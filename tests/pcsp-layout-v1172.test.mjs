@@ -230,6 +230,31 @@ test('速さ：押すところと文字は、先に全部読んでからまと�
   /* 文字の印を書いたあと押すところを読む前の 1 回と、押すところをまとめて書いたあとに relative になったかを確かめる 1 回（#169 の Codex 6900411328 の P3） */
   assert.ok(readsAfterWrite <= 2, '書いたあとに読むのは 2 回まで（' + readsAfterWrite + '）');
 });
+test('速さ：static を決めている要素がいくつあっても、先に全部読んでからまとめて外す（読む → 外す をくり返さない・#169 の Codex 6900755891 の P3）', () => {
+  /* 書く（setAttribute・removeAttribute・setProperty・removeProperty）のあとの最初の読みを数える。前の形は static の要素 1 つごとに 1 回（40 回） */
+  let dirty = false, readsAfterWrite = 0;
+  const watchEl = el => {
+    const sa = el.setAttribute.bind(el), ra = el.removeAttribute.bind(el), sp = el.style.setProperty.bind(el.style), rp = el.style.removeProperty.bind(el.style), gb = el.getBoundingClientRect, gc = el.getClientRects;
+    el.setAttribute = (k, v) => { dirty = true; sa(k, v); };
+    el.removeAttribute = k => { dirty = true; ra(k); };
+    el.style.setProperty = (k, v) => { dirty = true; sp(k, v); };
+    el.style.removeProperty = k => { dirty = true; return rp(k); };
+    el.getBoundingClientRect = () => { if (dirty) { readsAfterWrite++; dirty = false; } return gb(); };
+    el.getClientRects = () => { if (dirty) { readsAfterWrite++; dirty = false; } return gc(); };
+    return el;
+  };
+  const els = [];
+  for (let i = 0; i < 40; i++) { const el = watchEl(fakeEl(R(10 + (i % 8) * 40, 100 + Math.floor(i / 8) * 40, 30, 30))); Object.defineProperty(el._cs, 'position', { get: () => 'static' }); els.push(el); }
+  const root = { querySelectorAll: sel => (/table/.test(sel) ? [] : /input/.test(sel) ? [] : els) };
+  const c = layoutCtx({
+    matchMedia: q => ({ matches: /767/.test(q) || /coarse/.test(q) }),
+    getComputedStyle: (el, pseudo) => { if (dirty) { readsAfterWrite++; dirty = false; } return pseudo ? { content: 'none' } : (el._cs || { display: 'block', overflow: 'visible', overflowX: 'visible', overflowY: 'visible', position: 'static', fontSize: '13px' }); },
+    doc: { getElementById: id => (id === 'main-content' ? root : null), createTreeWalker: () => ({ nextNode: () => null }) },
+  });
+  c.FUNERGY_LAYOUT.run();
+  assert.ok(els.every(e => !e.hasAttribute('data-hit') && !e.hasAttribute('data-hitrel')), 'static を決めている要素には押す範囲も印も残さない');
+  assert.ok(readsAfterWrite <= 2, '書いたあとに読むのは 2 回まで（' + readsAfterWrite + '）');
+});
 /* 要素がとても多い画面：見えている所の上下 1 画面（外の塊はその中ごと飛ばす） */
 function treeRun(cards, opt = {}) {
   const NF = { SHOW_ELEMENT: 1, SHOW_TEXT: 4, FILTER_ACCEPT: 1, FILTER_REJECT: 2, FILTER_SKIP: 3 };
@@ -509,7 +534,7 @@ test('押す範囲：relative にするのは元が static のものだけ（散
   assert.doesNotMatch(CSS, /(^|[\s,}])\[data-hit\]\[data-hitrel\]\s*\{/, '強さのある印の決まりが残っていない');
   assert.match(LAYOUT, /if \(mk && pos === 'static'\) \{ if \(el\.hasAttribute\('data-hit'\)\) writes\.push\(\{ el: el \}\); return; \}/);
   assert.match(LAYOUT, /var stat = pos === 'static' \|\| \(mk && pos === 'relative'\);/);
-  assert.match(LAYOUT, /fresh\.forEach\(function\(el\)\{ if \(W\.getComputedStyle\(el\)\.position === 'static'\) clearHit\(el\); \}\);/);
+  assert.match(LAYOUT, /var stuck = fresh\.filter\(function\(el\)\{ return W\.getComputedStyle\(el\)\.position === 'static'; \}\);\s*stuck\.forEach\(clearHit\);/);
   assert.match(LAYOUT, /writes\.push\(\{ el: el, e: e, rel: stat \}\)/);
   assert.match(LAYOUT, /function clearHit\(el\)\{ el\.removeAttribute\('data-hit'\); el\.removeAttribute\('data-hitrel'\);/);
   /* 本物のブラウザの CSS での確かめは tests/e2e-pcsp/hit-position-v1172.mjs（座標・computed の position・押したときの対象） */

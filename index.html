@@ -113518,8 +113518,10 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       if (w.rel) { if (!el.hasAttribute('data-hitrel')) { el.setAttribute('data-hitrel', ''); fresh.push(el); } } else if (el.hasAttribute('data-hitrel')) el.removeAttribute('data-hitrel');
       if (!el.hasAttribute('data-hit')) el.setAttribute('data-hit', '');
     });
-    /* 印を付けても relative にならない（ほかの決まりが static を決めている）ものは押す範囲を外す（押す範囲がよその所にずれないように）。まとめて書いたあとに 1 回だけ読む */
-    fresh.forEach(function(el){ if (W.getComputedStyle(el).position === 'static') clearHit(el); });
+    /* 印を付けても relative にならない（ほかの決まりが static を決めている）ものは押す範囲を外す（押す範囲がよその所にずれないように）。
+       先に全部読んでから、まとめて外す（読む → 外す をくり返さない。#169 の Codex 6900755891 の P3） */
+    var stuck = fresh.filter(function(el){ return W.getComputedStyle(el).position === 'static'; });
+    stuck.forEach(clearHit);
     strips.forEach(function(sp){
       var hp = sp._hp, t = Math.max(0, Math.ceil(hp.t)), b = Math.max(0, Math.ceil(hp.b));
       if (t + b < 1) { if (sp.hasAttribute('data-hitpad')) { sp.removeAttribute('data-hitpad'); ['--hpt', '--hpb', '--p0t', '--p0b', '--m0t', '--m0b'].forEach(function(x){ sp.style.removeProperty(x); }); } return; }
