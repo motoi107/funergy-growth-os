@@ -268,24 +268,31 @@ test('前年：新店は「前年実績なし」・前年が確認済み $0 は�
   assert.equal(pcRow(html, '2026-09')[COL.pyd], '＋$13,000');
 });
 
-test('開店前の月（実績が 1 日も無く、予算が店の共通設定だけ）：未取込にしない・数えない・表の上に出す', () => {
+test('開店前の月（店舗マスターの開店日より前・実績が 1 日も無い）：未取込にしない・数えない・表の上に出す', () => {
   const mut = W => { W.plan.F06['2026-07'] = Object.fromEntries(Object.entries(spread('2026-07', 93000)).map(([k, v]) => [k, { sales: v, guests: v / 50, complete: true }]));
     W.fallback = { 'F06|2026-07': true }; return W; };
-  const c = device(mut), md = model(c, ['F06']), jul = md.months[6];
+  const OPEN = STORES.map(s => s.id === 'F06' ? { ...s, openDate: '2026-09-19' } : s);
+  const c = device(mut, { stores: OPEN }), md = model(c, ['F06']), jul = md.months[6];
   assert.equal(jul.relevant, 0); assert.equal(jul.gap.length, 0); assert.deepEqual(plain(jul.idle), ['LL']);
   const html = render(c, { store: 'F06' }), r = pcRow(html, '2026-07');
   assert.deepEqual([r[COL.st], r[COL.bud], r[COL.act], r[COL.diff], r[COL.cum]], ['実績なし', '—', '—', '—', '—']);
   assert.equal(c._apMonthsTx([1, 2, 3, 5, 7, 8]), '1〜3・5・7・8月');
-  // v1169：根拠（その店の最初の実績＝LaLa は 9/19）より前の月だけ
-  assert.match(strip(html), /開店前として数えない月：7月（その店の最初の実績より前で、実績が 1 日も無く、予算が店の共通設定だけの月）/);
-  const all = model(device(mut), ['F01', 'F02', 'F06']).months[6];
+  // v1170 の直し：根拠は店舗マスターの開店日（LaLa 9/19）だけ。その日より前の月
+  assert.match(strip(html), /開店前として数えない月：7月（店舗マスターの開店日より前で、実績が 1 日も無い月）/);
+  const all = model(device(mut, { stores: OPEN }), ['F01', 'F02', 'F06']).months[6];
   assert.equal(all.gap.length, 0); assert.equal(Math.round(c.apVal('sales', all.A, 'b')), 150000);   // 全店の 7 月を欠損ありにしない
-  // その月を予算設定で保存していれば（共通設定ではない）、実績が無いのは「未取込」
-  const c2 = device(W => { mut(W); W.fallback = {}; return W; });
-  assert.equal(model(c2, ['F06']).months[6].gap[0].dates.length, 31);
-  // 実績が 1 日でもあれば数える（共通設定の予算でも）
-  const c3 = device(W => { mut(W); W.da.F06['2026-07-20'] = { actual: 100, guests: 2 }; return W; });
+  // 開店日の前なら、その月を予算設定で保存していても数えない（開店前に実績は無い）
+  const c2 = device(W => { mut(W); W.fallback = {}; return W; }, { stores: OPEN });
+  assert.deepEqual(plain(model(c2, ['F06']).months[6].idle), ['LL']);
+  // 実績が 1 日でもあれば数える（開店日より前でも）
+  const c3 = device(W => { mut(W); W.da.F06['2026-07-20'] = { actual: 100, guests: 2 }; return W; }, { stores: OPEN });
   assert.equal(model(c3, ['F06']).months[6].relevant, 1);
+  // 開店日が無ければ開店前にしない：7 月は未取込（欠損あり）として数え、表の上に「開店日を入れてください」
+  const c4 = device(mut), j4 = model(c4, ['F06']).months[6];
+  assert.deepEqual(plain(j4.idle), []); assert.equal(j4.relevant, 1); assert.equal(j4.gap[0].dates.length, 31);
+  const h4 = strip(render(c4, { store: 'F06' }));
+  assert.ok(!/開店前として数えない月/.test(h4));
+  assert.match(h4, /7月 は実績がありません（未取込として数えています）。開店前の月なら、設定 › 店舗マスターで開店日を入れると数えなくなります/);
 });
 
 test('全店：店ごとの取込の日が違う進行中の月・予算のない日の店は未取込にしない', () => {
@@ -451,15 +458,14 @@ test('v1169：前から実績のある店の、実績の無い月（予算は共
   const c2 = device(W => { W.da.F06 = {}; W.fallback = { 'F06|2026-09': true, 'F06|2026-10': true }; return W; });
   const m2 = model(c2, ['F06']);
   assert.deepEqual(plain(m2.months[9].idle), []); assert.equal(m2.months[9].gap[0].dates.length, 31);
-  // 読み込み中・読めなかった月も開店前にしない（読めたら開店前）
+  // v1170 の直し：開店日が無ければ、読めた月でも開店前にしない（読めたことは開店前の根拠ではない）
   const stores = STORES.map(s => s.id === 'F06' ? { ...s, toastGuid: 'g6' } : s);
   const mutL = W => { W.plan.F06['2026-07'] = Object.fromEntries(Object.entries(spread('2026-07', 93000)).map(([k, v]) => [k, { sales: v, guests: v / 50, complete: true }])); W.fallback = { 'F06|2026-07': true }; return W; };
   const c3 = device(mutL, { stores });
-  for (const m of ['08', '09', '10']) c3.STORE.set('monthloaded_F06_2026-' + m, 'true');
-  const jl = model(c3, ['F06']).months[6];
-  assert.deepEqual(plain(jl.idle), [], '読み込み中は開店前にしない'); assert.equal(jl.loading, true);
-  c3.STORE.set('monthloaded_F06_2026-07', 'true');
-  assert.deepEqual(plain(model(c3, ['F06']).months[6].idle), ['LL'], '読めたら開店前');
+  for (const m of ['07', '08', '09', '10']) c3.STORE.set('monthloaded_F06_2026-' + m, 'true');
+  assert.deepEqual(plain(model(c3, ['F06']).months[6].idle), [], '読めても開店日が無ければ開店前にしない');
+  const c3b = device(mutL, { stores: stores.map(s => s.id === 'F06' ? { ...s, openDate: '2026-09-19' } : s) });
+  assert.deepEqual(plain(model(c3b, ['F06']).months[6].idle), ['LL'], '開店日があれば開店前');
 });
 
 test('v1169：過去の月の読み込みに失敗したら「読めませんでした」・確定と累計に入れない・60 秒たつと読み直す・「もう一度読む」はすぐ', async () => {
@@ -499,4 +505,34 @@ test('v1169：過去の月の読み込みに失敗したら「読めませんで
   ok = true; run(c3, 'apRetryLoad()'); await new Promise(r => setTimeout(r, 20));
   assert.deepEqual(plain(c3.LOADS), ['2026-10', '2026-10']);
   assert.equal(pcRow(render(c3), '2026-10')[COL.st], '確定');
+});
+
+/* ---- v1170 の直し（Codex #166 の P2）：取り込めた最初の実績を開店日の根拠にしない ---- */
+test('v1170 の直し：前年 PL のある店で、前年の日次と今年の先頭の月の日次が欠けても、その月を開店前にしない（予算・累計に入れる）', () => {
+  // Codex の再現：Store A に前年 7 月の会計 PL（売上 $100,000）。前年の日次は無く、今年 9 月より前の日次が無い
+  const mut = W => { delete W.pyd.F01; for (const k of Object.keys(W.da.F01)) if (k < '2026-09-01') delete W.da.F01[k];
+    W.fallback = { 'F01|2026-07': true, 'F01|2026-08': true }; W.seed['2025-07'] = W.seed['2025-07'] || {}; W.seed['2025-07'].F01 = { sales: 100000 }; return W; };
+  const c = device(mut), md = model(c, ['F01']);
+  for (const i of [6, 7]) {
+    const M = md.months[i];
+    assert.deepEqual(plain(M.idle), [], (i + 1) + '月を開店前にしない');
+    assert.equal(M.relevant, 1, (i + 1) + '月を数える'); assert.ok(M.gap.length > 0, (i + 1) + '月は欠損あり');
+  }
+  // 7〜10 月の累計は 7・8 月の予算も入る（欠損ありの印つき）
+  const oct = md.months[9];
+  assert.equal(Math.round(val(c, 'sales', oct.cum.A, 'b')), [6, 7, 8, 9].reduce((a, i) => a + Math.round(val(c, 'sales', md.months[i].A, 'b')), 0));
+  assert.equal(oct.cum.gap, true);
+  const h = strip(render(c, { store: 'F01' }));
+  assert.equal(pcRow(render(c, { store: 'F01' }), '2026-07')[COL.st], '欠損あり');
+  assert.ok(!/開店前として数えない月/.test(h));
+});
+
+test('v1170 の直し：店舗マスターの開店日（任意）を保存する・形の合わない値は保存しない', () => {
+  const src = fnSrc('saveStore');
+  assert.match(src, /openDate:\s*\(function\(\)\{ var v=\(\(document\.getElementById\('st-open-date'\)/);
+  assert.match(src, /\/\^\\d\{4\}-\\d\{2\}-\\d\{2\}\$\/\.test\(v\) \? v : ''/);
+  assert.match(SRC, /id="st-open-date"/);
+  const c = device();
+  assert.equal(run(c, `_apOpenDate({openDate:'2026-09-19'})`), '2026-09-19');
+  for (const bad of ["''", "'2026-9-19'", "'x'", 'null', '20260919', "{}"]) assert.equal(run(c, `_apOpenDate({openDate:${bad}})`), null, bad);
 });

@@ -193,6 +193,39 @@ test('(#163) a retired manager does not count: the next readable person becomes 
   else assert.fail('the fix SQL is not run (FIX_V1169=0)');
 });
 
+test('v1170 fix (Codex #166 P2): after the SQL, if the only manager of a request chat retires, the participant left can add someone, manage, rename and set the key; the chat is still shown to nobody else', async () => {
+  const s = await setup();
+  const r = await s.submit('E7');
+  const t = await s.ok('E7', { action: 'chat_case_create', id: r.id, members: ['E6'], client_key: 'case-key-0201' });
+  await s.retire('E7');   // SQL のあとに唯一の管理する人が退職（E6 は一般の参加者）
+  assert.deepEqual((await s.q(`select admin from public.chat_members where thread_id = '${t.id}' and emp_id = 'E6'`))[0], { admin: false }, 'E6 is not the manager yet');
+  // 前は 403 forbidden（加える）・409 last_member（抜ける）・409 case_exists（GM の作り直し）で、どこからも直せなかった
+  assert.deepEqual(await s.call('E6', { action: 'chat_remove', thread: t.id, emp: 'E6' }), { status: 409, body: { error: 'last_member' } }, 'E6 still cannot leave the only readable seat');
+  const add = await s.call('E6', { action: 'chat_add', thread: t.id, members: ['E8'], history: true });
+  assert.equal(add.status, 200, 'E6 can add someone: ' + JSON.stringify(add.body));
+  assert.deepEqual((await s.q(`select admin from public.chat_members where thread_id = '${t.id}' and emp_id = 'E6'`))[0], { admin: true }, 'E6 became the manager under the lock');
+  assert.equal((await s.ok('E6', { action: 'chat_remove', thread: t.id, emp: 'E6' })).removed, 1, 'after adding E8, E6 can leave');
+  assert.deepEqual((await s.q(`select admin from public.chat_members where thread_id = '${t.id}' and emp_id = 'E8'`))[0], { admin: true }, 'E8 is the manager now');
+  // GM（申請を見られる・参加者でない）は今までどおり「ある」とだけ（E8 が読める）
+  const c = await s.ok('E2', { action: 'chat_case', id: r.id });
+  assert.deepEqual([c.exists, c.can_open, c.thread], [true, false, null]);
+  assert.equal((await s.call('E2', { action: 'chat_messages', thread: t.id })).status, 404, 'not shown to a non-participant');
+  // 名前・管理する人・キー：退職した管理する人だけのグループでも、残った参加者が直せる
+  const s2 = await setup();
+  const g = await s2.ok('E7', { action: 'chat_create_group', title: 'Bar', members: ['E6'], client_key: s2.key() });
+  await s2.retire('E7');
+  const rev = (await s2.q(`select rev from public.chat_threads where id = '${g.id}'`))[0].rev;
+  assert.equal((await s2.call('E6', { action: 'chat_rename', thread: g.id, title: 'Bar 2', expect_rev: rev })).status, 200, 'rename');
+  const h = await s2.ok('E6', { action: 'chat_add', thread: g.id, members: ['E8'], history: false });
+  assert.equal(h.added, 1);
+  assert.equal((await s2.call('E6', { action: 'chat_admin', thread: g.id, emp: 'E8', admin: true })).status, 200, 'make E8 a manager too');
+  assert.equal((await s2.call('E6', { action: 'chat_admin', thread: g.id, emp: 'E7', admin: false })).status, 200, 'the retired manager’s mark can be taken off (E6 and E8 still manage)');
+  assert.deepEqual(await s2.call('E6', { action: 'chat_admin', thread: g.id, emp: 'E6', admin: false }), { status: 200, body: { emp: 'E6', admin: false } });
+  assert.deepEqual(await s2.call('E8', { action: 'chat_admin', thread: g.id, emp: 'E8', admin: false }), { status: 409, body: { error: 'last_admin' } }, 'the last readable manager cannot step down');
+  // 参加者でない人は今までどおり何もできない
+  assert.equal((await s2.call('E9', { action: 'chat_add', thread: g.id, members: ['E9'], history: true })).status, 404);
+});
+
 test('(#161) 処理済み（今月）: read by the time it was processed (paid, else checked; Hawaii month), newest first, page by page, only requests the person can see', async () => {
   const s = await setup();
   const old = await s.submit('E7', { date: '2026-08-20' });   // 前の申請を今月精算した
