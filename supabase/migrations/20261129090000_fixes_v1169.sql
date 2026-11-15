@@ -9,6 +9,8 @@
 --    ・だれも読めない会話（いまの参加者がいない・退職した人だけ・確かめていない前の自動の参加者だけ）は、次に開いた人が新しく作れる。
 --      前の会話は申請から外して ref_old に残す（中身はだれにも見せない＝参加者だけが読めるのは前のまま）。
 --    ・管理する人：退職した人は選ばない（いまの参加者から）。管理する人が退職した人だけの会話も直す（1 回）。
+--    ・v1170 の直し（Codex #166 の P2）：SQL のあとに唯一の管理する人が退職・無効になっても、加える・外す・管理する人・名前・キーの操作は、
+--      会話をロックしてから管理する人を直し（chat_admin_lock）、そのあとで権限と最後の参加者を確かめる。参加者でない人には見せない（前のまま）。
 -- 3.（#161）経理レビュー › 申請の「処理済み（今月）」：精算・確認した時刻（ハワイの月）でサーバーから読む（wr_acct_done・ページごと）。
 --    前は申請した日で 2 か月前まで・1,000 件で読んでいたので、古い申請を今月処理したものが出なかった。
 -- 4. 段：chat_stage 5（前の版のチャットの SQL はこの上では止まる）。申請の段（wr_stage）は変えない（v1165 の ③ が段 7 ちょうどを見るため）。
@@ -77,6 +79,18 @@ begin
  if v is not null then update public.chat_members set admin = true where thread_id = p_thread and emp_id = v; end if;
 end $$;
 
+-- v1170 の直し：会話をロックし、管理する人がいなければ（退職・無効だけなら）直してから、自分の参加の行を読み直す。
+-- 管理する人の権限を確かめる操作は、どれもこれを通してから確かめる（唯一の管理する人の退職のあとも、残った参加者が加える・抜ける・直すことができる）
+create or replace function public.chat_admin_lock(a jsonb, p_thread uuid) returns public.chat_members
+language plpgsql volatile security invoker set search_path = public, pg_temp as $$
+declare t public.chat_threads;
+begin
+ select * into t from public.chat_threads x where x.id = p_thread for update;
+ if not found then raise exception 'not_found'; end if;
+ perform public.chat_admin_fix(t.id);
+ return public.chat_member_of(a, t);
+end $$;
+
 -- 外す（管理する人）／抜ける（本人）。抜けるのはキーを開けていなくてもできる。申請のチャットの最後の参加者は抜けられない（last_member）
 create or replace function public.chat_remove(p jsonb) returns jsonb
 language plpgsql volatile security invoker set search_path = public, pg_temp as $$
@@ -85,9 +99,9 @@ begin
  if v is null or v = '' or length(v) > 64 then raise exception 'bad_value'; end if;
  if v = a->>'emp' then t := public.chat_find_nokey(a, p->>'thread'); else t := public.chat_find(a, p->>'thread'); end if;
  if t.kind = 'dm' then raise exception 'forbidden'; end if;
- me := public.chat_member_of(a, t);
+ me := public.chat_admin_lock(a, t.id);   -- v1170 の直し：ロックして管理する人を直してから確かめる
+ select * into t from public.chat_threads x where x.id = t.id;
  if v <> a->>'emp' and not coalesce(me.admin, false) then raise exception 'forbidden'; end if;
- select * into t from public.chat_threads x where x.id = t.id for update;
  if t.kind = 'case' and exists (select 1 from public.chat_members x where x.thread_id = t.id and x.emp_id = v and x.left_at is null)
     and not exists (select 1 from public.chat_members x where x.thread_id = t.id and x.emp_id <> v and x.left_at is null and not x.auto
                      and public.chat_emp_ok(x.emp_id)) then
@@ -101,6 +115,108 @@ begin
   perform public.chat_admin_fix(t.id); perform public.chat_bump(t.id); perform public.chat_bump_me(t.id, v);
  end if;
  return jsonb_build_object('removed', n);
+end $$;
+
+-- v1170 の直し：加える（その会話の管理する人だけ。v1167 のまま、確かめる前にロックして管理する人を直す）
+create or replace function public.chat_add(p jsonb) returns jsonb
+language plpgsql volatile security invoker set search_path = public, pg_temp as $$
+declare a jsonb := public.chat_actor(p); t public.chat_threads := public.chat_find(a, p->>'thread'); me public.chat_members; v text; v_hist boolean; n integer := 0; v_cnt integer;
+ mm public.chat_members; v_from bigint;
+begin
+ if t.kind = 'dm' then raise exception 'forbidden'; end if;
+ if jsonb_typeof(p->'history') <> 'boolean' then raise exception 'bad_value'; end if;
+ v_hist := (p->>'history')::boolean;
+ if jsonb_typeof(p->'members') <> 'array' or jsonb_array_length(p->'members') < 1 or jsonb_array_length(p->'members') > 49 then raise exception 'bad_value'; end if;
+ me := public.chat_admin_lock(a, t.id);
+ if not coalesce(me.admin, false) then raise exception 'forbidden'; end if;
+ select * into t from public.chat_threads x where x.id = t.id;
+ for v in select jsonb_array_elements_text(p->'members') loop
+  if not public.chat_emp_ok(v) then raise exception 'bad_value'; end if;
+  v_from := case when v_hist then 1 else t.last_seq + 1 end;
+  select * into mm from public.chat_members x where x.thread_id = t.id and x.emp_id = v for update;
+  if not found then
+   insert into public.chat_members(thread_id, emp_id, added_by, history_from) values (t.id, v, a->>'emp', v_from);
+   n := n + 1;
+  elsif mm.left_at is not null or mm.auto then
+   update public.chat_members set left_at = null, auto = false, admin = false, added_by = a->>'emp', added_at = now(), history_from = v_from
+    where thread_id = t.id and emp_id = v;
+   n := n + 1;
+  end if;
+ end loop;
+ select count(*) into v_cnt from public.chat_members x where x.thread_id = t.id and x.left_at is null and not x.auto;
+ if v_cnt > 50 then raise exception 'too_many'; end if;
+ if n > 0 then perform public.chat_bump(t.id); end if;
+ return jsonb_build_object('added', n, 'members', v_cnt);
+end $$;
+
+-- v1170 の直し：管理する人を決める（v1167 のまま、確かめる前にロックして管理する人を直す）。最後の 1 人は外せない。退職・無効の人は数えない
+create or replace function public.chat_admin(p jsonb) returns jsonb
+language plpgsql volatile security invoker set search_path = public, pg_temp as $$
+declare a jsonb := public.chat_actor(p); t public.chat_threads := public.chat_find(a, p->>'thread'); me public.chat_members; mm public.chat_members; v text := p->>'emp'; v_on boolean; n integer;
+begin
+ if t.kind = 'dm' then raise exception 'forbidden'; end if;
+ if v is null or v = '' or length(v) > 64 then raise exception 'bad_value'; end if;
+ if jsonb_typeof(p->'admin') <> 'boolean' then raise exception 'bad_value'; end if;
+ v_on := (p->>'admin')::boolean;
+ me := public.chat_admin_lock(a, t.id);
+ if not coalesce(me.admin, false) then raise exception 'forbidden'; end if;
+ select * into mm from public.chat_members x where x.thread_id = t.id and x.emp_id = v and x.left_at is null and not x.auto for update;
+ if not found then raise exception 'not_member'; end if;
+ if mm.admin = v_on then return jsonb_build_object('emp', v, 'admin', v_on); end if;
+ if not v_on then
+  select count(*) into n from public.chat_members x where x.thread_id = t.id and x.left_at is null and not x.auto and x.admin and public.chat_emp_ok(x.emp_id);
+  if n <= 1 then raise exception 'last_admin'; end if;
+ end if;
+ if v_on and not public.chat_emp_ok(v) then raise exception 'bad_value'; end if;
+ update public.chat_members set admin = v_on where thread_id = t.id and emp_id = v;
+ perform public.chat_bump(t.id);
+ return jsonb_build_object('emp', v, 'admin', v_on);
+end $$;
+
+-- v1170 の直し：名前（v1167 のまま、確かめる前にロックして管理する人を直す・版を確かめる）
+create or replace function public.chat_rename(p jsonb) returns jsonb
+language plpgsql volatile security invoker set search_path = public, pg_temp as $$
+declare a jsonb := public.chat_actor(p); t public.chat_threads := public.chat_find(a, p->>'thread'); me public.chat_members;
+ v_title text := btrim(regexp_replace(coalesce(p->>'title', ''), '[\u0001-\u001f\u007f]', '', 'g'));
+begin
+ if t.kind = 'dm' then raise exception 'forbidden'; end if;
+ if v_title = '' or length(v_title) > 60 then raise exception 'bad_value'; end if;
+ me := public.chat_admin_lock(a, t.id);
+ if not coalesce(me.admin, false) then raise exception 'forbidden'; end if;
+ select * into t from public.chat_threads x where x.id = t.id;
+ if not (jsonb_typeof(p->'expect_rev') = 'number' and (p->>'expect_rev')::int = t.rev) then raise exception 'conflict'; end if;
+ update public.chat_threads set title = v_title, rev = rev + 1 where id = t.id returning * into t;
+ perform public.chat_bump(t.id);
+ select * into t from public.chat_threads x where x.id = t.id;
+ return public.chat_row(a, t, public.chat_member_of(a, t));
+end $$;
+
+-- v1170 の直し：グループのキーを決める・変える・外す（v1168 のまま、確かめる前にロックして管理する人を直す）
+create or replace function public.chat_key_save(p jsonb) returns jsonb
+language plpgsql volatile security invoker set search_path = public, pg_temp as $$
+declare a jsonb := public.chat_actor(p); t public.chat_threads := public.chat_find_nokey(a, p->>'thread'); me public.chat_members; s jsonb; v_clear boolean;
+begin
+ if t.kind not in ('group','case') then raise exception 'forbidden'; end if;
+ if coalesce(jsonb_typeof(p->'clear'), '') <> 'boolean' then raise exception 'bad_value'; end if;
+ v_clear := (p->>'clear')::boolean;
+ if not v_clear and (coalesce(p->>'hash', '') !~ '^[0-9a-f]{64}$' or coalesce(p->>'salt', '') !~ '^[0-9a-f]{32}$'
+     or coalesce(jsonb_typeof(p->'iter'), '') <> 'number' or (p->>'iter')::int not between 100000 and 2000000) then raise exception 'bad_value'; end if;
+ me := public.chat_admin_lock(a, t.id);
+ if not coalesce(me.admin, false) then raise exception 'forbidden'; end if;
+ select * into t from public.chat_threads x where x.id = t.id;
+ if jsonb_typeof(p->'expect') = 'number' and (p->>'expect')::int <> t.key_rev then raise exception 'conflict'; end if;
+ if v_clear and t.key_hash is null then return jsonb_build_object('keyed', false, 'key_rev', t.key_rev); end if;
+ update public.chat_threads set key_hash = case when v_clear then null else p->>'hash' end, key_salt = case when v_clear then null else p->>'salt' end,
+   key_iter = case when v_clear then null else (p->>'iter')::int end, key_rev = key_rev + 1, key_at = now(), key_by = a->>'emp'
+  where id = t.id returning * into t;
+ delete from public.chat_sess_keys k where k.thread_id = t.id;
+ delete from public.chat_key_fails k where k.thread_id = t.id;
+ if not v_clear then
+  s := public.chat_sess_open(p, a->>'emp');
+  insert into public.chat_sess_keys(sess_id, thread_id, key_rev) values ((s->>'id')::uuid, t.id, t.key_rev);
+ end if;
+ perform public.chat_bump(t.id);
+ return jsonb_build_object('keyed', not v_clear, 'key_rev', t.key_rev) || case when s ? 'token' then jsonb_build_object('unlock', s->>'token') else '{}'::jsonb end;
 end $$;
 
 -- 開く：参加者なら会話。参加者でなく、読める参加者がいる会話なら「ある」とだけ。だれも読めない会話なら、新しく作れる（restart）

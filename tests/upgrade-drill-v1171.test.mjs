@@ -54,7 +54,7 @@ function make(daily, extra = {}) {
 function dailyFor(fn) { const da = {}; NOV.forEach(d => { if (d.date < TODAY || fn.today) { const v = fn(d.date); if (v) da[d.date] = v; } }); return da; }
 const settle = async () => { for (let i = 0; i < 8; i++) await new Promise(r => setTimeout(r, 0)); };
 
-test('totoyaKpiCalc：味噌汁・茶漬け（分母・分子）は今日を入れない・いくらシャワーと丼数は今までどおり・過去の月は同じ', () => {
+test('totoyaKpiCalc：味噌汁・茶漬け（分母・分子）もいくらシャワー・丼数も今日を入れない・過去の月は同じ', () => {
   const da = {};
   for (let i = 1; i <= 14; i++) { const d = '2026-11-' + String(i).padStart(2, '0'); da[d] = { misoTotal: 10, misoUpgrade: 3, ikuraShower: 2, ikuraBowls: 8 }; }
   da['2026-10-31'] = { misoTotal: 50, misoUpgrade: 50, ikuraShower: 1, ikuraBowls: 1 };
@@ -69,14 +69,67 @@ test('totoyaKpiCalc：味噌汁・茶漬け（分母・分子）は今日を入�
   assert.equal(r.eff.misoAll, 130, '13 日（11/1〜11/13）。今日 11/14 は入れない');
   assert.equal(r.eff.misoUp, 39);
   assert.equal(r.misoRate, 30);
-  assert.equal(r.eff.ikura, 28, 'いくらシャワーは今日も入る（今までどおり）');
-  assert.equal(r.eff.bowls, 112);
+  assert.equal(r.eff.ikura, 26, 'いくらシャワーも昨日まで（Moto さん 11/14 21:52 HST）');
+  assert.equal(r.eff.bowls, 104);
+  assert.equal(r.ikuraRate, 25);
+  assert.equal(oct0(ctx).eff.ikura, 1, '過去の月のいくらシャワーは変わらない');
   const oct = ctx.totoyaKpiCalc('F04-K', '2026.10');
   assert.equal(oct.eff.misoAll, 50, '過去の月は変わらない');
   ctx.bizToday = () => '2026-11-01';
   const first = ctx.totoyaKpiCalc('F04-K', '2026.11');
   assert.equal(first.eff.misoAll, null, '月の初日は昨日までの日が無い＝数なし（0 にしない）');
   assert.equal(first.misoRate, null);
+  assert.equal(first.eff.ikura, null, 'いくらシャワーも同じ');
+  assert.equal(first.ikuraRate, null);
+});
+function oct0(ctx) { return ctx.totoyaKpiCalc('F04-K', '2026.10'); }
+
+test('totoyaKpiCalc：今月は Toast の数を使う店なら、昨日までの数が無くても menu_mix に切り替えない（Codex #168 P3）・Toast の数の無い店は今までどおり', () => {
+  const cfg = { ikuraGuids: ['g-ikura'], ikuraBowlGuids: ['g-bowl'], misoAllGuids: ['g-miso'], misoUpGuids: ['g-up'] };
+  const recipes = [{ id: 'r1', toastGuid: 'g-ikura', name: 'Ikura' }, { id: 'r2', toastGuid: 'g-bowl', name: 'Bowl' }, { id: 'r3', toastGuid: 'g-miso', name: 'Miso' }, { id: 'r4', toastGuid: 'g-up', name: 'Up' }];
+  const mix = { items: { r1: 900, r2: 1000, r3: 800, r4: 700 } };
+  const mk = (da, today) => {
+    const ctx = {
+      Math, Number, String, Object, Array, isNaN, parseFloat, console,
+      bizToday: () => today, getTotoyaKpiCfg: () => cfg, getKpiManual: () => ({}), getMenuMix: () => mix,
+      activeRecipes: () => recipes, recipeInStore: () => true, getDailyActuals: () => da, _daRO: () => da,
+    };
+    vm.createContext(ctx);
+    ['_totoyaKw', '_totoyaMatchKw', 'totoyaKpiCalc'].forEach(n => vm.runInContext(fnSrc(n), ctx));
+    return ctx;
+  };
+  // 月の初日：今日の行（途中の数）だけが Toast にある
+  const da = { '2026-12-01': { misoTotal: 5, misoUpgrade: 2, ikuraShower: 1, ikuraBowls: 4 }, '2026-11-30': { misoTotal: 10, misoUpgrade: 3, ikuraShower: 2, ikuraBowls: 8 } };
+  const c = mk(da, '2026-12-01');
+  const r = c.totoyaKpiCalc('F04-K', '2026.12');
+  assert.equal(r.eff.ikura, null, 'menu_mix の 900 にしない'); assert.equal(r.eff.bowls, null);
+  assert.equal(r.eff.misoAll, null); assert.equal(r.eff.misoUp, null);
+  assert.equal(r.src.ikura, 'Toast'); assert.equal(r.ikuraRate, null); assert.equal(r.misoRate, null);
+  assert.equal(r.sel.i, 2, 'Toast の欄は数に入る（設定の数の表示は前と同じ）');
+  // 前の月（Toast の数がある）は今までどおり
+  const nov = c.totoyaKpiCalc('F04-K', '2026.11');
+  assert.equal(nov.eff.ikura, 2); assert.equal(nov.src.ikura, 'Toast');
+  // Toast の数が一つも無い店：今月も menu_mix（今までどおり）
+  const c2 = mk({}, '2026-12-01');
+  const r2 = c2.totoyaKpiCalc('F04-K', '2026.12');
+  assert.equal(r2.eff.ikura, 900); assert.equal(r2.src.ikura, 'menu_mix'); assert.equal(r2.eff.misoAll, 800);
+  // 過去の月に Toast の数が無いときも menu_mix（今までどおり）
+  const c3 = mk({ '2026-12-01': { ikuraShower: 1, ikuraBowls: 4 } }, '2026-12-02');
+  assert.equal(c3.totoyaKpiCalc('F04-K', '2026.11').eff.ikura, 900, '過去の月は切り替えのまま');
+  assert.equal(c3.totoyaKpiCalc('F04-K', '2026.12').eff.ikura, 1, '昨日（12/01）までの Toast');
+});
+
+test('日別で見る（いくらシャワー・味噌汁）：今日の行を並べない＝タイルの合計と同じ日まで', () => {
+  const da = {};
+  for (let i = 1; i <= 14; i++) { const d = '2026-11-' + String(i).padStart(2, '0'); da[d] = { ikuraShower: 2, ikuraBowls: 8 }; }
+  const ctx = { Math, Number, String, Object, Array, isNaN, console, bizToday: () => TODAY, getDailyActuals: () => da, escapeHtml: x => String(x), t: (ja) => ja };
+  vm.createContext(ctx);
+  vm.runInContext(fnSrc('_totoyaDayRows'), ctx);
+  const h = ctx._totoyaDayRows('F04-K', '2026-11', 'ikuraShower', 'ikuraBowls');
+  assert.match(h, /日別で見る（13日）/);
+  assert.ok(h.includes('11/13 2/8') && !h.includes('11/14'), '11/14（今日）は出さない');
+  ctx.bizToday = () => '2026-12-05';
+  assert.match(ctx._totoyaDayRows('F04-K', '2026-11', 'ikuraShower', 'ikuraBowls'), /日別で見る（14日）/, '過去の月はすべて');
 });
 
 test('stats：昨日まで・期間と店を足してから割る・取り込めていない日／店休を分ける・Totoya の店だけ', () => {
@@ -124,14 +177,24 @@ test('タイル：率は keyKpiStats の数・目標・前週比 pt・分子 ÷ 
   assert.match(none, /—/); assert.match(none, /まだ数がありません/);
 });
 
+// PostgREST と同じように limit・offset を守る。サーバーの 1 回の上限（max rows）も opt.maxRows で作れる
+function page(rows, q, opt) {
+  const off = Number(q.get('offset') || 0), lim = q.get('limit') == null ? Infinity : Number(q.get('limit'));
+  return rows.slice(off, off + Math.min(lim, opt.maxRows || Infinity));
+}
 function restWith(daysRows, linesRows, opt = {}) {
   return (tbl, q) => {
     if (opt.notable) return { status: 404, body: { code: 'PGRST205', message: 'Could not find the table' } };
-    if (tbl === 'toast_upgrade_days') return { status: 200, body: daysRows.filter(r => r.restaurant_guid === q.get('restaurant_guid').slice(3)) };
-    if (tbl === 'toast_upgrade_lines') { if (opt.lineErr) return { status: 500, body: {} }; return { status: 200, body: linesRows.filter(r => r.business_date === q.get('business_date').slice(3)) }; }
+    if (tbl === 'toast_upgrade_days') return { status: 200, body: page(daysRows.filter(r => r.restaurant_guid === q.get('restaurant_guid').slice(3)), q, opt) };
+    if (tbl === 'toast_upgrade_lines') {
+      if (opt.lineErr) return { status: 500, body: {} };
+      if (opt.failAt && opt.failAt(q)) return { status: 500, body: {} };
+      return { status: 200, body: page(linesRows.filter(r => r.business_date === q.get('business_date').slice(3)), q, opt) };
+    }
     return { status: 400, body: {} };
   };
 }
+const until = async (fn) => { for (let i = 0; i < 400; i++) { if (fn()) return; await new Promise(r => setTimeout(r, 0)); } };
 
 test('内訳：種類ごとの数は印のある日だけ・印の数が日次と違う日は使わない・明細なしの日は取り込み直すと出る', async () => {
   const k = dailyFor(d => ({ misoTotal: 10, misoUpgrade: 3 }));
@@ -183,7 +246,9 @@ test('内訳：種類ごとの数は印のある日だけ・印の数が日次�
   assert.equal(c._els['up-drill-' + id]._attr['data-tab'], 'day', '押したらスマホは日別へ');
   // 印はあるのに行が足りない日（11/12：行が 0）
   await c.FUNERGY_UP.pickAt(id, 0, '2026-11-12');
-  assert.match(c._els['up-day-' + id].innerHTML, /明細の行の合計が印の数と違います/);
+  assert.match(c._els['up-day-' + id].innerHTML, /明細の行の合計（分子 0 \/ 分母 0）が印の数と違います/);
+  assert.ok(!/up-bowls/.test(c._els['up-day-' + id].innerHTML), '合わない日は丼ごとの表を出さない');
+  assert.ok(!c._upCtx[id].lines['F04-K|2026-11-12'].ok, '合わない日は覚えない（もう一度押すと読み直す）');
   // 印と日次が違う日（11/11）
   await c.FUNERGY_UP.pickAt(id, 0, '2026-11-11');
   assert.match(c._els['up-day-' + id].innerHTML, /違います。この日を取り込み直してください/);
@@ -213,6 +278,64 @@ test('サーバーの準備（SQL）がまだのとき・明細を読めなか�
   assert.match(c2._els['up-day-' + id2].innerHTML, /丼ごと/);
 });
 
+test('明細はページごとに読む（Codex #168 P2）：サーバーの上限が 1,000 行でも 5,500 行をすべて・途中で読めなければ覚えずに読み直す・上限を超えたら丼ごとの数を出さない', async () => {
+  const k = dailyFor(d => (d === '2026-11-13' ? { misoTotal: 5500, misoUpgrade: 1500 } : { misoTotal: 10, misoUpgrade: 3 }));
+  const daysRows = [{ restaurant_guid: 'g-k', business_date: '2026-11-13', aosa: 4000, crab: 1500, today: 0, udon: 0, chazuke: 0, total: 5500, upgrade: 1500 }];
+  const lines = [];
+  for (let i = 0; i < 5500; i++) lines.push({ business_date: '2026-11-13', line_key: 'L' + String(i).padStart(5, '0') + ':0', order_no: String(1000 + i), opened_at: '2026-11-13T22:00:00Z', meal: 'L', takeout: false, bowl_guid: 'bw-1', bowl_name: 'Matsu', mod_name: i < 4000 ? 'AOSA' : 'Crab', kind: i < 4000 ? 'aosa' : 'crab', qty: 1, counted: true });
+  // 1) 全部読める
+  const c = make({ 'F04-K': k }, { rest: restWith(daysRows, lines, { maxRows: 1000 }) });
+  const id = c.FUNERGY_UP.ctx([{ id: 'F04-K' }], NOV, {});
+  c.FUNERGY_UP.open(id);
+  await until(() => c._upCtx[id].lines['F04-K|2026-11-13'] && !c._upCtx[id].lines['F04-K|2026-11-13'].busy);
+  const L = c._upCtx[id].lines['F04-K|2026-11-13'];
+  assert.equal(L.rows.length, 5500, 'すべての行'); assert.equal(L.ok, true); assert.ok(!L.cut);
+  const day = c._els['up-day-' + id].innerHTML;
+  assert.match(day, /丼ごと/); assert.match(day, /5,?500 行/);
+  assert.ok(!/印の数と違います/.test(day));
+  const lineCalls = c._calls.filter(u => u.includes('toast_upgrade_lines'));
+  assert.ok(lineCalls.every(u => /limit=1000&offset=\d+/.test(u)), '1,000 行ずつ');
+  assert.equal(lineCalls.length, 7, '6 ページ＋空のページ');
+  // 読み終えて合った日は、もう一度押しても読まない
+  await c.FUNERGY_UP.pickAt(id, 0, '2026-11-13');
+  assert.equal(c._calls.filter(u => u.includes('toast_upgrade_lines')).length, 7);
+
+  // 2) 途中のページで読めない → 覚えない → もう一度押すと最初から読み直す
+  let fail = true;
+  const c2 = make({ 'F04-K': k }, { rest: restWith(daysRows, lines, { maxRows: 1000, failAt: q => fail && q.get('offset') === '3000' }) });
+  const id2 = c2.FUNERGY_UP.ctx([{ id: 'F04-K' }], NOV, {});
+  c2.FUNERGY_UP.open(id2);
+  await until(() => c2._upCtx[id2].lines['F04-K|2026-11-13'] && c2._upCtx[id2].lines['F04-K|2026-11-13'].err);
+  assert.match(c2._els['up-day-' + id2].innerHTML, /読めませんでした。もう一度押してください/);
+  assert.ok(!c2._upCtx[id2].lines['F04-K|2026-11-13'].rows, '途中までの行は使わない');
+  fail = false;
+  await c2.FUNERGY_UP.pickAt(id2, 0, '2026-11-13');
+  assert.equal(c2._upCtx[id2].lines['F04-K|2026-11-13'].rows.length, 5500);
+  assert.match(c2._els['up-day-' + id2].innerHTML, /丼ごと/);
+
+  // 3) 上限（CAP）を超える日：途中までしか読めないので丼ごとの数を出さない・覚えない
+  const c3 = make({ 'F04-K': k }, { rest: restWith(daysRows, lines, { maxRows: 1000 }) });
+  c3.FUNERGY_UP.CAP = 2000;
+  const id3 = c3.FUNERGY_UP.ctx([{ id: 'F04-K' }], NOV, {});
+  c3.FUNERGY_UP.open(id3);
+  await until(() => c3._upCtx[id3].lines['F04-K|2026-11-13'] && !c3._upCtx[id3].lines['F04-K|2026-11-13'].busy);
+  const L3 = c3._upCtx[id3].lines['F04-K|2026-11-13'];
+  assert.equal(L3.cut, true); assert.equal(L3.ok, false);
+  const d3 = c3._els['up-day-' + id3].innerHTML;
+  assert.match(d3, /最初の 2,?000 行までしか読めませんでした/); assert.ok(!/up-bowls/.test(d3), '丼ごとの表を出さない');
+});
+
+test('日の印もページごとに読む：サーバーの上限が 10 行でも 13 日分そろう', async () => {
+  const k = dailyFor(d => ({ misoTotal: 10, misoUpgrade: 3 }));
+  const daysRows = NOV.filter(d => d.date < TODAY).map(d => ({ restaurant_guid: 'g-k', business_date: d.date, aosa: 7, crab: 3, today: 0, udon: 0, chazuke: 0, total: 10, upgrade: 3 }));
+  const c = make({ 'F04-K': k }, { rest: restWith(daysRows, [], { maxRows: 10 }) });
+  const id = c.FUNERGY_UP.ctx([{ id: 'F04-K' }], NOV, {});
+  c.FUNERGY_UP.open(id);
+  await until(() => c._upCtx[id].srv);
+  assert.equal(Object.keys(c._upCtx[id].srv.by['F04-K']).length, 13);
+  assert.equal(c.FUNERGY_UP.kindSums(id).daysWith, 13);
+});
+
 test('英語の画面・手入力の店の注意・店休と取り込めていない日の言葉', async () => {
   const k = dailyFor(d => d === '2026-11-03' || d === '2026-11-04' ? null : { misoTotal: 10, misoUpgrade: 3 });
   const c = make({ 'F04-K': k }, { en: true, closed: { 'F04-K|2026-11-03': 1 } });
@@ -221,6 +344,13 @@ test('英語の画面・手入力の店の注意・店休と取り込めてい�
   assert.match(h, /Upgrade rate breakdown/); assert.match(h, /through yesterday/); assert.match(h, /typed in KPI settings/);
   assert.match(h, /Closed/); assert.match(h, /Not imported \(not zero sales\)/);
   assert.match(h, /Target 25% · diff \+5\.0pt/);
+  assert.ok(!/monthly item mix/.test(h), 'menu_mix の店が無ければ出さない');
+  // タイルが menu_mix の数の店（Codex #168 P3）：出どころと期間の違いを出す
+  const c2 = make({ 'F04-K': k }, {});
+  const id2 = c2.FUNERGY_UP.ctx([{ id: 'F04-K' }], NOV, { totoyaParts: [{ sid: 'F04-K', srcMisoUp: 'menu_mix', srcMisoAll: 'menu_mix' }, { sid: 'F04-A', srcMisoUp: 'menu_mix', srcMisoAll: 'menu_mix' }] });
+  const h2 = c2.FUNERGY_UP.html(id2);
+  assert.match(h2, /月の出数（menu_mix）で数えている店があります（Totoya Kaimuki）/, '内訳の店だけ');
+  assert.match(h2, /Toast の昨日までの数/);
 });
 
 test('画面の作り：CSS（PC 2 列・スマホのタブ）・重要 KPI のタイルを置き換え・版', () => {
