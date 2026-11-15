@@ -31255,9 +31255,24 @@ function plFilePicked(el){
     if (box) box.innerHTML = '<div style="color:var(--red);font-size:12px">'+escapeHtml(String(e && e.message || e))+'</div>';
   });
 }
+/* v1174：あとから取り込んだ「暫定」の月で、もう「確定」として保存した同じ店・同じ月を上書きしない（Moto さん 11/15 の依頼の C）。
+   確定＝共有の保存（pl_public）か、この端末の保存（pl_actual）に、暫定の印の無い売上がある。確定版を取り込み直すのはいつでもできる。 */
+function _plKeepsFinal(x){
+  if (!x || !x.prov) return false;
+  try {
+    var hit = function(o){ var r = o && o[x.ym] && o[x.ym][x.storeKey]; return !!(r && !r.prov && Number(r.sales) > 0); };
+    return hit(ls('pl_public', null)) || hit(ls('pl_actual', null));
+  } catch(e){ return false; }
+}
 function _plPreviewHtml(r){
-  var good = r.rows.filter(function(x){ return x.ok; });
+  var keepF = r.rows.filter(function(x){ return x.ok && _plKeepsFinal(x); });
+  var good = r.rows.filter(function(x){ return x.ok && !_plKeepsFinal(x); });
   var h = '';
+  if (keepF.length){
+    h += '<div style="margin-bottom:8px;border:1px solid var(--border);border-radius:8px;padding:7px 8px;font-size:10.5px;line-height:1.7">'
+      +  '<b>'+t('確定済みの月は暫定で上書きしません','Final months are not overwritten by a provisional PL')+'</b>：'
+      +  keepF.map(function(x){ return escapeHtml(_plStoreLabel(x.storeKey)+' '+x.ym); }).join('、')+'</div>';
+  }
   if (!good.length){
     h += '<div style="color:var(--red);font-size:12px;font-weight:700;margin-bottom:8px">'+t('取り込める行がありません','Nothing to import')+'</div>';
   } else {
@@ -31342,7 +31357,8 @@ function backupPl(){
 function plImportSave(){
   var r = _plImport;
   if (!r || !r.rows.length){ showToast(t('取り込む内容がありません','Nothing to import'),'info'); return; }
-  var good = r.rows.filter(function(x){ return x.ok; });
+  var keepF = r.rows.filter(function(x){ return x.ok && _plKeepsFinal(x); });
+  var good = r.rows.filter(function(x){ return x.ok && !_plKeepsFinal(x); });
   var act = ls('pl_actual', {}) || {};
   var pub = ls('pl_public', {}) || {};
   var now = Date.now(), n = 0;
@@ -31385,7 +31401,7 @@ function plImportSave(){
   lsSet('pl_public', pub);
   _plImport = null;
   try { closeModalDirect(); } catch(e){}
-  showToast(n + t('件を取り込みました','rows imported'), 'success');
+  showToast(n + t('件を取り込みました','rows imported') + (keepF.length ? t('（確定済みの '+keepF.length+' 件は暫定で上書きしていません）',' ('+keepF.length+' final months kept)') : ''), 'success');
   try { _secRerender(); } catch(e){}
 }
 
@@ -32127,7 +32143,19 @@ function _meetYearMatrix(store, y){
   };
   var ORDER=['sales','guests','ppa','repeat','drink','fc','labor','miso','ikura','google'];
   /* v1153：Google の口コミの行はいつも出す（7月から＝KPI設定の目標と、手入力の「その月に投稿された口コミの平均」） */
-  var KEYS=ORDER.filter(function(k){ return seed[k] || ['sales','guests','ppa','google'].indexOf(k)>=0; });
+  /* v1174：その月の keyKpiStats を 1 回の描画で 1 回だけ（前は目標・実績・速報のセルごとに計算し直していた）。値は読むだけで書き換えない。 */
+  var _kc={};
+  function kks(ym){ if(!Object.prototype.hasOwnProperty.call(_kc, ym)){ var v=null; try{ v=keyKpiStats([store], daysOfYm(ym)); }catch(e){ v=null; } _kc[ym]=v; } return _kc[ym]; }
+  /* v1174：1〜6 月の Excel のデータ（seed）が無い店（9 月開店の LaLa など）は、7 月以降に目標か実績がある KPI も行に出す。
+     前は seed のある KPI と売上・客数・客単価・Google だけで、会計 PL の原価率・人件費率の行が出なかった（Moto さん 11/15）。
+     seed のある店は今までどおり（行を増やさない）。 */
+  var noSeed=!Object.keys(seed).length;
+  function hasLive(k){
+    for(var mo=1; mo<=12; mo++){ var ym=y+'-'+String(mo).padStart(2,'0'); if(!(ym > MEETING_KGI_SEED_UNTIL)) continue;
+      var off=(typeof _ymToOffset==='function')?_ymToOffset(ym):0;
+      if(liveT(k, ym)!=null || liveA(k, ym, off)!=null) return true; }
+    return false; }
+  var KEYS=ORDER.filter(function(k){ return seed[k] || ['sales','guests','ppa','google'].indexOf(k)>=0 || (noSeed && hasLive(k)); });
   if(!KEYS.length){ return '<div class="card"><div class="card-title"><i class="ti ti-building-store" style="color:var(--accent)"></i>'+escapeHtml(store.name)+'</div><div style="color:var(--muted);font-size:12px">'+t('この店舗のExcel取込データはありません（7月以降はライブ値で表示）。','No Excel data imported for this store.')+'</div></div>'; }
   var canEd=(typeof qbCanEdit==='function')?qbCanEdit():false;
   var edits=getKgiEdits();
@@ -32135,7 +32163,7 @@ function _meetYearMatrix(store, y){
      （「1〜6月の会議記録の数字は動かさない」A案・Motoさん確認済みを維持）。 */
   function liveA(kk, ym, off){ if(off>0) return null;
     if(kk==='google'){ try{ var _gm=(typeof grMonthOf==='function')?grMonthOf(sid, ym):null; if(_gm) return _gm.avg; return _k2Num((getKpiManual(sid, k2Period(ym))||{}).gAvg); }catch(e){ return null; } }   /* v1153（1A）・v1157：自動の店と月は Google */
-    var k; try{ k=keyKpiStats([store], daysOfYm(ym)); }catch(e){ return null; } if(!k) return null;
+    var k=kks(ym); if(!k) return null;
     try{ k=_meetApplyPl(k, sid, ym); }catch(e){}
     switch(kk){ case 'sales': return k.sales||null; case 'guests': return isB?((k.opDays>0)?Math.round((k.guests||0)/k.opDays):null):(k.guests||null); case 'ppa': return k.ppa||null; case 'repeat': return k.repeatRate; case 'fc': return k.fcRate||null; case 'labor': return k.laborRate||null; case 'miso': return k.misoRate; case 'ikura': return k.ikuraRate; case 'drink': return k.drinkRate; default: return null; } }
   /* v930: 速報（アプリの日次実績）。_meetApplyPl が退避した上書き前の値を読む。
@@ -32143,7 +32171,7 @@ function _meetYearMatrix(store, y){
      ★確定していない月は実績＝速報で差が無いので null（行に「—」を出す）。
      ★liveA の switch は複製しない（同じ処理を2か所に置かない）。 */
   function liveApp(kk, ym, off){ if(off>0) return null;
-    var k; try{ k=keyKpiStats([store], daysOfYm(ym)); }catch(e){ return null; } if(!k) return null;
+    var k=kks(ym); if(!k) return null;
     try{ k=_meetApplyPl(k, sid, ym); }catch(e){ return null; }
     if(!k || !k.plSrc || !k.app) return null;
     switch(kk){
@@ -32169,7 +32197,7 @@ function _meetYearMatrix(store, y){
      目標は中間MTGと同じ keyKpiStats の値を使う＝2つの会議で同じ数字になる。 */
   function liveT(kk, ym){
     if(kk==='google'){ try{ return k2ExplicitTarget(sid, ym, 'reviewScore'); }catch(e){ return null; } }   /* v1153：KPI設定の目標 */
-    var k; try{ k=keyKpiStats([store], daysOfYm(ym)); }catch(e){ return null; } if(!k) return null;
+    var k=kks(ym); if(!k) return null;
     switch(kk){ case 'sales': return k.budget;
       case 'guests': return isB?(k.guestBudget===0?0:((k.opDays>0&&k.guestBudget!=null)?Math.round(k.guestBudget/k.opDays):null)):k.guestBudget;
       case 'ppa': return k.ppaBudget; case 'repeat': return k.repeatTgt; case 'drink': return k.drinkTgt;
@@ -47097,7 +47125,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1173';
+const APP_VERSION = '1174';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。

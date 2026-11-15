@@ -32,7 +32,7 @@ function load(store = {}) {
   };
   vm.createContext(ctx);
   vm.runInContext(block('var PL_SHEET_MAP = {', '/* SheetJS は取り込みのときだけ読む'), ctx);
-  vm.runInContext(['_plPreviewHtml', '_plStoreLabel', 'plImportSave'].map(fnSrc).join('\n') + '\nvar _plImport = null;', ctx);
+  vm.runInContext(['_plKeepsFinal', '_plPreviewHtml', '_plStoreLabel', 'plImportSave'].map(fnSrc).join('\n') + '\nvar _plImport = null;', ctx);
   return Object.assign(ctx, { store, toasts });
 }
 
@@ -356,8 +356,8 @@ test('a section that the reader does not know breaks the operating-income check 
 test('⑤ saving: the same store and month is replaced (no double points), refused months keep the earlier values, provisional months are marked', () => {
   const store0 = {
     pl_actual: { _src: { '2026-01': 'PL取込 2026/10/01' }, '2026-01': { F05: { sales: 1, cogs: 1, payroll: 1, opex: 1, netop: 1, netinc: 1, detail: { old: 1 }, detailOthInc: { stale: 5 } } },
-      '2026-03': { F05: { sales: 7, cogs: 7, payroll: 7, opex: 7, netop: 7, netinc: 7 } } },
-    pl_public: { '2026-03': { F05: { sales: 7, cogs: 7, payroll: 7, _at: 1 } } },
+      '2026-03': { F05: { sales: 7, cogs: 7, payroll: 7, opex: 7, netop: 7, netinc: 7, prov: true } } },
+    pl_public: { '2026-03': { F05: { sales: 7, cogs: 7, payroll: 7, _at: 1, prov: 1 } } },   // v1174：前の 3 月は暫定（確定なら暫定で上書きしない＝下の試験）
   };
   const c = load(store0);
   const S = rowsOf(store());
@@ -370,8 +370,8 @@ test('⑤ saving: the same store and month is replaced (no double points), refus
   assert.equal(Object.keys(a['2026-01']).length, 1);
   assert.ok(near(a['2026-01'].F05.c.sales, S.keys.inc[0]) && !a['2026-01'].F05.detail.old, 'replaced, not merged');
   assert.equal('detailOthInc' in a['2026-01'].F05, false, 'a field only the earlier import had is gone (January has no other income now)');
-  same(a['2026-03'].F05, { sales: 7, cogs: 7, payroll: 7, opex: 7, netop: 7, netinc: 7 }, 'the refused month keeps the earlier import');
-  same(c.store.pl_public['2026-03'].F05, { sales: 7, cogs: 7, payroll: 7, _at: 1 });
+  same(a['2026-03'].F05, { sales: 7, cogs: 7, payroll: 7, opex: 7, netop: 7, netinc: 7, prov: true }, 'the refused month keeps the earlier import');
+  same(c.store.pl_public['2026-03'].F05, { sales: 7, cogs: 7, payroll: 7, _at: 1, prov: 1 });
   assert.equal(a['2026-02'].F05.prov, false);
   assert.equal(a._src['2026-03'], undefined, 'the refused month is not stamped as imported');
   assert.match(a._src['2026-02'], /^PL取込 /);
@@ -565,4 +565,31 @@ test('#156 the provisional month is decided for the whole book: a store with no 
   for (const k of Object.keys(s)) s[k] = s[k].map(r => (r.group ? { group: r.group, items: r.items.map(x => [x[0], [x[1][0], x[1][1], null]]) } : [r[0], [r[1][0], r[1][1], null]]));
   const r = c.parsePLWorkbook(book({ 'Marujuu': sheetOf(full.R), 'LALA': sheetOf(rowsOf(s).R) }), { fileName: 'PL_Mar26_暫定.xlsx' });
   same(r.rows.map(x => [x.storeKey, x.ym, x.prov]), [['F05', '2026-01', false], ['F05', '2026-02', false], ['F05', '2026-03', true], ['F06', '2026-01', false], ['F06', '2026-02', false]]);
+});
+
+test('v1174 a later provisional PL does not overwrite a store-month already saved as final; other months still import and a final PL can replace it', () => {
+  const c = load({
+    pl_actual: { '2026-03': { F05: { sales: 9, cogs: 9, payroll: 9, opex: 9, netop: 9, netinc: 9, prov: false } } },
+    pl_public: { '2026-03': { F05: { sales: 9, cogs: 9, payroll: 9, _at: 1 } } },
+  });
+  const S = rowsOf(store());
+  c._plImport = c.parsePLWorkbook(book({ 'Marujuu': sheetOf(S.R) }), { fileName: 'PL_Mar26_暫定.xlsx' });
+  assert.equal(c._plImport.rows.find(x => x.ym === '2026-03').prov, true);
+  const pv = c._plPreviewHtml(c._plImport);
+  assert.match(pv, /確定済みの月は暫定で上書きしません/); assert.match(pv, /Marujuu 2026-03/);
+  vm.runInContext('_plImport = this._plImport', c); c.plImportSave();
+  same(c.store.pl_public['2026-03'].F05, { sales: 9, cogs: 9, payroll: 9, _at: 1 }, 'the final March stays');
+  assert.equal(c.store.pl_actual['2026-03'].F05.sales, 9);
+  assert.ok(near(c.store.pl_actual['2026-01'].F05.c.sales, S.keys.inc[0]), 'January (not provisional) still imports');
+  assert.ok(c.toasts.some(([k, m]) => k === 'success' && /確定済みの 1 件は暫定で上書きしていません/.test(m)), JSON.stringify(c.toasts));
+  // 確定版なら置き換わる
+  c._plImport = c.parsePLWorkbook(book({ 'Marujuu': sheetOf(S.R) }), { fileName: 'PL_Mar26.xlsx' });
+  vm.runInContext('_plImport = this._plImport', c); c.plImportSave();
+  assert.equal(c.store.pl_public['2026-03'].F05.sales, Math.round(S.keys.inc[2]));
+  assert.equal(c.store.pl_public['2026-03'].F05.prov, undefined);
+  // 前が暫定なら、暫定でも置き換わる（同じ月の暫定を出し直したとき）
+  const c2 = load({ pl_public: { '2026-03': { F05: { sales: 9, cogs: 9, payroll: 9, _at: 1, prov: 1 } } } });
+  c2._plImport = c2.parsePLWorkbook(book({ 'Marujuu': sheetOf(S.R) }), { fileName: 'PL_Mar26_暫定.xlsx' });
+  vm.runInContext('_plImport = this._plImport', c2); c2.plImportSave();
+  assert.equal(c2.store.pl_public['2026-03'].F05.sales, Math.round(S.keys.inc[2])); assert.equal(c2.store.pl_public['2026-03'].F05.prov, 1);
 });

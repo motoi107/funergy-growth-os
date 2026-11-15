@@ -1,5 +1,14 @@
 # Claude / Codex 共通記録
 
+## 2026-11-15 v1174：会議タブの KPI推移（LaLa の原価率・人件費率）と PL の「暫定」の説明（Claude・ブランチ `claude/meet-lala-kpi`・#171（v1173）の上・アプリと読むだけの SQL・本番未反映）
+
+- 依頼：Moto さん 11/15 11:33 HST の添付（A 総労働時間 KPI・B アップセル対象商品・C PL の保存と会議タブ）「UIの修正は長いと思うので、これを先に」。11:41 HST：C は「エラーではなく、KPI推移の月の下が暫定の理由と、LaLa が反映されない件の取り込み・反映・保存の状況」。仕様と結果：`docs/PL_IMPORT_V1162_JA.md` の 8。
+- 暫定の理由：添付の Oct26 の PL のファイル名に「暫定」→ そのブックの最後の月（10 月）を全店暫定（v1162 の決まり・見出しには無い）。LaLa（LALA＝F06）の 9・10 月は読めて検算も合う。Marujuu の 10 月は依頼の数と同じ（数はリポジトリに書かない）。
+- 不具合：KPI推移の行は Excel（1〜6 月）のデータがある KPI だけ → LaLa は原価率・人件費率の行が無かった。直し：Excel のデータが無い店は 7 月以降に目標か実績がある KPI を出す（データのある店は前と同じ）・keyKpiStats を月ごとに 1 回・あとの暫定で確定の月を上書きしない・読むだけの SQL `db/pl-public-check.sql`。
+- 試験（合成データ）：meet-kpi-noseed-v1174 5・pl-public-check-sql 3（PGlite）・pl-import-v1162 25・関連（kpi-settings・mid-review-ui・annual-plan・storage-slim・labor-ui83）通る・meeting-budget と meeting-sales は前と同じ失敗だけ・static release pass/1174・模擬サーバーで 6 店の KPI推移を v1173 と比べた。CI に v1173・v1174 の試験を足した。
+- 独立レビュー・Codex はまだ。
+- 次：PR → Moto さんが `db/pl-public-check.sql` の結果 → マージ。そのあと A（総労働時間を h/営業日に）・B（アップセル対象商品）→ UI の続き。
+
 ## 2026-11-15 v1173：予実 › 人件費・勤怠の作り直し（UI案83 の 1〜5：A）と不具合 3 つ（Claude・ブランチ `claude/labor-ui83`・#169（v1172）の上・アプリだけ・本番未反映）
 
 - 依頼と決定：Moto さん 11/15 10:59 HST「全部Aで」（UI案83：1 全店は 9 店の表・店を押すとその店の労働時間／2 労働時間は左に人件費・右に日別の表／3 勤怠明細は従業員の表を広く・右に打刻エラー・Grade別（たたむ）・人件費／4 勤怠データ PC は日の一覧と右の表／5 スマホの勤怠データは日の一覧から全画面の箱・題と「承認」を固定）。仕様・結果は `docs/PC_SP_LAYOUT_JA.md` の 12。
