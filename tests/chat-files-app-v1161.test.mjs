@@ -102,7 +102,7 @@ function fakeDom() {
   const main = mkEl('main-content', 'div'), modal = mkEl('modal', 'div');
   const dom = { byId, main, modal, active: null, hidden: false,
     getElementById: id => byId.get(id) || null, addEventListener() {}, removeEventListener() {},
-    createElement: tag => mkEl('', tag), head: { appendChild(c) { if (c.id) byId.set(c.id, c); } } };
+    createElement: tag => mkEl('', tag), head: { appendChild(c) { if (c.id) byId.set(c.id, c); } }, body: { appendChild(c) { if (c.id) byId.set(c.id, c); } } };
   Object.defineProperty(dom, 'activeElement', { get: () => dom.active });
   byId.set('nav-bar', mkEl('nav-bar', 'div'));
   return dom;
@@ -160,12 +160,15 @@ async function app(srv, emp, { role = 'crew', fail = null, lang = 'ja' } = {}) {
   ctx._chatShrink = shrink;
   const realSave = ctx._chatSaveUrl;
   ctx._chatSaveUrl = (u, n) => saves.push([u, n]);
-  const idle = async () => { for (let quiet = 0; quiet < 3;) { await sleep(8); quiet = pending ? 0 : quiet + 1; } };
+  // v1167：確かめはチャットの画面の中（ブラウザの confirm ではない）。ここでは前と同じく「はい」と答え、文を confirms に残す
+  const answerAsks = () => { const el = D.getElementById('chat-askl'); const h = el ? el.innerHTML : ''; if (h) { confirms.push(h.replace(/<[^>]+>/g, '')); ctx.chatAskAnswer(true); return true; } return false; };
+  const idle = async () => { for (let quiet = 0; quiet < 3;) { await sleep(8); quiet = (pending || answerAsks()) ? 0 : quiet + 1; } };
   const show = () => { D.main.innerHTML = ctx.renderChatPage(); };
   const S = () => ctx._chatState();
   const type = async v => { const ta = D.getElementById('chat-ta'); ta.value = v; ta.selectionStart = ta.selectionEnd = v.length; ctx.chatInput(ta); await idle(); };
   const send = async () => { ctx.chatKey({ key: 'Enter', keyCode: 13, isComposing: false, ctrlKey: true, metaKey: false, preventDefault() {} }); await idle(); };
-  const attach = async (...files) => { ctx.chatPickFiles({ files, value: 'x' }); await idle(); };
+  // v1161 の付ける欄（v1167 からは写真 1 枚だけのときは「画像を送る」になるので、ここでは欄へ直接）
+  const attach = async (...files) => { ctx._chatAddFiles(ctx._chatState().open, files); await idle(); };
   return { ctx, D, toasts, pages, calls, wins, saves, confirms, revoked, idle, show, S, type, send, attach, realSave };
 }
 async function start(a) { a.ctx.chatStart(); await a.idle(); a.show(); await a.idle(); }
@@ -336,14 +339,15 @@ test('open, save and the photo viewer (4A): a window opened at the tap gets the 
   assert.equal(b.saves.length, 1); assert.match(b.saves[0][0], /download=%E8%A1%A8\.xlsx$/); assert.equal(b.saves[0][1], '表.xlsx');
   b.ctx.chatFileOpen(ph.id); await b.idle();
   assert.equal(b.wins.length, 1, 'a photo opens on this screen');
-  const v = text(b.D.getElementById('chat-view'));
-  assert.match(v, new RegExp(`<img src="${URLB}/sign/chat-files/[^"]+\\?token=s" alt="レジ\\.jpg"`));
+  const v = text(b.D.getElementById('chat-viewer'));   /* v1167：暗い全画面で拡大 */
+  assert.match(v, new RegExp(`<img id="chat-vw-img" src="${URLB}/sign/chat-files/[^"]+\\?token=s" alt="レジ\\.jpg"`));
+  assert.match(v, /返信する/);
   assert.doesNotMatch(v, /\.t\?/, 'the full photo, not the small one');
   assert.doesNotMatch(v, /申請に付ける/, 'not a request chat');
   // 新しい窓を開けない端末：押して開くリンク
   b.ctx.open = () => null;
   b.ctx.chatFileOpen(xl.id); await b.idle();
-  assert.match(text(b.D.modal), /<a class="btn btn-primary" href="https:\/\/db\.test\/storage\/v1\/object\/sign\/chat-files\/[^"]+" target="_blank" rel="noopener noreferrer"/);
+  assert.match(text(b.D.getElementById('chat-layer')), /<a class="btn btn-primary" href="https:\/\/db\.test\/storage\/v1\/object\/sign\/chat-files\/[^"]+" target="_blank" rel="noopener noreferrer"/);
   // サーバーの答えのリンクがほかの所なら使わない
   const c = await app(srv, 'E9', { fail: { status: () => '' } });
   await start(c); c.ctx.chatOpen(tid); await c.idle();
@@ -400,7 +404,7 @@ test('edit and delete: a message with files can lose its text; delete says the f
   await a.type('見てください'); await a.attach(file('x.pdf', PDF)); await a.send();
   const m = a.S().msgs[tid].list.at(-1);
   a.ctx.chatEdit(m.id);
-  assert.match(text(a.D.modal), /ファイルはそのまま/);
+  assert.match(text(a.D.getElementById('chat-layer')), /ファイルはそのまま/);
   a.D.getElementById('chat-edit-ta').value = '';
   a.ctx.chatEditSave(); await a.idle();
   assert.equal(a.S().msgs[tid].list.at(-1).body, '');
@@ -526,7 +530,8 @@ test('file names are shown as text; logout forgets the attachments and links; no
   assert.equal(a.revoked.length, 2, 'and the sent one too');
   const s = a.S();
   assert.deepEqual([Object.keys(s.att).length, Object.keys(s.furl).length, s.flist, s.view], [0, 0, null, null]);
-  assert.doesNotMatch(MOD.replace(/\/\*[\s\S]*?\*\//g, ''), /localStorage|indexedDB|lsSet\(|sessionStorage/, 'no copies on the device');
+  // v1167：パネルの位置・大きさ・前面の固定（UI_KEY）だけは端末に残す（チャットの中身は残さない）
+  assert.doesNotMatch(MOD.replace(/\/\*[\s\S]*?\*\//g, '').split('W.localStorage.getItem(UI_KEY)').join('').split('W.localStorage.setItem(UI_KEY').join(''), /localStorage|indexedDB|lsSet\(|sessionStorage/, 'no copies on the device');
   assert.match(html, /if \(p\.receipt && p\.receipt\.chat_file\) o\.push\(\[T\('領収書','Receipt'\), chatRcLink\(r\)\]\);/);
   assert.match(html, /if \(typeof rc\.chat_file === 'string' && rc\.chat_file\) return \['c:' \+ rc\.chat_file\];/);
   assert.match(html, /onclick="wrAttSeen\(\\'c:\\'\+this\.dataset\.f\);if\(window\.chatReceiptOpen\)chatReceiptOpen\(this\.dataset\.a\);return false"/);

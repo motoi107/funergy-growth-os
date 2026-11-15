@@ -17,7 +17,8 @@ const MIG = f => fs.readFileSync(path.join(ROOT, 'supabase/migrations', f + '.sq
 export const WR_MIGS = ['20261104090000_work_requests', '20261105090000_work_requests_eval', '20261106090000_work_requests_apply_claim', '20261107090000_work_requests_ui68',
   '20261113080000_wr_people_chef', '20261116080000_wr_people_g2', '20261120090000_work_requests_stage2', '20261121090000_chat', '20261123090000_work_requests_stage3', '20261124090000_chat_files']
   .concat(process.env.WR_FIX === '0' ? [] : ['20261125090000_wr_expense_g2'])   // WR_FIX=0：直す前（v1162 の本番と同じ SQL）
-  .concat(process.env.WR_FIX === '0' || process.env.WR_1165 === '0' ? [] : ['20261126090000_wr_approve_v1165']);   // v1165：事前経費と実費（WR_1165=0：その SQL の前）
+  .concat(process.env.WR_FIX === '0' || process.env.WR_1165 === '0' ? [] : ['20261126090000_wr_approve_v1165'])   // v1165：事前経費と実費（WR_1165=0：その SQL の前）
+  .concat(process.env.WR_UI79 === '1' ? ['20261127090000_chat_ui79'] : []);   // v1167：チャットの UI案79（WR_UI79=1 のときだけ。前の e2e は前のまま）
 
 export const TODAY = new Date().toISOString().slice(0, 10);
 const STORES = [['F01', 'Store A', 'Brand A', 'Ami Area'], ['F02', 'Store B', 'Brand B', '']].map(([id, name, brand, am]) => ({ id, name, brand, color: '#335577', am, toastGuid: '', hours: '11:00-22:00', days: '毎日', active: true }));
@@ -80,7 +81,8 @@ export async function startWorld({ appPort = 8090, vendor = process.env.VENDOR_D
   const wr = createHandler({ env: k => ({ SUPABASE_URL: 'https://tgbhgxzehzeouopklhje.supabase.co', SUPABASE_SERVICE_ROLE_KEY: 'service' })[k], db, storage,
     verifyPin: async tok => { const m = /^perf-session:(e\d+)$/.exec(tok); return m && NAME[m[1]] ? { emp_id: m[1], name: NAME[m[1]] } : null; } });
   const calls = [];
-  async function handle(method, u, headers, body) {
+  const authCalls = [];
+  async function handle(method, u, headers, body, raw) {
     if (u.pathname === '/functions/v1/work-requests') {
       let j = {}; try { j = JSON.parse(body || '{}'); } catch (e) { }
       calls.push({ at: Date.now(), action: j.action, kind: j.kind, op: j.op, who: String(j.pin_session || '').replace('perf-session:', '') });
@@ -91,8 +93,19 @@ export async function startWorld({ appPort = 8090, vendor = process.env.VENDOR_D
     }
     if (u.pathname === '/functions/v1/auth-pin') {
       let j = {}; try { j = JSON.parse(body || '{}'); } catch (e) { }
+      authCalls.push({ action: j.action, scope: j.scope, key: j.key, emp: j.emp, pin: j.pin ? '****' : '' });
+      if (j.action === 'verify' && String(j.pin) === '9999') return { status: 200, body: JSON.stringify({ ok: false }), headers: { 'content-type': 'application/json' } };   // 違う PIN
       if (j.action === 'verify') return { status: 200, body: JSON.stringify({ ok: true, token: j.emp ? 'perf-session:' + j.emp : 'perf-session' }), headers: { 'content-type': 'application/json' } };
       return { status: 200, body: '{"ok":true}', headers: { 'content-type': 'application/json' } };
+    }
+    const up = u.pathname.match(/^\/storage\/v1\/object\/upload\/sign\/chat-files\/(.+)$/), dl = u.pathname.match(/^\/storage\/v1\/object\/sign\/chat-files\/(.+)$/);
+    if (up && (method === 'PUT' || method === 'POST')) {   // チャットの添付（上げる先：中身はそのまま覚える）
+      const k = decodeURIComponent(up[1]); if (files.has(k)) return { status: 400, body: JSON.stringify({ statusCode: '409', error: 'Duplicate' }), headers: { 'content-type': 'application/json' } };
+      files.set(k, raw || Buffer.from(body || '')); return { status: 200, body: JSON.stringify({ Key: k }), headers: { 'content-type': 'application/json' } };
+    }
+    if (dl && method === 'GET') {   // 読む（5 分のリンクのまね）
+      const k = decodeURIComponent(dl[1]), o = files.get(k);
+      return o ? { status: 200, body: o, headers: { 'content-type': /\.t$/.test(k) || /\.jpg$/.test(k) || o[0] === 0xff ? 'image/jpeg' : 'application/octet-stream' } } : { status: 404, body: '{}' };
     }
     if (/^\/storage\/v1\/object\//.test(u.pathname)) {   // 領収書の置き場所のまね（中身は覚えるだけ）
       if (method === 'POST' || method === 'PUT') { files.set(u.pathname, Buffer.from(body || '')); return { status: 200, body: JSON.stringify({ Key: u.pathname }), headers: { 'content-type': 'application/json' } }; }
@@ -119,7 +132,8 @@ export async function startWorld({ appPort = 8090, vendor = process.env.VENDOR_D
     if (/open-meteo\.com$/.test(host)) return send(res, 200, { 'content-type': 'application/json' }, '{"daily":{"time":[],"weathercode":[],"temperature_2m_max":[],"precipitation_sum":[]}}');
     if (/supabase\.co$/.test(host)) {
       const chunks = []; for await (const c of req) chunks.push(c);
-      let r; try { r = await handle(req.method, u, req.headers, Buffer.concat(chunks).toString('utf8')); } catch (e) { r = { status: 500, body: JSON.stringify({ error: String(e && e.message || e) }) }; }
+      const rawBuf = Buffer.concat(chunks);
+      let r; try { r = await handle(req.method, u, req.headers, rawBuf.toString('utf8'), rawBuf); } catch (e) { r = { status: 500, body: JSON.stringify({ error: String(e && e.message || e) }) }; }
       return send(res, r.status, Object.assign({ 'content-type': 'application/json' }, r.headers || {}), r.body == null ? '' : r.body);
     }
     send(res, 404, {}, 'nf');
@@ -127,5 +141,5 @@ export async function startWorld({ appPort = 8090, vendor = process.env.VENDOR_D
   ext.on('upgrade', (req, sock) => sock.destroy());
   await new Promise(r => app.listen(appPort, '127.0.0.1', r)); await new Promise(r => ext.listen(443, '127.0.0.1', r));
   const q = async (sql, args) => { await pg.exec('reset role'); try { return (await pg.query(sql, args)).rows; } finally { await pg.exec('set role service_role'); } };
-  return { url: `http://localhost:${appPort}/`, mock, pg, q, db, calls, close: () => { app.close(); ext.close(); } };
+  return { url: `http://localhost:${appPort}/`, mock, pg, q, db, calls, authCalls, files, close: () => { app.close(); ext.close(); } };
 }

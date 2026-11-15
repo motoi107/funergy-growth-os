@@ -27,3 +27,15 @@ VENDOR_DIR=/tmp/e2e/vendor CERT_DIR=/tmp/e2e/cert node tests/e2e-wr/expense-path
 - `WR_FIX=0`：直す前の SQL（v1162 の本番と同じ・`20261125090000` を入れない）。
 - `CONFIRM=0`：GM・CEO が「承認・閲覧の権限の確かめ」をまだしていない（G2〜G5 に写しが無い）。
 - `APP_DIR=<フォルダ>`：ほかの版の `index.html` を配る。
+
+## チャット改修（v1167・UI案79）
+
+```
+VENDOR_DIR=/tmp/e2e/vendor CERT_DIR=/tmp/e2e/cert SHOTS=/tmp/ui79shots node tests/e2e-chat/ui79-v1167.mjs
+```
+
+- 同じ模擬の世界（`world.mjs`）に、チャット・添付・UI案79 の SQL を足す（`WR_UI79=1`）。置き場所（Storage）は代わりの入れ物。
+- auth-pin の PIN の確かめは 9999 を違う PIN として返す（ロックを続ける試験）。
+- `SHOTS` を付けると画面の写真（PC のパネル・印・別ウィンドウ・スマホの半分の画面・拡大・申請のチャットを始める・ロック）。
+- Document Picture-in-Picture は HeadlessChrome でも開く（`いつも前面`）。開けない Chrome ではふつうの別ウィンドウかパネルのまま（それも通る）。
+
