@@ -7,7 +7,7 @@ import { webcrypto } from 'node:crypto';
 import { createHandler } from '../supabase/functions/work-requests/handler.mjs';
 
 const { PGlite } = await import(process.env.BOT_PGLITE_MODULE || './runtime/node_modules/@electric-sql/pglite/dist/index.js');
-const html = fs.readFileSync(new URL('../index.html', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
+const html = fs.readFileSync(process.env.FUNERGY_INDEX || new URL('../index.html', import.meta.url), 'utf8').replace(/\r\n/g, '\n');   // FUNERGY_INDEX：直す前の画面で確かめるとき
 const B0 = '/* ==== FUNERGY_CHAT（v1156）', E0 = '/* ==== FUNERGY_CHAT end ==== */';
 const MOD = html.slice(html.indexOf(B0), html.indexOf(E0) + E0.length);
 const M = f => fs.readFileSync(new URL('../supabase/migrations/' + f + '.sql', import.meta.url), 'utf8');
@@ -40,7 +40,7 @@ function fakeStorage() {
   return st;
 }
 
-export async function server({ guard = true, push = true } = {}) {
+export async function server({ guard = true, push = true, fix = true } = {}) {
   const files = true, ui79 = true;
   const pg = new PGlite();
   await pg.exec(`create role anon; create role authenticated; create role service_role bypassrls;
@@ -59,6 +59,7 @@ export async function server({ guard = true, push = true } = {}) {
   if (files) await pg.exec(M('20261124090000_chat_files'));
   if (files && ui79) await pg.exec(M('20261127090000_chat_ui79'));
   if (guard) await pg.exec(M('20261128090000_chat_guard'));
+  if (guard && fix) await pg.exec(M('20261129090000_fixes_v1169'));   // v1169：キー付きのグループを 1 つの取引で（関数 v1169 はこれを使う）
   await pg.exec('update public.wr_settings set live = true; set role service_role');
   const db = { async rpc(name, p) { const r = await pg.query(`select public.${name}($1::jsonb) as v`, [JSON.stringify(p ?? {})]); return r.rows[0].v; } };
   const gm = { emp_id: 'E2', name: NAME.E2 }; const d = await db.rpc('wr_people_diff', gm); await db.rpc('wr_people_sync', { ...gm, digest: d.digest });

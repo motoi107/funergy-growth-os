@@ -30,7 +30,7 @@ union all select '4. 添付の関数がどれも security invoker（関数 work-
     and (p.proname like 'chat\_%' or p.proname in ('wr_receipt_from_chat','wr_receipt_file')) and p.prosecdef) = 0
     and to_regprocedure('public.wr_receipt_from_chat(jsonb)') is not null and to_regprocedure('public.chat_files_list(jsonb)') is not null then 'OK' else 'NG（2 をもう一度流す）' end
 union all select '5. SQL の段（チャット 2＝添付）',
-  case when public.chat_stage('{}'::jsonb)->>'chat' = '2' then 'OK' else 'NG（チャットの SQL を流し直した？ この 2 をもう一度）' end
+  case when coalesce((public.chat_stage('{}'::jsonb)->>'chat')::int, 0) >= 2 then 'OK' else 'NG（この 2 をもう一度）' end
 union all select '6. 送る・消す・一覧が添付に対応している（チャットの SQL をあとで流し直していない）',
   case when (select prosrc from pg_proc where oid = to_regprocedure('public.chat_send(jsonb)')) like '%chat_files%'
     and (select prosrc from pg_proc where oid = to_regprocedure('public.chat_delete(jsonb)')) like '%chat_files%'

@@ -1,6 +1,6 @@
 -- v1161：チャットの添付（写真・PDF・Excel・Word など）（UI案75 の答え・Moto さん 11/13 22:45 HST「1 B 2 A 3 A 4 A 5 A 6 A 7 A 8 B」）。
 -- 仕様：docs/CHAT_FILES_V1161_JA.md
--- 先にチャットの SQL（20261121090000）を流してから。2 回流しても同じ。チャットの SQL をあとで流し直したら、この SQL も流し直す。
+-- 先にチャットの SQL（20261121090000）を流してから。2 回流しても同じ。（v1169 から：この SQL のあとにチャットの SQL を流し直すと、チャットの SQL のほうが止まる）
 --
 -- 1B：送れるのは 写真（端末で JPEG にする）・PDF・Excel（xlsx・xls・csv）・Word（docx・doc）・PowerPoint（pptx・ppt）・テキスト（txt）。
 -- 2A：写真は送る前に端末で縮める（長い辺 2000px）。一覧の小さい写真（長い辺 480px）も一緒に上げる。
@@ -14,6 +14,17 @@
 -- 置き場所：Storage の非公開の置き場所 chat-files（公開の鍵では読めない・書けない。名前は意味のない番号＝<会話の id>/<ファイルの id>）。
 -- 中身は端末から 1 回だけ使える上げる先（関数 work-requests が出す）へ直接上げる。送るときに関数が中身の先頭の印と大きさを確かめる。
 -- 表 chat_files：だれの・どの会話の・どのメッセージの・状態。公開の鍵では読めない・書けない（RLS・権限なし）。関数はサーバーの鍵だけ。
+
+-- v1169：この SQL より新しいチャットの SQL（段 2 より上）がもう入っていれば止める。流し直すと、あとの版で直した関数が前の形に戻り、
+-- 暗証番号・キーの守りなどが外れるため（Codex #164 の P2）。何も変えずに止まる。この SQL を 2 回流すのは今までどおり大丈夫。
+do $$ declare v integer := 0; begin
+ if to_regprocedure('public.chat_stage(jsonb)') is not null then
+  execute $q$select coalesce((public.chat_stage('{}'::jsonb)->>'chat')::int, 0)$q$ into v;
+  if v > 2 then
+   raise exception 'STOP: これより新しいチャットの SQL（段 %）が入っています。流し直すと守りが外れるので止めました（何も変えていません）。この SQL は流さなくて大丈夫です', v;
+  end if;
+ end if;
+end $$;
 
 do $$ begin
  if to_regprocedure('public.chat_send(jsonb)') is null or to_regclass('public.chat_messages') is null or to_regprocedure('public.wr_find(jsonb,jsonb)') is null then

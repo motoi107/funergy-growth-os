@@ -12,6 +12,17 @@
 --   それでも auto のまま残った行（前の SQL を流し直したなど）は、確かめるまで読めない。
 -- 表はどれも公開の鍵で読めない・書けない（前のまま）。関数はサーバーの鍵だけ。
 
+-- v1169：この SQL より新しいチャットの SQL（段 3 より上）がもう入っていれば止める。流し直すと、あとの版で直した関数が前の形に戻り、
+-- 暗証番号・キーの守りなどが外れるため（Codex #164 の P2）。何も変えずに止まる。この SQL を 2 回流すのは今までどおり大丈夫。
+do $$ declare v integer := 0; begin
+ if to_regprocedure('public.chat_stage(jsonb)') is not null then
+  execute $q$select coalesce((public.chat_stage('{}'::jsonb)->>'chat')::int, 0)$q$ into v;
+  if v > 3 then
+   raise exception 'STOP: これより新しいチャットの SQL（段 %）が入っています。流し直すと守りが外れるので止めました（何も変えていません）。この SQL は流さなくて大丈夫です', v;
+  end if;
+ end if;
+end $$;
+
 do $$ begin
  if to_regprocedure('public.chat_stage(jsonb)') is null or to_regprocedure('public.chat_file_start(jsonb)') is null
     or to_regprocedure('public.chat_files_count(uuid)') is null then

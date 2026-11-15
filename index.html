@@ -32174,7 +32174,9 @@ var AP_BUDGET_START = { 2026: 7 };   /* 3A：年ごとの予算の開始月（20
 var AP_METRICS = ['sales', 'guests', 'ppa', 'fc', 'labor'];
 var _apMetric = 'sales';
 var _apPreOpen = false;
-var _apLoadTried = {};
+var _apLoadTried = {};   /* ym → 'busy'（読んでいる）・'done'（読めた）・'fail'（読めなかった＝v1169） */
+var _apLoadFail = {};    /* v1169（Codex #162 の P2）：読めなかった月と時刻。60 秒たったら描き直しのときにもう一度読む（描くたびには読まない）・「もう一度読む」ですぐ */
+var AP_RETRY_MS = 60000, _apRetryT = null;
 function _apYearMax(){ var d=(typeof bizNow==='function')?bizNow():new Date(); return d.getFullYear()+1; }
 function _apEnsureY(){
   if(_apY==null){ try{ _apY=budgetYM().y; }catch(e){ _apY=(bizNow()).getFullYear(); } }
@@ -32279,16 +32281,48 @@ function _apNeedLoad(stores, ym){
     return (stores||[]).some(function(s){ return s && s.toastGuid && !ls(monthFrozenKey(s.id, ym), false); });
   }catch(e){ return false; }
 }
-function _apKickLoad(stores, yms){
-  var todo=(yms||[]).filter(function(ym){ return !_apLoadTried[ym] && _apNeedLoad(stores, ym); });
+function _apOnAnnual(){ try{ return typeof curPage!=='undefined' && curPage==='budget' && typeof budgetTab!=='undefined' && budgetTab==='annual'; }catch(e){ return false; } }
+function _apKickLoad(stores, yms, force){
+  var now=Date.now();
+  var todo=(yms||[]).filter(function(ym){
+    var st=_apLoadTried[ym];
+    if(st==='busy' || st==='done') return false;
+    /* 読めなかった月：60 秒は読み直さない（描くたびに読むと止まらない）。「もう一度読む」（force）はすぐ */
+    if(st==='fail' && !force && now-((_apLoadFail[ym] && _apLoadFail[ym].at) || 0) < AP_RETRY_MS) return false;
+    return _apNeedLoad(stores, ym);
+  });
   if(!todo.length || typeof ensureMonthDataLoaded!=='function') return;
   todo.forEach(function(ym){ _apLoadTried[ym]='busy'; });
   (async function(){
-    for(var i=0;i<todo.length;i++){ try{ await ensureMonthDataLoaded(todo[i]); }catch(e){} _apLoadTried[todo[i]]='done'; }
-    try{ if(typeof curPage!=='undefined' && curPage==='budget' && typeof budgetTab!=='undefined' && budgetTab==='annual') renderPage('budget'); }catch(e){}
+    var bad=false;
+    for(var i=0;i<todo.length;i++){
+      var ym=todo[i], r=null, err=false;
+      try{ r=await ensureMonthDataLoaded(ym); }catch(e){ err=true; }
+      /* v1169：読めたか（売上の保存が終わって、この端末に月の印が付いたか）を確かめる。前は失敗しても done にして、古い日次を「確定」に見せていた */
+      if(err || (r && r.error) || _apNeedLoad(stores, ym)){ _apLoadTried[ym]='fail'; _apLoadFail[ym]={ at:Date.now() }; bad=true; }
+      else { _apLoadTried[ym]='done'; delete _apLoadFail[ym]; }
+    }
+    if(_apOnAnnual()) try{ renderPage('budget'); }catch(e){}
+    if(bad && !_apRetryT){ _apRetryT=setTimeout(function(){ _apRetryT=null; if(_apOnAnnual()) try{ renderPage('budget'); }catch(e){} }, AP_RETRY_MS+100); try{ if(_apRetryT && _apRetryT.unref) _apRetryT.unref(); }catch(e){} }
   })();
 }
 function _apLoading(stores, ym){ return _apLoadTried[ym]==='busy' || (!_apLoadTried[ym] && _apNeedLoad(stores, ym)); }
+/* v1169：この店（の範囲）の、この月の日次を読めなかった（端末にある分は古いかもしれない＝確定にしない） */
+function _apLoadFailed(stores, ym){ return _apLoadTried[ym]==='fail' && _apNeedLoad(stores, ym); }
+/* 「もう一度読む」：読めなかった月をすぐ読み直す */
+function apRetryLoad(){
+  try{ var y=_apEnsureY(), ms=[]; for(var m=1;m<=12;m++){ var ym=_apYm(y,m); if(_apLoadTried[ym]==='fail') ms.push(ym); }
+    _apKickLoad(budgetScopeStores(), ms, true); if(ms.length) renderPage('budget'); }catch(e){}
+}
+/* v1169（Codex #162 の P2）：その店の最初の実績の日（開店前の月を決める根拠）。前年の日次（PY2025_DAILY の from）・この端末の日次・会計PL の月から。
+   無ければ null（開店前とは言わない＝実績の無い月は未取込として出す） */
+function _apFirstAct(sid, perMonths){
+  var f=null, cut=bizToday();
+  try{ var py=(typeof PY2025_DAILY!=='undefined' && PY2025_DAILY) ? PY2025_DAILY[sid] : null; if(py && /^\d{4}-\d{2}-\d{2}$/.test(String(py.from||''))) f=py.from; }catch(e){}
+  try{ var raw=_daRO(sid)||{}; Object.keys(raw).forEach(function(d){ if(!/^\d{4}-\d{2}-\d{2}$/.test(d) || d>=cut) return; var v=raw[d]; if(v && v.actual!=null && (!f || d<f)) f=d; }); }catch(e){}
+  (perMonths||[]).forEach(function(o){ if(o && o.pl){ var d=o.ym+'-01'; if(!f || d<f) f=d; } });
+  return f;
+}
 
 /* 店・月 1 つぶんの材料。今の画面と同じ関数から取る */
 function apStoreMonth(sid, ym, need){
@@ -32361,15 +32395,18 @@ function _apRateOf(metric, r){ return r ? (metric==='fc' ? r.fc : r.lb) : null; 
 function _apPyRate(metric, py){ if(!py || !(py.sales>0)) return null; var c=(metric==='fc')?py.cogs:py.payroll; return (c==null)?null:Math.round(c/py.sales*1000)/10; }
 
 /* 1 か月（店をまたいで足す） */
-function _apMonth(metric, kind, m, ym, per, loading){
+function _apMonth(metric, kind, m, ym, per, loading, failed){
   var rate=_apIsRate(metric), M={ m:m, ym:ym, kind:kind, per:per, A:_apZ(), pyA:_apZ(), lflA:_apZ(), td:null,
-    unset:[], gap:[], loading:!!loading, relevant:0, pl:0, app:0, prov:false, comb:false, py:0, pyFail:false, pyTd:null, lflTd:null, last:null, behind:[], entered:0, idle:[] };
+    unset:[], gap:[], loading:!!(loading || failed), failed:!!failed, relevant:0, pl:0, app:0, prov:false, comb:false, py:0, pyFail:false, pyTd:null, lflTd:null, last:null, behind:[], entered:0, idle:[] };
   if(kind==='current') M.td={ A:_apZ(), last:null, ok:true };
   per.forEach(function(o){
     var budOk=_apBudOk(metric, o), hasAct=(o.actDays>0 || !!o.pl);
     var rel=(kind==='future') ? budOk : (budOk || hasAct || o.missing.length>0);
-    /* 実績が 1 日も無く、予算が店の共通設定だけの月は開店前（数えない・表の上に出す） */
-    if(rel && kind!=='future' && !hasAct && o.budFallback){ M.idle.push(o.abbr||o.sid); return; }
+    /* 実績が 1 日も無く、予算が店の共通設定だけの月は開店前（数えない・表の上に出す）。
+       v1169（Codex #162 の P2）：その店の最初の実績より前の月で、その月の日次を読めた（読み込み中・読めなかったではない）ときだけ。
+       根拠が無いときは開店前にしない（取り込みの欠けを隠さない） */
+    var preOpen=!!o.first && ym<o.first.slice(0,7) && !!o.ldOk;
+    if(rel && kind!=='future' && !hasAct && o.budFallback && preOpen){ M.idle.push(o.abbr||o.sid); if(!M.idleFirst) M.idleFirst={}; M.idleFirst[o.abbr||o.sid]=o.first; return; }
     if(!rel) return;
     M.relevant++;
     if(!budOk && kind!=='pre') M.unset.push(o.abbr||o.sid);
@@ -32410,27 +32447,35 @@ function apModel(stores, y, metric){
   stores=stores||[]; metric=(AP_METRICS.indexOf(metric)>=0)?metric:'sales';
   var start=apBudgetStart(stores, y), rate=_apIsRate(metric), months=[];
   var abbr={}; stores.forEach(function(s){ abbr[s.id]=_apAbbr(s); });
+  var pers=[], bySid={};
   for(var m=1;m<=12;m++){
-    var ym=_apYm(y,m), off=_ymToOffset(ym);
-    var kind=(start.m==null || m<start.m) ? 'pre' : (off>0 ? 'future' : (off===0 ? 'current' : 'past'));
-    var per=stores.map(function(s){ var o=apStoreMonth(s.id, ym, {rates:rate}); o.abbr=abbr[s.id]; o.name=s.name; o.py=apPrevMonth(s.id, ym); return o; });
-    var loading=(off<0) && _apLoading(stores, ym);
-    months.push(_apMonth(metric, kind, m, ym, per, loading));
+    var ym=_apYm(y,m);
+    pers.push(stores.map(function(s){ var o=apStoreMonth(s.id, ym, {rates:rate}); o.abbr=abbr[s.id]; o.name=s.name; o.py=apPrevMonth(s.id, ym);
+      o.ldOk=!_apNeedLoad([s], ym); (bySid[s.id]=bySid[s.id]||[]).push(o); return o; }));
+  }
+  var first={}; stores.forEach(function(s){ first[s.id]=_apFirstAct(s.id, bySid[s.id]); });
+  for(var m2=1;m2<=12;m2++){
+    var ym2=_apYm(y,m2), off=_ymToOffset(ym2);
+    var kind=(start.m==null || m2<start.m) ? 'pre' : (off>0 ? 'future' : (off===0 ? 'current' : 'past'));
+    var per=pers[m2-1]; per.forEach(function(o){ o.first=first[o.sid]; });
+    var loading=(off<0) && _apLoading(stores, ym2), failed=(off<0) && !loading && _apLoadFailed(stores, ym2);
+    months.push(_apMonth(metric, kind, m2, ym2, per, loading, failed));
   }
   /* 4A 累計：開始月から確定した月まで。四半期をまたいでもリセットしない */
-  var cA=_apZ(), blocked=null, gap=false, load=false, lastPast=null, cur=null, cn=0;
+  var cA=_apZ(), blocked=null, gap=false, load=false, fail=false, failMs=[], lastPast=null, cur=null, cn=0;
   months.forEach(function(M){
     if(M.kind==='past'){
       if(!blocked && M.unset.length) blocked={ m:M.m, stores:M.unset.slice() };
       if(M.gap.length) gap=true;
       if(M.loading) load=true;
+      if(M.failed){ fail=true; failMs.push(M.m); }
       _apAdd(cA, M.A); lastPast=M.m; if(M.relevant) cn++;
-      M.cum={ A:_apClone(cA), blocked:blocked, gap:gap, loading:load, from:start.m, to:M.m, n:cn };
+      M.cum={ A:_apClone(cA), blocked:blocked, gap:gap, loading:load, failed:fail, failMs:failMs.slice(), from:start.m, to:M.m, n:cn };
     } else if(M.kind==='current'){
       cur=M;
-      M.cum={ A:_apClone(cA), blocked:blocked, gap:gap, loading:load, from:start.m, to:lastPast, none:(lastPast==null || cn===0), n:cn };
+      M.cum={ A:_apClone(cA), blocked:blocked, gap:gap, loading:load, failed:fail, failMs:failMs.slice(), from:start.m, to:lastPast, none:(lastPast==null || cn===0), n:cn };
       var blockedNow=blocked || (M.unset.length ? { m:M.m, stores:M.unset.slice() } : null);
-      M.cumRef={ A:_apAdd(_apClone(cA), M.td.A), blocked:blockedNow, gap:gap || M.gap.length>0, loading:load, n:cn+(M.relevant?1:0) };
+      M.cumRef={ A:_apAdd(_apClone(cA), M.td.A), blocked:blockedNow, gap:gap || M.gap.length>0, loading:load, failed:fail, failMs:failMs.slice(), n:cn+(M.relevant?1:0) };
     } else M.cum=null;
   });
   /* 四半期：確定した月だけ足す（達成率・前年比は合計から。累計は月の行で見る） */
@@ -32454,9 +32499,10 @@ function apModel(stores, y, metric){
   });
   var noPrev=thisYear.filter(function(s){ return prevYear.indexOf(s)<0; });
   var lastM=null; months.forEach(function(M){ if(M.kind==='past') lastM=M; });
-  var idle={}; months.forEach(function(M){ M.idle.forEach(function(a){ (idle[a]=idle[a]||[]).push(M.m); }); });
+  var idle={}, idleFirst={}; months.forEach(function(M){ M.idle.forEach(function(a){ (idle[a]=idle[a]||[]).push(M.m); if(M.idleFirst && M.idleFirst[a]) idleFirst[a]=M.idleFirst[a]; }); });
+  var failed=months.filter(function(M){ return M.failed; }).map(function(M){ return M.m; });
   return { y:y, metric:metric, start:start, months:months, quarters:quarters, last:lastM, cur:cur,
-    stores:stores, thisYear:thisYear, prevYear:prevYear, noPrev:noPrev, idle:idle };
+    stores:stores, thisYear:thisYear, prevYear:prevYear, noPrev:noPrev, idle:idle, idleFirst:idleFirst, failed:failed };
 }
 
 /* ---- 表示 ---- */
@@ -32518,10 +32564,13 @@ function apGapText(M){
   return M.gap.map(function(g){ var ds=g.dates.slice(0,3).map(_apMD).join('・')+(g.dates.length>3?'…':'');
     return (M.per.length>1?g.abbr+' ':'')+t('未取込 ','Missing ')+g.dates.length+t(' 日',' d')+'（'+ds+'）'; }).join(' / ');
 }
+/* v1169：読み込み中か、読めなかったか */
+function apLoadWord(M){ return (M && M.failed) ? t('読めませんでした','Could not load') : t('読み込み中','Loading'); }
 function apStateChip(M){
   if(M.kind==='pre') return '<span class="ap-chip pre">'+t('予算開始前','Pre-budget')+'</span>';
   if(M.kind==='future') return '<span class="ap-chip fut">'+t('予定','Planned')+'</span>';
   if(M.kind==='current') return '<span class="ap-chip cur">'+t('進行中','In progress')+(M.td&&M.td.last?' '+_apMD(M.td.last):'')+'</span>';
+  if(M.failed) return '<span class="ap-chip gap">'+t('読めませんでした','Could not load')+'</span>';
   if(M.loading) return '<span class="ap-chip fut">'+t('読み込み中','Loading')+'</span>';
   if(!M.relevant) return '<span class="ap-chip fut">'+t('実績なし','No data')+'</span>';
   if(M.gap.length) return '<span class="ap-chip gap">'+t('欠損あり','Gaps')+'</span>';
@@ -32531,7 +32580,7 @@ function apStateChip(M){
 function apUnsetText(M, stores){ return (stores.length>1 && M.unset.length) ? t('未設定','Not set')+'（'+escapeHtml(M.unset.join('・'))+'）' : t('未設定','Not set'); }
 function apCumHtml(metric, C, gray){
   if(!C || C.n===0) return '—';
-  if(C.loading) return '<span class="ap-gray">'+t('読み込み中','Loading')+'</span>';
+  if(C.loading) return '<span class="ap-gray">'+apLoadWord(C)+'</span>';
   if(C.blocked) return '<span class="ap-gray" style="font-size:11px">'+C.blocked.m+t('月の予算が未設定',' budget not set')+'</span>';
   var d=apDiff(metric, C.A);
   if(C.gap) return '<span class="ap-gray">'+apSign(metric, d)+'</span><span class="ap-sub">'+t('欠損あり','gaps')+'</span>';
@@ -32572,7 +32621,7 @@ function _apRowPc(md, M, stores){
   /* 終わった月・予算開始前の月 */
   var gray=M.gap.length>0 || M.loading;
   var actC2;
-  if(M.loading) actC2='<span class="ap-gray">'+t('読み込み中','Loading')+'</span>';
+  if(M.loading) actC2='<span class="ap-gray">'+apLoadWord(M)+'</span>';
   else if(!M.relevant) actC2='<span class="ap-gray">—</span>';
   else if(M.zero) actC2=apFmt(metric, 0)+'<span class="ap-sub">'+t('確認済み','confirmed')+'</span>';
   else actC2='<b'+(gray?' class="ap-gray"':'')+'>'+apFmt(metric, act)+'</b>'+apSrcMark(M);
@@ -32639,7 +32688,7 @@ function _apRowPh(md, M, stores){
   }
   var gray=M.gap.length>0 || M.loading;
   var dd=(unset || M.loading || !M.relevant) ? null : apDiff(metric, M.A), rr=(unset || M.loading || !M.relevant) ? null : apRate(metric, M.A);
-  var actC=M.loading ? '<span class="ap-gray">'+t('読み込み中','Loading')+'</span>' : (!M.relevant ? '—' : (M.zero ? apFmt(metric, 0)+'<span class="ap-gray" style="font-size:10px">'+t('確認済み','conf.')+'</span>' : '<span'+(gray?' class="ap-gray"':'')+'>'+apFmt(metric, act)+'</span>'));
+  var actC=M.loading ? '<span class="ap-gray">'+apLoadWord(M)+'</span>' : (!M.relevant ? '—' : (M.zero ? apFmt(metric, 0)+'<span class="ap-gray" style="font-size:10px">'+t('確認済み','conf.')+'</span>' : '<span'+(gray?' class="ap-gray"':'')+'>'+apFmt(metric, act)+'</span>'));
   var body2='';
   body2+=kv(t('月間予算','Month budget'), !M.relevant ? '—' : (unset ? '<span class="ap-neg">'+apUnsetText(M, stores)+'</span>' : apFmt(metric, bud)));
   body2+=kv(rate?t('判定','Result'):t('達成率','Achievement'), rate ? ((dd==null)?'—':(Math.round(dd*10)/10>0?t('予算超過','Over'):t('予算内','Within'))) : apPct(rr));
@@ -32672,7 +32721,9 @@ function _apSummaryHtml(md, stores){
   else {
     var C=L.cum;
     h+='<div class="ap-st">'+st.m+t('月〜','–')+L.m+t('月の累計（最終確定月：',' cumulative (last final month: ')+'<b>'+L.m+t('月','')+'</b>・'+since+t('）',')')+'</div>';
-    if(C.loading) h+='<div class="ap-gray" style="margin-top:6px">'+t('過去の月の日次を読み込んでいます…','Loading past months…')+'</div>';
+    if(C.loading && C.failed) h+='<div class="ap-neg" style="margin-top:6px">'+escapeHtml(C.failMs.join('・'))+t('月の日次を読めませんでした（端末にある分は古いかもしれないので、累計は出しません）',': daily data could not be loaded (what is on this device may be old, so no cumulative)')
+      +' <button class="btn btn-secondary btn-sm" onclick="apRetryLoad()">'+t('もう一度読む','Load again')+'</button></div>';
+    else if(C.loading) h+='<div class="ap-gray" style="margin-top:6px">'+t('過去の月の日次を読み込んでいます…','Loading past months…')+'</div>';
     else if(C.blocked) h+='<div class="ap-neg" style="margin-top:6px;font-weight:700">'+C.blocked.m+t('月の予算が未設定のため、累計は出せません',': budget not set, so no cumulative')+(stores.length>1?'（'+escapeHtml(C.blocked.stores.join('・'))+'）':'')+'</div>';
     else {
       var b=apVal(metric, C.A, 'b'), a=apVal(metric, C.A, 'a'), d=apDiff(metric, C.A);
@@ -32728,7 +32779,9 @@ function renderAnnualPlan(){
   if(stores.length>1 && md.noPrev.length && (metric==='sales' || _apIsRate(metric)))
     notes.push(t('今年 ','This year ')+md.thisYear.length+t(' 店・前年 ',' stores · prior year ')+md.prevYear.length+t(' 店（',' (')+escapeHtml(md.noPrev.map(function(s){ return s.name||s.id; }).join('・'))+t(' は前年なし）。前年比は前年もある店どうしで比べます',': no prior year). Year-on-year compares only stores that have both years'));
   var idleTx=Object.keys(md.idle).map(function(a){ return (stores.length>1?a+' ':'')+_apMonthsTx(md.idle[a]); });
-  if(idleTx.length) notes.push(t('開店前として数えない月：','Months counted as before opening: ')+escapeHtml(idleTx.join(' / '))+t('（実績が 1 日も無く、予算が店の共通設定だけの月）',' (no actuals and only the store default budget)'));
+  if(idleTx.length) notes.push(t('開店前として数えない月：','Months counted as before opening: ')+escapeHtml(idleTx.join(' / '))+t('（その店の最初の実績より前で、実績が 1 日も無く、予算が店の共通設定だけの月）',' (before the store’s first actual, with no actuals and only the store default budget)'));
+  /* v1169：読めなかった月（表の上にも。もう一度読む） */
+  if(md.failed.length) notes.push('<span class="ap-neg">'+escapeHtml(_apMonthsTx(md.failed))+t('の日次をこの端末に読めませんでした。確定・累計に入れていません',': daily data could not be loaded on this device; not counted as final or in the cumulative')+'</span> <button class="btn btn-secondary btn-sm" onclick="apRetryLoad()">'+t('もう一度読む','Load again')+'</button>');
   if(metric==='guests' || metric==='ppa') notes.push(t('客数・客単価の前年は、会計PL に客数が無いので出しません（5A：前年は確定 PL の暦月）','Prior year is not shown for guests / avg check (the accounting PL has no guest counts)'));
   if(notes.length) html+='<div class="ap-note">'+notes.map(function(x){ return '<div><i class="ti ti-info-circle"></i> '+x+'</div>'; }).join('')+'</div>';
   /* ---- PC：月の表 ---- */
@@ -32755,7 +32808,7 @@ function renderAnnualPlan(){
   if(preMs.length){
     ph+='<details class="ap-pm"'+(md.start.m==null?' open':'')+' ontoggle="if(this.open&&!_apPreOpen)apTogglePre()"><summary class="ap-pr"><b>1'+(preMs.length>1?'〜'+preMs[preMs.length-1].m:'')+t('月','')+'</b><span class="ap-gray" style="grid-column:2/-1;text-align:left;font-size:12px">'+t('予算開始前（実績と前年だけ）','Pre-budget (actuals and prior year)')+'</span></summary><div class="ap-px">';
     preMs.forEach(function(M){ var yy=apYoY(metric, M);
-      ph+='<div class="k"><b>'+M.m+t('月','')+'</b></div><div class="v">'+(M.loading?t('読み込み中','Loading'):(M.relevant?apFmt(metric, apVal(metric, M.A, 'a')):'—'))+(yy&&M.relevant&&!M.loading?'<span class="ap-sub">'+t('前年 ','PY ')+apFmt(metric, yy.py)+'・'+apSign(metric, yy.diff)+'</span>':'')+'</div>'; });
+      ph+='<div class="k"><b>'+M.m+t('月','')+'</b></div><div class="v">'+(M.loading?apLoadWord(M):(M.relevant?apFmt(metric, apVal(metric, M.A, 'a')):'—'))+(yy&&M.relevant&&!M.loading?'<span class="ap-sub">'+t('前年 ','PY ')+apFmt(metric, yy.py)+'・'+apSign(metric, yy.diff)+'</span>':'')+'</div>'; });
     ph+='</div></details>';
   }
   md.quarters.forEach(function(Q){
@@ -46470,7 +46523,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1168';
+const APP_VERSION = '1169';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -106955,7 +107008,9 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     /* v1165（UI案77 の 4B）：事前経費に結ぶ */
     pre_bad:['この事前経費には結べません（同じ申請した人の「事前承認済み」だけ）。最新を読み込みました','You cannot link this pre-approval (only the same requester’s pre-approved ones). The latest is loaded'],
     pre_taken:['この事前経費は、ほかの実費（建て替え経費）にもう結ばれています','This pre-approval is already linked to another actual (reimbursement)'],
-    pre_missing:['事前経費に結ぶには v1165 の SQL と関数が要ります（Moto さんに知らせてください）','Linking to a pre-approval needs the v1165 SQL and function (tell Moto)']
+    pre_missing:['事前経費に結ぶには v1165 の SQL と関数が要ります（Moto さんに知らせてください）','Linking to a pre-approval needs the v1165 SQL and function (tell Moto)'],
+    /* v1169：処理済み（今月）を処理した日で読むのは v1169 の SQL と関数から */
+    done_old:['サーバーが前の版なので、前の読み方（申請した日で 2 か月前まで・1,000 件）で出しています。古い申請を今月処理したものは出ないことがあります（Moto さんに知らせてください）','The server is an earlier version, so this uses the earlier way (requests from the last 2 months, up to 1,000). Older requests processed this month may be missing (tell Moto)']
   };
   function errText(code, status){
     if (Object.prototype.hasOwnProperty.call(ERR, code)) return T(ERR[code][0], ERR[code][1]);
@@ -107956,19 +108011,47 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       a.load = 'done'; a.at = Date.now(); rerenderAcct();
     }, function(e){ if (a !== S.acct || g !== S.gen) return; a.load = 'err'; a.err = String(e && e.message || e); rerenderAcct(); });
   }
-  /* v1165（UI案77 の 3A）：「処理済み（今月）」＝今月（ハワイ）に経理が確認・精算したもの。閉じた申請を読む（申請した日で 3 か月まで） */
+  /* v1165（UI案77 の 3A）：「処理済み（今月）」＝今月（ハワイ）に経理が確認・精算したもの。
+     v1169（Codex #161 の P2）：処理した日（精算・確認の時刻・ハワイの月）でサーバーから読む（acct_done・500 件ずつ・続きを読む）。
+     前は申請した日で 2 か月前まで・1,000 件で読んでいたので、古い申請を今月処理したものが出なかった。SQL・関数が前の版なら前の読み方（そう出す） */
   function hstYm(iso){ try { var d = new Date(iso); if (isNaN(d)) return ''; var x = new Intl.DateTimeFormat('en-CA', { timeZone:'Pacific/Honolulu', year:'numeric', month:'2-digit' }).formatToParts(d); var y = '', m = ''; x.forEach(function(q){ if (q.type === 'year') y = q.value; if (q.type === 'month') m = q.value; }); return y && m ? y + '-' + m : ''; } catch(e) { return ''; } }
   function acctDoneAt(r){ return (r.paid && r.paid.at) || (r.checked && r.checked.at) || ''; }
+  var ACCT_DONE_PAGES = 20;   /* 500 件 × 20 ＝ 1 か月 10,000 件まで */
   function acctDoneLoad(){
-    var a = S.acct, g = S.gen, ym = hstToday().slice(0, 7), y = +ym.slice(0, 4), m = +ym.slice(5, 7) - 2;
-    if (m < 1) { m += 12; y -= 1; }
-    a.dload = 'loading';
-    api({ action:'list', scope:'team', state:'closed', limit:1000, from:y + '-' + pad(m) + '-01' }).then(function(j){
-      if (a !== S.acct || g !== S.gen) return;
-      a.done = (j.rows || []).filter(function(r){ return (KINDS.indexOf(r.kind) >= 0 || !!S2_K[r.kind]) && ['paid','done','applied'].indexOf(r.status) >= 0 && (r.checked || r.paid) && hstYm(acctDoneAt(r)) === ym; })
-        .sort(function(x, z){ return new Date(acctDoneAt(z)) - new Date(acctDoneAt(x)); });
+    var a = S.acct, g = S.gen, ym = hstToday().slice(0, 7), k0 = authKey();
+    a.dload = 'loading'; a.dnote = '';
+    var keep = function(r){ return r && (KINDS.indexOf(r.kind) >= 0 || !!S2_K[r.kind]) && ['paid','done','applied'].indexOf(r.status) >= 0 && (r.checked || r.paid) && hstYm(acctDoneAt(r)) === ym; };
+    var fin = function(rows){
+      var seen = {}; rows = rows.filter(function(r){ if (!keep(r) || seen[r.id]) return false; seen[r.id] = 1; return true; });
+      a.done = rows.sort(function(x, z){ return new Date(acctDoneAt(z)) - new Date(acctDoneAt(x)); });
       a.dload = 'done'; rerenderAcct();
-    }, function(e){ if (a !== S.acct || g !== S.gen) return; a.dload = 'err'; a.derr = String(e && e.message || e); rerenderAcct(); });
+    };
+    var fail = function(e){ if (a !== S.acct || g !== S.gen) return; a.dload = 'err'; a.derr = String(e && e.message || e); rerenderAcct(); };
+    var oldWay = function(){
+      var y = +ym.slice(0, 4), m = +ym.slice(5, 7) - 2; if (m < 1) { m += 12; y -= 1; }
+      a.dnote = errText('done_old');
+      api({ action:'list', scope:'team', state:'closed', limit:1000, from:y + '-' + pad(m) + '-01' }, k0).then(function(j){
+        if (a !== S.acct || g !== S.gen) return; fin(j.rows || []);
+      }, fail);
+    };
+    if (!(S.fn >= 11)) { oldWay(); return; }   /* 関数が v1169（fn 11）なら頼む。SQL がまだなら関数が done_old を返す（前の読み方に戻す） */
+    var acc = [], pages = 0;
+    (function page(next){
+      var q = { action:'acct_done', month:ym, limit:500 };
+      if (next) { q.before_at = next.before_at; q.before_id = next.before_id; }
+      api(q, k0).then(function(j){
+        if (a !== S.acct || g !== S.gen) return;
+        acc = acc.concat((j && j.rows) || []); pages++;
+        var nx = j && j.next;
+        if (nx && typeof nx.before_at === 'string' && typeof nx.before_id === 'string' && pages < ACCT_DONE_PAGES) { page(nx); return; }
+        if (nx) a.dnote = T('今月の処理済みが多いので、新しいものから ','Many processed this month; showing the newest ') + acc.length.toLocaleString('en-US') + T(' 件まで出しています',' only');
+        fin(acc);
+      }, function(e){
+        if (a !== S.acct || g !== S.gen) return;
+        if (e && (e.code === 'done_old' || e.code === 'unknown_action')) { oldWay(); return; }
+        fail(e);
+      });
+    })(null);
   }
   W.wrAcctTab = function(t){ if (!S.acct || ['ck','wait','done'].indexOf(t) < 0) return; S.acct.tab = t; rerenderAcct(); };
   W.wrAcctRefresh = function(){ S.load = ''; acctReload(); };
@@ -107997,6 +108080,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     if (tab === 'done') {
       if (a.dload === 'err') return h + '<div class="alert alert-danger" style="font-size:12px">' + esc(a.derr) + '</div>';
       if (!a.done) return h + '<div class="card" style="font-size:12px;color:var(--muted)">' + T('読み込み中…','Loading…') + '</div>';
+      if (a.dnote) h += '<div class="alert alert-warning" style="font-size:11.5px;margin-bottom:8px">' + esc(a.dnote) + '</div>';
       list = a.done; empty = T('今月、経理が処理した申請はまだありません','Nothing processed by accounting this month yet');
     } else {
       if (!a.rows) return h + '<div class="card" style="font-size:12px;color:var(--muted)">' + T('読み込み中…','Loading…') + '</div>';
@@ -109543,7 +109627,10 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     chat_key_required:['このグループはキーで守られています。キーを入れてください','This group is protected by a key. Enter the key'],
     guard_old:['チャットの守り（暗証番号・キー・プッシュ通知）は、サーバー（SQL）が v1168 になってから使えます（Moto さんに知らせてください）','Chat protection (PIN, key, push) works once the server (SQL) is v1168 (tell Moto)'],
     guard_fn_old:['チャットの守り（暗証番号・キー・プッシュ通知）は、チャットのサーバー（関数 work-requests）が v1168 になってから使えます（Moto さんに知らせてください）','Chat protection works once the chat server (work-requests) is v1168 (tell Moto)'],
-    push_off:['プッシュ通知のサーバーの準備がまだです（Moto さんに知らせてください）','Push notifications are not set up on the server yet (tell Moto)']
+    push_off:['プッシュ通知のサーバーの準備がまだです（Moto さんに知らせてください）','Push notifications are not set up on the server yet (tell Moto)'],
+    /* v1169（直し） */
+    last_member:['あなたがこの申請のチャットを読める最後の参加者です。先にほかの人を加えてから抜けてください','You are the last member who can read this request’s chat. Add someone else before leaving'],
+    fix_old:['キーを付けたグループは、サーバー（SQL）が v1169 になってから作れます（キーなしなら作れます。Moto さんに知らせてください）','Groups with a key can be created once the server (SQL) is v1169 (groups without a key still work; tell Moto)']
   };
   function T(ja, en){ try{ return typeof t === 'function' ? t(ja, en) : ja; }catch(e){ return ja; } }
   function esc(s){ return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
@@ -109573,10 +109660,12 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   W._chatState = function(){ return C; };
 
   /* サーバー（関数 work-requests）。答えが来る前に別の人のログインに変わったら（世代 gen が変わったら）使わない */
-  async function api(payload){
+  /* v1169（Codex #164 の P2）：opt＝{ g, tok }。頼んだときの世代とログインの印が今と違えば送らない（待っているあいだに別の人に替わったとき） */
+  async function api(payload, opt){
     var tok = pinTok();
     if (!tok) throw mk('signin');
     if (C.tok && tok !== C.tok) throw mk('signin_changed');
+    if (opt && ((opt.g != null && opt.g !== C.gen) || (opt.tok && opt.tok !== tok))) throw mk('signin_changed');
     var r, j = null, g0 = C.gen, u = L.utok;
     /* v1168：開けた印（このタブのメモリだけ）を一緒に送る。サーバーが暗証番号・キーを開けているかを確かめる */
     try { r = await fetch(SUPABASE_URL + FN, { method:'POST', headers:{ apikey:SUPABASE_ANON, Authorization:'Bearer ' + SUPABASE_ANON, 'Content-Type':'application/json' },
@@ -109696,6 +109785,18 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   /* v1167：抜けた・外された・見えなくなった会話は、この端末のメモリからも捨てる（別ウィンドウも同じ DOM・下書き・付けた写真・送れていない分・画面も） */
   function dropThread(id){
     var was = C.open === id;
+    /* v1169（Codex #163 の P2）：この会話のファイルの一覧・開いている画像・小さい写真のリンク・この会話のダイアログ（加える・キー・直す・見えなくする）も残さない */
+    var fids = {};
+    ((C.msgs[id] && C.msgs[id].list) || []).forEach(function(x){ (x.files || []).forEach(function(f){ if (f && f.id) fids[f.id] = 1; }); });
+    if (C.flist && C.flist.tid === id) (C.flist.items || []).forEach(function(f){ if (f && f.id) fids[f.id] = 1; });
+    Object.keys(fids).forEach(function(fid){ var u = C.furl['t:' + fid]; if (u && u.local) freeLocal({ local:u.url }); delete C.furl['t:' + fid]; delete C.fneed[fid]; });
+    if (C.view && (fids[C.view.id] || was)) { viewerClose(); C.view = null; }
+    var shut = false;
+    if (C.flist && C.flist.tid === id) { C.flist = null; shut = true; }
+    if (C.add && C.add.tid === id) { C.add = null; shut = true; }
+    if (C.kset && C.kset.tid === id) { C.kset = null; shut = true; }
+    if (C.dlg && C.dlg.tid === id) { C.dlg = null; shut = true; }
+    if (shut) dlgClose();
     delete C.threads[id]; delete C.msgs[id];
     if (C.drafts) delete C.drafts[id]; if (C.ment) delete C.ment[id];
     (C.att[id] || []).forEach(freeLocal); delete C.att[id];
@@ -110621,7 +110722,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   };
   function caseStart(id, j){
     var sel = {}; (j.candidates || []).forEach(function(x){ if (x && x.emp && x.pre !== false) sel[x.emp] = 1; });
-    C.dlg = { kind:'case', id:id, code:j.code || '', wkind:j.wr_kind || '', title:String(j.title || '').slice(0, 60), cands:j.candidates || [], sel:sel, q:'', key:newKey(), busy:false, err:'' };
+    C.dlg = { kind:'case', id:id, code:j.code || '', wkind:j.wr_kind || '', title:String(j.title || '').slice(0, 60), cands:j.candidates || [], sel:sel, q:'', key:newKey(), busy:false, err:'', restart:!!j.restart };
     ensurePeople();
     W.chatStart();
     try{ closeModalDirect(); }catch(e){}
@@ -110635,6 +110736,8 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     var row = function(x, sub){ return '<label class="chat-row"><input type="checkbox"' + (d.sel[x.emp] ? ' checked' : '') + ' onchange="chatCaseSel(\'' + esc(x.emp) + '\',this.checked)" style="width:18px;height:18px;flex:0 0 auto"><div class="chat-row-main"><b style="font-size:12.5px">' + esc(x.name || '') + '</b><div style="font-size:10.5px;color:var(--muted)">' + esc(sub) + '</div></div></label>'; };
     var h = '<div class="modal-title">' + T('この申請のチャットを始める','Start this request’s chat') + ' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
       + '<div style="font-size:12px;color:var(--muted);margin-bottom:8px">' + esc((k ? T(k[0], k[1]) : T('申請','Request')) + (d.code ? ' ' + d.code : '')) + '</div>'
+      /* v1169：前のチャットを読める人がいなくなった（全員が抜けた・退職した）ときは新しく始める。前の会話は見えないまま */
+      + (d.restart ? '<div class="alert alert-warning" style="font-size:11.5px;margin-bottom:8px;line-height:1.6">' + T('この申請のチャットは前にありましたが、いま読める参加者がいません。新しく始めます（前の会話は、だれにも見えないままです）。','This request had a chat before, but no one who can read it is left. A new chat starts (the earlier conversation stays hidden from everyone).') + '</div>' : '')
       + '<label style="font-size:11.5px;font-weight:700">' + T('チャットの名前（参加者に見えます）','Chat name (members see it)') + '</label>'
       + '<input class="form-input" maxlength="60" style="width:100%;margin:4px 0 10px" value="' + esc(d.title) + '" oninput="chatCaseTitle(this.value)">'
       + '<div style="font-size:11.5px;font-weight:700;margin-bottom:4px">' + T('参加者（関係する人を選んであります。外せます）','Members (the related people are picked; you can take them off)') + '</div>'
@@ -110680,6 +110783,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       d.busy = false;
       d.err = e.code === 'case_exists' ? T('ほかの人が先にこの申請のチャットを始めました。チャットを管理する人に加えてもらってください','Someone else started this request’s chat first. Ask its manager to add you')
         : e.code === 'chat_old' ? errText('chat_old') : e.code === 'unknown_action' ? errText('ui79_fn_old') : e.message;
+      /* v1169：だれも読めなくなった前のチャットを直すあいだに、ほかの人が先に始めた（case_exists）ときも同じ文 */
       drawCase();
     });
   };
@@ -110859,7 +110963,8 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     return r.kind === 'case' ? caseLabel(r) : (r.title || '');
   }
   function barHtml(){
-    var r = C.open ? C.threads[C.open] : null, n = r ? (Number(r.members) || 0) : 0;
+    /* v1169（Codex #163 の P2）：ロック中は会話の名前（DM の相手・人数）も出さない（「チャット」だけ） */
+    var r = (C.open && !L.locked) ? C.threads[C.open] : null, n = r ? (Number(r.members) || 0) : 0;
     var nm = r ? toName(r) : T('チャット','Chat');
     var sub = r ? (r.kind === 'dm' ? 'DM' : r.kind === 'case' ? T('申請','Request') : T('グループ','Group')) + T('・参加者 ',' · ') + n + T(' 人',' members') : '';
     var lk = '<button type="button" class="chat-fb" onclick="chatLockNow()" title="' + esc(T('今すぐロック（この画面と別ウィンドウのチャットを隠す）','Lock now (hides the chat here and in the separate window)')) + '"' + (L.locked ? ' disabled' : '') + '><i class="ti ti-lock"></i><span class="chat-fb-t">' + T('今すぐロック','Lock now') + '</span></button>';
@@ -111392,11 +111497,15 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     var why = pushWhy(); if (why) { C.push.st = why; drawGuard(); return; }
     var perm; try { perm = W.Notification.requestPermission(); } catch(e){ perm = 'default'; }   /* 押した操作の中で聞く（iPhone の決まり） */
     C.push.busy = true; C.push.st = ''; drawGuard();
-    var g = C.gen, ep = '';
+    /* v1169（Codex #164 の P2）：許可を待つあいだ・鍵や登録を待つあいだにログインが替わったら、次の人の送り先として登録しない（世代とログインの印を毎回確かめる） */
+    var g = C.gen, tok0 = pinTok(), who = { g:g, tok:tok0 }, ep = '';
+    function still(){ if (g !== C.gen || !tok0 || pinTok() !== tok0) throw mk('signin_changed'); }
     Promise.resolve(perm).then(function(pm){
+      still();
       if (pm !== 'granted') throw new Error(T('通知が許可されませんでした（端末・ブラウザの設定で許可できます）','Notifications were not allowed (you can allow them in the settings)'));
-      return api({ action:'chat_push_key' });
+      return api({ action:'chat_push_key' }, who);
     }).then(function(k){
+      still();
       if (!k || !k.key) throw mk('push_off');
       return regGet().then(function(reg){
         if (!reg || !reg.pushManager) throw new Error(T('このアプリの仕組み（Service Worker）が動いていないため使えません。開き直してください','The app’s service worker is not running. Reopen the app'));
@@ -111404,10 +111513,11 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
         return reg.pushManager.getSubscription().then(function(sub){
           if (sub && !sameKey(sub.options && sub.options.applicationServerKey, want)) return sub.unsubscribe().then(function(){ return null; });
           return sub;
-        }).then(function(sub){ return sub || reg.pushManager.subscribe({ userVisibleOnly:true, applicationServerKey:want }); });
+        }).then(function(sub){ still(); return sub || reg.pushManager.subscribe({ userVisibleOnly:true, applicationServerKey:want }); });
       });
-    }).then(function(sub){ ep = String(sub && sub.endpoint || ''); return api({ action:'chat_push_sub', endpoint:ep }); }).then(function(){
-      if (g !== C.gen) return;
+    }).then(function(sub){ still(); ep = String(sub && sub.endpoint || ''); return api({ action:'chat_push_sub', endpoint:ep }, who); }).then(function(){
+      /* 登録が届くあいだに替わった：前の人の登録を取り消す（この端末に前の人の通知が来ないように） */
+      if (g !== C.gen || pinTok() !== tok0) { postAs(tok0, { action:'chat_push_unsub', endpoint:ep }); if (g === C.gen) { C.push.busy = false; drawGuard(); } return; }
       C.push = { on:true, ep:ep, st:'', busy:false }; drawGuard();
       toast(T('この端末で通知を受け取ります（「新着メッセージがあります」だけ）','This device will get notifications (“New message” only)'), 'success');
     }, function(e){ if (g !== C.gen) return; C.push.busy = false; C.push.st = apiErr(e); drawGuard(); });
@@ -111415,10 +111525,11 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   W.chatPushOff = function(){
     if (C.push.busy) return;
     C.push.busy = true; drawGuard();
-    var g = C.gen, ep0 = C.push.ep;
+    var g = C.gen, ep0 = C.push.ep, who = { g:g, tok:pinTok() };
     regGet().then(function(reg){ return reg && reg.pushManager ? reg.pushManager.getSubscription() : null; }).then(function(sub){
+      if (g !== C.gen) throw mk('signin_changed');   /* 替わった人の送り先は触らない（前の人の分はログアウトで消している） */
       var ep = (sub && sub.endpoint) || ep0;
-      return (ep ? api({ action:'chat_push_unsub', endpoint:ep }).catch(function(){}) : Promise.resolve()).then(function(){ if (sub) return sub.unsubscribe(); });
+      return (ep ? api({ action:'chat_push_unsub', endpoint:ep }, who).catch(function(){}) : Promise.resolve()).then(function(){ if (sub && g === C.gen) return sub.unsubscribe(); });
     }).then(function(){ if (g !== C.gen) return; C.push = { on:false, ep:'', st:'', busy:false }; drawGuard(); },
       function(e){ if (g !== C.gen) return; C.push.busy = false; C.push.st = apiErr(e); drawGuard(); });
   };
@@ -111437,14 +111548,17 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     }).catch(function(){});
   }
   /* ログアウト：この端末の開けた印を消す・通知の送り先をやめる（答えは待たない。このタブの印はすぐ捨てる） */
+  /* その人のログインの印で送るだけ（答えは待たない・画面は変えない）。ログアウト・替わったあとの片づけ */
+  function postAs(tok, b){
+    if (!tok) return;
+    try { var f = fetch(SUPABASE_URL + FN, { method:'POST', keepalive:true, headers:{ apikey:SUPABASE_ANON, Authorization:'Bearer ' + SUPABASE_ANON, 'Content-Type':'application/json' },
+      body:JSON.stringify(Object.assign({ pin_session:tok }, b)) }); if (f && typeof f.catch === 'function') f.catch(function(){}); } catch(e){}
+  }
   function bye(){
     var tok = C.tok, u = L.utok, ep = C.push && C.push.on ? C.push.ep : '';
     L.utok = null;
     if (!tok || (!u && !ep)) return;
-    function post(b){
-      try { var f = fetch(SUPABASE_URL + FN, { method:'POST', keepalive:true, headers:{ apikey:SUPABASE_ANON, Authorization:'Bearer ' + SUPABASE_ANON, 'Content-Type':'application/json' },
-        body:JSON.stringify(Object.assign({ pin_session:tok }, b)) }); if (f && typeof f.catch === 'function') f.catch(function(){}); } catch(e){}
-    }
+    function post(b){ postAs(tok, b); }
     if (u) post({ action:'chat_relock', mode:'all', unlock:u });
     if (ep) {
       post({ action:'chat_push_unsub', endpoint:ep });

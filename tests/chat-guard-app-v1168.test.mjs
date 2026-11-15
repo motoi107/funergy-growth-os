@@ -260,7 +260,7 @@ test('the service worker shows only the fixed text (never the pushed data), grou
   assert.doesNotMatch(push, /e\.data|\.json\(\)|\.text\(\)/, 'the pushed data is not read');
   const click = sw.slice(sw.indexOf("addEventListener('notificationclick'"));
   assert.match(click, /funergy-chat-open/); assert.match(click, /\?chat=1/);
-  assert.match(sw, /const SW_BUILD = '1168'/);
+  assert.ok(Number((/const SW_BUILD = '(\d+)'/.exec(sw) || [])[1]) >= 1168, 'the service worker is 1168 or later');
 });
 
 test('a device that was open loses the realtime mark when the PIN is set on another device (it locks; only counts until the PIN)', async () => {

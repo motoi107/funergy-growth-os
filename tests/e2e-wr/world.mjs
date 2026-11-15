@@ -19,7 +19,8 @@ export const WR_MIGS = ['20261104090000_work_requests', '20261105090000_work_req
   .concat(process.env.WR_FIX === '0' ? [] : ['20261125090000_wr_expense_g2'])   // WR_FIX=0：直す前（v1162 の本番と同じ SQL）
   .concat(process.env.WR_FIX === '0' || process.env.WR_1165 === '0' ? [] : ['20261126090000_wr_approve_v1165'])   // v1165：事前経費と実費（WR_1165=0：その SQL の前）
   .concat(process.env.WR_UI79 === '1' ? ['20261127090000_chat_ui79'] : [])   // v1167：チャットの UI案79（WR_UI79=1 のときだけ。前の e2e は前のまま）
-  .concat(process.env.WR_UI79 === '1' && process.env.WR_GUARD === '1' ? ['20261128090000_chat_guard'] : []);   // v1168：チャットの守り（WR_GUARD=1 のときだけ）
+  .concat(process.env.WR_UI79 === '1' && process.env.WR_GUARD === '1' ? ['20261128090000_chat_guard'] : [])   // v1168：チャットの守り（WR_GUARD=1 のときだけ）
+  .concat(process.env.WR_UI79 === '1' && process.env.WR_GUARD === '1' && process.env.WR_V1169 !== '0' ? ['20261129090000_fixes_v1169'] : []);   // v1169：直し（守りのあと。WR_V1169=0 で前のまま）
 
 export const TODAY = new Date().toISOString().slice(0, 10);
 const STORES = [['F01', 'Store A', 'Brand A', 'Ami Area'], ['F02', 'Store B', 'Brand B', '']].map(([id, name, brand, am]) => ({ id, name, brand, color: '#335577', am, toastGuid: '', hours: '11:00-22:00', days: '毎日', active: true }));

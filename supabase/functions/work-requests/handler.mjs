@@ -1,5 +1,5 @@
-// work-requests: ワークセンターの申請の API（v1131・1 段目＝経費 3 種／v1132・2 段目＝評価の変更 3 種と表示設定／v1133・反映の押さえ／v1155・段階 2＝予算と前の承認タブの種類／v1156・チャット／v1161・チャットの添付／v1168・チャットの守り）。
-// 仕様：docs/WORK_REQUESTS_V1131_JA.md・docs/WORK_REQUESTS_V1132_JA.md・docs/WORK_REQUESTS_V1133_JA.md・docs/WORKCENTER_APPROVALS_STAGE2_JA.md・docs/CHAT_V1156_JA.md・docs/CHAT_FILES_V1161_JA.md・docs/CHAT_GUARD_V1168_JA.md
+// work-requests: ワークセンターの申請の API（v1131・1 段目＝経費 3 種／v1132・2 段目＝評価の変更 3 種と表示設定／v1133・反映の押さえ／v1155・段階 2＝予算と前の承認タブの種類／v1156・チャット／v1161・チャットの添付／v1168・チャットの守り／v1169・Codex の P2 の直し）。
+// 仕様：docs/WORK_REQUESTS_V1131_JA.md・docs/WORK_REQUESTS_V1132_JA.md・docs/WORK_REQUESTS_V1133_JA.md・docs/WORKCENTER_APPROVALS_STAGE2_JA.md・docs/CHAT_V1156_JA.md・docs/CHAT_FILES_V1161_JA.md・docs/CHAT_GUARD_V1168_JA.md・docs/FIXES_V1169_JA.md
 // 入り方は PIN のログインの印だけ（deps.verifyPin が確かめて { emp_id, name } を返す）。アプリが送る役割・名前・承認した人は使わない。
 // 役割・店・できることは SQL（wr_actor・wr_actions）が決める。この関数は形を整えて渡すだけ。
 
@@ -386,9 +386,10 @@ export function createHandler(deps) {
     // v1165 から fn 8（事前経費に結ぶ：pre_candidates・link_pre。SQL は sql 7 から）
     // v1167 から fn 9（チャットの UI案79：chat_case_create・chat_admin。チャットの SQL は chat 3 から）
     // v1168 から fn 10（チャットの守り：暗証番号・グループのキー・プッシュ通知。チャットの SQL は chat 4 から）。push＝プッシュ通知の鍵が入っている
+    // v1169 から fn 11（キー付きのグループを 1 つの取引で＝chat_create_group_k・経理の「処理済み（今月）」＝acct_done。SQL は chat 5 から。申請の段 sql は変えない＝wr_acct_done が無ければ done_old）
     whoami: async w => {
       const [me, st, cs] = await Promise.all([db.rpc('wr_whoami', w), db.rpc('wr_stage', {}).catch(() => null), db.rpc('chat_stage', {}).catch(() => null)]);
-      return { ...me, fn: 10, push: pushReady, sql: (st && Number.isInteger(st.stage)) ? st.stage : 1, chat: (cs && Number.isInteger(cs.chat)) ? cs.chat : 0 };
+      return { ...me, fn: 11, push: pushReady, sql: (st && Number.isInteger(st.stage)) ? st.stage : 1, chat: (cs && Number.isInteger(cs.chat)) ? cs.chat : 0 };
     },
     list: (w, b) => {
       const scope = ['todo', 'mine', 'team'].includes(b.scope) ? b.scope : 'todo';
@@ -399,6 +400,19 @@ export function createHandler(deps) {
       return db.rpc('wr_list', { ...w, scope, state, kind, store, from: DTO(b.from), to: DTO(b.to), limit });
     },
     get: (w, b) => db.rpc('wr_get', { ...w, ...ref(b) }),
+    // v1169（Codex #161 の P2）：経理レビュー › 申請の「処理済み（今月）」。精算・確認した時刻（ハワイの月）で新しい順に。続きは next（before_at・before_id）
+    acct_done: (w, b) => {
+      const month = b.month == null || b.month === '' ? null : (typeof b.month === 'string' && /^20\d{2}-(0[1-9]|1[0-2])$/.test(b.month) ? b.month : (() => { throw bad(); })());
+      const limit = Number.isInteger(b.limit) && b.limit >= 1 && b.limit <= 500 ? b.limit : 200;
+      const q = { ...w, month, limit };
+      if (b.before_at != null || b.before_id != null) {
+        const at = typeof b.before_at === 'string' && b.before_at.length <= 40 && !Number.isNaN(Date.parse(b.before_at)) ? b.before_at : null;
+        const id = ID(b.before_id);
+        if (!at || !id) throw bad();
+        q.before_at = at; q.before_id = id;
+      }
+      return db.rpc('wr_acct_done', q);
+    },
     // v1165（UI案77 の 4B・5A）：経理が建て替え経費（実費）を事前経費の番号に結ぶ。pre が null なら外す
     pre_candidates: (w, b) => db.rpc('wr_pre_candidates', { ...w, ...ref(b) }),
     link_pre: (w, b) => {
@@ -484,12 +498,11 @@ export function createHandler(deps) {
     chat_create_group: async (w, b) => {
       const title = TS(b.title, CHAT.title); if (!title) throw bad();
       const key = b.key == null || b.key === '' ? null : KEYV(b.key);   // v1168：作るときにキーも（任意）
-      const r = await db.rpc('chat_create_group', { ...w, title, members: EMPS(b.members, 1, CHAT.members), client_key: KEY(b.client_key) });
-      if (!key || !r || r.replay || r.keyed) return r;
-      try {
-        const k = await db.rpc('chat_key_save', { ...w, thread: r.id, clear: false, ...(await secretMake(key)) });
-        return { ...r, keyed: true, key_ok: true, key_rev: k.key_rev, ...(k.unlock ? { unlock: k.unlock } : {}) };
-      } catch (e) { console.error('work-requests chat key at create', safeErr(e)); return { ...r, key_failed: true }; }
+      const q = { ...w, title, members: EMPS(b.members, 1, CHAT.members), client_key: KEY(b.client_key) };
+      if (!key) return db.rpc('chat_create_group', q);
+      // v1169（Codex #164 の P2）：作るのとキーを付けるのを 1 つの取引で（キーが付かなければ会話もできない）。送り直しでも、まだキーの無い会話なら付ける。
+      // SQL がまだ前の版（chat_create_group_k が無い）なら作らない（fix_old）＝守りの無い会話を作らない
+      return db.rpc('chat_create_group_k', { ...q, ...(await secretMake(key)) });
     },
     chat_case: (w, b) => db.rpc('chat_case', { ...w, ...ref(b) }),
     // v1167（UI案79 の 2A）：申請のチャットは最初に開いた人が参加者を選んで作る（関係する人を最初から選んだ状態・外せる）。同じ申請は 1 つ
@@ -641,7 +654,7 @@ export function createHandler(deps) {
     dup_unresolved: 409, legacy_paid: 409, pin_check_missing: 503, not_member: 409, too_late: 409, too_many: 409, chat_missing: 503,
     file_type: 400, file_big: 413, file_bad: 409, file_missing: 409, file_many: 409, files_missing: 503, storage: 502,
     pre_bad: 409, pre_taken: 409, pre_missing: 503, case_exists: 409, last_admin: 409, chat_old: 503,
-    chat_pin_required: 423, chat_key_required: 423, guard_old: 503, push_off: 503 };
+    chat_pin_required: 423, chat_key_required: 423, guard_old: 503, push_off: 503, last_member: 409, fix_old: 503, done_old: 503 };
   // チャットの SQL がまだ無い（関数が見つからない）＝ 503 chat_missing（アプリは「サーバーの準備がまだ」と出す）
   const chatMissing = (action, e) => typeof action === 'string' && action.startsWith('chat_')
     && (e.status === 404 || /(function public\.chat_[a-z_]+\(.*\) does not exist|Could not find the function public\.chat_)/i.test(String(e.message || '')));
@@ -664,6 +677,14 @@ export function createHandler(deps) {
   const guardMissing = (action, e) => GUARD_ACTIONS.includes(action)
     && /chat_(guard_get|pin_|key_|relock|push_)/.test(String(e.message || '')) && (e.status === 404 || /does not exist|Could not find the function/i.test(String(e.message || '')));
 
+  // v1169：直しの SQL（20261129090000）がまだ（関数が無い）＝ 503。キー付きのグループは fix_old（作らない）・処理済み（今月）は done_old（アプリは前の読み方に戻す）
+  const fixMissing = (action, e) => {
+    const m = String(e.message || ''), miss = e.status === 404 || /does not exist|Could not find the function/i.test(m);
+    if (action === 'chat_create_group' && /chat_create_group_k/.test(m) && miss) return 'fix_old';
+    if (action === 'acct_done' && /wr_acct_done/.test(m) && miss) return 'done_old';
+    return '';
+  };
+
   return async function handle(req) {
     const origin = req.headers.get('origin');
     if (origin && !origins.includes(origin)) return new Response(JSON.stringify({ error: 'origin' }), { status: 403 });
@@ -682,7 +703,7 @@ export function createHandler(deps) {
       return json(await fn(who, body));
     } catch (e) {
       const msg = String(e.message || 'error'), code0 = msg.split(/[\s:]/)[0];
-      const code = ERR[code0] ? code0 : (filesMissing(body && body.action, e) ? 'files_missing' : preMissing(body && body.action, e) ? 'pre_missing' : ui79Missing(body && body.action, e) ? 'chat_old' : guardMissing(body && body.action, e) ? 'guard_old' : chatMissing(body && body.action, e) ? 'chat_missing' : code0);
+      const code = ERR[code0] ? code0 : (fixMissing(body && body.action, e) || (filesMissing(body && body.action, e) ? 'files_missing' : preMissing(body && body.action, e) ? 'pre_missing' : ui79Missing(body && body.action, e) ? 'chat_old' : guardMissing(body && body.action, e) ? 'guard_old' : chatMissing(body && body.action, e) ? 'chat_missing' : code0));
       const status = ERR[code] || 500;
       if (status === 500 || status === 502) console.error('work-requests', body && body.action, safeErr(e));
       return json({ error: status === 500 ? 'error' : code }, status);

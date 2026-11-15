@@ -106,16 +106,19 @@ test('with an old request chat: pre-check OK (stage 2, auto members counted); af
   assert.ok(okAll(post));
 });
 
-test('running the old chat SQL afterwards is caught (1・3・4・11 NG); attachments then this SQL again make it OK', async () => {
+test('running the old chat SQL afterwards stops (v1169) and changes nothing (before, 1・3・4・11 turned NG); this SQL itself can run again', async () => {
   const pg = await base();
   await oldCaseChat(pg);
   await pg.exec(read('2_SQL_チャット改修.sql'));
-  await pg.exec(CHAT);
-  let post = by(await rowsOf(pg, '3_確認_読むだけ.sql'));
-  for (const n of ['1.', '3.', '4.', '11.']) assert.match(post(n), /^NG/, n);
-  await pg.exec(FILES); await pg.exec(read('2_SQL_チャット改修.sql'));
+  const fns = async () => (await pg.query(`select string_agg(p.proname || md5(p.prosrc), ',' order by p.proname, md5(p.prosrc)) v from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname like 'chat%'`)).rows[0].v;
+  const before = await fns();
+  await assert.rejects(pg.exec(CHAT), /STOP: これより新しいチャットの SQL（段 3）が入っています/);
+  await assert.rejects(pg.exec(FILES), /STOP: これより新しいチャットの SQL（段 3）が入っています/);
+  assert.equal(await fns(), before, 'no chat function changed');
+  await pg.exec(read('2_SQL_チャット改修.sql'));
   const rows = await rowsOf(pg, '3_確認_読むだけ.sql');
   assert.ok(okAll(rows), JSON.stringify(rows.filter(r => r.result !== 'OK')));
+  let post;
   // 足りない管理する人・残った自動の行も 3 が見る
   await pg.exec(`update public.chat_members set admin = false`);
   post = by(await rowsOf(pg, '3_確認_読むだけ.sql'));
