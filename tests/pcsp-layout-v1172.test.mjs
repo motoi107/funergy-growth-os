@@ -74,6 +74,9 @@ function fakeEl(rect, extra = {}) {
     querySelector: () => null,
   };
   el._cs = Object.assign({ display: 'inline-block', overflow: 'visible', overflowX: 'visible', overflowY: 'visible', position: 'static', fontSize: '13px' }, extra.cs || {});
+  /* 本物の CSS と同じ：:where([data-hit][data-hitrel]) { position:relative }（強さ 0）は、元が static のときだけ効く */
+  const basePos = el._cs.position;
+  Object.defineProperty(el._cs, 'position', { enumerable: true, get: () => (basePos === 'static' && 'data-hit' in el._a && 'data-hitrel' in el._a) ? 'relative' : basePos });
   return el;
 }
 const R = (left, top, w, h) => ({ left, top, width: w, height: h, right: left + w, bottom: top + h });
@@ -224,7 +227,8 @@ test('速さ：押すところと文字は、先に全部読んでからまと�
   c.FUNERGY_LAYOUT.run();
   assert.ok(els.every(e => e.hasAttribute('data-hit')), '押すところの印は付く ' + els.filter(e => !e.hasAttribute('data-hit')).length);
   assert.ok(texts.some(t => t.parentElement.hasAttribute('data-fs11')), '文字の印は付く');
-  assert.ok(readsAfterWrite <= 1, '文字の印を書いたあと、押すところを読む前の 1 回だけ（' + readsAfterWrite + '）');
+  /* 文字の印を書いたあと押すところを読む前の 1 回と、押すところをまとめて書いたあとに relative になったかを確かめる 1 回（#169 の Codex 6900411328 の P3） */
+  assert.ok(readsAfterWrite <= 2, '書いたあとに読むのは 2 回まで（' + readsAfterWrite + '）');
 });
 /* 要素がとても多い画面：見えている所の上下 1 画面（外の塊はその中ごと飛ばす） */
 function treeRun(cards, opt = {}) {
@@ -500,9 +504,30 @@ test('従業員マスター：CSS は 1024px 以上で表とパネルを横に�
 /* ---------- #169 の Codex 6899952456 の P2：押す範囲で absolute・fixed・sticky の位置を変えない ---------- */
 test('押す範囲：relative にするのは元が static のものだけ（散布図の点 .mn-pt などの absolute はそのまま）', () => {
   assert.ok(!/^\s*\[data-hit\]\s*\{\s*position:\s*relative;?\s*\}/m.test(CSS), 'すべての data-hit を relative にする決まりが残っていない');
-  assert.match(CSS, /\[data-hit\]\[data-hitrel\]\s*\{\s*position:relative;\s*\}/);
-  assert.match(LAYOUT, /var stat = el\.hasAttribute\('data-hitrel'\) \|\| cs\.position === 'static';/);
+  /* #169 の Codex 6900411328 の P3：印の決まりは強さ 0（:where）＝あとからクラスや幅の決まりで absolute・sticky になればそちらが効く */
+  assert.match(CSS, /:where\(\[data-hit\]\[data-hitrel\]\)\s*\{\s*position:relative;\s*\}/);
+  assert.doesNotMatch(CSS, /(^|[\s,}])\[data-hit\]\[data-hitrel\]\s*\{/, '強さのある印の決まりが残っていない');
+  assert.match(LAYOUT, /if \(mk && pos === 'static'\) \{ if \(el\.hasAttribute\('data-hit'\)\) writes\.push\(\{ el: el \}\); return; \}/);
+  assert.match(LAYOUT, /var stat = pos === 'static' \|\| \(mk && pos === 'relative'\);/);
+  assert.match(LAYOUT, /fresh\.forEach\(function\(el\)\{ if \(W\.getComputedStyle\(el\)\.position === 'static'\) clearHit\(el\); \}\);/);
   assert.match(LAYOUT, /writes\.push\(\{ el: el, e: e, rel: stat \}\)/);
   assert.match(LAYOUT, /function clearHit\(el\)\{ el\.removeAttribute\('data-hit'\); el\.removeAttribute\('data-hitrel'\);/);
   /* 本物のブラウザの CSS での確かめは tests/e2e-pcsp/hit-position-v1172.mjs（座標・computed の position・押したときの対象） */
+});
+test('押す範囲：印を付けたあとに absolute・sticky になったら印を外す（押す範囲は残す）。static を決めている要素には押す範囲を付けない', () => {
+  /* a：前に印を付けた（元は static）が、いまはクラスで absolute。b：はじめから sticky。c：ほかの決まりが static を決めている（印を付けても relative にならない）。d：ふつうの static */
+  const a = fakeEl(R(20, 100, 24, 24), { cs: { position: 'absolute' } }); a._a['data-hit'] = ''; a._a['data-hitrel'] = '';
+  const b = fakeEl(R(120, 100, 24, 24), { cs: { position: 'sticky' } });
+  const c = fakeEl(R(220, 100, 24, 24)); Object.defineProperty(c._cs, 'position', { get: () => 'static' });
+  const d = fakeEl(R(320, 100, 24, 24));
+  phoneRun([a, b, c, d]);
+  assert.ok(a.hasAttribute('data-hit') && !a.hasAttribute('data-hitrel'), 'a：印を外し、押す範囲は残す');
+  assert.ok(b.hasAttribute('data-hit') && !b.hasAttribute('data-hitrel'), 'b：sticky に印は付けない');
+  assert.ok(!c.hasAttribute('data-hit') && !c.hasAttribute('data-hitrel'), 'c：relative にならないので押す範囲も印も外す');
+  assert.ok(d.hasAttribute('data-hit') && d.hasAttribute('data-hitrel') && d._cs.position === 'relative', 'd：印を付けて relative');
+  /* 2 回目の見直し：c はまた外す・a は印なしのまま */
+  const c2 = fakeEl(R(220, 100, 24, 24)); Object.defineProperty(c2._cs, 'position', { get: () => 'static' }); c2._a['data-hit'] = ''; c2._a['data-hitrel'] = '';
+  phoneRun([a, c2]);
+  assert.ok(!c2.hasAttribute('data-hit') && !c2.hasAttribute('data-hitrel'), '印があるのに static のものは押す範囲を外す');
+  assert.ok(a.hasAttribute('data-hit') && !a.hasAttribute('data-hitrel'));
 });

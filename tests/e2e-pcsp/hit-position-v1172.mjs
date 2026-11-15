@@ -1,6 +1,8 @@
 // v1172（#169 の Codex 6899952456 の P2）：スマホ・タッチの端末で押す範囲を広げても、
 // absolute・fixed・sticky の要素の位置を変えないこと（メニュー分析「出数 vs 売価」の散布図の点 .mn-pt など）を本物のブラウザ（Chromium）の CSS で確かめる。
 // index.html の <style> と FUNERGY_LAYOUT をそのまま白紙のページに入れ、合成の点・ボタンを置いて L.run() の前後を比べる（本番・模擬サーバーにはつながない）。
+// #169 の Codex 6900411328 の P3：印（data-hitrel）を付けたあとにクラスや幅の決まりで absolute・sticky に変わる要素も、その位置になること
+// （印の決まりは :where で強さ 0）・はじめから sticky の要素・static を決めている要素も確かめる。
 // 使い方：node tests/e2e-pcsp/hit-position-v1172.mjs   （INDEX=ほかの index.html で前の版と比べられる）
 // Playwright は環境によって置き場所が違う（PLAYWRIGHT_MODULE → 'playwright' → 決まった置き場所の順に探す）
 async function loadChromium() {
@@ -27,21 +29,30 @@ const DOM = `<div class="main"><div id="main-content">
     ${PTS.map(([x, y], i) => `<button type="button" class="mn-pt" id="p${i}" style="left:${x}px;top:${y}px" onclick="window.__hit='p${i}'"><span style="background:#c2410c"></span></button>`).join('')}
   </div>
   <p style="margin:24px 16px"><button type="button" id="st" style="padding:2px 6px;font-size:12px" onclick="window.__hit='st'">小さいボタン</button></p>
+  <p style="margin:24px 16px"><button type="button" id="sk" style="position:sticky;top:0;padding:2px 6px;font-size:12px" onclick="window.__hit='sk'">sticky</button></p>
+  <p style="margin:24px 16px;position:relative;height:40px"><button type="button" id="dy" class="t-dyn" style="padding:2px 6px;font-size:12px" onclick="window.__hit='dy'">あとで absolute</button></p>
+  <p style="margin:24px 16px"><button type="button" id="mq" class="t-mq" style="padding:2px 6px;font-size:12px" onclick="window.__hit='mq'">幅で sticky</button></p>
+  <p style="margin:24px 16px"><button type="button" id="fs" class="t-fs" style="padding:2px 6px;font-size:12px" onclick="window.__hit='fs'">static を決める</button></p>
   <div style="height:400px"></div>
   <button type="button" id="fx" style="position:fixed;right:12px;bottom:12px;width:24px;height:24px;padding:0" onclick="window.__hit='fx'">F</button>
 </div></div>
 <div id="modal-overlay" class="modal-overlay"><div id="modal-body" class="modal"></div></div>`;
 
+/* 試験だけの決まり（クラス 1 つ＝強さ 0,1,0。前の印の決まり [data-hit][data-hitrel] は 0,2,0 でこれに勝っていた） */
+const TEST_CSS = `.go-abs { position:absolute; left:120px; top:4px; }
+@media (min-width:1000px) { .t-mq { position:sticky; top:0; } }
+.t-fs { position:static; }`;
+
 const browser = await chromium.launch({ headless: true });
 for (const W of [390, 1024]) {   /* 390＝スマホ、1024＝タッチの iPad（pointer: coarse） */
   const ctx = await browser.newContext({ viewport: { width: W, height: 844 }, isMobile: true, hasTouch: true, deviceScaleFactor: 2 });
   const page = await ctx.newPage(); const errors = []; page.on('pageerror', e => errors.push(String(e.message || e)));
-  await page.setContent(`<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><style>${styles}</style></head><body>${DOM}<script>${LAYOUT}<\/script></body></html>`);
+  await page.setContent(`<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><style>${styles}</style><style>${TEST_CSS}</style></head><body>${DOM}<script>${LAYOUT}<\/script></body></html>`);
   const snap = () => page.evaluate(() => {
     const one = id => { const el = document.getElementById(id), r = el.getBoundingClientRect(), cs = getComputedStyle(el);
       return { id, x: +(r.left + r.width / 2).toFixed(1), y: +(r.top + r.height / 2).toFixed(1), w: Math.round(r.width), h: Math.round(r.height), pos: cs.position, hit: el.hasAttribute('data-hit'), rel: el.hasAttribute('data-hitrel'),
         ht: el.style.getPropertyValue('--ht'), hb: el.style.getPropertyValue('--hb') }; };
-    return [...document.querySelectorAll('.mn-pt')].map(p => one(p.id)).concat([one('st'), one('fx')]);
+    return [...document.querySelectorAll('.mn-pt')].map(p => one(p.id)).concat(['st', 'fx', 'sk', 'dy', 'mq', 'fs'].map(one));
   });
   const before = await snap();
   await page.evaluate(() => window.FUNERGY_LAYOUT.run());
@@ -79,6 +90,47 @@ for (const W of [390, 1024]) {   /* 390＝スマホ、1024＝タッチの iPad�
   ok(`${tag}：小さいボタンの下の押す範囲を押すとそのボタン`, await page.evaluate(() => window.__hit) === 'st');
   const fx0 = by(before, 'fx'), fx = by(after, 'fx');
   ok(`${tag}：fixed のボタンは fixed のまま・位置も同じ`, fx.pos === 'fixed' && !fx.rel && Math.abs(fx.x - fx0.x) < 0.6 && Math.abs(fx.y - fx0.y) < 0.6, { pos: fx.pos });
+  /* はじめから sticky：sticky のまま・印なし・位置も同じ・押す範囲は付く */
+  const sk0 = by(before, 'sk'), sk = by(after, 'sk');
+  ok(`${tag}：sticky のボタンは sticky のまま・relative の印なし・位置も同じ`, sk.pos === 'sticky' && !sk.rel && sk.hit && Math.abs(sk.x - sk0.x) < 0.6 && Math.abs(sk.y - sk0.y) < 0.6, { pos: sk.pos, rel: sk.rel, hit: sk.hit });
+  await page.evaluate(() => { window.__hit = ''; }); await page.mouse.click(sk.x, sk.y + Math.min(15, sk.h / 2 + 8));
+  ok(`${tag}：sticky のボタンの下の押す範囲を押すとそのボタン`, await page.evaluate(() => window.__hit) === 'sk');
+  /* static を決める決まりがあるもの：relative にできないので押す範囲は付けない（押す範囲がよその所に出ない）・位置は同じ */
+  const fs0 = by(before, 'fs'), fs = by(after, 'fs');
+  ok(`${tag}：static を決めているボタンは static のまま・押す範囲も印もなし・位置も同じ`, fs.pos === 'static' && !fs.hit && !fs.rel && Math.abs(fs.x - fs0.x) < 0.6 && Math.abs(fs.y - fs0.y) < 0.6, { pos: fs.pos, hit: fs.hit, rel: fs.rel });
+  /* あとからクラスで absolute：見直す前からその位置・見直すと印を外す・押す範囲は残る。クラスを外すと static → 見直して印を戻す */
+  const dy = by(after, 'dy');
+  ok(`${tag}：元が static のボタンに印が付く（relative）`, dy.rel && dy.hit && dy.pos === 'relative', { pos: dy.pos, rel: dy.rel });
+  const box = await page.evaluate(() => { const r = document.getElementById('dy').parentElement.getBoundingClientRect(); return { l: r.left, t: r.top }; });
+  await page.evaluate(() => document.getElementById('dy').classList.add('go-abs'));
+  const dyA = (await snap()).find(x => x.id === 'dy');
+  ok(`${tag}：クラスで absolute にすると、見直す前からその位置（relative に戻されない）`, dyA.pos === 'absolute' && Math.abs((dyA.x - dyA.w / 2) - (box.l + 120)) < 0.6 && Math.abs((dyA.y - dyA.h / 2) - (box.t + 4)) < 0.6, { pos: dyA.pos, left: +(dyA.x - dyA.w / 2 - box.l).toFixed(1), top: +(dyA.y - dyA.h / 2 - box.t).toFixed(1) });
+  await page.evaluate(() => window.FUNERGY_LAYOUT.run());
+  const dyB = (await snap()).find(x => x.id === 'dy');
+  ok(`${tag}：見直すと印を外し、absolute のまま押す範囲は残る`, dyB.pos === 'absolute' && !dyB.rel && dyB.hit, { pos: dyB.pos, rel: dyB.rel, hit: dyB.hit });
+  await page.evaluate(() => { window.__hit = ''; }); await page.mouse.click(dyB.x, dyB.y + Math.min(15, dyB.h / 2 + 8));
+  ok(`${tag}：absolute にしたボタンの下の押す範囲を押すとそのボタン`, await page.evaluate(() => window.__hit) === 'dy');
+  await page.evaluate(() => document.getElementById('dy').classList.remove('go-abs'));
+  await page.evaluate(() => window.FUNERGY_LAYOUT.run());
+  const dyC = (await snap()).find(x => x.id === 'dy');
+  ok(`${tag}：クラスを外して見直すと、また印を付けて relative`, dyC.pos === 'relative' && dyC.rel && dyC.hit, { pos: dyC.pos, rel: dyC.rel });
+  /* 幅の決まりで sticky（1000px 以上）：390px ではじめ static → 印。幅を 1100px にすると見直す前から sticky・見直すと印を外す。戻すとまた印 */
+  const mq = by(after, 'mq');
+  if (W < 1000) {
+    ok(`${tag}：幅の決まりのボタンは、この幅では static から relative に（印あり）`, mq.pos === 'relative' && mq.rel, { pos: mq.pos, rel: mq.rel });
+    await page.setViewportSize({ width: 1100, height: 844 });
+    const mqA = (await snap()).find(x => x.id === 'mq');
+    ok(`${tag}→1100px：幅の決まりで sticky になる（見直す前から）`, mqA.pos === 'sticky', mqA.pos);
+    await page.evaluate(() => window.FUNERGY_LAYOUT.run());
+    const mqB = (await snap()).find(x => x.id === 'mq');
+    ok(`${tag}→1100px：見直すと印を外す（sticky のまま）`, mqB.pos === 'sticky' && !mqB.rel, { pos: mqB.pos, rel: mqB.rel });
+    await page.setViewportSize({ width: W, height: 844 });
+    await page.evaluate(() => window.FUNERGY_LAYOUT.run());
+    const mqC = (await snap()).find(x => x.id === 'mq');
+    ok(`${tag}：幅を戻して見直すと、また印を付けて relative`, mqC.pos === 'relative' && mqC.rel, { pos: mqC.pos, rel: mqC.rel });
+  } else {
+    ok(`${tag}：幅の決まりのボタンは、はじめから sticky・印なし`, mq.pos === 'sticky' && !mq.rel, { pos: mq.pos, rel: mq.rel });
+  }
   ok(`${tag}：ページのエラーなし`, errors.length === 0, errors.slice(0, 3));
   await ctx.close();
 }
