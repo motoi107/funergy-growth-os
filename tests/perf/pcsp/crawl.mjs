@@ -11,11 +11,11 @@ const STORE = process.env.STORE || 'ALL';
 const ONLY = (process.env.PAGES || '').split(',').filter(Boolean);
 const OUT = process.argv[2];
 const SHOTS = process.env.SHOTS || '';
-const mobile = W < 768;
+const mobile = W < 768 || !!process.env.TOUCH;   /* TOUCH=1：タッチの端末（iPad など）として 768px 以上でも測る */
 const ARGS = ['--host-resolver-rules=MAP tgbhgxzehzeouopklhje.supabase.co 127.0.0.1, MAP cdn.jsdelivr.net 127.0.0.1, MAP api.open-meteo.com 127.0.0.1, MAP archive-api.open-meteo.com 127.0.0.1', '--ignore-certificate-errors'];
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-const dir = '/tmp/pcsp-' + WHO + '-' + W + '-' + STORE; fs.rmSync(dir, { recursive: true, force: true });
+const dir = '/tmp/pcsp-' + WHO + '-' + W + '-' + STORE + (process.env.TOUCH ? '-t' : ''); fs.rmSync(dir, { recursive: true, force: true });
 const ctx = await chromium.launchPersistentContext(dir, { headless: true, args: ARGS, ignoreHTTPSErrors: true,
   viewport: { width: W, height: mobile ? 844 : 900 }, isMobile: mobile, hasTouch: mobile, deviceScaleFactor: mobile ? 2 : 1 });
 const page = ctx.pages()[0] || await ctx.newPage();
@@ -55,6 +55,7 @@ const measure = (label) => page.evaluate((label) => {
   const vis = el => { const r = el.getBoundingClientRect(); if (r.width < 1 || r.height < 1) return null; const s = getComputedStyle(el); if (s.visibility === 'hidden' || s.display === 'none' || +s.opacity === 0) return null; return r; };
   const clipAnc = el => { let a = el.parentElement; while (a && a !== document.body) { const s = getComputedStyle(a); if (/(auto|scroll|hidden|clip)/.test(s.overflowX)) return a; a = a.parentElement; } return null; };
   const desc = el => { const t = (el.innerText || el.value || el.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim().slice(0, 30); return el.tagName.toLowerCase() + (el.className && typeof el.className === 'string' ? '.' + el.className.split(/\s+/)[0] : '') + (t ? '「' + t + '」' : ''); };
+  const ZOOM = parseFloat(getComputedStyle(document.body).zoom) || 1;
   let overflow = [], clipped = [], scrollers = [], tapSmall = 0, tapTiny = 0, tapTotal = 0, tapEx = [], fontSmall = 0, fontEx = [], tables = 0, tablesScroll = 0, inputs = 0;
   const all = root.querySelectorAll('*');
   const right = Math.min(vw, modalOpen ? rr.right : vw);
@@ -77,13 +78,18 @@ const measure = (label) => page.evaluate((label) => {
       if (el.hasAttribute('data-hit')) {
         const v = k => parseFloat(el.style.getPropertyValue(k)) || 0;
         let L0 = r.left - v('--hl'), R0 = r.right + v('--hr'), T0 = r.top - v('--ht'), B0 = r.bottom + v('--hb');
-        for (let a = el.parentElement; a && a !== document.body; a = a.parentElement) { const st = getComputedStyle(a); if (st.overflowX !== 'visible' || st.overflowY !== 'visible') { const ar = a.getBoundingClientRect(); L0 = Math.max(L0, ar.left); R0 = Math.min(R0, ar.right); T0 = Math.max(T0, ar.top); B0 = Math.min(B0, ar.bottom); } }
+        /* 親が切る分は切る。ただし横（縦）に送れる親の中で、今は外に送られている分は切らない（送れば全部見える） */
+        for (let a = el.parentElement; a && a !== document.body; a = a.parentElement) { const st = getComputedStyle(a); if (st.overflowX !== 'visible' || st.overflowY !== 'visible') { const ar = a.getBoundingClientRect();
+          const sx = /(auto|scroll)/.test(st.overflowX) && a.scrollWidth > a.clientWidth + 2, sy = /(auto|scroll)/.test(st.overflowY) && a.scrollHeight > a.clientHeight + 2;
+          if (!sx) { L0 = Math.max(L0, ar.left); R0 = Math.min(R0, ar.right); }
+          if (!sy) { T0 = Math.max(T0, ar.top); B0 = Math.min(B0, ar.bottom); } } }
         er = { width: Math.max(0, R0 - L0), height: Math.max(0, B0 - T0) };
       }
       if (er.width < 43.5 || er.height < 43.5) { tapSmall++; if (er.width < 32 || er.height < 28) { tapTiny++; if (tapEx.length < 6) tapEx.push(desc(el) + ' ' + Math.round(er.width) + '×' + Math.round(er.height)); } }
     }
     const hasText = [...el.childNodes].some(n => n.nodeType === 3 && n.textContent.trim());
-    if (hasText && parseFloat(s.fontSize) < 11) { fontSmall++; if (fontEx.length < 4) fontEx.push(desc(el) + ' ' + s.fontSize); }
+    /* v1172：PC は body に zoom 1.1 が掛かるので、見た目の大きさ（文字の大きさ × zoom）で測る（v1171 までの記録は文字の大きさそのまま） */
+    if (hasText && parseFloat(s.fontSize) * ZOOM < 10.95) { fontSmall++; if (fontEx.length < 4) fontEx.push(desc(el) + ' ' + s.fontSize); }
   }
   // PC：横に並んでいる塊があるか（.card などの塊の左端の位置の数）
   const blocks = [...root.querySelectorAll('.card, .kpi-card, .md-card, section, .stat-card, table')].map(vis).filter(r => r && r.width > 140 && r.height > 40);

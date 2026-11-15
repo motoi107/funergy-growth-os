@@ -77,16 +77,22 @@ function fakeEl(rect, extra = {}) {
   return el;
 }
 const R = (left, top, w, h) => ({ left, top, width: w, height: h, right: left + w, bottom: top + h });
-function phoneRun(els, phone = true) {
+/* phone：true＝スマホの幅（タッチ）／false＝PC（マウス・zoom）／'touch'＝タッチの端末で 768px 以上（iPad など）／'none'＝どれでもない */
+function phoneRun(els, phone = true, texts = []) {
   const root = { querySelectorAll: sel => (/table/.test(sel) ? [] : /input/.test(sel) ? [] : els) };
+  const tables = [];
+  const mode = phone === true ? 'phone' : phone === 'touch' ? 'touch' : phone === 'none' ? 'none' : 'mouse';
   const c = layoutCtx({
-    matchMedia: q => ({ matches: phone && /767/.test(q) }),
+    matchMedia: q => ({ matches: /767/.test(q) ? mode === 'phone' : /coarse/.test(q) ? (mode === 'phone' || mode === 'touch') : /hover: hover/.test(q) ? mode === 'mouse' : false }),
     getComputedStyle: (el, pseudo) => pseudo ? { content: 'none' } : (el._cs || { display: 'block', overflowX: 'visible', overflow: 'visible', overflowY: 'visible', position: 'static', fontSize: '13px' }),
-    doc: { getElementById: id => (id === 'main-content' ? root : null), createTreeWalker: () => ({ nextNode: () => null }) },
+    doc: { getElementById: id => (id === 'main-content' ? Object.assign(root, { querySelectorAll: sel => (/^table$/.test(sel) ? (tables.push(1), []) : /table/.test(sel) ? [] : /input/.test(sel) ? [] : els) }) : null),
+      createTreeWalker: () => { let i = 0; return { nextNode: () => texts[i++] || null }; } },
   });
   c.FUNERGY_LAYOUT.run();
+  c._tablesScanned = tables.length;
   return c;
 }
+const textOf = (px, word = 'abc') => { const el = fakeEl(R(0, 0, 40, 12), { tag: 'SPAN', cs: { fontSize: px + 'px' } }); el.closest = () => null; return { nodeValue: word, parentElement: el }; };
 test('スマホ：小さい押すところは押せる範囲を 44px に。となりの押すところとは間の半分まで（重ならない）', () => {
   const a = fakeEl(R(10, 100, 30, 30)), b = fakeEl(R(50, 100, 30, 30)), solo = fakeEl(R(200, 300, 20, 20)), big = fakeEl(R(10, 400, 60, 48));
   phoneRun([a, b, solo, big]);
@@ -107,6 +113,71 @@ test('スマホ：文字の行の中・表の中・はみ出しを切る中の�
   const x = fakeEl(R(10, 10, 20, 20));
   phoneRun([x], false);
   assert.ok(!x.hasAttribute('data-hit'), 'PC（768px 以上）では印を付けない');
+});
+
+test('スマホ：横に送る低い帯（店のボタンの列など）は、押す範囲が帯で切れる分だけ上下の余白を足し、同じだけ外の余白を減らす（ボタンは動かない・何度走らせても同じ）', () => {
+  const mkStrip = (rect, bg = 'rgba(0, 0, 0, 0)') => {
+    const sp = { _a: {}, clientHeight: rect.height, style: { _p: {}, setProperty(k, v) { this._p[k] = v; }, removeProperty(k) { delete this._p[k]; }, getPropertyValue(k) { return this._p[k] || ''; } },
+      hasAttribute(k) { return k in this._a; }, setAttribute(k, v) { this._a[k] = v; }, removeAttribute(k) { delete this._a[k]; }, getBoundingClientRect: () => sp._rect, closest: () => null };
+    sp._rect = rect;
+    sp._cs = { display: 'flex', overflowX: 'auto', overflowY: 'auto', overflow: 'auto', position: 'static', fontSize: '13px', backgroundColor: bg, borderTopWidth: '0px', borderBottomWidth: '0px', paddingTop: '6px', paddingBottom: '8px', marginTop: '0px', marginBottom: '6px' };
+    return sp;
+  };
+  const strip = mkStrip(R(0, 100, 390, 41));
+  const chip = fakeEl(R(10, 106, 40, 27)); chip.parentElement = strip;
+  phoneRun([chip]);
+  assert.ok(strip.hasAttribute('data-hitpad'));
+  assert.deepEqual(['--hpt', '--hpb', '--p0t', '--p0b', '--m0t', '--m0b'].map(k => strip.style.getPropertyValue(k)), ['3px', '1px', '6px', '8px', '0px', '6px'], '上は 6px しか無いので 3px 足す・下は 8px で 1px 足す・元の余白を覚える');
+  /* 余白を足したあと（帯の外側は 3px 上・1px 下に広がる）にもう一度走らせても同じ */
+  strip._rect = R(0, 97, 390, 45); strip._cs.paddingTop = '9px'; strip._cs.marginTop = '-3px';
+  phoneRun([chip]);
+  assert.deepEqual(['--hpt', '--hpb', '--p0t', '--m0t'].map(k => strip.style.getPropertyValue(k)), ['3px', '1px', '6px', '0px'], '元の余白は最初に読んだまま');
+  /* 背景色のある帯・高い帯は変えない */
+  const colored = mkStrip(R(0, 100, 390, 41), 'rgb(255, 255, 255)'), c2 = fakeEl(R(10, 106, 40, 27)); c2.parentElement = colored;
+  phoneRun([c2]);
+  assert.ok(!colored.hasAttribute('data-hitpad'));
+  const tall = mkStrip(R(0, 100, 390, 80)); tall.clientHeight = 80; const c3 = fakeEl(R(10, 106, 40, 27)); c3.parentElement = tall;
+  phoneRun([c3]);
+  assert.ok(!tall.hasAttribute('data-hitpad'));
+  assert.match(CSS, /\[data-hitpad\] \{ padding-top:calc\(var\(--p0t\) \+ var\(--hpt\)\) !important;[\s\S]*?margin-top:calc\(var\(--m0t\) - var\(--hpt\)\) !important;/);
+});
+test('タッチの端末（iPad など・768px 以上）も押せる範囲を広げて 11px に。PC（マウス）は押す範囲は変えず、10px 未満の文字だけ 10px（zoom 1.1 で見た目 11px）', () => {
+  /* タッチの端末（幅 1024px など）：押す範囲と 11px。表の固定（スマホの幅だけ）はしない */
+  const a = fakeEl(R(10, 100, 30, 30)), t1 = textOf(8.5), t2 = textOf(10.5), t3 = textOf(12);
+  const c = phoneRun([a], 'touch', [t1, t2, t3]);
+  assert.ok(a.hasAttribute('data-hit'), 'タッチの端末でも押せる範囲を広げる');
+  assert.deepEqual([t1, t2, t3].map(x => x.parentElement.hasAttribute('data-fs11')), [true, true, false]);
+  assert.ok(![t1, t2, t3].some(x => x.parentElement.hasAttribute('data-fs10')));
+  assert.equal(c._tablesScanned, 0, '表の固定はスマホの幅だけ');
+  /* PC（マウス）：押す範囲はそのまま。10px より小さい文字だけ data-fs10（10〜10.9px は見た目 11px 以上なのでそのまま） */
+  const b = fakeEl(R(10, 100, 30, 30)), p1 = textOf(8.5), p2 = textOf(9.5), p3 = textOf(10), p4 = textOf(10.5);
+  phoneRun([b], false, [p1, p2, p3, p4]);
+  assert.ok(!b.hasAttribute('data-hit'));
+  assert.deepEqual([p1, p2, p3, p4].map(x => x.parentElement.hasAttribute('data-fs10')), [true, true, false, false]);
+  assert.ok(![p1, p2, p3, p4].some(x => x.parentElement.hasAttribute('data-fs11')), 'PC では 11px の印を付けない（zoom で 12.1px になる）');
+  /* スマホの幅：押す範囲・11px・表の固定 */
+  const s1 = textOf(10.5), cp = phoneRun([fakeEl(R(10, 10, 20, 20))], true, [s1]);
+  assert.ok(s1.parentElement.hasAttribute('data-fs11'));
+  assert.equal(cp._tablesScanned, 1);
+  /* どれでもない（matchMedia が無い等）：何もしない。空白だけの文字・svg の中は数えない */
+  const n1 = textOf(8), sp = textOf(8, '  '), sv = textOf(8); sv.parentElement.closest = sel => (sel === 'svg' ? {} : null);
+  phoneRun([fakeEl(R(10, 10, 20, 20))], 'none', [n1]);
+  assert.ok(!n1.parentElement.hasAttribute('data-fs11') && !n1.parentElement.hasAttribute('data-fs10'));
+  phoneRun([], 'touch', [sp, sv]);
+  assert.ok(!sp.parentElement.hasAttribute('data-fs11') && !sv.parentElement.hasAttribute('data-fs11'));
+});
+test('CSS：押す範囲と 11px はスマホの幅とタッチの端末だけ（PC で残った印は効かない）。PC の 10px はマウスの端末だけ', () => {
+  const touch = CSS.slice(CSS.indexOf('@media (max-width:767px), (pointer: coarse) {'));
+  assert.ok(CSS.indexOf('@media (max-width:767px), (pointer: coarse) {') > 0);
+  const blk = touch.slice(0, touch.indexOf('\n}'));
+  assert.match(blk, /\[data-hit\]:not\(\.ux-busy\)::after/);
+  assert.match(blk, /\[data-fs11\] \{ font-size:11px !important; \}/);
+  assert.equal((CSS.match(/\[data-hit\]:not\(\.ux-busy\)::after/g) || []).length, 1, '押す範囲の決まりはこの段だけ');
+  assert.equal((CSS.match(/\[data-fs11\] \{/g) || []).length, 1);
+  const pc = CSS.slice(CSS.indexOf('@media (hover: hover) and (pointer: fine) {'));
+  assert.match(pc.slice(0, pc.indexOf('\n}')), /\[data-fs10\] \{ font-size:10px !important; \}/);
+  assert.ok(CSS.indexOf('[data-fs10] {') < CSS.indexOf('[data-fs11] {'), '両方付いたら 11px（あと）が勝つ');
+  assert.match(HTML, /@media \(hover: hover\) and \(pointer: fine\) \{\s*body \{ zoom: 1\.1; \}/, 'PC の zoom と同じ条件');
 });
 
 /* ---------- CSS の決まり ---------- */

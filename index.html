@@ -1694,17 +1694,25 @@ i.ti-loader, i.ti-loader-2 { display:inline-block; animation:uxSpin 1s linear in
 @media (max-width:374px) {
   .topbar-role-badge { display:none; }   /* 360px など：名前の札（押すところではない）を出さず、店・保存の状態・ログアウトを残す */
 }
+/* v1172：いちばん小さい文字。PC（マウス・body に zoom 1.1）は 10px（見た目 11px）、スマホとタッチの端末（iPad など）は 11px（印は FUNERGY_LAYOUT が付ける・大きくするだけ） */
+@media (hover: hover) and (pointer: fine) {
+  [data-fs10] { font-size:10px !important; }
+}
+/* v1172：スマホとタッチの端末（幅によらない）：押すところは見た目はそのまま、押せる範囲だけ 44px に（となりの押すところとは間の半分まで）。11px より小さい文字は 11px */
+@media (max-width:767px), (pointer: coarse) {
+  [data-hit] { position:relative; }
+  [data-hit]:not(.ux-busy)::after { content:""; position:absolute; top:calc(-1 * var(--ht, 0px)); bottom:calc(-1 * var(--hb, 0px)); left:calc(-1 * var(--hl, 0px)); right:calc(-1 * var(--hr, 0px)); }
+  [data-fs11] { font-size:11px !important; }
+  /* 横に送る低い帯：押す範囲が帯で切れないよう、上下の余白を足して同じだけ外の余白を減らす（ボタンの位置・見た目は動かない） */
+  [data-hitpad] { padding-top:calc(var(--p0t) + var(--hpt)) !important; padding-bottom:calc(var(--p0b) + var(--hpb)) !important;
+    margin-top:calc(var(--m0t) - var(--hpt)) !important; margin-bottom:calc(var(--m0b) - var(--hpb)) !important; }
+}
 @media (max-width:767px) {
   /* 画面の見出し：題とボタンが 1 行に入らなければ、ボタンを次の行へ（題を 1 文字ずつ折り返さない） */
   .section-header { flex-wrap:wrap; gap:8px 10px; }
   .section-header > :last-child:not(:first-child) { flex-wrap:wrap; max-width:100%; }
-  /* 押すところ：見た目はそのまま、押せる範囲だけ 44px に（となりの押すところとは間の半分まで） */
-  [data-hit] { position:relative; }
-  [data-hit]:not(.ux-busy)::after { content:""; position:absolute; top:calc(-1 * var(--ht, 0px)); bottom:calc(-1 * var(--hb, 0px)); left:calc(-1 * var(--hl, 0px)); right:calc(-1 * var(--hr, 0px)); }
   .nav-btn { min-height:44px; }
   .form-input, .form-select { min-height:44px; }
-  /* いちばん小さい文字は 11px */
-  [data-fs11] { font-size:11px !important; }
   /* 表：横に送る表は名前の列を固定・ページ全体は横に送らない */
   table[data-stick1] > * > tr > :first-child { position:sticky; left:0; z-index:2; background:var(--surface); box-shadow:1px 0 0 var(--border); }
   table[data-ovx] { display:block; max-width:100%; overflow-x:auto; }
@@ -113316,8 +113324,10 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
    ・画面の幅：body[data-layout]（wide＝表・一覧・分析／std＝カードの画面／read＝文章と短いフォーム＝今の 900px）
    ・箱：中身で大きさ（PC：data-msize md／lg・入力が多い箱は 2 列 data-mcols）・スマホは入力 3 つ以上か表のある箱を全画面（data-mfull）
      見出しと保存の行を上下に固定（data-mfoot）。開いているあいだは大きくなるだけ（中身が少し変わっても揺れない）
-   ・スマホ：押すところは押せる範囲だけ 44px に（data-hit・となりの押すところとは間の半分まで）・11px より小さい文字を 11px（data-fs11）
-     横に送る表は名前の列を固定（data-stick1）・ページからはみ出す表は表の中で送る（data-ovx）・長い表は見出しを固定（data-stickh）
+   ・スマホとタッチの端末（iPad など・幅によらない）：押すところは押せる範囲だけ 44px に（data-hit・となりの押すところとは間の半分まで）・
+     11px より小さい文字を 11px（data-fs11）
+   ・PC（マウス・body に zoom 1.1）：10px より小さい文字を 10px（data-fs10＝見た目 11px）。前からの 10〜10.9px はそのまま（見た目 11px 以上）
+   ・スマホ：横に送る表は名前の列を固定（data-stick1）・ページからはみ出す表は表の中で送る（data-ovx）・長い表は見出しを固定（data-stickh）
    ・ナビ（1023px まで）：今の場所を見える位置へ送る・横に送れるときは端をうすく（data-more） */
 (function(){
   var W = window, D = document;
@@ -113357,7 +113367,11 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
 
   var mqPhone = W.matchMedia ? W.matchMedia('(max-width:767px)') : { matches: false };
   var mqNav = W.matchMedia ? W.matchMedia('(max-width:1023px)') : { matches: false };
+  var mqTouch = W.matchMedia ? W.matchMedia('(pointer: coarse)') : { matches: false };
+  var mqZoom = W.matchMedia ? W.matchMedia('(hover: hover) and (pointer: fine)') : { matches: false };
   function phone(){ return !!mqPhone.matches; }
+  function touch(){ return !!(mqPhone.matches || mqTouch.matches); }   /* 押す範囲と 11px：スマホの幅か、タッチの端末 */
+  function zoomed(){ return !!mqZoom.matches; }                         /* PC：index.html の body{zoom:1.1} と同じ条件 */
 
   /* ---------- 箱（モーダル） ---------- */
   var RANK = { '': 0, md: 1, lg: 2 };
@@ -113423,6 +113437,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     tg.forEach(function(el){ var rs = el.getClientRects(); if (!rs.length) return; var r = el.getBoundingClientRect(); if (r.width < 1 || r.height < 1) return; items.push({ el: el, r: r }); });
     var others = items.map(function(x){ return x.r; });
     fields.forEach(function(f){ if (f.getClientRects().length) { var r = f.getBoundingClientRect(); if (r.width >= 1 && r.height >= 1) others.push(r); } });
+    var strips = [];   /* 横に送る低い帯（店のボタンの列など）：押す範囲が帯の上下で切れる分を、帯の上下の余白に足す */
     items.forEach(function(it){
       var el = it.el, r = it.r;
       if (r.width >= 44 && r.height >= 44) { if (el.hasAttribute('data-hit')) clearHit(el); return; }
@@ -113444,16 +113459,40 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       el.style.setProperty('--ht', e.t.toFixed(1) + 'px'); el.style.setProperty('--hb', e.b.toFixed(1) + 'px');
       el.style.setProperty('--hl', e.l.toFixed(1) + 'px'); el.style.setProperty('--hr', e.r.toFixed(1) + 'px');
       if (!el.hasAttribute('data-hit')) el.setAttribute('data-hit', '');
+      var sp = el.parentElement;
+      if (sp && (e.t > 0 || e.b > 0)) {
+        var ss = W.getComputedStyle(sp);
+        if (/(auto|scroll)/.test(ss.overflowX) && sp.clientHeight < 64 && /^(rgba\(0, 0, 0, 0\)|transparent)$/.test(ss.backgroundColor) && !parseFloat(ss.borderTopWidth) && !parseFloat(ss.borderBottomWidth)) {
+          var k = strips.indexOf(sp); if (k < 0) { strips.push(sp); k = strips.length - 1; sp._hp = { t: 0, b: 0 }; }
+          var cur = { t: parseFloat(sp.style.getPropertyValue('--hpt')) || 0, b: parseFloat(sp.style.getPropertyValue('--hpb')) || 0 };
+          var ar = sp.getBoundingClientRect();
+          sp._hp.t = Math.max(sp._hp.t, e.t - (r.top - (ar.top + cur.t)));
+          sp._hp.b = Math.max(sp._hp.b, e.b - ((ar.bottom - cur.b) - r.bottom));
+        }
+      }
+    });
+    strips.forEach(function(sp){
+      var t = Math.max(0, Math.ceil(sp._hp.t)), b = Math.max(0, Math.ceil(sp._hp.b));
+      if (t + b < 1) { if (sp.hasAttribute('data-hitpad')) { sp.removeAttribute('data-hitpad'); ['--hpt', '--hpb', '--p0t', '--p0b', '--m0t', '--m0b'].forEach(function(x){ sp.style.removeProperty(x); }); } return; }
+      if (!sp.hasAttribute('data-hitpad')) {   /* 元の余白は印を付ける前に 1 回だけ読む */
+        var cs0 = W.getComputedStyle(sp);
+        sp.style.setProperty('--p0t', cs0.paddingTop); sp.style.setProperty('--p0b', cs0.paddingBottom);
+        sp.style.setProperty('--m0t', cs0.marginTop); sp.style.setProperty('--m0b', cs0.marginBottom);
+      }
+      sp.style.setProperty('--hpt', t + 'px'); sp.style.setProperty('--hpb', b + 'px');
+      if (!sp.hasAttribute('data-hitpad')) sp.setAttribute('data-hitpad', '');
     });
   }
-  function scanFonts(roots){
+  /* attr：data-fs11（11px にする）か data-fs10（PC：10px にする＝zoom 1.1 で見た目 11px）。below より小さい文字だけに付ける（大きくするだけ） */
+  function scanFonts(roots, attr, below){
+    attr = attr || 'data-fs11'; below = below || 10.95;
     roots.forEach(function(root){
       if (!root) return;
       var tw = D.createTreeWalker(root, NodeFilter.SHOW_TEXT, null), seen = new Set(), n;
       while ((n = tw.nextNode())) {
         var p = n.parentElement; if (!p || seen.has(p)) continue; seen.add(p);
-        if (!n.nodeValue || !n.nodeValue.trim() || p.hasAttribute('data-fs11') || p.closest('svg')) continue;
-        if (parseFloat(W.getComputedStyle(p).fontSize) < 10.95 && p.getClientRects().length) p.setAttribute('data-fs11', '');
+        if (!n.nodeValue || !n.nodeValue.trim() || p.hasAttribute(attr) || p.closest('svg')) continue;
+        if (parseFloat(W.getComputedStyle(p).fontSize) < below && p.getClientRects().length) p.setAttribute(attr, '');
       }
     });
   }
@@ -113508,12 +113547,14 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     if (D.visibilityState === 'hidden') return;
     try { modalSize(false); } catch (e) {}
     try { navShow(false); } catch (e) {}
-    if (!phone()) return;
+    var ph = phone(), tc = touch(), zm = zoomed();
+    if (!ph && !tc && !zm) return;
     var ov = D.getElementById('modal-overlay'), mb = (ov && ov.classList.contains('open')) ? D.getElementById('modal-body') : null;
     var roots = [D.getElementById('main-content'), mb, D.getElementById('nav-bar'), D.getElementById('subnav-bar'), D.querySelector('.topbar')].filter(Boolean);
-    try { scanTables(roots); } catch (e) {}
-    try { scanFonts(roots); } catch (e) {}
-    try { scanHits(roots); } catch (e) {}
+    if (ph) { try { scanTables(roots); } catch (e) {} }
+    if (tc) { try { scanFonts(roots, 'data-fs11', 10.95); } catch (e) {} }
+    if (zm) { try { scanFonts(roots, 'data-fs10', 9.95); } catch (e) {} }
+    if (tc) { try { scanHits(roots); } catch (e) {} }
   }
   function schedule(){ if (tmr) return; tmr = setTimeout(function(){ (W.requestAnimationFrame || setTimeout)(run); }, 120); }
   L.schedule = schedule; L.run = run;
