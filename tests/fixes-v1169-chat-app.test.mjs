@@ -119,3 +119,35 @@ test('(#163) a request chat nobody can read any more: the next person is told it
   assert.ok(tid && tid !== old, 'a new conversation');
   assert.doesNotMatch(text(el(gm, 'chat-msgs')), /前の会話/);
 });
+
+test('v1170 fix (Codex #166 6891496601): the only manager of a request chat retires → the participant left opens the chat on the normal screen → “add people” is there → adds someone → can then leave', async () => {
+  const srv = await server();
+  const r7 = await app(srv, 'E7', { role: 'sl' });
+  r7.ctx.chatStart(); await r7.idle(); busy(r7);
+  const sub = await r7.ctx.chatAPI({ action: 'submit', kind: 'reimburse', store_id: 'S1', client_key: 'wr-v1170-0001',
+    payload: { date: '2026-11-03', payer: NAME.E7, payer_is_employee: true, vendor: 'Costco', purpose: '仕入れ', amount_cents: 4321 } });
+  r7.ctx.chatOpenCase(sub.id); await r7.idle();
+  for (const e of ['E1', 'E2', 'E3', 'E5']) r7.ctx.chatCaseSel(e, false);
+  r7.ctx.chatCaseSel('E6', true);
+  r7.ctx.chatCaseCreate(); await r7.idle();
+  const tid = r7.S().open; assert.ok(tid);
+  assert.deepEqual((await rowsOf(srv, `select emp_id, admin from public.chat_members where thread_id = $1 and left_at is null order by emp_id`, [tid])),
+    [{ emp_id: 'E6', admin: false }, { emp_id: 'E7', admin: true }], 'E7 is the only manager; E6 is a member');
+  await rowsOf(srv, `update public.employees set status = '退職' where id = 'E7'`);
+  const e6 = await app(srv, 'E6', { role: 'sl' });
+  await start(e6); e6.ctx.chatOpen(tid); await e6.idle(); e6.show(); await e6.idle();
+  e6.ctx.chatMembers(); await e6.idle();
+  const dlg = text(el(e6, 'chat-mem'));
+  assert.match(dlg, /人を加える/, 'the add section is on the normal screen');
+  assert.doesNotMatch(dlg, /人を加える・外すのは、この会話を管理する人だけです/);
+  e6.ctx.chatMemSel('E8', true); e6.ctx.chatMemAdd(); await e6.idle();
+  assert.ok(e6.toasts.some(t => /加えました/.test(t[1])), 'added');
+  assert.deepEqual((await rowsOf(srv, `select emp_id from public.chat_members where thread_id = $1 and left_at is null and emp_id <> 'E7' order by emp_id`, [tid])).map(r => r.emp_id), ['E6', 'E8']);
+  e6.ctx.chatMembers(); await e6.idle(); e6.ctx.chatRemove('E6'); await e6.idle();
+  assert.deepEqual((await rowsOf(srv, `select emp_id, admin from public.chat_members where thread_id = $1 and left_at is null and emp_id <> 'E7' order by emp_id`, [tid])),
+    [{ emp_id: 'E8', admin: true }], 'E6 could leave after adding E8; E8 manages it');
+  // 参加者でない人には今までどおり見せない
+  const e9 = await app(srv, 'E9');
+  await start(e9);
+  assert.equal(e9.S().threads[tid], undefined);
+});

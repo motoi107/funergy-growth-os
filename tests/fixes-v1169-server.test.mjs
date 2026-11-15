@@ -226,6 +226,42 @@ test('v1170 fix (Codex #166 P2): after the SQL, if the only manager of a request
   assert.equal((await s2.call('E9', { action: 'chat_add', thread: g.id, members: ['E9'], history: true })).status, 404);
 });
 
+test('v1170 fix (Codex #166 6891496601): after the only manager retires, opening the chat already shows the one who will manage next as the manager (add / rename / manage / key on the normal screen); only that one person, nothing written by reading, nobody else sees it', async () => {
+  const s = await setup();
+  const g = await s.ok('E7', { action: 'chat_create_group', title: 'Prep', members: ['E6', 'E8'], client_key: s.key() });
+  const CAN = b => [b.can_add, b.can_rename, b.can_admin, b.can_remove];
+  // 管理する人（E7）がいるあいだは、ほかの参加者には今までどおり出さない
+  assert.deepEqual(CAN(await s.ok('E6', { action: 'chat_messages', thread: g.id })), [false, false, false, false]);
+  await s.retire('E7');
+  const before = await s.q(`select emp_id, admin from public.chat_members where thread_id = '${g.id}' order by emp_id`);
+  // 次に管理する人になるのは、作った人（退職）を除いて、いちばん前から入っている人（同じ時刻なら社員 ID の順）＝ E6 だけ
+  const m6 = await s.ok('E6', { action: 'chat_messages', thread: g.id });
+  assert.deepEqual(CAN(m6), [true, true, true, true], 'E6 sees add / rename / manage / remove');
+  assert.equal(m6.thread.admin, true, 'the row says E6 manages it (the lock screen shows “set a new key” too)');
+  assert.deepEqual(m6.members.filter(x => x.admin).map(x => x.emp).sort(), ['E6', 'E7'], 'the list shows E6 as a manager (E7’s old mark stays until someone takes it off, as before)');
+  const m8 = await s.ok('E8', { action: 'chat_messages', thread: g.id });
+  assert.deepEqual(CAN(m8), [false, false, false, false], 'E8 is not the next manager: nothing more for E8');
+  assert.equal(m8.thread.admin, false);
+  const sync = await s.ok('E6', { action: 'chat_sync', since: 0 });
+  assert.equal((sync.threads || []).find(t => t.id === g.id).admin, true, 'the list row too');
+  assert.deepEqual(await s.q(`select emp_id, admin from public.chat_members where thread_id = '${g.id}' order by emp_id`), before, 'reading wrote nothing');
+  assert.equal((await s.call('E9', { action: 'chat_messages', thread: g.id })).status, 404, 'a non-participant still sees nothing');
+  // 画面から押す：ロックの下で本当に管理する人になって、加えられる
+  assert.equal((await s.ok('E6', { action: 'chat_add', thread: g.id, members: ['E9'], history: false })).added, 1);
+  assert.deepEqual(await s.q(`select emp_id, admin from public.chat_members where thread_id = '${g.id}' and left_at is null order by emp_id`),
+    [{ emp_id: 'E6', admin: true }, { emp_id: 'E7', admin: true }, { emp_id: 'E8', admin: false }, { emp_id: 'E9', admin: false }]);
+  assert.deepEqual(CAN(await s.ok('E8', { action: 'chat_messages', thread: g.id })), [false, false, false, false], 'E6 manages now: E8 sees no more');
+  // 申請のチャット（Codex の手順）：唯一の管理する人の退職 → 残った参加者が読む → 加えられる → 抜けられる
+  const s3 = await setup();
+  const r2 = await s3.submit('E7');
+  const t = await s3.ok('E7', { action: 'chat_case_create', id: r2.id, members: ['E6'], client_key: 'case-key-0301' });
+  await s3.retire('E7');
+  const c6 = await s3.ok('E6', { action: 'chat_messages', thread: t.id });
+  assert.deepEqual([c6.can_add, c6.can_admin, c6.can_leave], [true, true, true], 'the screen shows “add people” to E6');
+  assert.equal((await s3.ok('E6', { action: 'chat_add', thread: t.id, members: ['E8'], history: true })).added, 1);
+  assert.equal((await s3.ok('E6', { action: 'chat_remove', thread: t.id, emp: 'E6' })).removed, 1);
+});
+
 test('(#161) 処理済み（今月）: read by the time it was processed (paid, else checked; Hawaii month), newest first, page by page, only requests the person can see', async () => {
   const s = await setup();
   const old = await s.submit('E7', { date: '2026-08-20' });   // 前の申請を今月精算した
