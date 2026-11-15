@@ -4235,12 +4235,26 @@ function k2SaveMonth(sid, ym){
   renderPage('kpi_master');
   return true;
 }
+/* v1169（Moto さん 11/14・急ぎ）：G1・G2 の画面には「現場の重点 KPI」と「Tip Rate の変更履歴」を出さない。
+   G2 は curRole が sl に読み替わり myGradeNum() が 3 になるので、本当の役割（curRealRole）と従業員マスターのグレードで見る。
+   店のタブレット（店舗の PIN）は G1・G2 が使う画面なので隠す。事務Crew は G1・G2。分からないときは隠す。 */
+function isFloorG1G2(){
+  try{
+    if (curStoreLogin) return true;
+    if (curRealRole==='g2' || curRole==='crew' || curRole==='office_crew') return true;
+    if (curRole!=='sl') return false;   /* CEO・GM・経理・AM・G4・Head Chef は対象外 */
+    var e=(typeof getEmployees==='function')?getEmployees().find(function(x){ return x.name===curUserName; }):null;
+    var g=e?gradeNum(empGrade(e)):0;
+    return g>0 && g<=2;
+  }catch(e){ return true; }
+}
 /* ---- 重点 KPI のカード（G1〜G3＝現場、G4＝店舗責任） ---- */
 var K2_FOCUS = { field:['guests','repeatRate','drinkRate','misoUpgradeRate','ikuraShowerRate','reviewScore'],
                  mgmt:['sales','ppa','foodCost','laborPct','laborHours','reviewScore'] };
 function k2FocusCard(sid, mode){
   try{
     if(!sid || sid==='ALL') return '';
+    if(mode!=='mgmt' && isFloorG1G2()) return '';   /* v1169：G1・G2 には現場の重点 KPI を出さない */
     var A=k2Actuals(sid, curYm()); if(!A) return '';
     var keys=K2_FOCUS[mode]||K2_FOCUS.field;
     var rows=A.rows.filter(function(r){ return keys.indexOf(r.key)>=0 && r.on; });
@@ -46523,7 +46537,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1169';
+const APP_VERSION = '1170';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -99922,7 +99936,7 @@ function renderTipRate() {
   /* v1095（UI案57）：変更履歴に、変える前 → 後・適用開始日・変えた人・変えた日時（ハワイ）・種類・置き換え。新しい決定から 20 件 */
   var history = requests.map(function(r,i){ return {r:r, i:i}; }).filter(function(x){ return x.r && x.r.status!=='申請中'; })
     .sort(function(a,b){ return (_tipDecT(b.r)-_tipDecT(a.r)) || (b.i-a.i); }).map(function(x){ return x.r; });
-  if (history.length) {
+  if (history.length && !isFloorG1G2()) {   /* v1169：G1・G2 には Tip Rate の変更履歴を出さない */
     html += `<div class="card"><div class="card-title"><i class="ti ti-history"></i>${t('Tip Rate 変更履歴','Tip Rate History')}</div>`;
     history.slice(0,20).forEach(r => {
       var storeName = r.store ? ((STORES.find(s=>s.id===r.store)||{}).name||'') : '';
