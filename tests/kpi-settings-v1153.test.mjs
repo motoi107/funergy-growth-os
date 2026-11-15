@@ -44,6 +44,7 @@ const between = (a, b) => { const i = SRC.indexOf(a), j = SRC.indexOf(b, i); ass
 const K2 = between('/* ===== FUNERGY_KPI2 start =====', '/* ===== FUNERGY_KPI2 end ===== */');
 const MEET_DEF = between('var MEET_KPI_DEF=[', '\n];');
 const FMT_DEF = between('const FORMAT_KPI_DEFAULTS = {', '\n};').replace('const ', 'var ');
+const GRADES = between('var GRADE_TITLES = {', '\n};');
 const plain = v => JSON.parse(JSON.stringify(v));
 const run = (c, code) => vm.runInContext(code, c);
 
@@ -63,11 +64,14 @@ const STORES = [
 function device(opts = {}) {
   const c = { console: { log() {}, warn() {}, error() {} }, STORE: new Map(), STORES, CUR: opts.cur || '2026-11', TODAY: opts.today || '2026-11-13',
     NOW: Date.UTC(2026, 10, 13, 20), K: opts.k || {}, LC: opts.lc || {}, CONF: opts.conf || {}, DRINK: opts.drink || {}, CLOSED: opts.closed || {}, TL: opts.tl || {},
-    CAN: opts.can !== false, DOM: {}, TOASTS: [], RENDERS: 0, GRADE: opts.grade || 2, ROLE: opts.role || 'gm' };
+    CAN: opts.can !== false, DOM: {}, TOASTS: [], RENDERS: 0, GRADE: opts.grade || 2, ROLE: opts.role || 'gm',
+    REALROLE: opts.realRole || null, USER: opts.user || 'Moto', EMPS: opts.emps || [], SLOGIN: !!opts.storeLogin };
   vm.createContext(c);
-  run(c, [MEET_DEF, FMT_DEF, ...MERGE.map(fnSrc), ...REAL.map(fnSrc)].join('\n') + `
+  run(c, [MEET_DEF, FMT_DEF, GRADES, ...MERGE.map(fnSrc), ...REAL.map(fnSrc), ...['gradeOf', 'gradeNum', 'empGrade'].map(fnSrc)].join('\n') + `
     Date.now = function(){ return NOW; };
     var curLang = 'ja', curStore = 'ALL', curRole = ROLE, DRINK_RATE_STORES = ['F01','F02','F05'];
+    var curStoreLogin = SLOGIN, curRealRole = REALROLE, curUserName = USER;   /* v1169：G1・G2 の見分け（isFloorG1G2） */
+    function getEmployees(){ return EMPS; }
     function t(ja){ return ja; }
     function escapeHtml(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
     function _lsStoreGet(k){ return STORE.has(k) ? STORE.get(k) : null; }
@@ -517,6 +521,33 @@ test('⑦ focus cards: G1–G3 see the floor KPIs only, G4 the management KPIs; 
   assert.match(roughFn('renderSlFunergyNow'), /k2FocusCard\(myStoreId\(\), myGradeNum\(\)>=4 \? 'mgmt' : 'field'\)/);
   assert.match(roughFn('renderDashboard'), /if \(curRealRole==='g4'\) \{ try \{ html \+= k2FocusCard\(myStoreId\(\), 'mgmt'\)/, 'G4 is aliased to am: the real role decides');
   assert.match(roughFn('renderMgmtDash'), /if \(curRealRole === 'g4'\) \{ try \{ h \+= k2FocusCard\(myStoreId\(\), 'mgmt'\); \} catch \(e\) \{\} \}\n  h \+= '<div class="md-shell">'/, 'G4 opens the management dashboard (mdCanOpen): the card goes above it');
+});
+
+test('v1169 (Moto 11/14, urgent): G1 and G2 do not see the floor focus KPI card; G3 still does, G4 keeps the management card', () => {
+  const k = kBase({ pace: { budget: 49030, guestBudget: 1558 }, sales: 50210, guests: 1520 });
+  const emps = [{ name: 'Ann', title: 'Crew', role: 'crew' }, { name: 'Ben', title: 'Crew Leader', role: 'sl' }, { name: 'Cal', title: 'Operation Leader', role: 'sl' },
+    { name: 'Dee', title: 'Office Crew', role: 'office_crew' }, { name: 'Eve', title: 'Store Manager', role: 'g4' }];
+  const mk = o => { const c = device(Object.assign({ k: { 'F01|2026-11': k }, emps }, o)); setMan(c, 'F01', '2026.11', { tgt_repeatRate: 35 }); return c; };
+  const cases = [
+    ['G1 crew', { role: 'crew', user: 'Ann' }, false],
+    ['G2 (g2 aliased to sl)', { role: 'sl', realRole: 'g2', user: 'Ben' }, false],
+    ['G2 by title with the sl role', { role: 'sl', user: 'Ben' }, false],
+    ['the store tablet (store PIN)', { role: 'sl', user: 'ToriTon', storeLogin: true }, false],
+    ['office crew (G1)', { role: 'office_crew', user: 'Dee' }, false],
+    ['G3 by title', { role: 'sl', user: 'Cal' }, true],
+    ['GM', { role: 'gm', user: 'Moto' }, true],
+  ];
+  for (const [name, o, shown] of cases) {
+    const html = run(mk(o), `k2FocusCard('F01','field')`);
+    assert.equal(html.includes('ToriTon の現場の重点 KPI'), shown, name);
+    if (!shown) assert.equal(html, '', name + ': nothing at all');
+  }
+  // G4 keeps the management card (the real role is g4, curRole am)
+  assert.ok(run(mk({ role: 'am', realRole: 'g4', user: 'Eve' }), `k2FocusCard('F01','mgmt')`).includes('ToriTon の KPI'));
+  // when the role cannot be read, hide (safe side)
+  const c = mk({ role: 'sl', user: 'Cal' });
+  run(c, `getEmployees = function(){ throw new Error('x'); };`);
+  assert.equal(run(c, `k2FocusCard('F01','field')`), '');
 });
 
 test('⑧ names: アップグレード率 (formerly 味噌汁UP率) everywhere on screen; KPI設定; version 1153 or later', () => {
