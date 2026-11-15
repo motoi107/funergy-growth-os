@@ -130,7 +130,7 @@ test('the attachment SQL comes after the chat SQL, stops on a storage rule that 
 test('before the attachment SQL the function says files_missing; text chat keeps working; whoami tells the version', async () => {
   const s = await setup({ files: false });
   const w = (await s.call('E8', { action: 'whoami' })).body;
-  assert.equal(w.fn, 7); assert.equal(w.chat, 1, 'chat stage 1 = no attachments yet');
+  assert.ok(w.fn >= 7, 'fn ' + w.fn + ' (v1165 is 8)'); assert.equal(w.chat, 1, 'chat stage 1 = no attachments yet');
   const dm = await s.ok('E8', { action: 'chat_open_dm', to: 'E9' });
   const r = await s.call('E8', { action: 'chat_file_start', thread: dm.id, client_key: s.key(), name: 'a.pdf', ext: 'pdf', size: 100 });
   assert.deepEqual([r.status, r.body.error], [503, 'files_missing']);

@@ -16,7 +16,8 @@ const MIG = f => fs.readFileSync(path.join(ROOT, 'supabase/migrations', f + '.sq
 // 本番に入っている work-requests の SQL（入れた順）
 export const WR_MIGS = ['20261104090000_work_requests', '20261105090000_work_requests_eval', '20261106090000_work_requests_apply_claim', '20261107090000_work_requests_ui68',
   '20261113080000_wr_people_chef', '20261116080000_wr_people_g2', '20261120090000_work_requests_stage2', '20261121090000_chat', '20261123090000_work_requests_stage3', '20261124090000_chat_files']
-  .concat(process.env.WR_FIX === '0' ? [] : ['20261125090000_wr_expense_g2']);   // WR_FIX=0：直す前（v1162 の本番と同じ SQL）
+  .concat(process.env.WR_FIX === '0' ? [] : ['20261125090000_wr_expense_g2'])   // WR_FIX=0：直す前（v1162 の本番と同じ SQL）
+  .concat(process.env.WR_FIX === '0' || process.env.WR_1165 === '0' ? [] : ['20261126090000_wr_approve_v1165']);   // v1165：事前経費と実費（WR_1165=0：その SQL の前）
 
 export const TODAY = new Date().toISOString().slice(0, 10);
 const STORES = [['F01', 'Store A', 'Brand A', 'Ami Area'], ['F02', 'Store B', 'Brand B', '']].map(([id, name, brand, am]) => ({ id, name, brand, color: '#335577', am, toastGuid: '', hours: '11:00-22:00', days: '毎日', active: true }));

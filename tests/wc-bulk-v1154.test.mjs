@@ -225,16 +225,17 @@ test('accounting review › requests: accounting sees GM-approved requests to ch
   acct.ctx.curPage = 'acct_review'; acct.ctx._arTab = 'req';
   acct.ctx.renderWrAcct(); await acct.settle(); acct.ctx.renderWrAcct(); await acct.settle();
   let h = acct.ctx.renderWrAcct();
-  assert.match(h, /\[経理の確認待ち:2件\]/);
+  assert.match(h, />確認待ち <span class="tag tag-red"[^>]*>2<\/span>/);   /* v1165（UI案77 の 3A）：数字のタイルから 3 つのタブへ */
+  assert.match(h, />確認済み・処理待ち <span class="tag"[^>]*>0<\/span>/);
   assert.match(h, new RegExp(a.code)); assert.match(h, new RegExp(b.code));
-  assert.equal((h.match(/確認する/g) || []).length, 2);
+  assert.equal((h.match(/>確認する</g) || []).length, 2);   /* v1165：下の説明の「確認すると」は数えない */
   assert.doesNotMatch(h, new RegExp(w.code), 'not approved yet');
   const gm = await app(srv, 'E2');
   gm.ctx.curPage = 'acct_review'; gm.ctx._arTab = 'req';
   gm.ctx.renderWrAcct(); await gm.settle(); gm.ctx.renderWrAcct(); await gm.settle();
   const hg = gm.ctx.renderWrAcct();
   assert.match(hg, /（見るだけ）/);
-  assert.doesNotMatch(hg, /確認する/);
+  assert.doesNotMatch(hg, />確認する</);
   assert.match(hg, />見る</);
 });
 
@@ -257,7 +258,7 @@ test('accounting review › requests: the first open fills itself in when the re
   assert.ok(shown.length >= 1, 'the screen is drawn again when the reading ends');
   const last = shown.at(-1);
   assert.match(last, new RegExp(a.code), 'the approved request is listed');
-  assert.match(last, /\[経理の確認待ち:1件\]/);
+  assert.match(last, />確認待ち <span class="tag tag-red"[^>]*>1<\/span>/);
   assert.doesNotMatch(last, /読み込み中/);
   assert.ok(!d.pages.includes('tasks'), 'the work center is not drawn in its place');
   // a failure also replaces "loading…"

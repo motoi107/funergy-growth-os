@@ -235,11 +235,14 @@ test('the rest of the app: the menu drops 承認センター, old links go to th
   const ctx = { window: {}, NAV_ITEMS: [{ id: 'approval', roles: ['gm'] }, { id: 'tasks' }], curRole: 'gm' };
   vm.createContext(ctx);
   vm.runInContext(fnSrc('_apClosed') + '\n' + fnSrc('navChildAllowed'), ctx);
-  assert.equal(ctx.navChildAllowed('approval'), true, 'still there before stage 3');
+  /* v1165（UI案77 の 2A・Moto さん 11/14）：段階 3 の前でもメニューから外す（前の承認待ちはワークセンター › 申請/承認から開く） */
+  assert.equal(ctx.navChildAllowed('approval'), false, 'gone before stage 3 too (v1165)');
   ctx.window.wrS3Seen = () => true;
   assert.equal(ctx.navChildAllowed('approval'), false); assert.equal(ctx.navChildAllowed('tasks'), true);
   assert.match(fnSrc('navResolvePage'), /\(page === 'approval' \|\| \(page === 'tasks' && typeof workTab !== 'undefined' && workTab === 'approval'\)\) && typeof _apClosed === 'function' && _apClosed\(\)\) \{ page = 'tasks'; workTab = 'wr'; \}/);
-  assert.match(fnSrc('renderWorkCenter'), /var apOff = typeof _apClosed==='function' && _apClosed\(\);[\s\S]*if \(apOff && workTab==='approval'\) workTab='wr';[\s\S]*\$\{apOff\?'':/);
+  assert.match(fnSrc('renderWorkCenter'), /var apOff = typeof _apClosed==='function' && _apClosed\(\);[\s\S]*if \(apOff && workTab==='approval'\) workTab='wr';/);
+  assert.doesNotMatch(fnSrc('renderWorkCenter'), /\$\{apOff\?'':/, 'v1165: no separate 承認 tab at all');
+  assert.match(fnSrc('apOldPend'), /if \(typeof _apClosed==='function' && _apClosed\(\)\) return \[\];/, 'after stage 3 the old list is empty');
   assert.match(SRC, /if \(pid==='approval'\) return \(typeof _apClosed==='function' && _apClosed\(\)\) \? 0 :/);
   assert.match(SRC, /var approvalsAll = \(typeof _apClosed==='function' && _apClosed\(\)\) \? \[\] :/);
   assert.match(SRC, /out = \(\(typeof _apClosed === 'function' && _apClosed\(\)\) \? \[\] : \(ls\('approvals', \[\]\) \|\| \[\]\)\)\.filter/);
