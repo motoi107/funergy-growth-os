@@ -164,8 +164,8 @@ begin
    limit v_lim) x;
  select exists (select 1 from public.chat_messages y where y.thread_id = t.id and y.seq >= m.history_from
    and y.seq < coalesce((select min((e->>'seq')::bigint) from jsonb_array_elements(o) e), 0)) into v_older;
- select coalesce(jsonb_agg(jsonb_build_object('emp', x.emp_id, 'name', public.chat_emp_name(x.emp_id), 'auto', false, 'admin', x.admin or x.emp_id = v_next, 'last_read', x.last_read)
-   order by (x.admin or x.emp_id = v_next) desc, public.chat_emp_name(x.emp_id)), '[]'::jsonb) into mem
+ select coalesce(jsonb_agg(jsonb_build_object('emp', x.emp_id, 'name', public.chat_emp_name(x.emp_id), 'auto', false, 'admin', coalesce(x.admin, false) or coalesce(x.emp_id = v_next, false), 'last_read', x.last_read)
+   order by (coalesce(x.admin, false) or coalesce(x.emp_id = v_next, false)) desc, public.chat_emp_name(x.emp_id)), '[]'::jsonb) into mem
    from public.chat_members x where x.thread_id = t.id and x.left_at is null and not x.auto;
  return jsonb_build_object('thread', public.chat_row(a, t, m), 'messages', o, 'older', coalesce(v_older, false), 'members', mem,
   'can_add', v_adm, 'can_rename', v_adm, 'can_leave', t.kind <> 'dm', 'can_remove', v_adm, 'can_admin', v_adm);
