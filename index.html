@@ -1701,7 +1701,7 @@ i.ti-loader, i.ti-loader-2 { display:inline-block; animation:uxSpin 1s linear in
 }
 /* v1172：スマホとタッチの端末（幅によらない）：押すところは見た目はそのまま、押せる範囲だけ 44px に（となりの押すところとは間の半分まで）。11px より小さい文字は 11px */
 @media (max-width:767px), (pointer: coarse) {
-  [data-hit] { position:relative; }
+  [data-hit][data-hitrel] { position:relative; }   /* 元が static のものだけ（absolute・fixed・sticky の位置は変えない：メニューの散布図の点など） */
   [data-hit]:not(.ux-busy)::after { content:""; position:absolute; top:calc(-1 * var(--ht, 0px)); bottom:calc(-1 * var(--hb, 0px)); left:calc(-1 * var(--hl, 0px)); right:calc(-1 * var(--hr, 0px)); }
   [data-fs11] { font-size:11px !important; }
   /* 横に送る低い帯：押す範囲が帯で切れないよう、上下の余白を足して同じだけ外の余白を減らす（ボタンの位置・見た目は動かない） */
@@ -113425,7 +113425,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     var p = el.parentElement; if (p && p.closest('button, a[href], [onclick], [role=button]')) return false;   /* 押すところの中の押すところは数えない */
     return true;
   }
-  function clearHit(el){ el.removeAttribute('data-hit'); ['--ht', '--hb', '--hl', '--hr'].forEach(function(k){ el.style.removeProperty(k); }); }
+  function clearHit(el){ el.removeAttribute('data-hit'); el.removeAttribute('data-hitrel'); ['--ht', '--hb', '--hl', '--hr'].forEach(function(k){ el.style.removeProperty(k); }); }
   function absKids(el){ for (var c = el.firstElementChild; c; c = c.nextElementSibling) { var p = W.getComputedStyle(c).position; if (p === 'absolute' || p === 'fixed') return true; } return false; }
   /* 要素がとても多い画面（経理レビューなど：数万）は vb＝見えている所の上下 1 画面だけを見る（外の塊はその中ごと飛ばす・止まらないように）。
      スクロールが止まったら見直す。となりを探すのは近くのマス目だけ */
@@ -113473,7 +113473,9 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       var cs = W.getComputedStyle(el);
       if (cs.display === 'inline' || cs.display === 'contents' || cs.display.indexOf('table') === 0 || /(hidden|clip|auto|scroll)/.test(cs.overflow + cs.overflowX + cs.overflowY)) return;
       if (!el.hasAttribute('data-hit')) { var af = W.getComputedStyle(el, '::after').content; if (af && af !== 'none' && af !== 'normal') return; }
-      if (cs.position === 'static' && absKids(el)) return;
+      /* 元の位置の決め方：data-hitrel は「元が static だったので relative にした」印（付けたあとは computed が relative になるため） */
+      var stat = el.hasAttribute('data-hitrel') || cs.position === 'static';
+      if (stat && absKids(el)) { if (el.hasAttribute('data-hit')) writes.push({ el: el }); return; }
       var e = { t: Math.max(0, (44 - r.height) / 2), b: Math.max(0, (44 - r.height) / 2), l: Math.max(0, (44 - r.width) / 2), r: Math.max(0, (44 - r.width) / 2) };
       var ix = nearIdx(r);
       for (var n = 0; n < ix.length; n++) {
@@ -113486,7 +113488,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
         else if (q.bottom <= r.top && hOv) e.t = Math.min(e.t, Math.max(0, (r.top - q.bottom) / 2));
       }
       if (e.t + e.b + e.l + e.r < 1) { if (el.hasAttribute('data-hit')) writes.push({ el: el }); return; }
-      writes.push({ el: el, e: e });
+      writes.push({ el: el, e: e, rel: stat });
       var sp = el.parentElement;
       if (sp && (e.t > 0 || e.b > 0)) {
         var ss = W.getComputedStyle(sp);
@@ -113508,6 +113510,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       if (!e) { clearHit(el); return; }
       el.style.setProperty('--ht', e.t.toFixed(1) + 'px'); el.style.setProperty('--hb', e.b.toFixed(1) + 'px');
       el.style.setProperty('--hl', e.l.toFixed(1) + 'px'); el.style.setProperty('--hr', e.r.toFixed(1) + 'px');
+      if (w.rel) { if (!el.hasAttribute('data-hitrel')) el.setAttribute('data-hitrel', ''); } else if (el.hasAttribute('data-hitrel')) el.removeAttribute('data-hitrel');
       if (!el.hasAttribute('data-hit')) el.setAttribute('data-hit', '');
     });
     strips.forEach(function(sp){

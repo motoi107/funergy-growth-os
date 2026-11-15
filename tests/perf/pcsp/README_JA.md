@@ -32,3 +32,6 @@
 
 - `shot.mjs` と `proto.css`・`proto.js`：代表の画面の前・後の画像。UI案82 の試作で、案の CSS と箱の大きさを差し込む。
 - `update_v1172.mjs <今の CSV> <1440 の json> <390 の json>`：v1172 のあとに流し直した GM の結果で、点検一覧の「現状の問題」「対応状況」「検証結果」を書き直す（標準出力に新しい CSV）。
+- `navcheck.mjs`（v1172）：ナビの印（端がうすいか）・今の場所が見えるか・押せる高さ（`--ht`・`--hb` を足した高さ）・上の店の切り替え（GM・G3・G1 × 390・768・1440。390・768 はタッチ）。`cd "$PCSP_DIR" && node <repo>/tests/perf/pcsp/navcheck.mjs` → `navcheck.json`。
+- `update_v1172.mjs` の決まり：「文章・短いフォーム」の画面（`index.html` の WIDE・STD に無い画面）の幅 900px は共通の決まり 1 どおりなので問題に数えない。入力も表も無い箱の「スマホ用の小さな箱」も数えない。名前の列を固定しない表（結合したセル・最初の列が枠の 45% より広い）は検証結果に書く。
+- `tests/e2e-pcsp/hit-position-v1172.mjs`：押す範囲を広げても absolute・fixed・sticky の位置が変わらないこと（散布図の点など）を本物の Chromium の CSS で確かめる。模擬サーバーは要らない（index.html の `<style>` と FUNERGY_LAYOUT を白紙のページに入れる）。

@@ -496,3 +496,13 @@ test('従業員マスター：CSS は 1024px 以上で表とパネルを横に�
   assert.match(HTML, /@media \(pointer: coarse\) \{ \.sm-tbl tr\.sm-row > td \{ height:44px; \} \}/);
   assert.doesNotMatch(HTML, /@media \(hover: ?hover\)[^{]*\{[^}]*\.sm-tbl tr\.sm-row > td \{ height/);
 });
+
+/* ---------- #169 の Codex 6899952456 の P2：押す範囲で absolute・fixed・sticky の位置を変えない ---------- */
+test('押す範囲：relative にするのは元が static のものだけ（散布図の点 .mn-pt などの absolute はそのまま）', () => {
+  assert.ok(!/^\s*\[data-hit\]\s*\{\s*position:\s*relative;?\s*\}/m.test(CSS), 'すべての data-hit を relative にする決まりが残っていない');
+  assert.match(CSS, /\[data-hit\]\[data-hitrel\]\s*\{\s*position:relative;\s*\}/);
+  assert.match(LAYOUT, /var stat = el\.hasAttribute\('data-hitrel'\) \|\| cs\.position === 'static';/);
+  assert.match(LAYOUT, /writes\.push\(\{ el: el, e: e, rel: stat \}\)/);
+  assert.match(LAYOUT, /function clearHit\(el\)\{ el\.removeAttribute\('data-hit'\); el\.removeAttribute\('data-hitrel'\);/);
+  /* 本物のブラウザの CSS での確かめは tests/e2e-pcsp/hit-position-v1172.mjs（座標・computed の position・押したときの対象） */
+});
