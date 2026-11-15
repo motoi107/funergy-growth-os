@@ -9,7 +9,8 @@
 - 試験（合成データ・本番にはつながない）：fixes-v1169 3 ファイル 16 と wr-expense-card 2＝18/18・チャット 12 ファイル 113/113・CHAT_WITH_GUARD 18/18・deploy-all と年間計画 28/28・申請（work-requests・wr・wc 25 ファイル）223 件のうち 222（1 件は浅い clone で前の版のコミットが無く飛ばす＝前から）・static release pass/1169。直す前のコード（handler・index.html・SQL なし）で落ちる：サーバー 7/8（残り 1 は SQL そのものの試験）・チャットの画面 4/4・年間計画 4・経理 1/1。e2e の世界（`tests/e2e-wr/world.mjs`）に v1169 の SQL を足した（守りのとき・`WR_V1169=0` で前のまま）・本物の Chrome で守り 38/38・UI案79 45/45。CI に v1169 の 3 つと wr-expense-card を足した。
 - 非公開の 1 ファイル `work-requests_v1169_index.ts` はまだ作っていない（前の 1 ファイル `work-requests_v1168_index.ts` がこの環境に無い・端末の Downloads の許可は断られた）→ Moto さんに添付を頼む。それまで ④ は入れられない（② だけでも壊れない・関数は v1168 のままでキー付きのグループは前の作り）。
 - 独立レビュー（Claude の別エージェント）は無し。Codex のレビューはまだ。
-- 次：PR → Codex → Moto さんが v1168 の 1 ファイルを添付 → Claude が v1169 の 1 ファイル → Moto さんが `deploy/fixes-v1169/手順.md` → マージ → 端末を 1169 に。そのあと新しい案件。
+- PR #166（base main・#165 を含む・コードは `b0cc2f3`・Growth OS checks 成功）。
+- 次：Codex → Moto さんが v1168 の 1 ファイルを添付 → Claude が v1169 の 1 ファイル → Moto さんが `deploy/fixes-v1169/手順.md` → マージ → 端末を 1169 に。そのあと新しい案件。
 
 ## 2026-11-14 引き継ぎ：#160〜#164 はマージ済み・main は v1168（Codex の blocked の P2 が残ったまま）（Claude）
 
