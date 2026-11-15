@@ -608,6 +608,9 @@ test('#151 a review missed once (the order changed while paging) is only marked,
   assert.deepEqual((await s.ok('E8', { action: 'kpi' })).months['2026-11'], { S1: { avg: 3, cnt: 3 } });
   // 長くつながっていなかった（最後に取れたのが 120 日前）あとでも、消す所で止まらない（Claude の P3）
   await s.pg.exec("reset role; update public.gr_bp_loc set synced_at = now() - interval '120 days'; set role service_role");
+  // 本番は関数とデータベースが同じ時計。ここだけ関数の時計をデータベースの時計に合わせる
+  // （試験の時計は 11/13 に固定・データベースは本物の時計なので、1 日たつと「99 日」の端がデータベースの「100 日」を越えて落ちていた）
+  s.setNow(Math.round((await s.pg.query('select extract(epoch from now())::float8 * 1000 v')).rows[0].v));
   const r4 = await s.worker(k);
   assert.deepEqual([r4.body.stores[0].ok, r4.body.stores[0].error], [true, undefined]);
 });
