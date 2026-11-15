@@ -3,7 +3,7 @@
 ## 2026-11-14 v1171：アップグレード率の内訳（ブランチ `claude/upgrade-drill`）
 
 1. 済（Moto さん 11/14 20:14 HST）：UI案81 はい・昨日まで・hyper-worker のソース（非公開）。済（Claude）：読むだけの SQL を直接渡した。
-2. 済（Claude）：SQL `20261130090000`・hyper-worker v1171（非公開・`48a5ba239f12`）・アプリ v1171・試験・入れる一式 `deploy/upgrade-drill-v1171/`（`docs/UPGRADE_RATE_DRILL_JA.md`）。次：PR → Codex（とくに明細の行が数え方と同じか・印の順・公開の鍵で読める範囲・昨日までの変更が効く画面）→ #166 → この PR → Moto さんが手順.md → Totoya を取り込み直す → 確かめの SQL の表を Claude に。
+2. 済（Claude）：SQL `20261130090000`・hyper-worker v1171（非公開・`48a5ba239f12`）・アプリ v1171・試験・入れる一式 `deploy/upgrade-drill-v1171/`（`docs/UPGRADE_RATE_DRILL_JA.md`）。PR #168。次：Codex（とくに明細の行が数え方と同じか・印の順・公開の鍵で読める範囲・昨日までの変更が効く画面）→ #166 → この PR → Moto さんが手順.md → Totoya を取り込み直す → 確かめの SQL の表を Claude に。
 3. Moto さんに聞く：いくらシャワー率も昨日までにそろえるか（今は今日も入る）。
 4. ログイン（UI案80・答え 4 は「PIN＋LINE・テキストの URL」・D）：仕様の変わるところ（HttpOnly のクッキーは使えない・招待は URL＋PIN）を Moto さんに報告済み → GM・CEO のパスキーを残すかの答え → サーバー側（端末・招待・記録の表と関数）を別のブランチで。
 5. 次（Claude）：PC・スマホの最適化の棚卸し表。

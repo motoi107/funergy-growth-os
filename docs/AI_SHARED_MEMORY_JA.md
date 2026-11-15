@@ -9,7 +9,8 @@
 - アプリ v1171：`totoyaKpiCalc` の味噌汁・茶漬けの 2 つだけ昨日まで（ほかは今までどおり）／`FUNERGY_UP`（重要 KPI のタイル・前週比 pt・内訳の画面：PC 2 列・スマホのタブ・日ごと・丼ごと・注文ごと・印が無い日／数が違う日の注意）／`misoSub` の言葉。何も書かない。
 - 試験（合成データ）：upgrade-drill-v1171 8・toast-upgrade-lines-sql 4（PGlite）・わざと壊す（アプリ）20/20（1 回目 17 → 試験を足した）・画面（合成・Chromium 1280／390px・日英）はみ出しなし・pageerror 0・static release pass/1171・CI に足した。本物のアプリの模擬サーバーでは見ていない。
 - ログイン（UI案80）の答えで仕様が変わるところ（Moto さんに報告する）：独自ドメインを使わない → 本人確認の印を HttpOnly のクッキーにできない（Supabase のドメインは別のサイトなので iPhone の Safari が送らない）→ 端末の印は取り出せない鍵（WebCrypto・IndexedDB）にしてサーバーは公開鍵だけ持つ案。メールの送り手を使わない → 招待はメールのコードの代わりに LINE・テキストで送る 1 回だけの URL（48 時間）＋その人の PIN。URL を転送されるとほかの人が使える → 1 回だけ・期限・名前を出す・PIN が要る・GM・CEO に知らせ・取り消せる、で抑える。GM・CEO のパスキー（元の依頼）を残すかは Moto さんに聞く。試すのは GM・CEO が名前で選んだ人だけ（D）。
-- 独立レビュー・Codex のレビューはまだ。
+- 全体（重い 2 つ以外・4 並列）：2,869 件のうち 32 件が落ちる＝前からの失敗だけ（bot-center 2・bot-database 1＋親・cooking-sake 4・cs-grade-rollback と toast-alias（浅い clone で git の履歴が要る）・ingredient-transfers 1・meeting-budget と meeting-sales 18・next-v1090 1・perf-v1098 1・specialist-career 1）。
+- PR #168（base main・#166 を含む・この PR だけの差分は `f0ff8c8`）。独立レビュー・Codex のレビューはまだ。
 
 ## 2026-11-14 v1169（急ぎ）：G1・G2 の画面から Tip Rate の変更履歴と現場の重点 KPI を外す（Claude・ブランチ `claude/g1g2-hide-1169`・main `cb60c55`（v1168）の上・アプリだけ・本番未反映）
 
