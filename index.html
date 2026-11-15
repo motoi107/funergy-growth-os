@@ -4430,15 +4430,21 @@ function totoyaKpiCalc(sid, period){
   // toast_sales のモディファイア集計列（first_time_count等と同じ仕組み）を月内合計
   var da=(typeof getDailyActuals==='function')?_daRO(sid):{};
   var ymStr=(function(){ var p=String(period).split('.'); return p[0]+'-'+String(p[1]).padStart(2,'0'); })();
-  /* v1171（Moto さん 11/14：アップグレード率は「昨日まで」）：味噌汁・茶漬けの 2 つ（misoTotal・misoUpgrade）だけ、ハワイ時間の今日より前の日を足す。
-     今日の途中の数を入れない。いくらシャワー・丼数は今までどおり（今日も入る）。過去の月は変わらない。 */
+  /* v1171（Moto さん 11/14：アップグレード率は「昨日まで」）：ハワイ時間の今日より前の日を足す（今日の途中の数を入れない）。
+     v1171 の直し（Moto さん 11/14 21:52 HST「いくらシャワーも昨日までに揃えてください」）：味噌汁・茶漬け（misoTotal・misoUpgrade）に加えて、
+     いくらシャワー・丼数（ikuraShower・ikuraBowls）も昨日まで。過去の月は変わらない。 */
   var _upToday=''; try{ _upToday=(typeof bizToday==='function')?bizToday():''; }catch(e){}
-  var dSum=function(field){ var toY=(field==='misoTotal'||field==='misoUpgrade'); var has=false,s=0; Object.keys(da).forEach(function(d){ if(d.indexOf(ymStr)===0 && !(toY && _upToday && d>=_upToday)){ var v=(da[d]||{})[field]; if(v!=null&&!isNaN(v)){ s+=Number(v); has=true; } } }); return has?s:null; };
+  var _curYm=_upToday ? _upToday.slice(0,7) : '';
+  var dRaw=function(field){ var has=false,any=false,s=0; Object.keys(da).forEach(function(d){ if(d.indexOf(ymStr)===0){ var v=(da[d]||{})[field]; if(v!=null&&!isNaN(v)){ any=true; if(!(_upToday && d>=_upToday)){ s+=Number(v); has=true; } } } }); return { v:has?s:null, any:any }; };
+  var dSum=function(field){ return dRaw(field).v; };
+  /* v1171 の直し（Codex #168 の P3）：今月は、Toast の数（日次の欄）を使っている店なら、昨日までの数が無くても menu_mix に切り替えない
+     （月の初日などに、タイルだけ menu_mix の数になって内訳と合わなくなるのを防ぐ）。過去の月は今までどおり */
+  var _toastField=function(field){ if(ymStr!==_curYm) return false; return Object.keys(da).some(function(d){ var v=(da[d]||{})[field]; return v!=null && !isNaN(v); }); };
   // 優先順位: 手入力 > Toast(モディファイア集計) > menu_mix(GUID/キーワード)
   var resolve=function(guids,kw,dailyField,manKey,tag){
-    var d=dSum(dailyField);
-    var a=(d!=null)?d:autoSum(guids,kw,tag);
-    var aSrc=(d!=null)?'Toast':(a!=null?'menu_mix':null);
+    var dr=dRaw(dailyField), d=dr.v, useT=(d!=null) || _toastField(dailyField);
+    var a=useT?d:autoSum(guids,kw,tag);
+    var aSrc=useT?'Toast':(a!=null?'menu_mix':null);
     var m=man[manKey];
     if(m!=null&&m!==''&&!isNaN(m)) return {v:Number(m), src:'手入力', na:a, naSrc:aSrc};
     return {v:a, src:aSrc, na:a, naSrc:aSrc};
@@ -4454,10 +4460,10 @@ function totoyaKpiCalc(sid, period){
     na:{misoAll:rA.na,misoUp:rU.na,ikura:rI.na,bowls:rB.na},
     man:{misoAll:man.tMisoAll,misoUp:man.tMisoUp,ikura:man.tIkura,bowls:man.tBowls},
     hits:_hits,   /* v933: menu_mix で当たった商品（原因追跡用） */
-    sel:{ a:(tcfg.misoAllGuids||[]).length+(_totoyaKw(tcfg.misoAllKw).length?1:0)+(dSum('misoTotal')!=null?1:0),
-          u:(tcfg.misoUpGuids||[]).length+(_totoyaKw(tcfg.misoUpKw).length?1:0)+(dSum('misoUpgrade')!=null?1:0),
-          i:(tcfg.ikuraGuids||[]).length+(_totoyaKw(tcfg.ikuraKw).length?1:0)+(dSum('ikuraShower')!=null?1:0),
-          b:(tcfg.ikuraBowlGuids||[]).length+(_totoyaKw(tcfg.ikuraBowlKw).length?1:0)+(dSum('ikuraBowls')!=null?1:0) },
+    sel:{ a:(tcfg.misoAllGuids||[]).length+(_totoyaKw(tcfg.misoAllKw).length?1:0)+(dRaw('misoTotal').any?1:0),
+          u:(tcfg.misoUpGuids||[]).length+(_totoyaKw(tcfg.misoUpKw).length?1:0)+(dRaw('misoUpgrade').any?1:0),
+          i:(tcfg.ikuraGuids||[]).length+(_totoyaKw(tcfg.ikuraKw).length?1:0)+(dRaw('ikuraShower').any?1:0),
+          b:(tcfg.ikuraBowlGuids||[]).length+(_totoyaKw(tcfg.ikuraBowlKw).length?1:0)+(dRaw('ikuraBowls').any?1:0) },
     misoRate:(misoAll!=null&&misoAll>0&&misoUp!=null)?Math.round(misoUp/misoAll*1000)/10:null,
     ikuraRate:(bowls!=null&&bowls>0&&ikura!=null)?Math.round(ikura/bowls*1000)/10:null
   };
@@ -35787,7 +35793,7 @@ function budKpiCard(stores, days, agg, isCur, wow){
   /* v1171（UI案81）：アップグレード率は FUNERGY_UP のタイル（前週比・分子 ÷ 分母・押すと内訳）。数は今までと同じ keyKpiStats（昨日まで） */
   if (k.totoyaScope && window.FUNERGY_UP) { try { html += FUNERGY_UP.kpiTile(stores, days, k); } catch(e) { } }
   else if (k.totoyaScope && k.misoRate!=null) html += kpiTile('ti-soup',t('アップグレード率 ★','Upgrade % ★'), k.misoRate.toFixed(1)+'%', k.misoTgt!=null?k.misoTgt+'%':'', rateCol(k.misoRate,k.misoTgt), '', null, {title:t('アップグレード率','Upgrade %'), body:_kpiDetailWrap(t("アップグレード（Crab・Today's・Udon・CHAZUKE）÷ 味噌汁・茶漬けの数（Aosa＋アップグレード）。昨日まで。","Upgrades (Crab / Today's / Udon / CHAZUKE) ÷ miso & chazuke (Aosa + upgrades). Through yesterday."), misoSub(k))});
-  if (k.totoyaScope && k.ikuraRate!=null) html += kpiTile('ti-fish',t('いくらシャワー率 ★','Ikura shower % ★'), k.ikuraRate.toFixed(1)+'%', k.ikuraTgt!=null?k.ikuraTgt+'%':'', rateCol(k.ikuraRate,k.ikuraTgt), '', null, {title:t('いくらシャワー率','Ikura shower %'), body:_kpiDetailWrap(t('いくらシャワー数 ÷ 対象の丼数。','Ikura ÷ eligible bowls.'), ikuraSub(k))});
+  if (k.totoyaScope && k.ikuraRate!=null) html += kpiTile('ti-fish',t('いくらシャワー率 ★','Ikura shower % ★'), k.ikuraRate.toFixed(1)+'%', k.ikuraTgt!=null?k.ikuraTgt+'%':'', rateCol(k.ikuraRate,k.ikuraTgt), '', null, {title:t('いくらシャワー率','Ikura shower %'), body:_kpiDetailWrap(t('いくらシャワー数 ÷ 対象の丼数。昨日まで。','Ikura ÷ eligible bowls. Through yesterday.'), ikuraSub(k))});
   if (k.drinkScope && k.drinkRate!=null) html += kpiTile('ti-glass-full',t('ドリンク比率','Drink ratio'), k.drinkRate.toFixed(1)+'%', k.drinkTgt!=null?k.drinkTgt+'%':'', rateCol(k.drinkRate,k.drinkTgt), '', null, {title:t('ドリンク比率','Drink ratio'), body:_kpiDetailWrap(t('店舗ごとのドリンク売上 ÷ 総売上と、お酒／ソフトの内訳・曜日別・前々月からの推移。お酒の対象カテゴリ設定に依存します。','Drink ÷ total per store, alcohol/soft split, by weekday, and the 3-month trend.'), (drinkSubDetail(k)||'')+drinkRatioTriSub(stores,days)+drinkTrendSub(stores,days))});
   html += `</div>
     <div style="font-size:10px;color:var(--muted);margin-top:6px">${t('前週比＝直近7日（昨日まで）とその前7日の比較（同曜日構成）。率のptは低下＝改善。','WoW = last 7 days (through yesterday) vs the prior 7 (same weekday mix). Lower pt on rates = improvement.')}</div></div>`;
@@ -38479,7 +38485,9 @@ function misoSub(k){
 function _totoyaDayRows(sid, ym, numField, denField){
   if(!sid || !ym) return '';
   var da={}; try{ da=(typeof getDailyActuals==='function')?(getDailyActuals(sid)||{}):{}; }catch(e){ return ''; }
-  var days=Object.keys(da).filter(function(d){ return d.indexOf(ym)===0; }).sort();
+  /* v1171: 率は昨日まで（Moto さん 11/14 21:52 HST）。日別の並びも同じ日までにして、合計とそろえる。 */
+  var _today=''; try{ _today=(typeof bizToday==='function')?bizToday():''; }catch(e){}
+  var days=Object.keys(da).filter(function(d){ return d.indexOf(ym)===0 && !(_today && d>=_today); }).sort();
   if(!days.length) return '';
   var cells=[], any=false, oddN=0;
   days.forEach(function(d){
@@ -105946,6 +105954,19 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     if(!res.ok){ var code = (j && (j.code || '')) || ''; return { err: (res.status === 404 || code === '42P01' || code === 'PGRST205') ? 'notable' : 'http' + res.status }; }
     return Array.isArray(j) ? { rows: j } : { err: 'shape' };
   };
+  /* v1171 の直し（Codex #168 の P2）：明細は 1,000 行ずつ、空のページが返るまで読む（サーバーの 1 回の上限に左右されない）。
+     50,000 行で止める（cut）。途中で読めなければ err（途中までの行は使わない） */
+  UP.PAGE = 1000; UP.CAP = 50000;
+  UP._getAll = async function(path){
+    var out = [], off = 0, n = 0;
+    for(;;){
+      var r = await UP._get(path + '&limit=' + UP.PAGE + '&offset=' + off);
+      if(r.err) return { err: r.err };
+      if(!r.rows.length) return { rows: out };
+      out = out.concat(r.rows); off += r.rows.length;
+      if(out.length >= UP.CAP || ++n >= 500) return { rows: out, cut: true };
+    }
+  };
   UP.loadDays = async function(id){
     var c = CTX[id]; if(!c) return;
     var dd = c.days.filter(function(s){ return s < today(); }); if(!dd.length){ c.srv = { by: {}, err: [] }; paint(id); return; }
@@ -105954,7 +105975,9 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       var sid = c.stores[i], st = storeObj(sid);
       if(!st.toastGuid){ out.err.push(st.name + T('（GUID 未設定）', ' (no GUID)')); continue; }
       try{
-        var r = await UP._get('toast_upgrade_days?restaurant_guid=eq.' + encodeURIComponent(st.toastGuid) + '&business_date=gte.' + dd[0] + '&business_date=lte.' + dd[dd.length - 1] + '&order=business_date.asc');
+        /* 日の印もページごとに読む（サーバーの 1 回の上限より長い期間でも欠けない） */
+        var r = await UP._getAll('toast_upgrade_days?restaurant_guid=eq.' + encodeURIComponent(st.toastGuid) + '&business_date=gte.' + dd[0] + '&business_date=lte.' + dd[dd.length - 1] + '&order=business_date.asc');
+        if(r.cut){ out.err.push(st.name); continue; }
         if(r.err){ if(r.err === 'notable') out.notable = true; else out.err.push(st.name); continue; }
         out.by[sid] = {}; r.rows.forEach(function(x){ if(x && x.business_date) out.by[sid][String(x.business_date).slice(0, 10)] = x; });
       }catch(e){ out.err.push(st.name); }
@@ -105987,16 +106010,21 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     c.pick = { sid: sid, d: s };
     if(!auto){ try{ var box = document.getElementById('up-drill-' + id); if(box) box.setAttribute('data-tab', 'day'); }catch(e){} }
     paintDay(id);
-    var key = sid + '|' + s; if(c.lines[key] && !c.lines[key].err) return;
+    /* 読み終えて数が印と合ったものだけ覚える（合わない・途中で切れた・読めなかったものは、もう一度押すと読み直す） */
+    var key = sid + '|' + s, L0 = c.lines[key]; if(L0 && (L0.busy || L0.ok)) return;
     var mk = mark(c, sid, s); if(mk.st !== 'ok') return;
     var st = storeObj(sid); if(!st.toastGuid) return;
     c.lines[key] = { busy: true };
     paintDay(id);
-    var r; try{ r = await UP._get('toast_upgrade_lines?restaurant_guid=eq.' + encodeURIComponent(st.toastGuid) + '&business_date=eq.' + s + '&order=opened_at.asc,line_key.asc&limit=5000'); }catch(e){ r = { err: 'net' }; }
+    var r; try{ r = await UP._getAll('toast_upgrade_lines?restaurant_guid=eq.' + encodeURIComponent(st.toastGuid) + '&business_date=eq.' + s + '&order=opened_at.asc,line_key.asc'); }catch(e){ r = { err: 'net' }; }
     if(!CTX[id]) return;
-    c.lines[key] = r.err ? { err: r.err } : { rows: r.rows };
+    if(r.err){ c.lines[key] = { err: r.err }; paintDay(id); return; }
+    var sm = lineSums(r.rows), m2 = mark(c, sid, s);
+    var same = m2.st === 'ok' && Math.round(sm.all) === num(m2.m.total) && Math.round(sm.up) === num(m2.m.upgrade);
+    c.lines[key] = { rows: r.rows, cut: !!r.cut, ok: same && !r.cut };
     paintDay(id);
   };
+  function lineSums(rows){ var a = 0, u = 0; (rows || []).forEach(function(r){ if(r.counted === false) return; var q = num(r.qty) || 0; a += q; if(r.kind !== 'aosa') u += q; }); return { all: a, up: u }; }
   /* 画面から：店は番号で渡す（店の ID を onclick の文字に入れない） */
   UP.pickAt = function(id, si, s){ var c = CTX[id]; if(!c || !/^\d{4}-\d{2}-\d{2}$/.test(String(s))) return; var sid = c.stores[si]; if(sid) return UP.pickDay(id, sid, s); };
   UP.tab = function(id, tb){ var box = document.getElementById('up-drill-' + id); if(box) box.setAttribute('data-tab', tb === 'day' ? 'day' : 'sum'); };
@@ -106033,6 +106061,9 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     h += '<div style="display:flex;flex-wrap:wrap;gap:8px">' + box(T('アップグレード率', 'Upgrade rate'), rate != null ? rate.toFixed(1) + '%' : '—', tgtLine, true) + '</div>';
     var man = (k.totoyaParts || []).filter(function(p){ return c.stores.indexOf(p.sid) >= 0 && (p.srcMisoUp === '手入力' || p.srcMisoAll === '手入力'); });
     if(man.length) h += '<div style="margin-top:6px;padding:7px 10px;border-radius:8px;background:#fff8ef;font-size:11px;line-height:1.6">' + T('KPI 設定で手入力の数を使っている店があります（', 'Some stores use numbers typed in KPI settings (') + esc(man.map(function(p){ return storeObj(p.sid).name; }).join('、')) + T('）。タイルの率はその数、ここの内訳は Toast の数です。', '). The tile uses those; this breakdown uses Toast.') + '</div>';
+    /* v1171 の直し（Codex #168 の P3）：タイルが menu_mix（月の出数）の数を使っている店も知らせる（期間と出どころが内訳と違う） */
+    var mm = (k.totoyaParts || []).filter(function(p){ return c.stores.indexOf(p.sid) >= 0 && (p.srcMisoUp === 'menu_mix' || p.srcMisoAll === 'menu_mix'); });
+    if(mm.length) h += '<div style="margin-top:6px;padding:7px 10px;border-radius:8px;background:#fff8ef;font-size:11px;line-height:1.6">' + T('Toast の数が無いので、月の出数（menu_mix）で数えている店があります（', 'Some stores have no Toast numbers and use the monthly item mix (menu_mix) (') + esc(mm.map(function(p){ return storeObj(p.sid).name; }).join('、')) + T('）。タイルの率はその月の出数（今日の分も入ることがあります）、ここの内訳は Toast の昨日までの数です。', '). The tile uses the monthly mix (it may include today); this breakdown uses Toast through yesterday.') + '</div>';
     h += '<div style="margin-top:8px;padding:9px 11px;border-radius:10px;background:var(--surface2);font-size:11.5px;line-height:1.75">'
       + '<b>' + T('分子（アップグレード）', 'Numerator (upgrade)') + '</b> ＝ ' + T("丼に Crab・Today's・Udon の味噌汁、または CHAZUKE（茶漬け）を付けた数", "Crab / Today's / Udon miso or CHAZUKE added to a bowl") + '<br>'
       + '<b>' + T('分母', 'Denominator') + '</b> ＝ ' + T('Aosa（通常の味噌汁）＋ 分子', 'Aosa (regular miso) + numerator') + '<br>'
@@ -106115,8 +106146,10 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     if(L.err) return h + '<div style="color:var(--red);font-size:11px">' + T('注文の明細を読めませんでした。もう一度押してください。', 'Could not load order lines. Tap again.') + '</div>';
     var rows = L.rows || [];
     var cnt = rows.filter(function(r){ return r.counted !== false; });
-    var sumAll = 0, sumUp = 0; cnt.forEach(function(r){ var q = num(r.qty) || 0; sumAll += q; if(r.kind !== 'aosa') sumUp += q; });
-    if(Math.round(sumAll) !== num(mk.m.total) || Math.round(sumUp) !== num(mk.m.upgrade)) h += '<div style="padding:7px 10px;border-radius:8px;background:#fff8ef;font-size:11px;margin-bottom:6px">' + T('明細の行の合計が印の数と違います（読み込みの途中の可能性）。取り込み直してください。', 'Line totals differ from the day mark (possibly mid-import). Please re-import.') + '</div>';
+    var sm = lineSums(rows), sumAll = sm.all, sumUp = sm.up;
+    /* 数が合わない・多すぎて途中までしか読めなかったときは、丼ごとの数を出さない（足りない数を本当の数に見せない） */
+    if(L.cut) return h + '<div style="padding:8px 10px;border-radius:8px;background:#fff8ef;font-size:11.5px;line-height:1.6">' + T('この日の明細は多すぎて、最初の ', 'This day has too many lines; only the first ') + fmt(rows.length) + T(' 行までしか読めませんでした。丼ごとの数は出していません。', ' could be loaded. Bowl totals are not shown.') + '</div>';
+    if(Math.round(sumAll) !== num(mk.m.total) || Math.round(sumUp) !== num(mk.m.upgrade)) return h + '<div style="padding:8px 10px;border-radius:8px;background:#fff8ef;font-size:11.5px;line-height:1.6">' + T('明細の行の合計（分子 ', 'Line totals (num ') + fmt(sumUp) + ' / ' + T('分母 ', 'den ') + fmt(sumAll) + T('）が印の数と違います。取り込みの途中かもしれません。少し待ってこの日をもう一度押してください（読み直します）。続くときは、この日を取り込み直してください。丼ごとの数は出していません。', ') differ from the day mark. It may be mid-import. Wait a moment and tap this day again (it reloads). If it continues, re-import this day. Bowl totals are not shown.') + '</div>';
     /* 丼ごと */
     var bowls = {}, order = [];
     cnt.forEach(function(r){
