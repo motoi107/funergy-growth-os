@@ -14,17 +14,36 @@ const parse = (txt) => { const rows = []; let row = [], cur = '', q = false; for
 const csv = parse(fs.readFileSync(csvPath, 'utf8').replace(/^﻿/, ''));
 const head = csv[0]; const H = k => head.indexOf(k);
 const after = JSON.parse(execFileSync('node', [here + 'analyze.mjs', pcPath, spPath], { maxBuffer: 1 << 28 }).toString());
-const byPath = new Map(after.filter(r => r.who.startsWith('GM')).map(r => [r.path, r]));
+/* タブの名前の数（「エラー 339」など）は日によって変わるので、比べるときは外す */
+const normPath = p => String(p || '').replace(/ \d+(?= ›|$)/g, '');
+const byPath = new Map(after.filter(r => r.who.startsWith('GM')).map(r => [normPath(r.path), r]));
+/* 画面の幅の決まり（共通の決まり 1）：アプリの WIDE・STD にない画面は「読む」＝今の 900px のまま（文章・短いフォーム） */
+const appSrc = fs.readFileSync(here + '../../../index.html', 'utf8');
+const setOf = name => { const m = appSrc.match(new RegExp('var ' + name + ' = \\{([^}]*)\\}')); return new Set(m ? [...m[1].matchAll(/([a-z_]+):1/g)].map(x => x[1]) : []); };
+const WIDE = setOf('WIDE'), STD = setOf('STD');
+if (!WIDE.size || !STD.size) throw new Error('WIDE・STD が index.html に見つからない');
+const isRead = page => page && !WIDE.has(page) && !STD.has(page) && page !== 'shift_admin' && page !== 'chat';
+const ISSUE = /押すところ|文字|スクロール|はみ出|箱|縦に長い|隠れる|切れる|重なる/;
 const isTap = s => /押すところ/.test(s);
 let changed = 0; const cnt = {};
 for (const r of csv.slice(1)) {
   if (r.length < head.length) continue;
-  const a = byPath.get(r[H('画面への経路')]);
+  const a = byPath.get(normPath(r[H('画面への経路')]));
   if (!a || !r[H('見た役割')].startsWith('GM') || r[H('対応状況')] === '未検証') { cnt[r[H('対応状況')]] = (cnt[r[H('対応状況')]] || 0) + 1; continue; }
-  const pcLeft = a.pc, spLeft = a.sp.filter(s => !isTap(s)), taps = a.sp.filter(isTap);
+  const read = isRead(a.page), mpc = a.metrics && a.metrics.pc;
+  const notes = [];
+  const pcLeft = a.pc.filter(x => {
+    if (read && /^幅 900px/.test(x)) { notes.push('文章・短いフォームの画面なので、読みやすい幅 900px のまま（共通の決まり 1）'); return false; }
+    if (/スマホ用の小さな箱/.test(x) && mpc && mpc.modal && !mpc.inputs && !mpc.tables) { notes.push('文章だけの確かめの箱なので、読みやすい幅のまま（入力・表なし）'); return false; }
+    return true;
+  });
+  const spLeft = a.sp.filter(s => !isTap(s)), taps = a.sp.filter(isTap);
+  if (spLeft.some(x => /固定列なし/.test(x))) notes.push('項目の列を固定しない表：結合したセルがある表・最初の列が枠の 45% より広い表（固定すると見える所が狭すぎる）→ 画面ごとの作り直しで');
   const before = r[H('対応状況')];
+  const was = r[H('現状の問題')].replace(/^v1171：/, '').split('　→ ')[0];
+  const wasOnlyKept = !ISSUE.test(was.replace(/幅 900px の制限（[^）]*）/g, ''));   /* v1171 の問題が、決まりで残す 900px の幅だけだった */
   let st;
-  if (!pcLeft.length && !spLeft.length) st = before === '点検済み・改修不要' ? before : '改修済み';
+  if (!pcLeft.length && !spLeft.length) st = before === '点検済み・改修不要' || (read && wasOnlyKept && !taps.length) ? '点検済み・改修不要' : '改修済み';
   else st = '未対応';
   const m = a.metrics, sp = m.sp;
   const left = [pcLeft.length ? 'PC：' + pcLeft.join('・') : '', spLeft.length ? 'スマホ：' + spLeft.join('・') : ''].filter(Boolean).join('／');
@@ -34,6 +53,7 @@ for (const r of csv.slice(1)) {
   r[H('検証結果')] = `v1172（合成データ・GM）1440：主の幅 ${m.pc.mainW}px・横はみ出し ${m.pc.docOv > 2 ? '+' + m.pc.docOv : 'なし'}・枠の中で横に送る表 ${m.pc.tablesScroll}` +
     (sp ? `／390：横はみ出し ${sp.docOv > 2 ? '+' + sp.docOv : 'なし'}・44px に届かない押すところ ${sp.tapSmall}/${sp.tapTotal}（となりと近い・文中のリンク・表の中）・11px 未満の文字 ${sp.fontSmall}${sp.fontSmall && !huge ? '（グラフの中の文字）' : ''}・表の固定 ${sp.stick1 || 0}${sp.mfull ? '・全画面の箱' : ''}${huge ? '（とても大きい画面：アプリは見えている所の上下 1 画面だけを直し、スクロールが止まったら見直す。この数はページ全体）' : ''}` : '／390：測れず');
   if (taps.length && st === '改修済み') r[H('検証結果')] += '　残り：' + taps.join('・');
+  if (notes.length) r[H('検証結果')] += '　' + [...new Set(notes)].join('。');
   changed++; cnt[st] = (cnt[st] || 0) + 1;
 }
 const esc = s => '"' + String(s ?? '').replace(/"/g, '""') + '"';
