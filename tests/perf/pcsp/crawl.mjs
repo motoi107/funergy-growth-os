@@ -12,7 +12,7 @@ const ONLY = (process.env.PAGES || '').split(',').filter(Boolean);
 const OUT = process.argv[2];
 const SHOTS = process.env.SHOTS || '';
 const mobile = W < 768 || !!process.env.TOUCH;   /* TOUCH=1：タッチの端末（iPad など）として 768px 以上でも測る */
-const ARGS = ['--host-resolver-rules=MAP tgbhgxzehzeouopklhje.supabase.co 127.0.0.1, MAP cdn.jsdelivr.net 127.0.0.1, MAP api.open-meteo.com 127.0.0.1, MAP archive-api.open-meteo.com 127.0.0.1', '--ignore-certificate-errors'];
+const ARGS = ['--host-resolver-rules=MAP tgbhgxzehzeouopklhje.supabase.co 127.0.0.1, MAP cdn.jsdelivr.net 127.0.0.1, MAP api.open-meteo.com 127.0.0.1, MAP archive-api.open-meteo.com 127.0.0.1, MAP * ~NOTFOUND, EXCLUDE localhost, EXCLUDE 127.0.0.1', '--ignore-certificate-errors'];
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 const dir = '/tmp/pcsp-' + WHO + '-' + W + '-' + STORE + (process.env.TOUCH ? '-t' : ''); fs.rmSync(dir, { recursive: true, force: true });

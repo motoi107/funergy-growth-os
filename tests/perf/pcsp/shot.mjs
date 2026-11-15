@@ -12,7 +12,7 @@ const plan = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
 const OUTD = process.env.OUTD || (process.env.PCSP_DIR || '/tmp/pcsp') + '/rep';
 fs.mkdirSync(OUTD, { recursive: true });
 const mobile = W < 768;
-const ARGS = ['--host-resolver-rules=MAP tgbhgxzehzeouopklhje.supabase.co 127.0.0.1, MAP cdn.jsdelivr.net 127.0.0.1, MAP api.open-meteo.com 127.0.0.1, MAP archive-api.open-meteo.com 127.0.0.1', '--ignore-certificate-errors'];
+const ARGS = ['--host-resolver-rules=MAP tgbhgxzehzeouopklhje.supabase.co 127.0.0.1, MAP cdn.jsdelivr.net 127.0.0.1, MAP api.open-meteo.com 127.0.0.1, MAP archive-api.open-meteo.com 127.0.0.1, MAP * ~NOTFOUND, EXCLUDE localhost, EXCLUDE 127.0.0.1', '--ignore-certificate-errors'];
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const dir = '/tmp/pcsp-shot-' + WHO + W + TAG; fs.rmSync(dir, { recursive: true, force: true });
 const ctx = await chromium.launchPersistentContext(dir, { headless: true, args: ARGS, ignoreHTTPSErrors: true, viewport: { width: W, height: mobile ? 844 : 900 }, isMobile: mobile, hasTouch: mobile, deviceScaleFactor: mobile ? 2 : 1 });

@@ -3,7 +3,6 @@ const rows = JSON.parse(fs.readFileSync('rows.json','utf8'));
 const nav = JSON.parse(fs.readFileSync('nav.json','utf8'));
 const mp = JSON.parse(fs.readFileSync('modal_pages.json','utf8'));
 const names = JSON.parse(fs.readFileSync('names.json','utf8'));
-const rest = JSON.parse(fs.readFileSync('modals_rest.json','utf8'));
 // ---- concrete proposals for the priority screens (予実・人材) ----
 const P = [
  // [page, state-regex on path, pc[], sp[]]

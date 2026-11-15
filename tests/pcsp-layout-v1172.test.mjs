@@ -166,6 +166,114 @@ test('タッチの端末（iPad など・768px 以上）も押せる範囲を広
   phoneRun([], 'touch', [sp, sv]);
   assert.ok(!sp.parentElement.hasAttribute('data-fs11') && !sv.parentElement.hasAttribute('data-fs11'));
 });
+/* ---------- 速さ（v1172 の直し：経理レビューのように押すところが数万ある画面で止まらない） ---------- */
+/* 前の形（となりを全部見る）と同じ広げ方：同じ順で全部を見る。マス目で近くだけを見ても結果は同じであること */
+function bruteExt(rects) {
+  return rects.map((r, i) => {
+    if (r.width >= 44 && r.height >= 44) return null;
+    const e = { t: Math.max(0, (44 - r.height) / 2), b: Math.max(0, (44 - r.height) / 2), l: Math.max(0, (44 - r.width) / 2), r: Math.max(0, (44 - r.width) / 2) };
+    for (let j = 0; j < rects.length; j++) {
+      const q = rects[j]; if (j === i) continue;
+      if (q.left < r.right && q.right > r.left && q.top < r.bottom && q.bottom > r.top) continue;
+      const vOv = q.top < r.bottom + e.b && q.bottom > r.top - e.t, hOv = q.left < r.right + e.r && q.right > r.left - e.l;
+      if (q.left >= r.right && vOv) e.r = Math.min(e.r, Math.max(0, (q.left - r.right) / 2));
+      else if (q.right <= r.left && vOv) e.l = Math.min(e.l, Math.max(0, (r.left - q.right) / 2));
+      if (q.top >= r.bottom && hOv) e.b = Math.min(e.b, Math.max(0, (q.top - r.bottom) / 2));
+      else if (q.bottom <= r.top && hOv) e.t = Math.min(e.t, Math.max(0, (r.top - q.bottom) / 2));
+    }
+    return (e.t + e.b + e.l + e.r < 1) ? null : [e.t, e.b, e.l, e.r].map(v => +v.toFixed(1));
+  });
+}
+test('速さ：となりは近くのマス目だけを見る。ばらばらに置いた押すところ（大きいもの・重なるもの・負の位置も）で、全部を見たときと同じ広げ方', () => {
+  let seed = 7; const rnd = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648;
+  for (let round = 0; round < 6; round++) {
+    const rects = [];
+    for (let i = 0; i < 260; i++) {
+      const big = rnd() < 0.08, w = big ? 200 + rnd() * 5000 : 8 + rnd() * 50, h = big ? 40 + rnd() * 3000 : 8 + rnd() * 50;
+      rects.push(R(Math.round(rnd() * 900 - 300), Math.round(rnd() * 2600 - 600), Math.round(w), Math.round(h)));
+    }
+    const els = rects.map(r => fakeEl(r));
+    phoneRun(els);
+    const got = els.map(el => el.hasAttribute('data-hit') ? ['--ht', '--hb', '--hl', '--hr'].map(k => parseFloat(el.style.getPropertyValue(k))) : null);
+    assert.deepEqual(got, bruteExt(rects), 'round ' + round);
+  }
+});
+test('速さ：押すところと文字は、先に全部読んでからまとめて書く（1 つ書くたびにレイアウトし直さない）', () => {
+  /* 書いたあとの最初の読みでレイアウトし直す（数えて、きれいに戻す）。前の形は押すところ 1 つごとに 1 回（40 回以上） */
+  let dirty = false, readsAfterWrite = 0;
+  const watchEl = el => {
+    const sa = el.setAttribute.bind(el), sp = el.style.setProperty.bind(el.style), gb = el.getBoundingClientRect, gc = el.getClientRects;
+    el.setAttribute = (k, v) => { dirty = true; sa(k, v); };
+    el.style.setProperty = (k, v) => { dirty = true; sp(k, v); };
+    el.getBoundingClientRect = () => { if (dirty) { readsAfterWrite++; dirty = false; } return gb(); };
+    el.getClientRects = () => { if (dirty) { readsAfterWrite++; dirty = false; } return gc(); };
+    return el;
+  };
+  const els = []; for (let i = 0; i < 40; i++) els.push(watchEl(fakeEl(R(10 + (i % 8) * 40, 100 + Math.floor(i / 8) * 40, 30, 30))));
+  const texts = []; for (let i = 0; i < 20; i++) { const t = textOf(8 + (i % 5)); watchEl(t.parentElement); texts.push(t); }
+  const root = { querySelectorAll: sel => (/table/.test(sel) ? [] : /input/.test(sel) ? [] : els) };
+  const c = layoutCtx({
+    matchMedia: q => ({ matches: /767/.test(q) || /coarse/.test(q) }),
+    getComputedStyle: (el, pseudo) => { if (dirty) { readsAfterWrite++; dirty = false; } return pseudo ? { content: 'none' } : (el._cs || { display: 'block', overflow: 'visible', overflowX: 'visible', overflowY: 'visible', position: 'static', fontSize: '13px' }); },
+    doc: { getElementById: id => (id === 'main-content' ? root : null), createTreeWalker: () => { let i = 0; return { nextNode: () => texts[i++] || null }; } },
+  });
+  c.FUNERGY_LAYOUT.run();
+  assert.ok(els.every(e => e.hasAttribute('data-hit')), '押すところの印は付く ' + els.filter(e => !e.hasAttribute('data-hit')).length);
+  assert.ok(texts.some(t => t.parentElement.hasAttribute('data-fs11')), '文字の印は付く');
+  assert.ok(readsAfterWrite <= 1, '文字の印を書いたあと、押すところを読む前の 1 回だけ（' + readsAfterWrite + '）');
+});
+/* 要素がとても多い画面：見えている所の上下 1 画面（外の塊はその中ごと飛ばす） */
+function treeRun(cards, opt = {}) {
+  const NF = { SHOW_ELEMENT: 1, SHOW_TEXT: 4, FILTER_ACCEPT: 1, FILTER_REJECT: 2, FILTER_SKIP: 3 };
+  const root = { tagName: 'DIV', kids: cards, getElementsByTagName: () => ({ length: opt.count || 25000 }), querySelectorAll: () => { throw new Error('多い画面では全部を集めない'); }, firstChild: null };
+  let visited = 0;
+  const walker = (r, what, filter) => {
+    const out = [];
+    const dfs = n => { for (const k of n.kids || []) { visited++; const v = filter && filter.acceptNode ? filter.acceptNode(k) : 1; if (v === NF.FILTER_REJECT) continue; if (v === NF.FILTER_ACCEPT) out.push(k); dfs(k); } };
+    dfs(r); let i = 0; return { nextNode: () => out[i++] || null };
+  };
+  const listeners = [];
+  const c = layoutCtx({
+    matchMedia: q => ({ matches: /767/.test(q) || /coarse/.test(q) }),
+    getComputedStyle: (el, pseudo) => pseudo ? { content: 'none' } : (el._cs || { display: 'block', overflow: 'visible', overflowX: 'visible', overflowY: 'visible', position: 'static', fontSize: '13px' }),
+    doc: { getElementById: id => (id === 'main-content' ? root : null), createTreeWalker: walker, addEventListener: (ev, fn, o) => listeners.push([ev, o]) },
+    globals: { NodeFilter: NF, MutationObserver: function(){ this.observe = () => {}; }, addEventListener() {} },
+  });
+  c.document.getElementById = id => (id === 'main-content' ? root : id === 'modal-body' || id === 'modal-overlay' ? { classList: { contains: () => false } } : null);
+  c.FUNERGY_LAYOUT.run();
+  return { c, visited: () => visited, listeners };
+}
+function card(top, h, kids) { const el = fakeEl(R(0, top, 390, h), { tag: 'DIV' }); el.matches = () => false; el.kids = kids; return el; }
+function btnIn(top) { const b = fakeEl(R(20, top, 30, 30)); b.kids = []; b.matches = sel => /button/.test(sel); return b; }
+function smallText(top) { const sp = fakeEl(R(20, top, 60, 12), { tag: 'SPAN', cs: { fontSize: '9px' } }); sp.matches = () => false; sp.closest = () => null; sp.kids = []; sp.firstChild = { nodeType: 3, nodeValue: 'abc', nextSibling: null }; return sp; }
+test('速さ：要素が 2 万より多い画面は、見えている所の上下 1 画面だけに印を付け、外の塊は中を見ない。スクロールが止まったら見直す', () => {
+  const near = [], far = [], farTexts = [], nearTexts = [];
+  const cards = [];
+  for (let i = 0; i < 40; i++) {
+    const top = i * 300 - 1500, b = btnIn(top + 10), t = smallText(top + 60);
+    const inside = r => r.bottom >= -844 && r.top <= 844 * 2;   /* 上下 1 画面（844px）とその下 1 画面 */
+    (inside(b.getBoundingClientRect()) ? near : far).push(b); (inside(t.getBoundingClientRect()) ? nearTexts : farTexts).push(t);
+    cards.push(card(top, 300, [b, t]));
+  }
+  const { c, visited, listeners } = treeRun(cards);
+  assert.ok(near.length > 3 && far.length > 10);
+  assert.ok(near.every(b => b.hasAttribute('data-hit')), '見えている所の近くは広げる ' + near.filter(b => !b.hasAttribute('data-hit')).map(b => b.getBoundingClientRect().top).join(','));
+  assert.ok(far.every(b => !b.hasAttribute('data-hit')), '遠い所はまだ触らない');
+  assert.ok(nearTexts.every(t => t.hasAttribute('data-fs11')) && farTexts.every(t => !t.hasAttribute('data-fs11')));
+  assert.ok(visited() < cards.length * 3 + near.length * 4, '外の塊の中は見ない');
+  assert.equal(c.FUNERGY_LAYOUT._windowed, true);
+  /* 要素が少ない画面は今までどおり全部（querySelectorAll）。見えている所だけにはしない */
+  const few = []; for (let i = 0; i < 30; i++) few.push(fakeEl(R(10, i * 400, 30, 30)));
+  const cc = phoneRun(few);
+  assert.ok(few.every(b => b.hasAttribute('data-hit')));
+  assert.equal(cc.FUNERGY_LAYOUT._windowed, false);
+});
+test('速さ：スクロールの見張りは 1 つ（止まってから 200ms で見直す・見えている所だけを見ているときだけ）', () => {
+  const i = LAYOUT.indexOf("D.addEventListener('scroll'");
+  assert.ok(i > 0);
+  assert.match(LAYOUT.slice(i, i + 220), /if \(!L\._windowed\) return; clearTimeout\(stT\); stT = setTimeout\(schedule, 200\); \}, \{ capture: true, passive: true \}\);/);
+  assert.equal(LAYOUT.split("D.addEventListener('scroll'").length, 2, 'ページのスクロールの見張りは 1 つ（ナビの横のスクロールは別）');
+});
 test('CSS：押す範囲と 11px はスマホの幅とタッチの端末だけ（PC で残った印は効かない）。PC の 10px はマウスの端末だけ', () => {
   const touch = CSS.slice(CSS.indexOf('@media (max-width:767px), (pointer: coarse) {'));
   assert.ok(CSS.indexOf('@media (max-width:767px), (pointer: coarse) {') > 0);
@@ -380,4 +488,7 @@ test('従業員マスター：CSS は 1024px 以上で表とパネルを横に�
   assert.ok(at > 0);
   assert.match(CSS.slice(CSS.lastIndexOf('@media (min-width:1024px)', at)), /^@media \(min-width:1024px\) \{[\s\S]*?\.sm-wrap > \.sm-pc \{ display:grid;/);
   assert.match(CSS, /@media \(min-width:1024px\) \{ \.sm-pc > \.sm-panel \{ margin-top:0; position:sticky; top:64px; \} \}/);
+  /* タッチの端末（iPad など）で表になっても行は 44px（マウスの PC は zoom 1.1 で 47px なので足さない） */
+  assert.match(HTML, /@media \(pointer: coarse\) \{ \.sm-tbl tr\.sm-row > td \{ height:44px; \} \}/);
+  assert.doesNotMatch(HTML, /@media \(hover: ?hover\)[^{]*\{[^}]*\.sm-tbl tr\.sm-row > td \{ height/);
 });

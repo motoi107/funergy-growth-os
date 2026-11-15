@@ -61,8 +61,10 @@ function judgeSP(m) {
   if (m.tapSmall > 0) { out.push(`44px 未満の押すところ ${m.tapSmall}／${m.tapTotal}`); fix.push('押すところを 44px 以上に'); }
   if (m.fontSmall > 0) { out.push(`11px 未満の文字 ${m.fontSmall}`); fix.push('文字を 11px 以上に'); }
   if ((m.tabbars || []).some(t => t.hidden)) { out.push('タブが横に隠れて気づけない'); fix.push('タブの端に続きの印・今のタブを見える位置に'); }
-  if (m.modal && (m.inputs >= 5 || m.tables > 0)) { out.push(`入力の多い箱（入力 ${m.inputs}）`); fix.push('全画面で開き、保存・閉じるを上下に固定'); }
-  if (m.tablesScroll > 0) { out.push(`表の横スクロール（${m.tablesScroll}・固定列なし）`); fix.push('項目列を固定・月や期間で切り替え・詳細の展開'); }
+  /* v1172 の印（mfull＝全画面の箱・stick1＝名前の列を固定した表）があれば、その分は済み（v1171 までの記録には無い） */
+  if (m.modal && (m.inputs >= 5 || m.tables > 0) && !m.mfull) { out.push(`入力の多い箱（入力 ${m.inputs}）`); fix.push('全画面で開き、保存・閉じるを上下に固定'); }
+  const unfixed = Math.max(0, m.tablesScroll - (m.stick1 || 0));
+  if (unfixed > 0) { out.push(`表の横スクロール（${unfixed}・固定列なし）`); fix.push('項目列を固定・月や期間で切り替え・詳細の展開'); }
   return { out, fix };
 }
 

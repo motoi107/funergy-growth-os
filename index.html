@@ -1668,6 +1668,7 @@ i.ti-loader, i.ti-loader-2 { display:inline-block; animation:uxSpin 1s linear in
 @media (hover:hover) { .sm-tbl tr.sm-row:hover > td { background:var(--surface2); } }
 .sm-tbl tr.sm-row.sel > td { background:var(--accent-soft, #fff4ec); }
 .sm-tbl tr.sm-row:focus-visible { outline:2px solid var(--accent); outline-offset:-2px; }
+@media (pointer: coarse) { .sm-tbl tr.sm-row > td { height:44px; } }  /* v1172：タッチの端末（iPad など・1024px から表）でも行を 44px に（マウスの PC は zoom 1.1 で 47px） */
 .sm-tbl tr.sm-grp > td { font-size:11px; font-weight:700; letter-spacing:1px; color:var(--muted); background:var(--surface2); padding:6px 10px; }
 .sm-nm { display:flex; align-items:center; gap:8px; min-width:150px; }
 .sm-av { width:26px; height:26px; border-radius:50%; border:1.5px solid var(--border); display:inline-flex; align-items:center; justify-content:center; font-size:11px; font-weight:700; flex-shrink:0; background:var(--surface); }
@@ -113426,28 +113427,57 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   }
   function clearHit(el){ el.removeAttribute('data-hit'); ['--ht', '--hb', '--hl', '--hr'].forEach(function(k){ el.style.removeProperty(k); }); }
   function absKids(el){ for (var c = el.firstElementChild; c; c = c.nextElementSibling) { var p = W.getComputedStyle(c).position; if (p === 'absolute' || p === 'fixed') return true; } return false; }
-  function scanHits(roots){
+  /* 要素がとても多い画面（経理レビューなど：数万）は vb＝見えている所の上下 1 画面だけを見る（外の塊はその中ごと飛ばす・止まらないように）。
+     スクロールが止まったら見直す。となりを探すのは近くのマス目だけ */
+  var GRID = 64, FIELDS = 'input:not([type=hidden]), select, textarea';
+  function walkNear(root, vb, fn){   /* vb の外（上下 50px も外）の塊は、その中ごと飛ばす */
+    var w = D.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, { acceptNode: function(el){
+      var r = el.getBoundingClientRect();
+      return (r.height > 0 && (r.bottom < vb.t - 50 || r.top > vb.b + 50)) ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT;
+    } }), el;
+    while ((el = w.nextNode())) fn(el);
+  }
+  function scanHits(roots, vb){
     var tg = [], fields = [];
     roots.forEach(function(root){
       if (!root) return;
+      if (vb) { walkNear(root, vb, function(el){ if (el.matches(TGT) && isTarget(el)) tg.push(el); else if (el.matches(FIELDS)) fields.push(el); }); return; }
       root.querySelectorAll(TGT).forEach(function(el){ if (isTarget(el)) tg.push(el); });
-      root.querySelectorAll('input:not([type=hidden]), select, textarea').forEach(function(f){ fields.push(f); });
+      root.querySelectorAll(FIELDS).forEach(function(f){ fields.push(f); });
     });
-    var items = [];
-    tg.forEach(function(el){ var rs = el.getClientRects(); if (!rs.length) return; var r = el.getBoundingClientRect(); if (r.width < 1 || r.height < 1) return; items.push({ el: el, r: r }); });
-    var others = items.map(function(x){ return x.r; });
-    fields.forEach(function(f){ if (f.getClientRects().length) { var r = f.getBoundingClientRect(); if (r.width >= 1 && r.height >= 1) others.push(r); } });
-    var strips = [];   /* 横に送る低い帯（店のボタンの列など）：押す範囲が帯の上下で切れる分を、帯の上下の余白に足す */
+    function near(r){ return !vb || (r.bottom >= vb.t - 50 && r.top <= vb.b + 50); }   /* となりとして数える分は 50px 余分に */
+    function inBand(r){ return !vb || (r.bottom >= vb.t && r.top <= vb.b); }
+    /* 1. 読むだけ（ここでは何も書かない＝何度もレイアウトし直さない） */
+    var items = [], others = [];
+    tg.forEach(function(el){ var rs = el.getClientRects(); if (!rs.length) return; var r = el.getBoundingClientRect(); if (r.width < 1 || r.height < 1 || !near(r)) return; others.push(r); if (inBand(r)) items.push({ el: el, r: r }); });
+    fields.forEach(function(f){ if (f.getClientRects().length) { var r = f.getBoundingClientRect(); if (r.width >= 1 && r.height >= 1 && near(r)) others.push(r); } });
+    /* となりを探すのは近くのマス目だけ（並びの順は前のまま＝結果は全部を見たときと同じ） */
+    var grid = new Map(), huge = [];
+    others.forEach(function(q, i){
+      var x0 = Math.floor(q.left / GRID), x1 = Math.floor(q.right / GRID), y0 = Math.floor(q.top / GRID), y1 = Math.floor(q.bottom / GRID);
+      if ((x1 - x0 + 1) * (y1 - y0 + 1) > 400) { huge.push(i); return; }
+      for (var x = x0; x <= x1; x++) for (var y = y0; y <= y1; y++) { var k = x + ',' + y, a = grid.get(k); if (a) a.push(i); else grid.set(k, [i]); }
+    });
+    var mark = new Array(others.length), stamp = 0;
+    function nearIdx(r){
+      stamp++; var out = [];
+      var x0 = Math.floor((r.left - 45) / GRID), x1 = Math.floor((r.right + 45) / GRID), y0 = Math.floor((r.top - 45) / GRID), y1 = Math.floor((r.bottom + 45) / GRID);
+      for (var x = x0; x <= x1; x++) for (var y = y0; y <= y1; y++) { var a = grid.get(x + ',' + y); if (a) for (var j = 0; j < a.length; j++) if (mark[a[j]] !== stamp) { mark[a[j]] = stamp; out.push(a[j]); } }
+      huge.forEach(function(i){ if (mark[i] !== stamp) { mark[i] = stamp; out.push(i); } });
+      return out.sort(function(p, q){ return p - q; });
+    }
+    var writes = [], strips = [];   /* 横に送る低い帯（店のボタンの列など）：押す範囲が帯の上下で切れる分を、帯の上下の余白に足す */
     items.forEach(function(it){
       var el = it.el, r = it.r;
-      if (r.width >= 44 && r.height >= 44) { if (el.hasAttribute('data-hit')) clearHit(el); return; }
+      if (r.width >= 44 && r.height >= 44) { if (el.hasAttribute('data-hit')) writes.push({ el: el }); return; }
       var cs = W.getComputedStyle(el);
       if (cs.display === 'inline' || cs.display === 'contents' || cs.display.indexOf('table') === 0 || /(hidden|clip|auto|scroll)/.test(cs.overflow + cs.overflowX + cs.overflowY)) return;
       if (!el.hasAttribute('data-hit')) { var af = W.getComputedStyle(el, '::after').content; if (af && af !== 'none' && af !== 'normal') return; }
       if (cs.position === 'static' && absKids(el)) return;
       var e = { t: Math.max(0, (44 - r.height) / 2), b: Math.max(0, (44 - r.height) / 2), l: Math.max(0, (44 - r.width) / 2), r: Math.max(0, (44 - r.width) / 2) };
-      for (var i = 0; i < others.length; i++) {
-        var q = others[i]; if (q === r) continue;
+      var ix = nearIdx(r);
+      for (var n = 0; n < ix.length; n++) {
+        var q = others[ix[n]]; if (q === r) continue;
         if (q.left < r.right && q.right > r.left && q.top < r.bottom && q.bottom > r.top) continue;   /* 重なる（中・外）ものは見ない */
         var vOv = q.top < r.bottom + e.b && q.bottom > r.top - e.t, hOv = q.left < r.right + e.r && q.right > r.left - e.l;
         if (q.left >= r.right && vOv) e.r = Math.min(e.r, Math.max(0, (q.left - r.right) / 2));
@@ -113455,46 +113485,69 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
         if (q.top >= r.bottom && hOv) e.b = Math.min(e.b, Math.max(0, (q.top - r.bottom) / 2));
         else if (q.bottom <= r.top && hOv) e.t = Math.min(e.t, Math.max(0, (r.top - q.bottom) / 2));
       }
-      if (e.t + e.b + e.l + e.r < 1) { if (el.hasAttribute('data-hit')) clearHit(el); return; }
-      el.style.setProperty('--ht', e.t.toFixed(1) + 'px'); el.style.setProperty('--hb', e.b.toFixed(1) + 'px');
-      el.style.setProperty('--hl', e.l.toFixed(1) + 'px'); el.style.setProperty('--hr', e.r.toFixed(1) + 'px');
-      if (!el.hasAttribute('data-hit')) el.setAttribute('data-hit', '');
+      if (e.t + e.b + e.l + e.r < 1) { if (el.hasAttribute('data-hit')) writes.push({ el: el }); return; }
+      writes.push({ el: el, e: e });
       var sp = el.parentElement;
       if (sp && (e.t > 0 || e.b > 0)) {
         var ss = W.getComputedStyle(sp);
         if (/(auto|scroll)/.test(ss.overflowX) && sp.clientHeight < 64 && /^(rgba\(0, 0, 0, 0\)|transparent)$/.test(ss.backgroundColor) && !parseFloat(ss.borderTopWidth) && !parseFloat(ss.borderBottomWidth)) {
-          var k = strips.indexOf(sp); if (k < 0) { strips.push(sp); k = strips.length - 1; sp._hp = { t: 0, b: 0 }; }
-          var cur = { t: parseFloat(sp.style.getPropertyValue('--hpt')) || 0, b: parseFloat(sp.style.getPropertyValue('--hpb')) || 0 };
-          var ar = sp.getBoundingClientRect();
-          sp._hp.t = Math.max(sp._hp.t, e.t - (r.top - (ar.top + cur.t)));
-          sp._hp.b = Math.max(sp._hp.b, e.b - ((ar.bottom - cur.b) - r.bottom));
+          var k = strips.indexOf(sp);
+          if (k < 0) {
+            strips.push(sp); sp._hp = { t: 0, b: 0, ar: sp.getBoundingClientRect(), cur: { t: parseFloat(sp.style.getPropertyValue('--hpt')) || 0, b: parseFloat(sp.style.getPropertyValue('--hpb')) || 0 } };
+            if (!sp.hasAttribute('data-hitpad')) sp._hp.o = { pt: ss.paddingTop, pb: ss.paddingBottom, mt: ss.marginTop, mb: ss.marginBottom };   /* 元の余白は印を付ける前に 1 回だけ読む */
+          }
+          var hp = sp._hp;
+          hp.t = Math.max(hp.t, e.t - (r.top - (hp.ar.top + hp.cur.t)));
+          hp.b = Math.max(hp.b, e.b - ((hp.ar.bottom - hp.cur.b) - r.bottom));
         }
       }
     });
+    /* 2. まとめて書く */
+    writes.forEach(function(w){
+      var el = w.el, e = w.e;
+      if (!e) { clearHit(el); return; }
+      el.style.setProperty('--ht', e.t.toFixed(1) + 'px'); el.style.setProperty('--hb', e.b.toFixed(1) + 'px');
+      el.style.setProperty('--hl', e.l.toFixed(1) + 'px'); el.style.setProperty('--hr', e.r.toFixed(1) + 'px');
+      if (!el.hasAttribute('data-hit')) el.setAttribute('data-hit', '');
+    });
     strips.forEach(function(sp){
-      var t = Math.max(0, Math.ceil(sp._hp.t)), b = Math.max(0, Math.ceil(sp._hp.b));
+      var hp = sp._hp, t = Math.max(0, Math.ceil(hp.t)), b = Math.max(0, Math.ceil(hp.b));
       if (t + b < 1) { if (sp.hasAttribute('data-hitpad')) { sp.removeAttribute('data-hitpad'); ['--hpt', '--hpb', '--p0t', '--p0b', '--m0t', '--m0b'].forEach(function(x){ sp.style.removeProperty(x); }); } return; }
-      if (!sp.hasAttribute('data-hitpad')) {   /* 元の余白は印を付ける前に 1 回だけ読む */
-        var cs0 = W.getComputedStyle(sp);
-        sp.style.setProperty('--p0t', cs0.paddingTop); sp.style.setProperty('--p0b', cs0.paddingBottom);
-        sp.style.setProperty('--m0t', cs0.marginTop); sp.style.setProperty('--m0b', cs0.marginBottom);
-      }
+      if (hp.o) { sp.style.setProperty('--p0t', hp.o.pt); sp.style.setProperty('--p0b', hp.o.pb); sp.style.setProperty('--m0t', hp.o.mt); sp.style.setProperty('--m0b', hp.o.mb); }
       sp.style.setProperty('--hpt', t + 'px'); sp.style.setProperty('--hpb', b + 'px');
       if (!sp.hasAttribute('data-hitpad')) sp.setAttribute('data-hitpad', '');
     });
   }
-  /* attr：data-fs11（11px にする）か data-fs10（PC：10px にする＝zoom 1.1 で見た目 11px）。below より小さい文字だけに付ける（大きくするだけ） */
-  function scanFonts(roots, attr, below){
+  /* attr：data-fs11（11px にする）か data-fs10（PC：10px にする＝zoom 1.1 で見た目 11px）。below より小さい文字だけに付ける（大きくするだけ）。
+     先に全部読んでから、まとめて書く（1 つ書くたびにレイアウトし直さない）。
+     vb：要素がとても多い画面（経理レビューなど）は、見えている所の上下 1 画面だけを見る（外の塊はその中ごと飛ばす。スクロールが止まったら見直す） */
+  function scanFonts(roots, attr, below, vb){
     attr = attr || 'data-fs11'; below = below || 10.95;
+    var cand = [];
+    function check(p){ if (!p.hasAttribute(attr) && !p.closest('svg') && parseFloat(W.getComputedStyle(p).fontSize) < below) cand.push(p); }
     roots.forEach(function(root){
       if (!root) return;
-      var tw = D.createTreeWalker(root, NodeFilter.SHOW_TEXT, null), seen = new Set(), n;
-      while ((n = tw.nextNode())) {
-        var p = n.parentElement; if (!p || seen.has(p)) continue; seen.add(p);
-        if (!n.nodeValue || !n.nodeValue.trim() || p.hasAttribute(attr) || p.closest('svg')) continue;
-        if (parseFloat(W.getComputedStyle(p).fontSize) < below && p.getClientRects().length) p.setAttribute(attr, '');
+      if (!vb) {
+        var tw = D.createTreeWalker(root, NodeFilter.SHOW_TEXT, null), seen = new Set(), n;
+        while ((n = tw.nextNode())) {
+          var p = n.parentElement; if (!p || seen.has(p)) continue; seen.add(p);
+          if (!n.nodeValue || !n.nodeValue.trim()) continue;
+          check(p);
+        }
+        return;
       }
+      var ew = D.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, { acceptNode: function(el){
+        if (String(el.tagName).toLowerCase() === 'svg') return NodeFilter.FILTER_REJECT;
+        var r = el.getBoundingClientRect();
+        if (r.height > 0 && (r.bottom < vb.t || r.top > vb.b)) return NodeFilter.FILTER_REJECT;
+        return NodeFilter.FILTER_ACCEPT;
+      } }), el;
+      var go = function(e){ for (var c = e.firstChild; c; c = c.nextSibling) if (c.nodeType === 3 && c.nodeValue && c.nodeValue.trim()) { check(e); return; } };
+      go(root);
+      while ((el = ew.nextNode())) go(el);
     });
+    var hit = cand.filter(function(p){ return p.getClientRects().length; });
+    hit.forEach(function(p){ p.setAttribute(attr, ''); });
   }
   function scroller(el){ for (var a = el.parentElement; a && a !== D.body; a = a.parentElement) { var s = W.getComputedStyle(a); if (/(auto|scroll)/.test(s.overflowX)) return a; if (/(hidden|clip)/.test(s.overflowX)) return null; } return null; }
   function scanTables(roots){
@@ -113552,9 +113605,12 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     var ov = D.getElementById('modal-overlay'), mb = (ov && ov.classList.contains('open')) ? D.getElementById('modal-body') : null;
     var roots = [D.getElementById('main-content'), mb, D.getElementById('nav-bar'), D.getElementById('subnav-bar'), D.querySelector('.topbar')].filter(Boolean);
     if (ph) { try { scanTables(roots); } catch (e) {} }
-    if (tc) { try { scanFonts(roots, 'data-fs11', 10.95); } catch (e) {} }
-    if (zm) { try { scanFonts(roots, 'data-fs10', 9.95); } catch (e) {} }
-    if (tc) { try { scanHits(roots); } catch (e) {} }
+    var fvb = null;   /* 要素がとても多い画面（2 万より多い）は、押すところも文字も見えている所の近くだけ */
+    try { var all = 0; roots.forEach(function(x){ all += x.getElementsByTagName('*').length; }); if (all > 20000) { var vh = W.innerHeight || 800; fvb = { t: -vh, b: vh * 2 }; } } catch (e) {}
+    L._windowed = !!fvb;
+    if (tc) { try { scanFonts(roots, 'data-fs11', 10.95, fvb); } catch (e) {} }
+    if (zm) { try { scanFonts(roots, 'data-fs10', 9.95, fvb); } catch (e) {} }
+    if (tc) { try { scanHits(roots, fvb); } catch (e) {} }
   }
   function schedule(){ if (tmr) return; tmr = setTimeout(function(){ (W.requestAnimationFrame || setTimeout)(run); }, 120); }
   L.schedule = schedule; L.run = run;
@@ -113566,6 +113622,8 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     if (mb) mo.observe(mb, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'open', 'hidden'] });
     if (ov) mo.observe(ov, { attributes: true, attributeFilter: ['class'] });
     W.addEventListener('resize', schedule, { passive: true });
+    var stT = 0;   /* 押すところがとても多い画面は見えている所の近くだけを見るので、スクロールが止まったら見直す */
+    D.addEventListener('scroll', function(){ if (!L._windowed) return; clearTimeout(stT); stT = setTimeout(schedule, 200); }, { capture: true, passive: true });
     W.addEventListener('orientationchange', schedule, { passive: true });
     D.addEventListener('visibilitychange', function(){ if (D.visibilityState === 'visible') schedule(); });
   }

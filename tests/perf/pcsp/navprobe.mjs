@@ -4,7 +4,7 @@ import fs from 'node:fs';
 for (const k of Object.keys(process.env)) if (/proxy/i.test(k)) delete process.env[k];
 const APP = 'http://localhost:8080/';
 const DATA = JSON.parse(fs.readFileSync((process.env.PCSP_DIR || '/tmp/pcsp') + '/data.json', 'utf8')).login;
-const ARGS = ['--host-resolver-rules=MAP tgbhgxzehzeouopklhje.supabase.co 127.0.0.1, MAP cdn.jsdelivr.net 127.0.0.1, MAP api.open-meteo.com 127.0.0.1, MAP archive-api.open-meteo.com 127.0.0.1', '--ignore-certificate-errors'];
+const ARGS = ['--host-resolver-rules=MAP tgbhgxzehzeouopklhje.supabase.co 127.0.0.1, MAP cdn.jsdelivr.net 127.0.0.1, MAP api.open-meteo.com 127.0.0.1, MAP archive-api.open-meteo.com 127.0.0.1, MAP * ~NOTFOUND, EXCLUDE localhost, EXCLUDE 127.0.0.1', '--ignore-certificate-errors'];
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const out = {};
 for (const WHO of ['gm', 'sl', 'crew']) for (const W of [390, 768, 1440]) {
