@@ -32353,8 +32353,10 @@ function apRetryLoad(){
   try{ var y=_apEnsureY(), ms=[]; for(var m=1;m<=12;m++){ var ym=_apYm(y,m); if(_apLoadTried[ym]==='fail') ms.push(ym); }
     _apKickLoad(budgetScopeStores(), ms, true); if(ms.length) renderPage('budget'); }catch(e){}
 }
-/* v1169（Codex #162 の P2）：その店の最初の実績の日（開店前の月を決める根拠）。前年の日次（PY2025_DAILY の from）・この端末の日次・会計PL の月から。
-   無ければ null（開店前とは言わない＝実績の無い月は未取込として出す） */
+/* v1170 の直し（Codex #166 の P2）：開店前の月を決めるのは、店舗マスターに入れた開店日（openDate）だけ。
+   取り込めた最初の実績の日は、開店日の根拠にしない（取り込みの欠けを開店前として隠さない）。無ければ null */
+function _apOpenDate(s){ var d=s && s.openDate; return (typeof d==='string' && /^\d{4}-\d{2}-\d{2}$/.test(d)) ? d : null; }
+/* その店の最初の実績の日（v1169）。v1170 の直しからは「開店日を入れてください」の案内にだけ使う（数える・数えないは決めない） */
 function _apFirstAct(sid, perMonths){
   var f=null, cut=bizToday();
   try{ var py=(typeof PY2025_DAILY!=='undefined' && PY2025_DAILY) ? PY2025_DAILY[sid] : null; if(py && /^\d{4}-\d{2}-\d{2}$/.test(String(py.from||''))) f=py.from; }catch(e){}
@@ -32441,11 +32443,11 @@ function _apMonth(metric, kind, m, ym, per, loading, failed){
   per.forEach(function(o){
     var budOk=_apBudOk(metric, o), hasAct=(o.actDays>0 || !!o.pl);
     var rel=(kind==='future') ? budOk : (budOk || hasAct || o.missing.length>0);
-    /* 実績が 1 日も無く、予算が店の共通設定だけの月は開店前（数えない・表の上に出す）。
-       v1169（Codex #162 の P2）：その店の最初の実績より前の月で、その月の日次を読めた（読み込み中・読めなかったではない）ときだけ。
-       根拠が無いときは開店前にしない（取り込みの欠けを隠さない） */
-    var preOpen=!!o.first && ym<o.first.slice(0,7) && !!o.ldOk;
-    if(rel && kind!=='future' && !hasAct && o.budFallback && preOpen){ M.idle.push(o.abbr||o.sid); if(!M.idleFirst) M.idleFirst={}; M.idleFirst[o.abbr||o.sid]=o.first; return; }
+    /* 開店前の月（数えない・表の上に出す）。v1170 の直し（Codex #166 の P2）：店舗マスターの開店日より前の月で、実績が 1 日も無いときだけ。
+       開店日が無ければ開店前にしない（実績の無い月は未取込として出し、表の上で「開店日を入れてください」と案内する） */
+    var preOpen=!!o.open && ym<o.open.slice(0,7);
+    if(rel && kind!=='future' && !hasAct && preOpen){ M.idle.push(o.abbr||o.sid); if(!M.idleFirst) M.idleFirst={}; M.idleFirst[o.abbr||o.sid]=o.open; return; }
+    if(rel && kind!=='future' && !hasAct && o.budFallback && !o.open && o.first && ym<o.first.slice(0,7) && o.ldOk){ if(!M.hint) M.hint=[]; M.hint.push(o.abbr||o.sid); }
     if(!rel) return;
     M.relevant++;
     if(!budOk && kind!=='pre') M.unset.push(o.abbr||o.sid);
@@ -32492,11 +32494,11 @@ function apModel(stores, y, metric){
     pers.push(stores.map(function(s){ var o=apStoreMonth(s.id, ym, {rates:rate}); o.abbr=abbr[s.id]; o.name=s.name; o.py=apPrevMonth(s.id, ym);
       o.ldOk=!_apNeedLoad([s], ym); (bySid[s.id]=bySid[s.id]||[]).push(o); return o; }));
   }
-  var first={}; stores.forEach(function(s){ first[s.id]=_apFirstAct(s.id, bySid[s.id]); });
+  var first={}, open={}; stores.forEach(function(s){ first[s.id]=_apFirstAct(s.id, bySid[s.id]); open[s.id]=_apOpenDate(s); });
   for(var m2=1;m2<=12;m2++){
     var ym2=_apYm(y,m2), off=_ymToOffset(ym2);
     var kind=(start.m==null || m2<start.m) ? 'pre' : (off>0 ? 'future' : (off===0 ? 'current' : 'past'));
-    var per=pers[m2-1]; per.forEach(function(o){ o.first=first[o.sid]; });
+    var per=pers[m2-1]; per.forEach(function(o){ o.first=first[o.sid]; o.open=open[o.sid]; });
     var loading=(off<0) && _apLoading(stores, ym2), failed=(off<0) && !loading && _apLoadFailed(stores, ym2);
     months.push(_apMonth(metric, kind, m2, ym2, per, loading, failed));
   }
@@ -32538,10 +32540,11 @@ function apModel(stores, y, metric){
   });
   var noPrev=thisYear.filter(function(s){ return prevYear.indexOf(s)<0; });
   var lastM=null; months.forEach(function(M){ if(M.kind==='past') lastM=M; });
-  var idle={}, idleFirst={}; months.forEach(function(M){ M.idle.forEach(function(a){ (idle[a]=idle[a]||[]).push(M.m); if(M.idleFirst && M.idleFirst[a]) idleFirst[a]=M.idleFirst[a]; }); });
+  var idle={}, idleFirst={}, hint={}; months.forEach(function(M){ M.idle.forEach(function(a){ (idle[a]=idle[a]||[]).push(M.m); if(M.idleFirst && M.idleFirst[a]) idleFirst[a]=M.idleFirst[a]; });
+    (M.hint||[]).forEach(function(a){ (hint[a]=hint[a]||[]).push(M.m); }); });
   var failed=months.filter(function(M){ return M.failed; }).map(function(M){ return M.m; });
   return { y:y, metric:metric, start:start, months:months, quarters:quarters, last:lastM, cur:cur,
-    stores:stores, thisYear:thisYear, prevYear:prevYear, noPrev:noPrev, idle:idle, idleFirst:idleFirst, failed:failed };
+    stores:stores, thisYear:thisYear, prevYear:prevYear, noPrev:noPrev, idle:idle, idleFirst:idleFirst, hint:hint, failed:failed };
 }
 
 /* ---- 表示 ---- */
@@ -32818,7 +32821,10 @@ function renderAnnualPlan(){
   if(stores.length>1 && md.noPrev.length && (metric==='sales' || _apIsRate(metric)))
     notes.push(t('今年 ','This year ')+md.thisYear.length+t(' 店・前年 ',' stores · prior year ')+md.prevYear.length+t(' 店（',' (')+escapeHtml(md.noPrev.map(function(s){ return s.name||s.id; }).join('・'))+t(' は前年なし）。前年比は前年もある店どうしで比べます',': no prior year). Year-on-year compares only stores that have both years'));
   var idleTx=Object.keys(md.idle).map(function(a){ return (stores.length>1?a+' ':'')+_apMonthsTx(md.idle[a]); });
-  if(idleTx.length) notes.push(t('開店前として数えない月：','Months counted as before opening: ')+escapeHtml(idleTx.join(' / '))+t('（その店の最初の実績より前で、実績が 1 日も無く、予算が店の共通設定だけの月）',' (before the store’s first actual, with no actuals and only the store default budget)'));
+  if(idleTx.length) notes.push(t('開店前として数えない月：','Months counted as before opening: ')+escapeHtml(idleTx.join(' / '))+t('（店舗マスターの開店日より前で、実績が 1 日も無い月）',' (before the opening date in the store master, with no actuals)'));
+  /* v1170 の直し：開店日が入っていない店で、最初の実績より前に実績の無い月がある＝開店前かもしれない。数えたまま（未取込）にして案内だけ出す */
+  var hintTx=Object.keys(md.hint||{}).map(function(a){ return (stores.length>1?a+' ':'')+_apMonthsTx(md.hint[a]); });
+  if(hintTx.length) notes.push(escapeHtml(hintTx.join(' / '))+t(' は実績がありません（未取込として数えています）。開店前の月なら、設定 › 店舗マスターで開店日を入れると数えなくなります',': no actuals (counted as not imported). If these months were before opening, enter the opening date in Settings › Store master and they will not be counted'));
   /* v1169：読めなかった月（表の上にも。もう一度読む） */
   if(md.failed.length) notes.push('<span class="ap-neg">'+escapeHtml(_apMonthsTx(md.failed))+t('の日次をこの端末に読めませんでした。確定・累計に入れていません',': daily data could not be loaded on this device; not counted as final or in the cumulative')+'</span> <button class="btn btn-secondary btn-sm" onclick="apRetryLoad()">'+t('もう一度読む','Load again')+'</button>');
   if(metric==='guests' || metric==='ppa') notes.push(t('客数・客単価の前年は、会計PL に客数が無いので出しません（5A：前年は確定 PL の暦月）','Prior year is not shown for guests / avg check (the accounting PL has no guest counts)'));
@@ -103388,6 +103394,8 @@ function openStoreModal(storeId) {
       </select>
       <div style="font-size:11px;color:var(--muted);margin-top:4px">${t('免許なし店舗の料理用の酒は食材に分類。既存の仕入れ・棚卸出力にも適用します。ソフトドリンクは飲料のままです。','At unlicensed stores, cooking alcohol counts as food, including existing purchases and inventory exports. Soft drinks remain beverages.')}</div>
     </div>
+    <div class="form-group"><label class="form-label">${t('開店日（任意）','Opening date (optional)')}</label><input class="form-input" type="date" id="st-open-date" value="${(typeof s.openDate==='string' && /^\d{4}-\d{2}-\d{2}$/.test(s.openDate))?s.openDate:''}">
+      <div style="font-size:11px;color:var(--muted);margin-top:4px">${t('予実管理 › 年間計画で、この日より前の月（実績が無い月）を開店前として数えません。空なら開店前の月は作らず、実績の無い月は未取込と出します','In Budget › Annual plan, months before this date (with no actuals) are not counted. If empty, months with no actuals are shown as not imported')}</div></div>
     <div class="form-group"><label class="form-label">Toast Restaurant GUID</label><input class="form-input" id="st-toast" value="${s.toastGuid||''}" placeholder="Toast連携用ID（任意）"></div>
     <div class="form-row">
       <div class="form-group"><label class="form-label">ランチ営業時間</label><input class="form-input" id="st-lunch" value="${s.lunchHours||''}" placeholder="11:00-14:30"></div>
@@ -103518,6 +103526,7 @@ function saveStore(storeId) {
     toastGuid: document.getElementById('st-toast').value.trim().toLowerCase(),
     format: fmtEl ? fmtEl.value : 'dining',
     liquorLicense: (function(){ var v=(document.getElementById('st-liquor-license')||{}).value; return v==='true'?true:v==='false'?false:null; })(),
+    openDate: (function(){ var v=((document.getElementById('st-open-date')||{}).value||'').trim(); return /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : ''; })(),   /* v1170 の直し：年間計画の開店前の月の根拠 */
     lunchHours: lunch, dinnerHours: dinner,
     hours: (lunch&&dinner) ? (lunch.split('-')[0]+'-'+dinner.split('-').slice(-1)[0]) : (lunch||dinner||''),
     takeout: document.getElementById('st-takeout').checked,

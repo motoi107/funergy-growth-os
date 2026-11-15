@@ -6,22 +6,25 @@ select '1. チャットの段（5＝この直し）' as check_name,
     then 'OK' else 'NG（2 をもう一度流す）' end as result
 union all select '2. キー付きのグループを 1 つの取引で作る（chat_create_group_k）',
   case when to_regprocedure('public.chat_create_group_k(jsonb)') is not null then 'OK' else 'NG（2 をもう一度流す）' end
-union all select '3. 申請のチャット：最後の参加者は抜けられない・だれも読めない会話は新しく始められる・退職した人は管理する人に数えない',
+union all select '3. 申請のチャット：最後の参加者は抜けられない・だれも読めない会話は新しく始められる・退職した人は管理する人に数えない（あとで退職しても、次の操作で直る）',
   case when (select prosrc from pg_proc where oid = to_regprocedure('public.chat_remove(jsonb)')) like '%last_member%'
     and (select prosrc from pg_proc where oid = to_regprocedure('public.chat_case_create(jsonb)')) like '%ref_old%'
     and (select prosrc from pg_proc where oid = to_regprocedure('public.chat_case(jsonb)')) like '%restart%'
     and (select prosrc from pg_proc where oid = to_regprocedure('public.chat_admin_fix(uuid)')) like '%chat_emp_ok%'
+    and to_regprocedure('public.chat_admin_lock(jsonb,uuid)') is not null
+    and (select prosrc from pg_proc where oid = to_regprocedure('public.chat_add(jsonb)')) like '%chat_admin_lock%'
+    and (select prosrc from pg_proc where oid = to_regprocedure('public.chat_remove(jsonb)')) like '%chat_admin_lock%'
     and (select count(*) from information_schema.columns where table_schema = 'public' and table_name = 'chat_threads' and column_name = 'ref_old') = 1
     then 'OK' else 'NG（チャットの SQL を流し直した？ 守り → この 2 の順にもう一度）' end
 union all select '4. 経理レビュー › 申請の「処理済み（今月）」を処理した日で読む（wr_acct_done）',
   case when to_regprocedure('public.wr_acct_done(jsonb)') is not null then 'OK' else 'NG（2 をもう一度流す）' end
 union all select '5. ブラウザの鍵では新しい関数を呼べない（サーバーの鍵だけ）',
   case when (select count(*) from pg_proc p join pg_namespace s on s.oid = p.pronamespace where s.nspname = 'public'
-    and p.proname in ('chat_create_group_k','chat_live_n','wr_acct_done','chat_case','chat_case_create','chat_remove','chat_admin_fix')
+    and p.proname in ('chat_create_group_k','chat_live_n','wr_acct_done','chat_case','chat_case_create','chat_remove','chat_admin_fix','chat_admin_lock','chat_add','chat_admin','chat_rename','chat_key_save')
     and (has_function_privilege('anon', p.oid, 'execute') or has_function_privilege('authenticated', p.oid, 'execute'))) = 0 then 'OK' else 'NG（2 をもう一度流す）' end
 union all select '6. 新しい関数がどれも security invoker',
   case when (select count(*) from pg_proc p join pg_namespace s on s.oid = p.pronamespace where s.nspname = 'public'
-    and p.proname in ('chat_create_group_k','chat_live_n','wr_acct_done') and p.prosecdef) = 0 then 'OK' else 'NG（Claude に）' end
+    and p.proname in ('chat_create_group_k','chat_live_n','wr_acct_done','chat_admin_lock') and p.prosecdef) = 0 then 'OK' else 'NG（Claude に）' end
 union all select '7. 管理する人が退職した人だけのグループ・申請のチャットが無い',
   case when to_regclass('public.chat_threads') is null then 'NG（チャットの SQL がまだ）'
     when coalesce((xpath('/table/row/n/text()', query_to_xml($q$select count(*) n from public.chat_threads t where t.kind in ('group','case')
