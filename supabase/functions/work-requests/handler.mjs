@@ -1,5 +1,5 @@
-// work-requests: ワークセンターの申請の API（v1131・1 段目＝経費 3 種／v1132・2 段目＝評価の変更 3 種と表示設定／v1133・反映の押さえ／v1155・段階 2＝予算と前の承認タブの種類／v1156・チャット／v1161・チャットの添付）。
-// 仕様：docs/WORK_REQUESTS_V1131_JA.md・docs/WORK_REQUESTS_V1132_JA.md・docs/WORK_REQUESTS_V1133_JA.md・docs/WORKCENTER_APPROVALS_STAGE2_JA.md・docs/CHAT_V1156_JA.md・docs/CHAT_FILES_V1161_JA.md
+// work-requests: ワークセンターの申請の API（v1131・1 段目＝経費 3 種／v1132・2 段目＝評価の変更 3 種と表示設定／v1133・反映の押さえ／v1155・段階 2＝予算と前の承認タブの種類／v1156・チャット／v1161・チャットの添付／v1168・チャットの守り）。
+// 仕様：docs/WORK_REQUESTS_V1131_JA.md・docs/WORK_REQUESTS_V1132_JA.md・docs/WORK_REQUESTS_V1133_JA.md・docs/WORKCENTER_APPROVALS_STAGE2_JA.md・docs/CHAT_V1156_JA.md・docs/CHAT_FILES_V1161_JA.md・docs/CHAT_GUARD_V1168_JA.md
 // 入り方は PIN のログインの印だけ（deps.verifyPin が確かめて { emp_id, name } を返す）。アプリが送る役割・名前・承認した人は使わない。
 // 役割・店・できることは SQL（wr_actor・wr_actions）が決める。この関数は形を整えて渡すだけ。
 
@@ -83,6 +83,53 @@ export function sniffOk(ext, bytes) {
 }
 export const FILE_EXTS = ['jpg', 'pdf', 'xlsx', 'xls', 'csv', 'docx', 'doc', 'pptx', 'ppt', 'txt'];
 export const FILE_MAX = { count: 5, size: 10485760, thumb: 1048576 };
+
+// v1168：チャットの守り。個人の暗証番号（4〜8 桁の数字）とグループのキー（4〜32 文字）は、そのまま置かない（PBKDF2 の印・ここで作って SQL に渡す）
+export const GUARD = { iter: 150000, pinMin: 4, pinMax: 8, keyMin: 4, keyMax: 32 };
+const te = new TextEncoder();
+const hexOf = buf => Array.from(new Uint8Array(buf), x => x.toString(16).padStart(2, '0')).join('');
+const bytesOfHex = h => new Uint8Array(h.match(/../g).map(x => parseInt(x, 16)));
+export async function secretHash(secret, saltHex, iter) {
+  const k = await crypto.subtle.importKey('raw', te.encode(secret), 'PBKDF2', false, ['deriveBits']);
+  return hexOf(await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt: bytesOfHex(saltHex), iterations: iter }, k, 256));
+}
+export async function secretMake(secret) {
+  const salt = hexOf(crypto.getRandomValues(new Uint8Array(16)));
+  return { hash: await secretHash(secret, salt, GUARD.iter), salt, iter: GUARD.iter };
+}
+const sameHex = (x, y) => { if (typeof x !== 'string' || typeof y !== 'string' || x.length !== y.length) return false; let d = 0; for (let i = 0; i < x.length; i++) d |= x.charCodeAt(i) ^ y.charCodeAt(i); return d === 0; };
+export async function secretOk(secret, g) {
+  if (!g || typeof g.hash !== 'string' || typeof g.salt !== 'string' || !/^[0-9a-f]{32}$/.test(g.salt) || !Number.isInteger(g.iter)) return false;
+  return sameHex(await secretHash(secret, g.salt, g.iter), g.hash);
+}
+// 全角の数字・文字は半角に（日本語の入力のまま打っても同じ）
+export const PINV = v => { if (typeof v !== 'string') throw bad(); const x = v.normalize('NFKC').trim(); if (!/^\d+$/.test(x) || x.length < GUARD.pinMin || x.length > GUARD.pinMax) throw bad(); return x; };
+export const KEYV = v => { if (typeof v !== 'string') throw bad(); const x = v.normalize('NFKC').replace(CTRL, '').trim(); if (x.length < GUARD.keyMin || x.length > GUARD.keyMax) throw bad(); return x; };
+const UNLOCK = v => (typeof v === 'string' && /^[0-9a-f]{64}$/.test(v) ? v : null);
+// プッシュ通知の送る先：ブラウザの送り先のサーバーだけ（ほかの場所へは送らない）。SQL の chat_push_host_ok と同じ
+export const PUSH_HOST = /^https:\/\/(fcm\.googleapis\.com|[a-z0-9-]+\.push\.apple\.com|updates\.push\.services\.mozilla\.com|[a-z0-9-]+\.notify\.windows\.com)\/[^\s]{1,950}$/;
+const ENDPOINT = v => { if (typeof v !== 'string' || v.length > 1000 || !PUSH_HOST.test(v)) throw bad(); return v; };
+const b64u = buf => { const b = buf instanceof Uint8Array ? buf : new Uint8Array(buf); let s = ''; for (const x of b) s += String.fromCharCode(x); return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); };
+const fromB64u = s => { const t = String(s).replace(/-/g, '+').replace(/_/g, '/'); const p = t + '='.repeat((4 - t.length % 4) % 4); return Uint8Array.from(atob(p), c => c.charCodeAt(0)); };
+// 中身の無いプッシュ（VAPID・ES256）。だれから・どの会話・本文は送らない（画面は「新着メッセージがあります」だけ）
+export function webPush({ fetch, pub, priv, subject }) {
+  let keyP = null;
+  const key = () => keyP || (keyP = (async () => {
+    const raw = fromB64u(pub), d = fromB64u(priv);
+    if (raw.length !== 65 || raw[0] !== 4 || d.length !== 32) throw new Error('vapid_key');
+    return crypto.subtle.importKey('jwk', { kty: 'EC', crv: 'P-256', x: b64u(raw.slice(1, 33)), y: b64u(raw.slice(33, 65)), d: b64u(d), ext: true }, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign']);
+  })());
+  return async function send(endpoint) {
+    const u = new URL(endpoint);
+    const head = b64u(te.encode(JSON.stringify({ typ: 'JWT', alg: 'ES256' })));
+    const claims = b64u(te.encode(JSON.stringify({ aud: u.origin, exp: Math.floor(Date.now() / 1000) + 12 * 3600, sub: subject })));
+    const sig = await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, await key(), te.encode(head + '.' + claims));
+    const r = await fetch(endpoint, { method: 'POST', redirect: 'manual', headers: { TTL: '3600', Urgency: 'normal', Topic: 'funergychat',
+      Authorization: 'vapid t=' + head + '.' + claims + '.' + b64u(sig) + ', k=' + pub, 'Content-Length': '0' } });
+    try { await r.text(); } catch { /* 読み捨て */ }
+    return r.status;
+  };
+}
 
 const safeErr = e => String((e && (e.code || e.message)) || e || 'error').replace(/(key|token|secret|bearer)[^\s]*/gi, '$1:***').slice(0, 200);
 const bad = () => { const e = new Error('bad_value'); e.code = 'bad_value'; return e; };
@@ -272,6 +319,45 @@ export function createHandler(deps) {
     if (!ok) throw fileErr('file_bad');
   }
   const verifyPin = typeof deps.verifyPin === 'function' ? deps.verifyPin : null;
+  // v1168：プッシュ通知（鍵が無ければ送らない）と、暗証番号を忘れたときの本人の確かめ（ログインの PIN：サーバーの auth-pin・続けて間違えると auth-pin が止める）
+  const vapid = { pub: String(env('CHAT_VAPID_PUBLIC') || '').trim(), priv: String(env('CHAT_VAPID_PRIVATE') || '').trim(), subject: String(env('CHAT_VAPID_SUBJECT') || '').trim() || 'https://funergy-plus.com' };
+  const pushReady = !!(vapid.pub && vapid.priv);
+  const pushSend = typeof deps.pushSend === 'function' ? deps.pushSend : (pushReady ? webPush({ fetch, ...vapid }) : null);
+  const loginCheck = typeof deps.loginCheck === 'function' ? deps.loginCheck : async (w, pin) => {
+    const anon = env('SUPABASE_ANON_KEY') || service;
+    let r, j = null;
+    try {
+      r = await fetch(`${url}/functions/v1/auth-pin`, { method: 'POST', headers: { apikey: anon, authorization: 'Bearer ' + anon, 'content-type': 'application/json' },
+        body: JSON.stringify({ action: 'verify', scope: 'staff', key: w.name, emp: w.emp_id, pin }) });
+      j = await r.json().catch(() => null);
+    } catch { return { ok: false, server: true }; }
+    if (r.ok && j && j.ok === true) return { ok: true };
+    if (r.ok && j && j.error === 'locked') return { ok: false, locked: Number(j.retry_after) > 0 ? Number(j.retry_after) : 900 };
+    if (!r.ok) return { ok: false, server: true };
+    return { ok: false };
+  };
+  async function pushFan(thread, author) {
+    if (!pushSend) return 0;
+    let r;
+    try { r = await db.rpc('chat_push_targets', { thread, emp_id: author }); }
+    catch (e) { if (e && (e.status === 404 || /chat_push_targets|does not exist|Could not find the function/.test(String(e.message || '')))) return 0; throw e; }
+    const eps = (r && Array.isArray(r.endpoints)) ? r.endpoints.filter(x => typeof x === 'string' && PUSH_HOST.test(x)) : [];
+    if (!eps.length) return 0;
+    const ok = [], gone = [], fail = [];
+    await Promise.all(eps.map(async ep => {
+      try { const st = await pushSend(ep); if (st >= 200 && st < 300) ok.push(ep); else if (st === 404 || st === 410) gone.push(ep); else fail.push(ep); }
+      catch { fail.push(ep); }
+    }));
+    await db.rpc('chat_push_result', { ok, gone, fail });
+    return ok.length;
+  }
+  // 確かめ（回数は SQL が先に数える）。合えば開けた印（初めてなら印そのもの unlock を 1 回だけ返す）
+  async function pinCheck(w, pin) {
+    const g = await db.rpc('chat_pin_begin', w);
+    if (g && g.none) return { ok: false, none: true };
+    if (g && g.locked) return { ok: false, locked: g.locked, left: 0 };
+    return { g, ok: await secretOk(pin, g) };
+  }
   const origins = ['https://funergy-plus.com', ...String(env('WR_ALLOWED_ORIGINS') || '').split(',').map(s => s.trim()).filter(Boolean)];
 
   // 呼んだ人：本文の pin_session（auth-pin が出した印）だけ。メールのログインは使わない（アプリは PIN だけ）。
@@ -288,7 +374,9 @@ export function createHandler(deps) {
     // 社員 ID の無い印（auth-pin v1085 より前の名前だけの印）は断る。名前は社員の表（公開の鍵で書ける）で引くことになるため（独立レビュー 272b159 の B）。
     // v1085 からの印には社員 ID が入る。前の印は期限（14 日）を過ぎている。
     if (!emp_id) return { deny: 'pin_no_emp' };
-    return { emp_id, name };
+    // v1168：チャットの開けた印（このタブのメモリだけ・64 桁）。SQL が確かめる。形が違えば無いものとする
+    const unlock = UNLOCK(body.unlock);
+    return unlock ? { emp_id, name, unlock } : { emp_id, name };
   }
 
   const ref = b => { const id = ID(b.id), code = CODE(b.code); if (!id && !code) throw bad(); return id ? { id } : { code }; };
@@ -297,9 +385,10 @@ export function createHandler(deps) {
     // v1156 から fn 5（チャット）・chat：チャットの SQL が入っていれば 1（添付の SQL があれば 2）。v1159 から fn 6（段階 3 の s3_import）。v1161 から fn 7（添付）
     // v1165 から fn 8（事前経費に結ぶ：pre_candidates・link_pre。SQL は sql 7 から）
     // v1167 から fn 9（チャットの UI案79：chat_case_create・chat_admin。チャットの SQL は chat 3 から）
+    // v1168 から fn 10（チャットの守り：暗証番号・グループのキー・プッシュ通知。チャットの SQL は chat 4 から）。push＝プッシュ通知の鍵が入っている
     whoami: async w => {
       const [me, st, cs] = await Promise.all([db.rpc('wr_whoami', w), db.rpc('wr_stage', {}).catch(() => null), db.rpc('chat_stage', {}).catch(() => null)]);
-      return { ...me, fn: 9, sql: (st && Number.isInteger(st.stage)) ? st.stage : 1, chat: (cs && Number.isInteger(cs.chat)) ? cs.chat : 0 };
+      return { ...me, fn: 10, push: pushReady, sql: (st && Number.isInteger(st.stage)) ? st.stage : 1, chat: (cs && Number.isInteger(cs.chat)) ? cs.chat : 0 };
     },
     list: (w, b) => {
       const scope = ['todo', 'mine', 'team'].includes(b.scope) ? b.scope : 'todo';
@@ -392,9 +481,15 @@ export function createHandler(deps) {
     chat_mentions: (w, b) => db.rpc('chat_my_mentions', { ...w, limit: Number.isInteger(b.limit) && b.limit >= 1 && b.limit <= 100 ? b.limit : 50 }),
     chat_people: w => db.rpc('chat_people', w),
     chat_open_dm: (w, b) => db.rpc('chat_open_dm', { ...w, to: EMP(b.to) }),
-    chat_create_group: (w, b) => {
+    chat_create_group: async (w, b) => {
       const title = TS(b.title, CHAT.title); if (!title) throw bad();
-      return db.rpc('chat_create_group', { ...w, title, members: EMPS(b.members, 1, CHAT.members), client_key: KEY(b.client_key) });
+      const key = b.key == null || b.key === '' ? null : KEYV(b.key);   // v1168：作るときにキーも（任意）
+      const r = await db.rpc('chat_create_group', { ...w, title, members: EMPS(b.members, 1, CHAT.members), client_key: KEY(b.client_key) });
+      if (!key || !r || r.replay || r.keyed) return r;
+      try {
+        const k = await db.rpc('chat_key_save', { ...w, thread: r.id, clear: false, ...(await secretMake(key)) });
+        return { ...r, keyed: true, key_ok: true, key_rev: k.key_rev, ...(k.unlock ? { unlock: k.unlock } : {}) };
+      } catch (e) { console.error('work-requests chat key at create', safeErr(e)); return { ...r, key_failed: true }; }
     },
     chat_case: (w, b) => db.rpc('chat_case', { ...w, ...ref(b) }),
     // v1167（UI案79 の 2A）：申請のチャットは最初に開いた人が参加者を選んで作る（関係する人を最初から選んだ状態・外せる）。同じ申請は 1 つ
@@ -402,7 +497,9 @@ export function createHandler(deps) {
       members: b.members == null ? [] : EMPS(b.members, 0, CHAT.members), client_key: KEY(b.client_key) }),
     chat_send: async (w, b) => {
       const thread = TID(b.thread), files = FILES(b.files), client_key = KEY(b.client_key), mentions = MENTIONS(b.mentions);
-      if (!files.length) return db.rpc('chat_send', { ...w, thread, body: BODY(b.body), mentions, client_key });
+      // v1168：送れたら、ほかの参加者の端末に「新着メッセージがあります」（中身なし・答えのあとに裏で）
+      const sent = r => { if (r && !r.replay) later(() => pushFan(thread, w.emp_id)); return r; };
+      if (!files.length) return sent(await db.rpc('chat_send', { ...w, thread, body: BODY(b.body), mentions, client_key }));
       const body = BODY_OPT(b.body);
       // 上げたファイルを確かめてから送る（確かめたもの・もう送ったものは飛ばす）。だれの・どの会話のファイルかは SQL が確かめる
       const pend = await db.rpc('chat_file_pending', { ...w, thread, ids: files });
@@ -410,7 +507,7 @@ export function createHandler(deps) {
         if (f.status === 'up') await verifyFile(w, f);
         else if (f.status === 'bad') throw fileErr('file_bad');
       }
-      return db.rpc('chat_send', { ...w, thread, body, mentions, client_key, files });
+      return sent(await db.rpc('chat_send', { ...w, thread, body, mentions, client_key, files }));
     },
     chat_edit: (w, b) => db.rpc('chat_edit', { ...w, id: TID(b.id), body: BODY_OPT(b.body), mentions: MENTIONS(b.mentions) }),
     chat_delete: async (w, b) => {
@@ -481,11 +578,70 @@ export function createHandler(deps) {
       const title = TS(b.title, CHAT.title); if (!title) throw bad();
       return db.rpc('chat_rename', { ...w, thread: TID(b.thread), title, expect_rev: REV(b.expect_rev) });
     },
+    // ---------------------------------------------------------------- v1168：チャットの守り（UI案79 の答え・依頼書の 6）
+    chat_guard: w => db.rpc('chat_guard_get', w),
+    // 個人のチャット暗証番号：開ける（続けて 5 回間違えると止まる）
+    chat_pin_verify: async (w, b) => {
+      const c = await pinCheck(w, PINV(b.pin));
+      if (!c.g) return c;
+      return db.rpc('chat_pin_end', { ...w, ok: c.ok, rev: c.g.rev });
+    },
+    // 決める（まだ無いとき）・変える（今の暗証番号 cur が要る）
+    chat_pin_set: async (w, b) => {
+      const pin = PINV(b.pin), h = await secretMake(pin);
+      const st = await db.rpc('chat_guard_get', w);
+      if (!st || !st.pin) return { ok: true, ...(await db.rpc('chat_pin_save', { ...w, mode: 'set', ...h })) };
+      const c = await pinCheck(w, PINV(b.cur));
+      if (!c.g) return c;
+      if (!c.ok) return db.rpc('chat_pin_end', { ...w, ok: false, rev: c.g.rev });
+      return { ok: true, ...(await db.rpc('chat_pin_save', { ...w, mode: 'change', rev: c.g.rev, ...h })) };
+    },
+    // 外す（今の暗証番号が要る）
+    chat_pin_clear: async (w, b) => {
+      const c = await pinCheck(w, PINV(b.cur));
+      if (!c.g) return c.none ? { ok: true, pin: false } : c;
+      if (!c.ok) return db.rpc('chat_pin_end', { ...w, ok: false, rev: c.g.rev });
+      return { ok: true, ...(await db.rpc('chat_pin_save', { ...w, mode: 'clear', rev: c.g.rev })) };
+    },
+    // 忘れた：ログインの PIN で本人を確かめて外す（auth-pin が確かめる・続けて間違えると auth-pin が止める）
+    chat_pin_reset: async (w, b) => {
+      const pin = PINV(b.login_pin);
+      const lc = await loginCheck(w, pin);
+      if (!lc || lc.ok !== true) return { ok: false, login: true, locked: (lc && lc.locked) || 0, server: !!(lc && lc.server) };
+      return { ok: true, ...(await db.rpc('chat_pin_save', { ...w, mode: 'reset' })) };
+    },
+    // グループのキー：開ける（参加者だけ・暗証番号を決めていれば先に開けていること）
+    chat_key_verify: async (w, b) => {
+      const thread = TID(b.thread), key = KEYV(b.key);
+      const g = await db.rpc('chat_key_begin', { ...w, thread });
+      if (g && g.none) return { ok: false, none: true };
+      if (g && g.locked) return { ok: false, locked: g.locked, left: 0 };
+      return db.rpc('chat_key_end', { ...w, thread, ok: await secretOk(key, g), rev: g.rev });
+    },
+    // 決める・変える・外す（管理する人）。expect＝見ていたキーの番号（ほかの人が先に変えていれば conflict）
+    chat_key_set: async (w, b) => {
+      const thread = TID(b.thread);
+      const q = { ...w, thread };
+      if (b.expect != null) { if (!Number.isInteger(b.expect) || b.expect < 0 || b.expect > 1e9) throw bad(); q.expect = b.expect; }
+      if (b.key === null) return db.rpc('chat_key_save', { ...q, clear: true });
+      return db.rpc('chat_key_save', { ...q, clear: false, ...(await secretMake(KEYV(b.key))) });
+    },
+    // ロック（pin：暗証番号の分）・ログアウト（all：この端末の開けた印を全部）
+    chat_relock: (w, b) => {
+      if (b.mode !== 'pin' && b.mode !== 'all') throw bad();
+      return db.rpc('chat_relock', { ...w, mode: b.mode });
+    },
+    // プッシュ通知（中身なし）。鍵（公開の側）を渡す・この端末で受け取る・やめる・この端末の送る先がだれのものか
+    chat_push_key: () => ({ key: pushReady ? vapid.pub : null }),
+    chat_push_sub: (w, b) => { if (!pushReady) { const e = new Error('push_off'); e.code = 'push_off'; throw e; } return db.rpc('chat_push_save', { ...w, endpoint: ENDPOINT(b.endpoint) }); },
+    chat_push_unsub: (w, b) => { if (typeof b.endpoint !== 'string' || !b.endpoint || b.endpoint.length > 1000) throw bad(); return db.rpc('chat_push_drop', { ...w, endpoint: b.endpoint }); },
+    chat_push_check: (w, b) => { if (typeof b.endpoint !== 'string' || !b.endpoint || b.endpoint.length > 1000) throw bad(); return db.rpc('chat_push_check', { ...w, endpoint: b.endpoint }); },
   };
   const ERR = { forbidden: 403, not_live: 409, conflict: 409, not_found: 404, bad_value: 400, no_rate: 409, reason_required: 400,
     dup_unresolved: 409, legacy_paid: 409, pin_check_missing: 503, not_member: 409, too_late: 409, too_many: 409, chat_missing: 503,
     file_type: 400, file_big: 413, file_bad: 409, file_missing: 409, file_many: 409, files_missing: 503, storage: 502,
-    pre_bad: 409, pre_taken: 409, pre_missing: 503, case_exists: 409, last_admin: 409, chat_old: 503 };
+    pre_bad: 409, pre_taken: 409, pre_missing: 503, case_exists: 409, last_admin: 409, chat_old: 503,
+    chat_pin_required: 423, chat_key_required: 423, guard_old: 503, push_off: 503 };
   // チャットの SQL がまだ無い（関数が見つからない）＝ 503 chat_missing（アプリは「サーバーの準備がまだ」と出す）
   const chatMissing = (action, e) => typeof action === 'string' && action.startsWith('chat_')
     && (e.status === 404 || /(function public\.chat_[a-z_]+\(.*\) does not exist|Could not find the function public\.chat_)/i.test(String(e.message || '')));
@@ -501,6 +657,12 @@ export function createHandler(deps) {
   // v1167：チャットの UI案79 の SQL（20261127090000）がまだ（関数が無い）＝ 503 chat_old（アプリは「チャットのサーバー（SQL）が前の版」と出す）
   const ui79Missing = (action, e) => (action === 'chat_case_create' || action === 'chat_admin')
     && /chat_(case_create|admin)/.test(String(e.message || '')) && (e.status === 404 || /does not exist|Could not find the function/i.test(String(e.message || '')));
+
+  // v1168：チャットの守りの SQL（20261128090000）がまだ（関数が無い）＝ 503 guard_old（アプリは「サーバーの準備がまだ」と出す）
+  const GUARD_ACTIONS = ['chat_guard', 'chat_pin_verify', 'chat_pin_set', 'chat_pin_clear', 'chat_pin_reset', 'chat_key_verify', 'chat_key_set', 'chat_relock',
+    'chat_push_sub', 'chat_push_unsub', 'chat_push_check'];
+  const guardMissing = (action, e) => GUARD_ACTIONS.includes(action)
+    && /chat_(guard_get|pin_|key_|relock|push_)/.test(String(e.message || '')) && (e.status === 404 || /does not exist|Could not find the function/i.test(String(e.message || '')));
 
   return async function handle(req) {
     const origin = req.headers.get('origin');
@@ -520,7 +682,7 @@ export function createHandler(deps) {
       return json(await fn(who, body));
     } catch (e) {
       const msg = String(e.message || 'error'), code0 = msg.split(/[\s:]/)[0];
-      const code = ERR[code0] ? code0 : (filesMissing(body && body.action, e) ? 'files_missing' : preMissing(body && body.action, e) ? 'pre_missing' : ui79Missing(body && body.action, e) ? 'chat_old' : chatMissing(body && body.action, e) ? 'chat_missing' : code0);
+      const code = ERR[code0] ? code0 : (filesMissing(body && body.action, e) ? 'files_missing' : preMissing(body && body.action, e) ? 'pre_missing' : ui79Missing(body && body.action, e) ? 'chat_old' : guardMissing(body && body.action, e) ? 'guard_old' : chatMissing(body && body.action, e) ? 'chat_missing' : code0);
       const status = ERR[code] || 500;
       if (status === 500 || status === 502) console.error('work-requests', body && body.action, safeErr(e));
       return json({ error: status === 500 ? 'error' : code }, status);

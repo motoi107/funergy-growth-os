@@ -46470,7 +46470,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1167';
+const APP_VERSION = '1168';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -109491,7 +109491,10 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
    ・Enter は改行、Ctrl＋Enter（Mac は ⌘＋Enter）で送る。日本語の変換中の Enter では送らない。
    ・v1167（UI案79・Moto さん 11/14 の答え 1〜6 A）：読めるのは参加者だけ（GM・CEO も参加していなければ見えない）。申請のチャットは最初に開いた人が参加者を選んで作る
      （関係する人を最初から選んだ状態・外せる）。加える・外すのは管理する人。どの画面にも右下の「チャット」→ PC はパネル・別ウィンドウ（いつも前面）、
-     スマホは下から半画面。画像の貼り付けと丸・矢印・説明。今すぐロック・放っておいたときのロック。仕様：docs/CHAT_UI79_V1167_JA.md */
+     スマホは下から半画面。画像の貼り付けと丸・矢印・説明。今すぐロック・放っておいたときのロック。仕様：docs/CHAT_UI79_V1167_JA.md
+   ・v1168（UI案79 の答えの残り）：個人のチャット暗証番号（本人が決める・初めはオフ）・グループのキー（管理する人）・プッシュ通知（「新着メッセージがあります」だけ）。
+     暗証番号・キーはサーバー（関数 work-requests と SQL）が確かめ、開けた印（unlock）はこのタブのメモリ（L.utok）だけ。ロックで暗証番号の分を、ログアウトで全部を消す。
+     仕様：docs/CHAT_GUARD_V1168_JA.md */
 (function(){
   'use strict';
   var W = window, D = document;
@@ -109534,7 +109537,13 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     case_exists:['ほかの人が先にこの申請のチャットを始めました。チャットを管理する人に加えてもらってください','Someone else started this request’s chat first. Ask its manager to add you'],
     last_admin:['管理する人が 1 人だけなので外せません。先にほかの人を管理する人にしてください','This is the only manager. Make someone else a manager first'],
     chat_old:['チャットのサーバー（SQL）が前の版です（UI案79 の SQL がまだ）。Moto さんに知らせてください','The chat database is an earlier version (the UI79 SQL is not in yet). Tell Moto'],
-    ui79_fn_old:['申請のチャットを作る・管理する人を決めるのは、チャットのサーバー（関数 work-requests）が v1167 になってから使えます（Moto さんに知らせてください）','Starting a request chat and choosing managers work once the chat server (work-requests) is v1167 (tell Moto)']
+    ui79_fn_old:['申請のチャットを作る・管理する人を決めるのは、チャットのサーバー（関数 work-requests）が v1167 になってから使えます（Moto さんに知らせてください）','Starting a request chat and choosing managers work once the chat server (work-requests) is v1167 (tell Moto)'],
+    /* v1168（守り） */
+    chat_pin_required:['チャットの暗証番号を入れてください','Enter your chat PIN'],
+    chat_key_required:['このグループはキーで守られています。キーを入れてください','This group is protected by a key. Enter the key'],
+    guard_old:['チャットの守り（暗証番号・キー・プッシュ通知）は、サーバー（SQL）が v1168 になってから使えます（Moto さんに知らせてください）','Chat protection (PIN, key, push) works once the server (SQL) is v1168 (tell Moto)'],
+    guard_fn_old:['チャットの守り（暗証番号・キー・プッシュ通知）は、チャットのサーバー（関数 work-requests）が v1168 になってから使えます（Moto さんに知らせてください）','Chat protection works once the chat server (work-requests) is v1168 (tell Moto)'],
+    push_off:['プッシュ通知のサーバーの準備がまだです（Moto さんに知らせてください）','Push notifications are not set up on the server yet (tell Moto)']
   };
   function T(ja, en){ try{ return typeof t === 'function' ? t(ja, en) : ja; }catch(e){ return ja; } }
   function esc(s){ return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
@@ -109558,7 +109567,8 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     threads:{}, cursor:0, unread:0, mention:0, lastSync:0, lastFull:0, syncing:false, again:'', painted:'',
     seg:'all', q:'', open:'', paneFor:null, msgs:{}, out:{}, drafts:{}, ment:{}, people:null, peopleSt:'', at:null, atSt:'',
     rt:false, ch:null, chSeq:0, timer:null, sigT:null, pop:null, dlg:null, mem:null, add:null,
-    att:{}, furl:{}, fneed:{}, fbusy:false, flist:null, view:null, rkey:{} }; }
+    att:{}, furl:{}, fneed:{}, fbusy:false, flist:null, view:null, rkey:{},
+    guard:{ pin:false, unlocked:true }, push:{ on:false, ep:'', st:'', busy:false }, kg:null, gd:null, want:false }; }
   var C = fresh(0);
   W._chatState = function(){ return C; };
 
@@ -109567,13 +109577,15 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     var tok = pinTok();
     if (!tok) throw mk('signin');
     if (C.tok && tok !== C.tok) throw mk('signin_changed');
-    var r, j = null;
+    var r, j = null, g0 = C.gen, u = L.utok;
+    /* v1168：開けた印（このタブのメモリだけ）を一緒に送る。サーバーが暗証番号・キーを開けているかを確かめる */
     try { r = await fetch(SUPABASE_URL + FN, { method:'POST', headers:{ apikey:SUPABASE_ANON, Authorization:'Bearer ' + SUPABASE_ANON, 'Content-Type':'application/json' },
-      body:JSON.stringify(Object.assign({}, payload, { pin_session:tok })) }); }
+      body:JSON.stringify(Object.assign({}, payload, { pin_session:tok }, u ? { unlock:u } : {})) }); }
     catch(e) { throw mk('network'); }
     try { j = await r.json(); } catch(e) { j = null; }
     if (r.status === 404 && !(j && j.error)) throw mk('network', 404);
-    if (!r.ok) throw mk((j && typeof j.error === 'string') ? j.error : '', r.status);
+    if (!r.ok) { var code = (j && typeof j.error === 'string') ? j.error : ''; if (g0 === C.gen) guardErr(code, payload); throw mk(code, r.status); }
+    if (j && typeof j.unlock === 'string' && /^[0-9a-f]{64}$/.test(j.unlock) && g0 === C.gen && pinTok() === tok) L.utok = j.unlock;
     return j;
   }
   W.chatAPI = api;
@@ -109588,13 +109600,16 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     try{ C.timer = setInterval(tick, 15000); }catch(e){}
     try{ D.addEventListener('visibilitychange', onVis); }catch(e){}
     hostStart();   /* v1167：どの画面にも「チャット」ボタン・放っておいたときのロック・アプリを切り替えたときに隠す */
+    try { if (/[?&]chat=1(&|$)/.test(String(W.location.search || ''))) { C.want = true; W.history.replaceState(null, '', String(W.location.pathname || './') + String(W.location.hash || '')); } } catch(e){}   /* v1168：通知を押して開いた */
     syncNow(true);
+    pushCheck();   /* v1168：この端末の通知の送り先がだれのものか（前の人のなら消す） */
   };
   W.chatReset = function(){
     try{ if (C.ch && typeof _rtClient !== 'undefined' && _rtClient) _rtClient.removeChannel(C.ch); }catch(e){}
     try{ if (C.timer) clearInterval(C.timer); }catch(e){}
     try{ if (C.sigT) clearTimeout(C.sigT); }catch(e){}
     try{ D.removeEventListener('visibilitychange', onVis); }catch(e){}
+    bye();   /* v1168：この端末の開けた印を消す・通知の送り先をやめる（ログアウト） */
     freeAll();   /* v1161：付けた写真の小さい絵（このタブのメモリ）も残さない */
     hostReset();   /* v1167：別ウィンドウを閉じる・パネルとボタンを消す・ロックと画像（貼り付けた絵・印）も捨てる */
     C = fresh(C.gen + 1);
@@ -109622,7 +109637,8 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
         if (!j.more) { done = true; break; }
         since = Number(j.cursor) || since;
       }
-      if (all && done) Object.keys(C.threads).forEach(function(id){ if (!seen[id]) dropThread(id); });
+      /* v1168：暗証番号を開けていない（一覧が来ない）ときは、この端末の写し・書きかけを捨てない（開けたら読み直す） */
+      if (all && done && C.guard.unlocked !== false) Object.keys(C.threads).forEach(function(id){ if (!seen[id]) dropThread(id); });
       if (all) C.lastFull = Date.now();
       C.lastSync = Date.now(); C.st = 'ok'; C.err = ''; C.errCode = '';
     } catch(e) {
@@ -109636,16 +109652,24 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     }
     if (g !== C.gen) return;
     subscribe(); paintAll(); badges();
+    if (C.want && C.guard.unlocked !== false) { C.want = false; W.chatOpenLatest(); }
     if (C.seg === 'at' && visible()) loadAt();
     if (C.again) { var a = C.again; C.again = ''; syncNow(a === 'full'); }
   }
   function apply(j, seen){
     var first = !C.lastFull;
     C.me = j.me || C.me; C.role = j.role || C.role;
+    /* v1168：暗証番号を決めていて開けていなければ、一覧も合図の印も来ない（数だけ）→ ロックして暗証番号を聞く */
+    if (j.guard) {
+      C.guard = { pin:!!j.guard.pin, unlocked:j.guard.unlocked !== false };
+      if (!C.guard.unlocked) { unsubscribe(); C.token = ''; pinNeed(); }
+    }
     (j.threads || []).forEach(function(r){
       var old = C.threads[r.id]; C.threads[r.id] = r; if (seen) seen[r.id] = 1;
       if (!first && old && (Number(r.mention) || 0) > (Number(old.mention) || 0) && !(C.open === r.id && visible() && !hid())) toast(T('新着メッセージがあります（あなた宛ての @）','You have a new message (an @ for you)'));   /* v1167：知らせに送った人・会話の名前・本文は出さない（依頼書の 5） */
-      if (C.open === r.id && old && old.chg !== r.chg) loadMsgs(r.id, 'latest');
+      /* v1168：キーが変わった・決められた（この端末の印では開かない）→ この会話の写しを捨てて、キーを聞く */
+      if (gated(r) && !(old && gated(old))) keyNeed(r.id, true);
+      else if (C.open === r.id && old && old.chg !== r.chg) loadMsgs(r.id, 'latest');
     });
     (j.gone || []).forEach(function(id){ if (seen) seen[id] = 1; dropThread(id); });
     C.cursor = Math.max(C.cursor, Number(j.cursor) || 0);
@@ -109724,6 +109748,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     C.out[tid] = o.filter(function(x){ return !keys[x.key]; });   /* 答えが届かなかったが、サーバーには入っていたもの */
   }
   function loadMsgs(tid, mode){
+    if (gated(C.threads[tid])) { if (C.open === tid) paintPane('keep'); return; }   /* v1168：キーを開けていない会話は読みに行かない */
     var m = C.msgs[tid] || (C.msgs[tid] = newMsgs());
     if (m.busy) { if (mode !== 'older') m.again = true; return; }
     m.busy = true; if (!m.list.length) m.st = 'loading';
@@ -110053,7 +110078,10 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       + (d.mode === 'group' ? '<input id="chat-new-title" class="form-input" maxlength="60" style="width:100%;margin-bottom:6px" placeholder="' + esc(T('グループの名前（60 字まで）','Group name (up to 60)')) + '" value="' + esc(d.title) + '" oninput="chatNewTitle(this.value)">' : '')
       + '<input class="form-input" style="width:100%" placeholder="' + esc(T('名前で探す','Search by name')) + '" value="' + esc(d.q) + '" oninput="chatNewQ(this.value)">'
       + '<div id="chat-new-list" style="max-height:46vh;overflow-y:auto;margin-top:6px"></div>'
-      + (d.mode === 'group' ? '<div id="chat-new-foot" style="display:flex;gap:8px;align-items:center;margin-top:10px"></div>' : '')
+      + (d.mode === 'group' ? '<details style="margin-top:8px;font-size:12px"' + (d.keyOn ? ' open' : '') + ' ontoggle="if(window.chatNewKeyToggle)chatNewKeyToggle(this.open)"><summary style="cursor:pointer"><i class="ti ti-key"></i> ' + T('キーで守る（任意）','Protect with a key (optional)') + '</summary>'
+          + '<div style="font-size:11px;color:var(--muted);margin:6px 0;line-height:1.6">' + T('参加者は、開くときにこのキーを入れます（4〜32 文字）。参加者でない人は、キーを知っていても入れません。キーは参加者に口頭などで伝えてください（チャットに書かない）。','Members enter this key to open it (4–32 characters). People who are not members cannot get in even with the key. Tell members the key in person (not in the chat).') + '</div>'
+          + '<input id="chat-new-key" class="form-input" type="password" autocomplete="new-password" maxlength="40" style="width:100%;margin-bottom:4px" placeholder="' + esc(T('キー','Key')) + '"><input id="chat-new-key2" class="form-input" type="password" autocomplete="new-password" maxlength="40" style="width:100%" placeholder="' + esc(T('もう一度','Again')) + '"></details>'
+          + '<div id="chat-new-foot" style="display:flex;gap:8px;align-items:center;margin-top:10px"></div>' : '')
       + '<div id="chat-new-err"></div>';
     drawNewList();
   }
@@ -110098,10 +110126,18 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     var d = C.dlg; if (!d || d.kind !== 'new' || d.busy) return;
     var mem = Object.keys(d.sel), title = d.title.trim();
     if (!title || !mem.length) return;
+    /* v1168：キー（任意）。2 回同じに入れたものだけ（このタブのメモリにも残さない） */
+    var k1 = $id('chat-new-key'), k2 = $id('chat-new-key2'), gk = k1 ? keyNorm(k1.value) : '', gk2 = k2 ? keyNorm(k2.value) : '';
+    if (gk || gk2) {
+      if (gk.length < 4 || gk.length > 32) { newErr(T('キーは 4〜32 文字です','The key is 4–32 characters')); return; }
+      if (gk !== gk2) { newErr(T('キーが 2 回とも同じではありません','The two keys do not match')); return; }
+    }
     d.busy = true; drawNewFoot();
-    var g = C.gen;
+    var g = C.gen, p = { action:'chat_create_group', title:title, members:mem, client_key:d.key };
+    if (gk) p.key = gk;
     /* 同じ鍵：答えが届かずにもう一度押しても、グループは 1 つ */
-    api({ action:'chat_create_group', title:title, members:mem, client_key:d.key }).then(function(r){ if (g !== C.gen) return; C.dlg = null; C.threads[r.id] = Object.assign({}, C.threads[r.id] || {}, r); dlgClose(); W.chatGo(r.id); },
+    api(p).then(function(r){ if (g !== C.gen) return; C.dlg = null; C.threads[r.id] = Object.assign({}, C.threads[r.id] || {}, r); dlgClose(); W.chatGo(r.id);
+        if (gk && !r.keyed) toast(T('グループは作りました。キーは決められませんでした（参加者の画面の「グループのキー」から決めてください）','The group was created, but the key was not set (set it from Members › Group key)'), 'warn'); },
       function(e){ if (g !== C.gen) return; d.busy = false; drawNewFoot(); newErr(e); });
   };
 
@@ -110119,6 +110155,8 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     var h = '<div class="modal-title">' + T('参加者','Members') + '（' + m.members.length + '）<button class="modal-close" onclick="chatDlgClose()">×</button></div>';
     if (s.err) h += '<div class="alert alert-danger" style="font-size:12px">' + esc(s.err) + '</div>';
     if (can.rename) h += '<div style="display:flex;gap:6px;margin-bottom:10px"><input id="chat-ren" class="form-input" maxlength="60" style="flex:1" value="' + esc(s.title) + '"><button class="btn btn-secondary btn-sm"' + (s.busy ? ' disabled' : '') + ' onclick="chatRename()">' + T('名前を変える','Rename') + '</button></div>';
+    /* v1168：グループのキー（管理する人だけ） */
+    if (can.admin && r.kind !== 'dm') h += '<div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;font-size:12px"><i class="ti ti-key"></i><span style="flex:1">' + (r.keyed ? T('キー：あり（参加者は開くときにキーを入れる）','Key: on (members enter it to open)') : T('キー：なし','Key: off')) + '</span><button class="btn btn-secondary btn-sm" onclick="chatKeySettings(\'' + esc(s.tid) + '\')">' + T('グループのキー','Group key') + '</button></div>';
     h += '<div style="max-height:34vh;overflow-y:auto">' + m.members.map(function(x){
       var me = x.emp === C.me, e = esc(x.emp), btn = '';
       if (me) { if (can.leave) btn = '<button class="btn btn-secondary btn-sm"' + (s.busy ? ' disabled' : '') + ' onclick="chatRemove(\'' + e + '\')">' + T('抜ける','Leave') + '</button>'; }
@@ -110679,7 +110717,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
        スマホ・タブレットでアプリを切り替えたときは、チャットを隠す（切り替えの画面に出さない）。ログアウト・人が替わると別ウィンドウを閉じ、前の人の会話・画像・書きかけ・ロックの状態を捨てる。
        個人のチャット PIN・グループのキー・プッシュ通知は v1168。 */
   var H = { where:'', shown:false, mode:'panel', full:false, pinned:false, narrow:false, geo:null, el:null, obs:null, started:false, menu:false };
-  var L = { locked:false, why:'', last:Date.now(), timer:null, busy:false, err:'', priv:false };
+  var L = { locked:false, why:'', last:Date.now(), timer:null, busy:false, err:'', priv:false, utok:null, forgot:false };
   var EXT = null, SHOT = null, ASKS = [];
   var UI_KEY = '_chat_ui_v1';   /* この端末だけ（パネルの位置・大きさ・前面の固定だけ）。会話・書きかけ・人の名前や ID・端末の種類は入れない */
 
@@ -110710,7 +110748,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     if (ly && !ly.hidden) { flushAsks(); ly.innerHTML = ''; ly.hidden = true; return; }
     try { closeModalDirect(); } catch(e){}
   }
-  W.chatDlgClose = function(){ if (SHOT) { W.chatShotCancel(); return; } C.dlg = null; C.mem = null; C.add = null; C.flist = null; C.view = null; dlgClose(); };
+  W.chatDlgClose = function(){ if (SHOT) { W.chatShotCancel(); return; } C.dlg = null; C.mem = null; C.add = null; C.flist = null; C.view = null; C.gd = null; C.kset = null; dlgClose(); };
   function flushAsks(){ var a = ASKS.slice(); a.forEach(function(f){ try { f(false); } catch(e){} }); ASKS = []; var el = $id('chat-askl'); if (el) { el.innerHTML = ''; el.hidden = true; } }
   /* 確かめる（チャットの画面の中に重ねる。別ウィンドウでも見える）。チャットの画面が無ければブラウザの確かめ。1 つずつ（次を出すと前は「やめる」） */
   function ask(msg, okLabel, sub){
@@ -110774,12 +110812,16 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     try { $id('chat-fbar').addEventListener('pointerdown', barDown); $id('chat-rz').addEventListener('pointerdown', rzDown); } catch(e){}
     return el;
   }
+  /* v1168 の直し：PC は body に zoom:1.1 が掛かる（index.html の @media (hover: hover) and (pointer: fine)）。パネルの位置・大きさは zoom の前の値なので、
+     見えている幅・高さ・マウスの動きを zoom で割る（前はパネルが右・下にはみ出していた） */
+  function zoomOf(){ try { var z = parseFloat(W.getComputedStyle(D.body).zoom); return z > 0 && z < 5 ? z : 1; } catch(e){ return 1; } }
+  W._chatZoom = zoomOf;
   function geoDef(){
-    var vw = W.innerWidth || 1280, vh = W.innerHeight || 800, w = Math.min(440, vw - 32), h = Math.min(660, vh - 96);
+    var z = zoomOf(), vw = (W.innerWidth || 1280) / z, vh = (W.innerHeight || 800) / z, w = Math.min(440, vw - 32), h = Math.min(660, vh - 96);
     return { x:Math.max(8, vw - w - 20), y:Math.max(56, vh - h - 20), w:w, h:h };
   }
   function geoFix(g){
-    var vw = W.innerWidth || 1280, vh = W.innerHeight || 800;
+    var z = zoomOf(), vw = (W.innerWidth || 1280) / z, vh = (W.innerHeight || 800) / z;
     g = g && typeof g === 'object' ? g : geoDef();
     var w = Math.max(320, Math.min(Number(g.w) || 440, vw - 16)), h = Math.max(360, Math.min(Number(g.h) || 640, vh - 16));
     var x = Math.max(8, Math.min(Number(g.x) || 0, vw - w - 8)), y = Math.max(8, Math.min(Number(g.y) || 0, vh - h - 8));
@@ -110882,12 +110924,12 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   function barDown(ev){
     if (!H.el || EXT || !ev || ev.button > 0) return;
     var t = ev.target; if (t && t.closest && t.closest('button')) return;
-    var sx = ev.clientX, sy = ev.clientY, g0 = Object.assign({}, H.geo || geoDef()), moved = false, pid = ev.pointerId;
+    var sx = ev.clientX, sy = ev.clientY, g0 = Object.assign({}, H.geo || geoDef()), moved = false, pid = ev.pointerId, z = zoomOf();
     try { ev.currentTarget.setPointerCapture(pid); } catch(e){}
     var tgt = ev.currentTarget;
     function mv(e){
       if (e.pointerId !== pid) return;
-      var dx = e.clientX - sx, dy = e.clientY - sy;
+      var dx = (e.clientX - sx) / z, dy = (e.clientY - sy) / z;
       if (Math.abs(dx) + Math.abs(dy) > 3) moved = true;
       if (H.mode === 'panel') { H.geo = geoFix({ x:g0.x + dx, y:g0.y + dy, w:g0.w, h:g0.h }); H.el.style.left = H.geo.x + 'px'; H.el.style.top = H.geo.y + 'px'; }
     }
@@ -110904,11 +110946,11 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   function rzDown(ev){
     if (!H.el || EXT || H.mode !== 'panel' || !ev) return;
     ev.preventDefault();
-    var sx = ev.clientX, sy = ev.clientY, g0 = Object.assign({}, H.geo || geoDef()), pid = ev.pointerId, tgt = ev.currentTarget;
+    var sx = ev.clientX, sy = ev.clientY, g0 = Object.assign({}, H.geo || geoDef()), pid = ev.pointerId, tgt = ev.currentTarget, z = zoomOf();
     try { tgt.setPointerCapture(pid); } catch(e){}
     function mv(e){
       if (e.pointerId !== pid) return;
-      H.geo = geoFix({ x:g0.x, y:g0.y, w:g0.w + (e.clientX - sx), h:g0.h + (e.clientY - sy) });
+      H.geo = geoFix({ x:g0.x, y:g0.y, w:g0.w + (e.clientX - sx) / z, h:g0.h + (e.clientY - sy) / z });
       H.el.style.left = H.geo.x + 'px'; H.el.style.top = H.geo.y + 'px'; H.el.style.width = H.geo.w + 'px'; H.el.style.height = H.geo.h + 'px';   /* 画面からはみ出さない（入力欄が隠れない） */
       var nw = narrowNow(); if (nw !== H.narrow) { H.narrow = nw; var rt = $id('chat-root'); if (rt && !L.locked) rt.className = rootCls(); }
     }
@@ -111008,9 +111050,12 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   W.chatLockNow = function(){ lockNow('now'); };
   function lockNow(why){
     if (!canUse() || L.locked) return;
+    /* v1168：暗証番号を決めている人は、サーバーの開けた印からも暗証番号の分を消す（続けるには暗証番号）。キーの分は残す（ログアウトで消す） */
+    if (why !== 'pin' && L.utok) { var g = C.gen; api({ action:'chat_relock', mode:'pin' }).then(function(){ if (g === C.gen && C.guard.pin) C.guard.unlocked = false; }, function(){}); }
+    L.forgot = false;
     L.locked = true; L.why = why || 'now'; L.err = ''; L.busy = false; H.menu = false;
     flushAsks(); viewerClose(); closePop();
-    C.dlg = null; C.mem = null; C.add = null; C.flist = null; C.view = null;
+    C.dlg = null; C.mem = null; C.add = null; C.flist = null; C.view = null; C.gd = null; C.kset = null;
     repaintHosts(); fabPaint(); badges();
   }
   function repaintHosts(){
@@ -111020,6 +111065,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   }
   function lockHtml(){
     var name = ''; try { name = (typeof curUserName !== 'undefined' && curUserName) ? String(curUserName) : ''; } catch(e){}
+    if (C.guard.pin) return pinLockHtml(name);   /* v1168：チャットの暗証番号を決めている人（どの端末でも） */
     var shared = devKind() === 'shared';
     return '<div class="chat-lock"><i class="ti ti-lock chat-lock-i" aria-hidden="true"></i><div class="chat-lock-t">' + T('ロック中','Locked') + (name ? '（' + esc(name) + '）' : '') + '</div>'
       + '<div class="chat-lock-s">' + (L.why === 'idle' ? T('しばらく操作がなかったので、チャットを隠しました','The chat was hidden after a while without use') : T('チャットを隠しました','The chat is hidden')) + '</div>'
@@ -111031,6 +111077,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   }
   W.chatUnlock = function(){
     if (!L.locked || L.busy) return;
+    if (C.guard.pin) { pinUnlock(); return; }   /* v1168 */
     if (devKind() !== 'shared') { unlockDone(); return; }
     var el = $id('chat-lock-pin'), pin = el ? String(el.value || '').trim() : '';
     if (el) el.value = '';
@@ -111064,23 +111111,354 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       return { ok:false };
     }, function(){ return { ok:false, server:true }; });
   };
-  function unlockDone(){
-    L.locked = false; L.err = ''; L.busy = false; L.last = Date.now();
+  function unlockDone(full){
+    L.locked = false; L.err = ''; L.busy = false; L.forgot = false; L.last = Date.now();
     repaintHosts(); fabPaint(); badges();
-    syncNow(false);
+    syncNow(!!full);
   }
   W.chatSwitchUser = function(){ try { if (typeof doLogout === 'function') doLogout(); } catch(e){} };
   /* この端末の守り（人ごと）。ロック中は変えられない */
+  /* ================================================================ v1168：チャットの守り（個人の暗証番号・グループのキー・プッシュ通知）
+     暗証番号・キーはサーバーが確かめる（続けて 5 回間違えると止まる・そのまま置かない）。開けた印（L.utok）はこのタブのメモリだけ。
+     暗証番号を決めている人：開けていないと一覧・会話・画像・合図が来ない（数だけ）→ ロックの画面で暗証番号を聞く（どの端末でも）。
+     キーの会話：開けていないと中身・入力欄を出さない（一覧は名前と数だけ）。キーが変わったら、この端末の写しを捨ててもう一度聞く。
+     プッシュ通知：「新着メッセージがあります」だけ（送った人・会話の名前・本文・画像は出さない）。ログアウトでやめる。 */
+  function pinNorm(v){ var x = String(v == null ? '' : v); try { x = x.normalize('NFKC'); } catch(e){} return x.trim(); }
+  function keyNorm(v){ var x = String(v == null ? '' : v); try { x = x.normalize('NFKC'); } catch(e){} return x.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '').trim(); }
+  function gated(r){ return !!(r && r.keyed && r.key_ok === false); }
+  W._chatGated = gated;
+  function guardErr(code, payload){
+    if (code === 'chat_pin_required') pinNeed();
+    else if (code === 'chat_key_required') { var tid = (payload && payload.thread) || C.open; if (tid) keyNeed(tid, false); }
+  }
+  /* 暗証番号を開けていない：ロックして暗証番号を聞く（一覧・本文は来ていない） */
+  function pinNeed(){
+    C.guard.pin = true; C.guard.unlocked = false;
+    if (!canUse()) return;
+    if (!L.locked) lockNow('pin'); else repaintHosts();
+    fabPaint();
+  }
+  /* キーを開けていない（キーが決まった・変わった）：この会話の写しを捨てる（もう一度キーを聞く） */
+  function keyNeed(tid, quiet){
+    var r = C.threads[tid]; if (!r) return;
+    r.keyed = true; r.key_ok = false;
+    var m = C.msgs[tid]; if (m) { m.ep = (m.ep || 0) + 1; m.list = []; m.older = false; m.once = false; m.st = ''; m.painted = false; m.reading = 0; m.members = []; m.can = {}; }
+    if (C.open === tid) {
+      if (C.view) { viewerClose(); C.view = null; }
+      if ((C.mem && C.mem.tid === tid) || (C.flist && C.flist.tid === tid)) { C.mem = null; C.flist = null; dlgClose(); }
+      if (!quiet && visible()) toast(errText('chat_key_required'), 'warn');
+    }
+    if (visible()) { paintList(); if (C.open === tid) paintPane('keep'); }
+  }
+  function guardFail(j, login, key){
+    j = j || {};
+    if (Number(j.locked) > 0) { var mn = Math.max(1, Math.ceil(Number(j.locked) / 60)); return T('続けて間違えたので止まっています（あと ' + mn + ' 分）','Too many wrong tries. Wait ' + mn + ' min'); }
+    if (j.server) return T('サーバーにつながらないため確かめられませんでした。もう一度押してください','Could not reach the server to check it. Try again');
+    if (j.conflict) return T('ほかの端末で変わりました。もう一度入れてください','It was changed on another device. Enter it again');
+    var what = login ? T('ログインの PIN が違います','The login PIN is wrong') : key ? T('キーが違います','The key is wrong') : T('暗証番号が違います','The PIN is wrong');
+    return what + (Number(j.left) > 0 ? T('（あと ' + Number(j.left) + ' 回で止まります）',' (' + Number(j.left) + ' tries left)') : '');
+  }
+  function apiErr(e){ return e && e.code === 'unknown_action' ? errText('guard_fn_old') : (e && e.message) || errText(''); }
+
+  /* ---- ロックの画面（暗証番号を決めている人） */
+  function pinLockHtml(name){
+    var f = !!L.forgot;
+    return '<div class="chat-lock"><i class="ti ti-lock chat-lock-i" aria-hidden="true"></i><div class="chat-lock-t">' + T('ロック中','Locked') + (name ? '（' + esc(name) + '）' : '') + '</div>'
+      + '<div class="chat-lock-s">' + (f ? T('ログインの PIN で本人を確かめると、チャットの暗証番号を外します（そのあと決め直せます）','Confirm it is you with your login PIN to remove the chat PIN (you can set a new one afterwards)')
+        : L.why === 'idle' ? T('しばらく操作がなかったので、チャットを隠しました。チャットの暗証番号を入れてください','The chat was hidden after a while without use. Enter your chat PIN')
+        : T('チャットの暗証番号を入れてください','Enter your chat PIN')) + '</div>'
+      + '<input id="chat-lock-pin" class="form-input" type="password" inputmode="numeric" autocomplete="off" maxlength="8" placeholder="' + esc(f ? T('ログインの PIN','Your login PIN') : T('チャットの暗証番号','Chat PIN')) + '" onkeydown="if(event.key===\'Enter\'&&!event.isComposing)chatUnlock()">'
+      + (L.err ? '<div class="alert alert-danger" style="font-size:12px;margin-top:8px">' + esc(L.err) + '</div>' : '')
+      + '<div class="chat-lock-b"><button type="button" class="btn btn-primary"' + (L.busy ? ' disabled' : '') + ' onclick="chatUnlock()">' + (f ? T('本人を確かめて外す','Confirm and remove') : T('続ける','Continue')) + '</button>'
+      + '<button type="button" class="btn btn-secondary" onclick="chatPinForgot(' + (f ? 'false' : 'true') + ')">' + (f ? T('戻る','Back') : T('暗証番号を忘れた','Forgot the PIN')) + '</button>'
+      + '<button type="button" class="btn btn-secondary" onclick="chatSwitchUser()">' + T('別の人に替わる（ログアウト）','Switch user (log out)') + '</button></div>'
+      + '<div class="chat-lock-n">' + T('暗証番号はサーバーで確かめます。続けて 5 回間違えると、しばらく止まります。','The PIN is checked by the server. After 5 wrong tries in a row it stops for a while.') + '</div></div>';
+  }
+  W.chatPinForgot = function(on){ if (!L.locked || L.busy) return; L.forgot = !!on; L.err = ''; repaintHosts(); focusPin(); };
+  function pinUnlock(){
+    var el = $id('chat-lock-pin'), v = pinNorm(el ? el.value : '');
+    if (el) el.value = '';
+    if (!/^\d{4,8}$/.test(v)) { L.err = L.forgot ? T('ログインの PIN（4〜8 桁の数字）を入れてください','Enter your login PIN (4–8 digits)') : T('チャットの暗証番号（4〜8 桁の数字）を入れてください','Enter your chat PIN (4–8 digits)'); repaintHosts(); focusPin(); return; }
+    L.busy = true; L.err = ''; repaintHosts();
+    var g = C.gen, forgot = !!L.forgot;
+    api(forgot ? { action:'chat_pin_reset', login_pin:v } : { action:'chat_pin_verify', pin:v }).then(function(j){
+      if (g !== C.gen || !L.locked) return;
+      L.busy = false;
+      if (j && (j.ok || j.none)) {
+        if (forgot || j.none) { C.guard = { pin:false, unlocked:true }; if (forgot) toast(T('チャットの暗証番号を外しました。🛡（チャットの守り）から決め直せます','The chat PIN was removed. You can set a new one from 🛡 (chat protection)'), 'success'); }
+        else C.guard.unlocked = true;
+        unlockDone(true); return;
+      }
+      L.err = guardFail(j, forgot); repaintHosts(); focusPin();
+    }, function(e){ if (g !== C.gen) return; L.busy = false; L.err = apiErr(e); repaintHosts(); focusPin(); });
+  }
+
+  /* ---- この端末の守りの画面（端末の種類・暗証番号・プッシュ通知） */
   W.chatGuard = function(){
     if (L.locked || !C.me) return;
-    var d = devKind();
-    dlgOpen('<div class="modal-title"><i class="ti ti-shield-lock"></i> ' + T('チャットの守り（この端末）','Chat protection (this device)') + ' <button class="modal-close" onclick="chatDlgClose()">×</button></div>'
-      + '<label class="chat-row" style="cursor:pointer"><input type="radio" name="chat-dev"' + (d === 'shared' ? ' checked' : '') + ' onchange="chatSetDev(\'shared\')" style="width:18px;height:18px"><div class="chat-row-main"><b style="font-size:12.5px">' + T('店の共有 PC','Shared store PC') + '</b><div style="font-size:11px;color:var(--muted)">' + T('5 分操作がないとロック。続けるにはログインの PIN','Locks after 5 minutes; your login PIN unlocks it') + '</div></div></label>'
-      + '<label class="chat-row" style="cursor:pointer"><input type="radio" name="chat-dev"' + (d === 'personal' ? ' checked' : '') + ' onchange="chatSetDev(\'personal\')" style="width:18px;height:18px"><div class="chat-row-main"><b style="font-size:12.5px">' + T('自分だけの端末','My own device') + '</b><div style="font-size:11px;color:var(--muted)">' + T('30 分操作がないとロック','Locks after 30 minutes') + '</div></div></label>'
-      + '<div style="font-size:11px;color:var(--muted);margin:10px 0;line-height:1.6">' + T('この選び方は、このログインのあいだだけです（この端末に残しません。ログインし直すと、PC は共有 PC・スマホは自分の端末に戻ります）。ログアウトすると、この画面の会話・画像・書きかけも消えます。個人のチャット PIN とグループのキーは次の版（v1168）で入ります。','This lasts for this sign-in only (nothing is kept on the device; after signing in again a PC is a shared PC and a phone is your own device). Logging out also removes the conversations, images and drafts from this screen. A personal chat PIN and group keys come in the next version (v1168).') + '</div>'
-      + '<div style="display:flex;justify-content:flex-end;gap:8px"><button type="button" class="btn btn-secondary" onclick="chatDlgClose()">' + T('閉じる','Close') + '</button><button type="button" class="btn btn-primary" onclick="chatDlgClose();chatLockNow()"><i class="ti ti-lock"></i> ' + T('今すぐロック','Lock now') + '</button></div>');
+    C.gd = { mode:'', err:'', busy:false, old:'' };
+    dlgOpen('<div id="chat-gd" style="width:100%"></div>'); drawGuard();
+    var g = C.gen, s = C.gd;
+    api({ action:'chat_guard' }).then(function(j){ if (g !== C.gen || C.gd !== s) return; C.guard.pin = !!(j && j.pin); s.locked = Number(j && j.locked) || 0; drawGuard(); },
+      function(e){ if (g !== C.gen || C.gd !== s) return; if (e.code === 'guard_old' || e.code === 'unknown_action') s.old = e.code === 'guard_old' ? 'guard_old' : 'guard_fn_old'; drawGuard(); });
   };
-  W.chatSetDev = function(k){ if (L.locked || !C.me || (k !== 'shared' && k !== 'personal')) return; L.dev = k; L.last = Date.now(); paintBar(); };
+  function gdIn(id, ph){ return '<input id="' + id + '" class="form-input" type="password" inputmode="numeric" autocomplete="' + (id === 'chat-gd-cur' ? 'current-password' : 'new-password') + '" maxlength="8" style="width:100%;margin-bottom:6px;text-align:center;letter-spacing:.3em" placeholder="' + esc(ph) + '">'; }
+  function drawGuard(){
+    var el = $id('chat-gd'), s = C.gd; if (!el || !s) return;
+    var d = devKind(), pin = C.guard.pin, b = s.busy ? ' disabled' : '';
+    var h = '<div class="modal-title"><i class="ti ti-shield-lock"></i> ' + T('チャットの守り','Chat protection') + ' <button class="modal-close" onclick="chatDlgClose()">×</button></div>';
+    h += '<div class="chat-gd-h">' + T('この端末','This device') + '</div>'
+      + '<label class="chat-row" style="cursor:pointer"><input type="radio" name="chat-dev"' + (d === 'shared' ? ' checked' : '') + ' onchange="chatSetDev(\'shared\')" style="width:18px;height:18px"><div class="chat-row-main"><b style="font-size:12.5px">' + T('店の共有 PC','Shared store PC') + '</b><div style="font-size:11px;color:var(--muted)">' + (pin ? T('5 分操作がないとロック。続けるにはチャットの暗証番号','Locks after 5 minutes; your chat PIN unlocks it') : T('5 分操作がないとロック。続けるにはログインの PIN','Locks after 5 minutes; your login PIN unlocks it')) + '</div></div></label>'
+      + '<label class="chat-row" style="cursor:pointer"><input type="radio" name="chat-dev"' + (d === 'personal' ? ' checked' : '') + ' onchange="chatSetDev(\'personal\')" style="width:18px;height:18px"><div class="chat-row-main"><b style="font-size:12.5px">' + T('自分だけの端末','My own device') + '</b><div style="font-size:11px;color:var(--muted)">' + (pin ? T('30 分操作がないとロック。続けるにはチャットの暗証番号','Locks after 30 minutes; your chat PIN unlocks it') : T('30 分操作がないとロック','Locks after 30 minutes')) + '</div></div></label>';
+    h += '<div class="chat-gd-h"><i class="ti ti-lock-password"></i> ' + T('チャットの暗証番号（あなた）','Your chat PIN') + ' <span class="chat-chip">' + (pin ? T('オン','On') : T('オフ','Off')) + '</span></div>';
+    if (s.old) h += '<div class="alert alert-warning" style="font-size:12px">' + esc(errText(s.old)) + '</div>';
+    else {
+      h += '<div class="chat-gd-s">' + (pin ? T('チャットを開くとき・ロックのあとに、この暗証番号を入れます（どの端末でも）。','You enter this PIN to open the chat and after a lock (on any device).')
+          : T('決めると、チャットを開くとき・ロックのあとに入れます（どの端末でも）。','Once set, you enter it to open the chat and after a lock (on any device).'))
+        + T('ログインの PIN とは別の 4〜8 桁の数字。サーバーで確かめ、続けて 5 回間違えると止まります。','4–8 digits, different from your login PIN. Checked by the server; 5 wrong tries in a row stop it for a while.') + '</div>';
+      if (s.locked > 0) h += '<div class="alert alert-warning" style="font-size:12px">' + esc(guardFail({ locked:s.locked })) + '</div>';
+      if (s.err) h += '<div class="alert alert-danger" style="font-size:12px">' + esc(s.err) + '</div>';
+      if (!s.mode) h += '<div style="display:flex;gap:8px;flex-wrap:wrap">' + (pin
+          ? '<button class="btn btn-secondary btn-sm" onclick="chatPinMode(\'change\')">' + T('暗証番号を変える','Change the PIN') + '</button><button class="btn btn-secondary btn-sm" onclick="chatPinMode(\'clear\')">' + T('暗証番号を外す','Remove the PIN') + '</button>'
+          : '<button class="btn btn-primary btn-sm" onclick="chatPinMode(\'set\')">' + T('暗証番号を決める','Set a PIN') + '</button>') + '</div>';
+      else {
+        h += '<div class="chat-gd-form">';
+        if (s.mode !== 'set') h += gdIn('chat-gd-cur', T('今の暗証番号','Current PIN'));
+        if (s.mode !== 'clear') h += gdIn('chat-gd-new', T('新しい暗証番号（4〜8 桁）','New PIN (4–8 digits)')) + gdIn('chat-gd-new2', T('もう一度','Again'));
+        h += '<div style="display:flex;gap:8px;justify-content:flex-end"><button class="btn btn-secondary btn-sm" onclick="chatPinMode(\'\')"' + b + '>' + T('やめる','Cancel') + '</button><button class="btn btn-primary btn-sm" id="chat-gd-ok" onclick="chatPinSave()"' + b + '>'
+          + (s.mode === 'set' ? T('決める','Set') : s.mode === 'change' ? T('変える','Change') : T('外す','Remove')) + '</button></div>'
+          + (s.mode === 'change' ? '<div class="chat-gd-s" style="margin-top:6px">' + T('変えると、ほかの端末では新しい暗証番号を入れ直します。','Other devices will ask for the new PIN.') + '</div>' : '')
+          + '</div>';
+      }
+    }
+    h += '<div class="chat-gd-h"><i class="ti ti-bell"></i> ' + T('プッシュ通知（この端末）','Push notifications (this device)') + ' <span class="chat-chip">' + (C.push.on ? T('受け取る','On') : T('受け取らない','Off')) + '</span></div>'
+      + '<div class="chat-gd-s">' + T('知らせるのは「新着メッセージがあります」だけです（送った人・会話の名前・本文・画像は出しません）。押すと、新しいメッセージのある会話を開きます。ログアウトすると止まります。','Shows only “New message” (no sender, conversation name, text or images). Tapping it opens the newest unread conversation. Stops when you log out.') + '</div>'
+      + (C.push.st ? '<div class="alert alert-warning" style="font-size:12px">' + esc(C.push.st) + '</div>' : '')
+      + '<div style="display:flex;gap:8px">' + (C.push.on ? '<button class="btn btn-secondary btn-sm" onclick="chatPushOff()"' + (C.push.busy ? ' disabled' : '') + '>' + T('この端末で受け取らない','Turn off on this device') + '</button>'
+          : '<button class="btn btn-primary btn-sm" onclick="chatPushOn()"' + (C.push.busy ? ' disabled' : '') + '><i class="ti ti-bell"></i> ' + T('この端末で受け取る','Turn on for this device') + '</button>') + '</div>';
+    h += '<div style="font-size:11px;color:var(--muted);margin:12px 0 10px;line-height:1.6">' + T('端末の種類は、このログインのあいだだけです（この端末に残しません）。ログアウトすると、この画面の会話・画像・書きかけ・開けた印も消えます。','The device type lasts for this sign-in only (nothing is kept on the device). Logging out also removes the conversations, images, drafts and unlocks from this screen.') + '</div>'
+      + '<div style="display:flex;justify-content:flex-end;gap:8px"><button type="button" class="btn btn-secondary" onclick="chatDlgClose()">' + T('閉じる','Close') + '</button><button type="button" class="btn btn-primary" onclick="chatDlgClose();chatLockNow()"><i class="ti ti-lock"></i> ' + T('今すぐロック','Lock now') + '</button></div>';
+    el.innerHTML = h;
+    if (s.mode) setTimeout(function(){ var f = $id(s.mode === 'set' ? 'chat-gd-new' : 'chat-gd-cur'); if (f && !f.value) try { f.focus(); } catch(e){} }, 0);
+  }
+  W.chatPinMode = function(m){ var s = C.gd; if (!s || s.busy) return; s.mode = ['set','change','clear'].indexOf(m) >= 0 ? m : ''; s.err = ''; drawGuard(); };
+  W.chatPinSave = function(){
+    var s = C.gd; if (!s || s.busy || !s.mode) return;
+    var val = function(id){ var e = $id(id); return e ? pinNorm(e.value) : ''; };
+    var cur = val('chat-gd-cur'), n1 = val('chat-gd-new'), n2 = val('chat-gd-new2'), mode = s.mode;
+    var no = function(m){ s.err = m; drawGuard(); };
+    if (mode !== 'set' && !/^\d{4,8}$/.test(cur)) return no(T('今の暗証番号（4〜8 桁の数字）を入れてください','Enter your current PIN (4–8 digits)'));
+    if (mode !== 'clear') {
+      if (!/^\d{4,8}$/.test(n1)) return no(T('新しい暗証番号は 4〜8 桁の数字です','The new PIN is 4–8 digits'));
+      if (n1 !== n2) return no(T('新しい暗証番号が 2 回とも同じではありません','The two new PINs do not match'));
+      if (mode === 'change' && n1 === cur) return no(T('今の暗証番号と同じです','It is the same as the current PIN'));
+    }
+    var p = mode === 'clear' ? { action:'chat_pin_clear', cur:cur } : mode === 'change' ? { action:'chat_pin_set', pin:n1, cur:cur } : { action:'chat_pin_set', pin:n1 };
+    s.busy = true; s.err = ''; drawGuard();
+    var g = C.gen;
+    api(p).then(function(j){
+      if (g !== C.gen || C.gd !== s) return;
+      s.busy = false;
+      if (j && j.ok) {
+        C.guard = { pin:!!j.pin, unlocked:true }; s.mode = '';
+        drawGuard(); paintBar();
+        toast(mode === 'set' ? T('チャットの暗証番号を決めました','Your chat PIN is set') : mode === 'change' ? T('暗証番号を変えました（ほかの端末では入れ直します）','PIN changed (other devices will ask again)') : T('暗証番号を外しました','The PIN is removed'), 'success');
+        return;
+      }
+      if (j && j.none && mode !== 'set') { C.guard.pin = false; s.mode = ''; }
+      s.err = guardFail(j, false); drawGuard();
+    }, function(e){
+      if (g !== C.gen || C.gd !== s) return;
+      s.busy = false; s.err = apiErr(e);
+      if (e.code === 'conflict') { s.mode = ''; api({ action:'chat_guard' }).then(function(j){ if (C.gd === s) { C.guard.pin = !!(j && j.pin); drawGuard(); } }, function(){}); }
+      drawGuard();
+    });
+  };
+
+  /* ---- グループのキー：開ける（参加者だけ） */
+  function keyGateHtml(r){
+    var kg = C.kg && C.kg.tid === r.id ? C.kg : { err:'', busy:false }, id = esc(r.id);
+    return '<div class="chat-head" id="chat-head"><button class="btn btn-secondary btn-sm chat-back" onclick="chatBack()"><i class="ti ti-chevron-left"></i> ' + T('戻る','Back') + '</button><div style="flex:1;min-width:0"><div class="chat-head-t"><i class="ti ti-key"></i> ' + esc(titleOf(r)) + '</div></div></div>'
+      + '<div class="chat-keygate"><div class="chat-lock"><i class="ti ti-key chat-lock-i" aria-hidden="true"></i><div class="chat-lock-t">' + T('キーで守られています','Protected by a key') + '</div>'
+      + '<div class="chat-lock-s">' + T('この会話を開くには、管理する人から聞いたキーを入れてください（参加者だけが入れます）。','Enter the key you got from a manager to open this conversation (members only).') + '</div>'
+      + '<input id="chat-key-in" class="form-input" type="password" autocomplete="off" maxlength="40" placeholder="' + esc(T('キー','Key')) + '" onkeydown="if(event.key===\'Enter\'&&!event.isComposing)chatKeyOpen()">'
+      + (kg.err ? '<div class="alert alert-danger" style="font-size:12px;margin-top:8px">' + esc(kg.err) + '</div>' : '')
+      + '<div class="chat-lock-b"><button type="button" class="btn btn-primary" id="chat-key-ok"' + (kg.busy ? ' disabled' : '') + ' onclick="chatKeyOpen()">' + T('開く','Open') + '</button>'
+      + (r.admin ? '<button type="button" class="btn btn-secondary" onclick="chatKeySettings(\'' + id + '\')">' + T('キーを忘れた：新しいキーを決める','Forgot it: set a new key') + '</button>' : '')
+      + (r.kind !== 'dm' ? '<button type="button" class="btn btn-secondary" onclick="chatLeaveGated(\'' + id + '\')">' + T('この会話から抜ける','Leave this conversation') + '</button>' : '') + '</div>'
+      + '<div class="chat-lock-n">' + (r.admin ? T('あなたはこの会話を管理しています。新しいキーを決めると、前のキーでは開かなくなります。','You manage this conversation. A new key replaces the old one.') : T('キーを忘れたら、この会話を管理する人に聞いてください。続けて 5 回間違えると、しばらく止まります。','If you forgot the key, ask a manager of this conversation. 5 wrong tries in a row stop it for a while.')) + '</div></div></div>';
+  }
+  function keyInputKeep(){ var el = $id('chat-key-in'); return el ? { v:el.value, f:act() === el } : null; }
+  function keyInputPut(k){ var el = $id('chat-key-in'); if (!el || !k) return; el.value = k.v; if (k.f) try { el.focus(); } catch(e){} }
+  function keyOpened(tid, j){
+    var r = C.threads[tid]; C.kg = null;
+    if (r) { r.key_ok = true; if (j && j.none) r.keyed = false; if (j && j.key_rev != null) r.key_rev = j.key_rev; }
+    C.msgs[tid] = newMsgs();
+    if (C.open === tid) { C.paneFor = null; paintAll(); loadMsgs(tid, 'latest'); }
+    syncNow(false);
+  }
+  W.chatKeyOpen = function(){
+    var tid = C.open, r = C.threads[tid]; if (!r || !gated(r) || (C.kg && C.kg.busy)) return;
+    var el = $id('chat-key-in'), v = keyNorm(el ? el.value : '');
+    if (v.length < 4 || v.length > 32) { C.kg = { tid:tid, err:T('キーは 4〜32 文字です','The key is 4–32 characters'), busy:false }; paintPane('keep'); return; }
+    C.kg = { tid:tid, err:'', busy:true }; paintPane('keep');
+    var g = C.gen;
+    api({ action:'chat_key_verify', thread:tid, key:v }).then(function(j){
+      if (g !== C.gen) return;
+      var e2 = $id('chat-key-in'); if (e2) e2.value = '';
+      if (j && (j.ok || j.none)) { keyOpened(tid, j); return; }
+      C.kg = { tid:tid, err:guardFail(j, false, true), busy:false }; paintPane('keep');
+    }, function(e){ if (g !== C.gen) return; var e2 = $id('chat-key-in'); if (e2) e2.value = ''; C.kg = { tid:tid, err:apiErr(e), busy:false }; if (C.open === tid) paintPane('keep'); });
+  };
+  W.chatLeaveGated = function(tid){
+    if (!C.threads[tid]) return;
+    var g = C.gen;
+    ask(T('この会話から抜けますか？（もう読めなくなります。戻るには管理する人に加えてもらいます）','Leave this conversation? (you will no longer see it; a manager can add you back)'), T('抜ける','Leave')).then(function(yes){
+      if (!yes || g !== C.gen) return;
+      api({ action:'chat_remove', thread:tid, emp:C.me }).then(function(){ if (g !== C.gen) return; if (C.open === tid) C.open = ''; dropThread(tid); paintAll(); badges(); },
+        function(e){ if (g === C.gen) toast(apiErr(e), 'warn'); });
+    });
+  };
+  /* ---- グループのキー：決める・変える・外す（管理する人） */
+  W.chatKeySettings = function(tid){
+    var r = C.threads[tid]; if (!r || r.kind === 'dm' || L.locked) return;
+    C.mem = null; C.kset = { tid:tid, err:'', busy:false };
+    dlgOpen('<div id="chat-kset" style="width:100%"></div>'); drawKset();
+  };
+  function drawKset(){
+    var el = $id('chat-kset'), s = C.kset; if (!el || !s) return;
+    var r = C.threads[s.tid] || {}, b = s.busy ? ' disabled' : '';
+    el.innerHTML = '<div class="modal-title"><i class="ti ti-key"></i> ' + T('グループのキー','Group key') + ' <button class="modal-close" onclick="chatDlgClose()">×</button></div>'
+      + '<div class="chat-gd-s"><b>' + esc(titleOf(r)) + '</b> · ' + (r.keyed ? T('キーあり','Key on') : T('キーなし','No key')) + '</div>'
+      + '<div class="chat-gd-s">' + T('参加者は、開くときにこのキーを入れます（4〜32 文字）。参加者でない人は、キーを知っていても入れません。決める・変えると、ほかの参加者は次に開くときに新しいキーを入れます（前のキーでは開きません）。キーはチャットに書かず、口頭などで伝えてください。','Members enter this key to open it (4–32 characters). Non-members cannot get in even with the key. After setting or changing it, other members enter the new key next time (the old one stops working). Tell members the key in person, not in the chat.') + '</div>'
+      + (s.err ? '<div class="alert alert-danger" style="font-size:12px">' + esc(s.err) + '</div>' : '')
+      + '<input id="chat-kset-1" class="form-input" type="password" autocomplete="new-password" maxlength="40" style="width:100%;margin-bottom:6px" placeholder="' + esc(r.keyed ? T('新しいキー','New key') : T('キー','Key')) + '">'
+      + '<input id="chat-kset-2" class="form-input" type="password" autocomplete="new-password" maxlength="40" style="width:100%;margin-bottom:8px" placeholder="' + esc(T('もう一度','Again')) + '">'
+      + '<div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap">' + (r.keyed ? '<button class="btn btn-secondary btn-sm" onclick="chatKeyClear()"' + b + '>' + T('キーを外す','Remove the key') + '</button>' : '')
+      + '<button class="btn btn-secondary btn-sm" onclick="chatDlgClose()"' + b + '>' + T('閉じる','Close') + '</button><button class="btn btn-primary btn-sm" id="chat-kset-ok" onclick="chatKeySave()"' + b + '>' + (r.keyed ? T('キーを変える','Change the key') : T('キーを決める','Set the key')) + '</button></div>';
+  }
+  function ksetRun(p, done){
+    var s = C.kset; if (!s || s.busy) return;
+    s.busy = true; s.err = ''; drawKset();
+    var g = C.gen, r0 = C.threads[s.tid];
+    if (r0 && r0.key_rev != null) p.expect = Number(r0.key_rev) || 0;
+    api(p).then(function(j){
+      if (g !== C.gen) return;
+      var r = C.threads[s.tid], was = gated(r);
+      if (r) { r.keyed = !!j.keyed; r.key_ok = true; if (j.key_rev != null) r.key_rev = j.key_rev; }
+      if (C.kset === s) { C.kset = null; dlgClose(); }
+      done(); paintList();
+      if (was) keyOpened(s.tid, j); else if (C.open === s.tid) paintPane('keep');
+    }, function(e){
+      if (g !== C.gen) return;
+      s.busy = false; s.err = apiErr(e); if (e.code === 'conflict') { s.err = T('ほかの人が先にキーを変えました。最新を読み込みました','Someone changed the key first. The latest is loaded'); syncNow(false); }
+      if (C.kset === s) drawKset();
+    });
+  }
+  W.chatKeySave = function(){
+    var s = C.kset; if (!s || s.busy) return;
+    var a = $id('chat-kset-1'), b = $id('chat-kset-2'), k1 = keyNorm(a ? a.value : ''), k2 = keyNorm(b ? b.value : '');
+    if (k1.length < 4 || k1.length > 32) { s.err = T('キーは 4〜32 文字です','The key is 4–32 characters'); drawKset(); return; }
+    if (k1 !== k2) { s.err = T('キーが 2 回とも同じではありません','The two keys do not match'); drawKset(); return; }
+    ksetRun({ action:'chat_key_set', thread:s.tid, key:k1 }, function(){ toast(T('キーを決めました。ほかの参加者は次に開くときにキーを入れます','Key set. Other members enter it next time they open it'), 'success'); });
+  };
+  W.chatKeyClear = function(){
+    var s = C.kset; if (!s || s.busy) return;
+    ask(T('この会話のキーを外しますか？（参加者はキーなしで開けるようになります）','Remove the key from this conversation? (members can open it without a key)'), T('外す','Remove')).then(function(yes){
+      if (!yes || C.kset !== s) { if (C.kset === s) drawKset(); return; }
+      ksetRun({ action:'chat_key_set', thread:s.tid, key:null }, function(){ toast(T('キーを外しました','The key is removed'), 'success'); });
+    });
+  };
+  W.chatNewKeyToggle = function(on){ var d = C.dlg; if (d && d.kind === 'new') d.keyOn = !!on; };
+
+  /* ---- プッシュ通知（この端末）：中身なし。押すと新しいメッセージのある会話を開く */
+  function pushOk(){ try { return !!(W.navigator && W.navigator.serviceWorker && ('PushManager' in W) && ('Notification' in W)); } catch(e){ return false; } }
+  function iosWeb(){
+    try { var n = W.navigator || {}, ua = String(n.userAgent || ''); var ios = /iPhone|iPad|iPod/.test(ua) || (/Macintosh/.test(ua) && Number(n.maxTouchPoints) > 1);
+      return ios && !(n.standalone === true || mq('(display-mode: standalone)')); } catch(e){ return false; }
+  }
+  function pushWhy(){
+    if (iosWeb() && !pushOk()) return T('iPhone・iPad は、Safari の共有ボタン →「ホーム画面に追加」で入れたアプリで開くと使えます（iOS 16.4 以上）','On iPhone and iPad, open the app added with Share → “Add to Home Screen” (iOS 16.4 or later)');
+    if (!pushOk()) return T('この端末・ブラウザではプッシュ通知を使えません','This device or browser does not support push notifications');
+    try { if (W.Notification.permission === 'denied') return T('通知が止められています。端末・ブラウザの設定で、このアプリの通知を許可してください','Notifications are blocked. Allow them for this app in the device or browser settings'); } catch(e){}
+    return '';
+  }
+  function regGet(){ try { return Promise.resolve(W.navigator.serviceWorker.getRegistration()).then(function(r){ return r || null; }, function(){ return null; }); } catch(e){ return Promise.resolve(null); } }
+  function b64uBytes(s){ var t = String(s).replace(/-/g, '+').replace(/_/g, '/'); while (t.length % 4) t += '='; var bin = W.atob(t), a = new Uint8Array(bin.length); for (var i = 0; i < bin.length; i++) a[i] = bin.charCodeAt(i); return a; }
+  function sameKey(a, b){ try { if (!a) return false; var x = new Uint8Array(a); if (x.length !== b.length) return false; for (var i = 0; i < x.length; i++) if (x[i] !== b[i]) return false; return true; } catch(e){ return false; } }
+  W._chatPushWhy = pushWhy;
+  W.chatPushOn = function(){
+    if (C.push.busy) return;
+    var why = pushWhy(); if (why) { C.push.st = why; drawGuard(); return; }
+    var perm; try { perm = W.Notification.requestPermission(); } catch(e){ perm = 'default'; }   /* 押した操作の中で聞く（iPhone の決まり） */
+    C.push.busy = true; C.push.st = ''; drawGuard();
+    var g = C.gen, ep = '';
+    Promise.resolve(perm).then(function(pm){
+      if (pm !== 'granted') throw new Error(T('通知が許可されませんでした（端末・ブラウザの設定で許可できます）','Notifications were not allowed (you can allow them in the settings)'));
+      return api({ action:'chat_push_key' });
+    }).then(function(k){
+      if (!k || !k.key) throw mk('push_off');
+      return regGet().then(function(reg){
+        if (!reg || !reg.pushManager) throw new Error(T('このアプリの仕組み（Service Worker）が動いていないため使えません。開き直してください','The app’s service worker is not running. Reopen the app'));
+        var want = b64uBytes(k.key);
+        return reg.pushManager.getSubscription().then(function(sub){
+          if (sub && !sameKey(sub.options && sub.options.applicationServerKey, want)) return sub.unsubscribe().then(function(){ return null; });
+          return sub;
+        }).then(function(sub){ return sub || reg.pushManager.subscribe({ userVisibleOnly:true, applicationServerKey:want }); });
+      });
+    }).then(function(sub){ ep = String(sub && sub.endpoint || ''); return api({ action:'chat_push_sub', endpoint:ep }); }).then(function(){
+      if (g !== C.gen) return;
+      C.push = { on:true, ep:ep, st:'', busy:false }; drawGuard();
+      toast(T('この端末で通知を受け取ります（「新着メッセージがあります」だけ）','This device will get notifications (“New message” only)'), 'success');
+    }, function(e){ if (g !== C.gen) return; C.push.busy = false; C.push.st = apiErr(e); drawGuard(); });
+  };
+  W.chatPushOff = function(){
+    if (C.push.busy) return;
+    C.push.busy = true; drawGuard();
+    var g = C.gen, ep0 = C.push.ep;
+    regGet().then(function(reg){ return reg && reg.pushManager ? reg.pushManager.getSubscription() : null; }).then(function(sub){
+      var ep = (sub && sub.endpoint) || ep0;
+      return (ep ? api({ action:'chat_push_unsub', endpoint:ep }).catch(function(){}) : Promise.resolve()).then(function(){ if (sub) return sub.unsubscribe(); });
+    }).then(function(){ if (g !== C.gen) return; C.push = { on:false, ep:'', st:'', busy:false }; drawGuard(); },
+      function(e){ if (g !== C.gen) return; C.push.busy = false; C.push.st = apiErr(e); drawGuard(); });
+  };
+  /* ログインのあと：この端末の送り先がだれのものか（前の人がログアウトし損ねたものは消す・この人の分にはしない） */
+  function pushCheck(){
+    if (!pushOk()) return;
+    try { if (W.Notification.permission !== 'granted') return; } catch(e){ return; }
+    var g = C.gen;
+    regGet().then(function(reg){ return reg && reg.pushManager ? reg.pushManager.getSubscription() : null; }).then(function(sub){
+      if (g !== C.gen || !sub) return;
+      return api({ action:'chat_push_check', endpoint:sub.endpoint }).then(function(j){
+        if (g !== C.gen) return;
+        C.push.on = !!(j && j.on); C.push.ep = C.push.on ? sub.endpoint : '';
+        if (j && j.cleared) { try { sub.unsubscribe(); } catch(e){} }
+      });
+    }).catch(function(){});
+  }
+  /* ログアウト：この端末の開けた印を消す・通知の送り先をやめる（答えは待たない。このタブの印はすぐ捨てる） */
+  function bye(){
+    var tok = C.tok, u = L.utok, ep = C.push && C.push.on ? C.push.ep : '';
+    L.utok = null;
+    if (!tok || (!u && !ep)) return;
+    function post(b){
+      try { var f = fetch(SUPABASE_URL + FN, { method:'POST', keepalive:true, headers:{ apikey:SUPABASE_ANON, Authorization:'Bearer ' + SUPABASE_ANON, 'Content-Type':'application/json' },
+        body:JSON.stringify(Object.assign({ pin_session:tok }, b)) }); if (f && typeof f.catch === 'function') f.catch(function(){}); } catch(e){}
+    }
+    if (u) post({ action:'chat_relock', mode:'all', unlock:u });
+    if (ep) {
+      post({ action:'chat_push_unsub', endpoint:ep });
+      regGet().then(function(reg){ return reg && reg.pushManager ? reg.pushManager.getSubscription() : null; }).then(function(s){ if (s && s.endpoint === ep) return s.unsubscribe(); }).catch(function(){});
+    }
+  }
+  /* 通知を押した：新しいメッセージのある会話（なければいちばん新しい会話）を開く。暗証番号を開けていなければ、開けてから */
+  W.chatOpenLatest = function(){
+    if (!canUse() || C.guard.unlocked === false || !C.lastFull) { C.want = true; if (canUse() && !onChatPage()) floatShow(); return; }
+    var all = sorted(), r = all.filter(function(x){ return (Number(x.unread) || 0) > 0; })[0] || all[0];
+    if (!r) { if (!onChatPage()) floatShow(); return; }
+    if (onChatPage()) W.chatOpen(r.id); else W.chatGo(r.id);
+  };
+  W.chatSetDev = function(k){ if (L.locked || !C.me || (k !== 'shared' && k !== 'personal')) return; L.dev = k; L.last = Date.now(); paintBar(); drawGuard(); };
   /* スマホ・タブレットでアプリを切り替えたとき：チャットを隠す（切り替えの画面の絵に出さない） */
   function privacy(on){
     if (!coarse()) return;
@@ -111118,6 +111496,9 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       var mc = D.getElementById('main-content');
       if (mc && typeof W.MutationObserver === 'function') { H.obs = new W.MutationObserver(function(){ clearTimeout(H.obsT); H.obsT = setTimeout(fabPaint, 60); }); H.obs.observe(mc, { childList:true }); }
     } catch(e){}
+    /* v1168：通知を押して開いた（Service Worker から）→ 新しいメッセージのある会話を開く。1 回だけつなぐ */
+    try { if (!H.swOn && W.navigator && W.navigator.serviceWorker && typeof W.navigator.serviceWorker.addEventListener === 'function') { H.swOn = true;
+      W.navigator.serviceWorker.addEventListener('message', function(ev){ var d = ev && ev.data; if (d && d.type === 'funergy-chat-open') W.chatOpenLatest(); }); } } catch(e){}
     ensureCss(); fabPaint();
   }
   function hostReset(){
@@ -111130,7 +111511,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     ['pointerdown', 'keydown', 'wheel', 'touchstart'].forEach(function(tp){ try { D.removeEventListener(tp, touchAct, { capture:true }); } catch(e){} });
     try { D.removeEventListener('keydown', escKey); W.removeEventListener('resize', onResize); W.removeEventListener('beforeunload', onBeforeUnload); } catch(e){}
     try { if (W.visualViewport) { W.visualViewport.removeEventListener('resize', fitVV); W.visualViewport.removeEventListener('scroll', fitVV); } } catch(e){}
-    L = { locked:false, why:'', last:Date.now(), timer:null, busy:false, err:'', priv:false };
+    L = { locked:false, why:'', last:Date.now(), timer:null, busy:false, err:'', priv:false, utok:null, forgot:false };
     H.started = false; H.obs = null;
     var f = D.getElementById('chat-fab'); if (f) f.hidden = true;
     var pg = D.getElementById('chat-host-page'); if (pg) pg.innerHTML = '';
@@ -111344,6 +111725,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   // 一覧の 1 行の文（v1163・#155 の Codex P3）：サーバーの files・state から画面の言葉で。無ければ（前の SQL）text のまま
   function pvText(pv){
     if (!pv) return '';
+    if (pv.locked) return T('（キーで守られています）','(Protected by a key)');   /* v1168：キーを開けるまで中身・送った人は来ない */
     if (pv.state === 'deleted') return T('（削除されました）','(Deleted)');
     if (pv.state === 'hidden') return T('（見えなくなりました）','(Hidden)');
     var f = pv.files, ph = f ? Number(f.ph) || 0 : 0, ot = f ? Number(f.ot) || 0 : 0;
@@ -111419,9 +111801,9 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     return rows.map(function(r){
       var pv = r.preview, un = Number(r.unread) || 0, mn = Number(r.mention) || 0, ref = r.ref || {};
       var av = r.kind === 'group' ? '<i class="ti ti-users"></i>' : r.kind === 'case' ? '<i class="ti ti-file-text"></i>' : esc(String(r.title || '?').slice(0, 1));
-      return '<div class="chat-row' + (C.open === r.id ? ' on' : '') + '" onclick="chatOpen(\'' + esc(r.id) + '\')"><div class="chat-av k-' + esc(r.kind) + '">' + av + '</div><div class="chat-row-main"><div class="chat-row-top"><b>' + esc(r.kind === 'case' ? caseLabel(r) : titleOf(r)) + '</b>'
+      return '<div class="chat-row' + (C.open === r.id ? ' on' : '') + '" onclick="chatOpen(\'' + esc(r.id) + '\')"><div class="chat-av k-' + esc(r.kind) + '">' + av + '</div><div class="chat-row-main"><div class="chat-row-top"><b>' + (r.keyed ? '<i class="ti ti-key chat-keyi" title="' + esc(T('キーで守られています','Protected by a key')) + '"></i> ' : '') + esc(r.kind === 'case' ? caseLabel(r) : titleOf(r)) + '</b>'
         + (r.kind === 'case' && ref.code ? '<span class="chat-chip">' + T('案件 ','Req ') + esc(ref.code) + '</span>' : '') + '<span class="chat-time">' + esc(shortTime(r.last_at)) + '</span></div>'
-        + '<div class="chat-row-prev">' + (pv ? (pv.emp === C.me ? T('あなた','You') : esc(pv.name)) + '：' + esc(pvText(pv)) : '<span style="opacity:.7">' + T('まだメッセージはありません','No messages yet') + '</span>') + '</div></div>'
+        + '<div class="chat-row-prev">' + (pv ? (pv.locked ? '' : (pv.emp === C.me ? T('あなた','You') : esc(pv.name)) + '：') + esc(pvText(pv)) : '<span style="opacity:.7">' + T('まだメッセージはありません','No messages yet') + '</span>') + '</div></div>'
         + (un ? '<span class="chat-unread">' + un + (mn ? ' · @' : '') + '</span>' : '') + '</div>';
     }).join('');
   }
@@ -111501,7 +111883,9 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       + '<div class="chat-hint">' + T('Enter で改行、Ctrl＋Enter（Mac は ⌘＋Enter）で送信。日本語の変換中の Enter では送りません。画像は ' + (isMac() ? '⌘V' : 'Ctrl＋V') + '・ドラッグ・📎（丸と矢印を付けられます）。📎 で PDF・Excel・Word・PowerPoint・テキストも（5 つ・1 つ 10MB まで）。','Enter adds a new line. Ctrl+Enter (⌘+Enter on Mac) sends. Enter during Japanese input does not send. Paste (' + (isMac() ? '⌘V' : 'Ctrl+V') + '), drag or 📎 an image (you can add circles and arrows). 📎 also attaches PDF, Excel, Word, PowerPoint or text (5 files, 10 MB each).') + '</div>';
   }
   function paneHtml(){
+    C.paneGate = false;
     if (!C.open || !C.threads[C.open]) return '<div class="chat-empty" style="margin:auto">' + T('左の一覧から会話を選んでください','Choose a conversation on the left') + '</div>';
+    if (gated(C.threads[C.open])) { C.paneGate = true; return keyGateHtml(C.threads[C.open]); }   /* v1168：キーを入れるまで中身・入力欄は出さない */
     return '<div class="chat-head" id="chat-head">' + headHtml() + '</div><div class="chat-msgs" id="chat-msgs">' + msgsHtml() + '</div><div class="chat-comp" id="chat-comp">' + compHtml() + '</div>';
   }
   function scrollBottom(){ var b = $id('chat-msgs'); if (b) b.scrollTop = b.scrollHeight; }
@@ -111515,7 +111899,8 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     var pane = $id('chat-pane'); if (!pane) return;
     var root = $id('chat-root'); if (root) root.className = rootCls();
     paintBar();
-    if (C.paneFor !== C.open || !$id('chat-msgs') !== !C.open) { pane.innerHTML = paneHtml(); C.paneFor = C.open; scrollBottom(); fetchThumbs(); return; }
+    var gate = !!(C.open && gated(C.threads[C.open]));
+    if (C.paneFor !== C.open || gate || !!C.paneGate !== gate || !$id('chat-msgs') !== !C.open) { var kv = gate ? keyInputKeep() : null; pane.innerHTML = paneHtml(); C.paneFor = C.open; if (kv) keyInputPut(kv); scrollBottom(); fetchThumbs(); return; }
     var box = $id('chat-msgs');
     var near = box ? (box.scrollHeight - box.scrollTop - box.clientHeight < 80) : true, prevH = box ? box.scrollHeight : 0, prevT = box ? box.scrollTop : 0;
     var hd = $id('chat-head'); if (hd) hd.innerHTML = headHtml();
@@ -111634,6 +112019,9 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       + '.chat-wrap.chat-locked{display:flex;align-items:center;justify-content:center;grid-template-columns:none}'
       + '.chat-lock{text-align:center;padding:24px 18px;max-width:340px;width:100%;display:flex;flex-direction:column;gap:10px;align-items:stretch}.chat-lock-i{font-size:34px;color:var(--accent)}.chat-lock-t{font-weight:700;font-size:15px}'
       + '.chat-lock-s,.chat-lock-n{font-size:11.5px;color:var(--muted);line-height:1.6}.chat-lock-b{display:flex;flex-direction:column;gap:8px}.chat-lock input{text-align:center;font-size:18px;letter-spacing:.3em}'
+      /* v1168：守りの画面・キーの入口 */
+      + '.chat-gd-h{font-size:12.5px;font-weight:700;margin:14px 0 6px;display:flex;gap:6px;align-items:center}.chat-gd-s{font-size:11.5px;color:var(--muted);line-height:1.6;margin-bottom:8px}.chat-gd-form{max-width:320px}'
+      + '.chat-keygate{flex:1;display:flex;align-items:center;justify-content:center;overflow-y:auto;padding:12px}.chat-keygate .chat-lock input{letter-spacing:.05em;font-size:15px}.chat-keyi{font-size:12px;color:var(--accent)}'
       + '.chat-privacy .chat-wrap,.chat-privacy .chat-layer,.chat-privacy .chat-fbar-main,.chat-privacy .chat-fbar-t,.chat-privacy .chat-vw-stage,.chat-privacy .chat-vw-name{visibility:hidden!important}'
       + '.chat-comp-row{position:relative}.chat-plus-menu{position:absolute;left:0;bottom:calc(100% + 6px);background:var(--surface);border:1px solid var(--border);border-radius:12px;box-shadow:0 8px 24px rgba(0,0,0,.18);display:flex;flex-direction:column;z-index:6;overflow:hidden}'
       + '.chat-plus-menu[hidden]{display:none}.chat-plus-menu button{background:none;border:0;padding:13px 18px;text-align:left;font-size:14px;display:flex;gap:8px;align-items:center;color:inherit;min-width:160px;font-family:inherit;cursor:pointer}.chat-plus-menu button+button{border-top:1px solid var(--border)}'

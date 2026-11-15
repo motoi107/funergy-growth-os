@@ -39,3 +39,14 @@ VENDOR_DIR=/tmp/e2e/vendor CERT_DIR=/tmp/e2e/cert SHOTS=/tmp/ui79shots node test
 - `SHOTS` を付けると画面の写真（PC のパネル・印・別ウィンドウ・スマホの半分の画面・拡大・申請のチャットを始める・ロック）。
 - Document Picture-in-Picture は HeadlessChrome でも開く（`いつも前面`）。開けない Chrome ではふつうの別ウィンドウかパネルのまま（それも通る）。
 
+
+## チャットの守り（v1168・暗証番号・グループのキー・プッシュ通知）
+
+```
+VENDOR_DIR=/tmp/e2e/vendor CERT_DIR=/tmp/e2e/cert SHOTS=/tmp/guardshots node tests/e2e-chat/guard-v1168.mjs
+```
+
+- `WR_UI79=1 WR_GUARD=1`（スクリプトが付ける）：v1167 の SQL のあとに守りの SQL を足す。関数 work-requests は本物の handler（プッシュの送り先とログインの PIN の確かめだけ代わり：ログインの PIN は 1234 が正しい）。
+- 完了の条件 ④ の残り：暗証番号だけ・キーだけ・両方・両方オフ・キーを変えた・忘れた・ログアウト（サーバーの印）。サーバーが断る（423）ことも。
+- プッシュは本物の Chrome の Service Worker（`serviceWorkers: 'allow'`）に CDP（`ServiceWorker.deliverPushMessage`）で中身つきの push を 3 つ届け、出た通知が「新着メッセージがあります」1 つだけかを見る（push の購読そのものは送り先のサーバーにつながらないので VM の試験で）。
+- PC はパネルが画面に収まるか（`body{zoom:1.1}`・v1167 の直し）も見る。

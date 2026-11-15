@@ -44,6 +44,8 @@ async function setup({ ui79 = true, twice = false, files = true } = {}) {
   await pg.exec(CHAT_SQL);
   if (files) await pg.exec(FILES_SQL);
   if (ui79) { await pg.exec(UI79_SQL); if (twice) await pg.exec(UI79_SQL); }
+  // v1168：CHAT_WITH_GUARD=1 なら守りの SQL も（暗証番号・キーを決めていなければ v1167 と同じに動くか）
+  if (ui79 && process.env.CHAT_WITH_GUARD === '1') await pg.exec(M('20261128090000_chat_guard'));
   await pg.exec('update public.wr_settings set live = true; set role service_role');
   const db = { async rpc(name, p) { const r = await pg.query(`select public.${name}($1::jsonb) as v`, [JSON.stringify(p ?? {})]); return r.rows[0].v; } };
   const gm = { emp_id: 'E2', name: NAME.E2 }; const d = await db.rpc('wr_people_diff', gm); await db.rpc('wr_people_sync', { ...gm, digest: d.digest });
@@ -72,7 +74,7 @@ test('the SQL needs chat and attachments first (STOP, nothing changed), runs twi
   assert.equal((await pg.query(`select count(*)::int n from pg_proc where proname = 'chat_case_create'`)).rows[0].n, 0);
   const { ok, pg: pg2 } = await setup({ twice: true });
   const me = await ok('E7', { action: 'whoami' });
-  assert.equal(me.fn, 9); assert.equal(me.chat, 3);
+  assert.ok(me.fn >= 9, 'fn 9 or later'); assert.equal(me.chat, process.env.CHAT_WITH_GUARD === '1' ? 4 : 3);   // v1168 の関数は fn 10・守りの SQL は chat 4
   // only the server key may run the new functions
   for (const fn of ['chat_case_create(jsonb)', 'chat_admin(jsonb)', 'chat_admin_fix(uuid)']) {
     const r = (await pg2.query(`select has_function_privilege('anon', 'public.${fn}', 'execute') a, has_function_privilege('authenticated', 'public.${fn}', 'execute') b, has_function_privilege('service_role', 'public.${fn}', 'execute') c`)).rows[0];
