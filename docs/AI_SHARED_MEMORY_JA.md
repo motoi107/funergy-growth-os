@@ -1,5 +1,12 @@
 # Claude / Codex 共通記録
 
+## 2026-11-15 開発の流れ：個人と Team の 2 つの Claude・Codex はレビューだけ（Claude・ブランチ `claude/two-claude-workflow`・文書だけ・アプリ・SQL・関数・自動化は変えない）
+
+- 依頼：Moto さん 11/15 08:47 HST の添付（個人の Claude と会社の Team の Claude の両方で開発・Codex は独立レビュー・GitHub を唯一の最新版に・途中で交代できる・Codex の指摘はその時の担当の Claude が直す・重複レビューの自動化を足さない）。
+- 作ったもの：`docs/DEV_WORKFLOW.md`（手順の唯一の説明）・`docs/HANDOFF.md`（引き継ぎ記録の決まりとひな形）・`docs/handoff/<作業ID>.md`（作業ごとに 1 つ）・`.env.example`（名前だけ）。`CLAUDE.md` は入口だけにし、この記録とバックログの全文の読み込みをやめた（Moto さんの判断待ち）。`AGENTS.md` に役割とレビューの観点。
+- 確かめたこと：main `5e11a2b`（v1169）・Pages が `main` を `funergy-plus.com` に公開・`main` にブランチ保護なし・自動マージ OFF・CI「Growth OS checks」・Codex の判定は `chatgpt-codex-connector` の PR コメント（同じ head に 2 つ付くことが多い）・予定タスク「Growth OS：Claude自動レビュー」は PR を直すと同じ head に 2 回書くことがある（#169）・GitHub ではどの書き手も motoi107。
+- 未確認：このセッションが個人か Team か・Codex をどこで動かしているか・予定タスクがどちらのワークスペースにあるか・Team の Owner と GitHub の連携・iPhone のネイティブのアプリのリポジトリ・`funergy_supabase_client.js` が指す別の Supabase のプロジェクト。確かめの S1〜S4 は未実行。
+
 ## 2026-11-14 v1169（急ぎ）：G1・G2 の画面から Tip Rate の変更履歴と現場の重点 KPI を外す（Claude・ブランチ `claude/g1g2-hide-1169`・main `cb60c55`（v1168）の上・アプリだけ・本番未反映）
 
 - 依頼：Moto さん 11/14 19:38 HST「G1とG2の画面からTip Rateの変更履歴と現場のKPIを至急非表示にしてください」。仕様・見分け方・限界：`docs/G1G2_HIDE_V1169_JA.md`。

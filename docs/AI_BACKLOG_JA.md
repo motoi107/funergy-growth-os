@@ -1,5 +1,11 @@
 # 改修・自動化の作業記録
 
+## 2026-11-15 開発の流れ（ブランチ `claude/two-claude-workflow`・文書だけ）
+
+1. 済（Claude）：`docs/DEV_WORKFLOW.md`・`docs/HANDOFF.md`・`docs/handoff/two-claude-workflow.md`・`.env.example`・`CLAUDE.md` と `AGENTS.md` の更新（下書きの PR）。
+2. 次（Moto さん）：このセッションが個人か Team か（画面左下の組織名）・`CLAUDE.md` から 2 つの大きな記録の読み込みを外すか・非公開ファイルの置き場所・リポジトリを公開のままにするか・予定タスク「Growth OS：Claude自動レビュー」を残すか・`main` の保護（任意）。
+3. 次：下書きを外して Codex の判定 → 本番に触れない確かめ S1〜S4（個人 → Team → Codex → 修正 → 再レビューと、その逆）。
+
 ## 2026-11-14 v1169（急ぎ）：G1・G2 の画面から Tip Rate の変更履歴と現場の重点 KPI を外す（ブランチ `claude/g1g2-hide-1169`）
 
 1. 済（Claude）：アプリだけの直し・試験（`docs/G1G2_HIDE_V1169_JA.md`）。次：PR → Moto さんがマージ（急ぎ）→ G1・G2 の端末と店のタブレットを 1169 に。
