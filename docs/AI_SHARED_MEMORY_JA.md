@@ -8,7 +8,8 @@
 - 試験（合成データ）：kpi-hours-upsell-v1176 14（わざと壊す 28/28）・kpi-settings-v1153 15・kpi-hours-day-v1175 9・upsell-v1176-sql 4・関連は前と同じ（next-v1090 の 1 件は前から）・static release pass/1176・Chromium（模擬サーバー）17/17（`tests/e2e-pcsp/upsell-v1176.mjs`）。hyper-worker v1176 の非公開の試験 8/8・わざと壊す 14/14（sha256 先頭 `48e37c42feaa`・Moto さんに直接・リポジトリに置かない）。CI に足した。
 - 見つけたこと（記録だけ）：PC の窓を 390px に狭くした（タッチでない）とき、KPI設定のページが 4px 横に出る（v1176 の前から・この PR のカードではない）。
 - 独立レビュー・Codex はまだ。
-- 次：PR → Codex → #173 → この PR → Moto さんが手順.md → 11 月の取り込み直しのあと確かめの SQL と画面で本物の注文明細と照合（依頼の ⑤）。そのあと UI の続き（チップ・採用・Career Score・スキル・成長管理・OJT。画面ごとの UI 案から）。
+- PR #174（base main・#173 の上・この PR だけの差分は `a028d3a`）。
+- 次：Codex → #173 → #174 → Moto さんが手順.md → 11 月の取り込み直しのあと確かめの SQL と画面で本物の注文明細と照合（依頼の ⑤）。そのあと UI の続き（チップ・採用・Career Score・スキル・成長管理・OJT。画面ごとの UI 案から）。
 
 ## 2026-11-15 v1175：総労働時間を「1 営業日あたり」に（計算の元）・アップセル対象商品の保存（Claude・ブランチ `claude/kpi-hours-upsell`・#172（v1174）の上・アプリだけ・本番未反映）
 
