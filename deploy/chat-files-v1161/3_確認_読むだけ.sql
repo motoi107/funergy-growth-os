@@ -47,10 +47,14 @@ union all select '8. Storage に chat-files を開ける決まり・置き場所
     then 'NG（Claude に決まりの名前を：' || (select string_agg(policyname, ', ' order by policyname) from pol where chat or loose) || '。公開の鍵で添付を読めるおそれ）' else 'OK' end
 union all select '9. 申請の段階 2 が入ったまま（添付のあとに前の申請の SQL を流していない）',
   case when (public.wr_stage('{}'::jsonb)->>'stage')::int >= 5 then 'OK' else 'NG（deploy/work-requests-v1155 の ② → チャットの ② → この 2）' end
-union all select '10. Storage の行の守り（RLS）が効いている（OFF・RLS を飛ばせる公開の鍵だと、決まりに関係なく chat-files も読めてしまう）',
+union all select '10. Storage の行の守り（RLS）が効いている（RLS が OFF・公開の鍵が RLS を飛ばせるロールや storage.objects・chat_files の持ち主のロールに入っていると、決まりに関係なく読めてしまう）',
   case when to_regclass('storage.objects') is null then '—（Storage が無い）'
     when coalesce((select c.relrowsecurity from pg_class c join pg_namespace n on n.oid = c.relnamespace where n.nspname = 'storage' and c.relname = 'objects'), false)
-     and not exists (select 1 from pg_roles r where r.rolname in ('anon','authenticated') and (r.rolbypassrls or r.rolsuper)) then 'OK'
+     and not exists (select 1 from pg_roles u join pg_roles g on pg_has_role(u.oid, g.oid, 'MEMBER')
+                      where u.rolname in ('anon','authenticated')
+                        and (g.rolbypassrls or g.rolsuper
+                             or g.oid = (select c.relowner from pg_class c join pg_namespace n on n.oid = c.relnamespace where n.nspname = 'storage' and c.relname = 'objects')
+                             or g.oid = (select c.relowner from pg_class c where c.oid = to_regclass('public.chat_files')))) then 'OK'
     else 'NG（Claude にこの表を）' end
 union all select '11. 一覧の 1 行が画面の言葉で出せる（files・state。v1163 の直し・#155 の Codex P3）',
   case when (select prosrc from pg_proc where oid = to_regprocedure('public.chat_row(jsonb,public.chat_threads,public.chat_members)')) like '%chat_files_count%'

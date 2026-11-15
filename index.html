@@ -45968,7 +45968,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1163';
+const APP_VERSION = '1164';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -87528,6 +87528,8 @@ function renderMypage() {
 
   html += (typeof ocsMyCardHtml==='function') ? ocsMyCardHtml() : '';   /* v1050: オフィス用 Career Score（本人・正式運用後・担当設定が有効なときだけ） */
   if (!isCrewView) {
+    /* v1164：G4・AM・GM・CEO・経理もマイページから経費の申請（前は管理者の側に入口が無かった） */
+    try { if (typeof wrMyExpCard==='function') html += wrMyExpCard('mypage'); } catch(e) {}
     // 管理者は従来のPGD中心
     html += renderCompanyMessageCard();
   html += renderPriceAlertCard();
@@ -87848,7 +87850,11 @@ function renderMypage() {
      こうしておくと、次にどちらかのグレードを動かしてもここは直さなくてよい。 */
   var _mpExp = (typeof canSubmitExpense==='function') ? canSubmitExpense() : false;
   var _mpMile = (typeof canSubmitMileage==='function') ? canSubmitMileage() : false;
-  if (_mpExp || _mpMile) {
+  /* v1164：ワークセンターの申請を使い始めたら、経費の申請（ガソリン代・建て替え経費・事前経費）はサーバーが決めた種類の入口と自分の申請（レシート管理と同じ） */
+  var _wrExp = '';
+  try { if (typeof wrMyExpCard==='function') _wrExp = wrMyExpCard('mypage'); } catch(e) { _wrExp = ''; }
+  if (_wrExp) html += _wrExp;
+  else if (_mpExp || _mpMile) {
     html += `<div class="card"><div class="card-title"><i class="ti ti-files"></i>${t('申請','Requests')}</div>`;
     if (_mpExp) {
     var myExp = (typeof getExpenseRequests==='function') ? getExpenseRequests().filter(function(r){return r.employee===me;}) : [];
@@ -91176,6 +91182,7 @@ function renderInvoice() {
   var _invOkStores = invoiceStoreCandidates().filter(s => s.id!=='OFFICE' && !invInUsesDrive(s.id));
   var html = `<div class="section-header"><div><div class="section-title">${t('レシート管理','Receipts')}</div><div class="section-sub">${t('会社カードのレシート・立替経費・チェック','Company-card receipts, reimbursements and checks')}</div></div>
     <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end">${_canCard?`<button class="btn btn-secondary btn-sm" onclick="openDriveSetup()"><i class="ti ti-brand-google-drive"></i> ${t('Drive連携','Drive link')}</button>`:''}<!-- v1137：「伝票診断・復旧」は「設定 › 診断と記録」へ -->${(function(){var n=invUnclassified().length;return n?`<button class="btn btn-secondary btn-sm" style="border-color:var(--yellow);color:var(--yellow)" onclick="openInvClassify()"><i class="ti ti-tag"></i> ${t('未分類','Unclassified')} ${n}</button>`:'';})()}<button class="btn btn-secondary btn-sm" onclick="openInvoiceDiag()"><i class="ti ti-stethoscope"></i> ${t('突合診断','Reconcile')}</button><button class="btn btn-primary btn-sm" onclick="invReceiptAdd()"><i class="ti ti-receipt"></i> ${t('レシート・立替を登録','Add receipt / reimbursement')}</button></div></div>`;
+  try{ if (typeof wrMyExpCard==='function') html += wrMyExpCard('invoice'); }catch(e){}   /* v1164：経費の申請（3 種）の入口と自分の申請（マイページと同じ） */
   try{ html += invInStoreCardHtml(); }catch(e){}   /* v1052: 提出フォルダ（GM・CEO が「出す」にした店舗だけ） */
   try{ html += invInHqBarHtml(); }catch(e){}       /* v1055: 本部は Invoice取込へ */
   html += bulkBannerHtml();   /* v1035: まとめて取り込みの未保存 */
@@ -106508,7 +106515,9 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       if (g !== S.gen) return;
       S.me = me.me; S.live = !!me.live; S.rate = me.rate; S.settingsRev = me.settings_rev || 1; S.people = me.people || null;
       S.s2 = !!me.s2; S.s2At = me.s2_at || ''; S.s2By = me.s2_by || ''; S.fn = Number(me.fn) || 0; S.sql = Number(me.sql) || 0;
+      S.expKinds = Array.isArray(me.exp_kinds) ? me.exp_kinds.filter(function(k){ return KINDS.indexOf(k) >= 0; }) : null;   /* v1164：出せる経費の種類（サーバーが決める） */
       setLiveSeen(S.live, me.settings_at, S.s2);
+      if (S.live) legacyAuto();
       s3Seen(me);
       if (S.s2) s2Retry();
       if (S.s3) s3Import(me);
@@ -106519,8 +106528,8 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     }).then(function(){
       if (g !== S.gen) return;
       var pn = S.pendingNew; S.pendingNew = null;
-      if (pn) { if (S.me) W.wrNew(pn.kind, pn.from); else { var el = document.getElementById('wr-form'); if (el) el.innerHTML = '<div class="alert alert-danger">' + esc(S.err) + '</div>'; } }
-      rerender();
+      if (pn) { if (S.me) (pn.start ? W.wrStartExpense(pn.kind, pn.pre) : W.wrNew(pn.kind, pn.from, pn.pre)); else { var el = document.getElementById('wr-form'); if (el) el.innerHTML = '<div class="alert alert-danger">' + esc(S.err) + '</div>'; } }
+      rerender(); paintMyExp();
     });
   }
   async function loadList(g){
@@ -106533,7 +106542,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     if (S.openCode) { var c = S.openCode; S.openCode = ''; var hit = S.rows.find(function(x){ return x.code === c; }); if (hit) setTimeout(function(){ W.wrOpen(hit.id); }, 0); }
   }
   function reloadList(){ var g = ++S.gen; S.load = 'loading'; loadList(g).then(function(){ if (g === S.gen) S.load = 'done'; }, function(e){ if (g === S.gen) { S.load = 'err'; S.err = String(e && e.message || e); S.errCode = e && e.code || ''; } }).then(function(){ if (g === S.gen) rerender(); }); }
-  W.wrRefresh = function(){ S.load = ''; S.me = null; load(true); rerender(); };
+  W.wrRefresh = function(){ S.load = ''; S.me = null; MY.at = 0; load(true); rerender(); };
   W.wrSetView = function(v){ if (['todo','mine','team','history'].indexOf(v) < 0) return; S.view = v; S.rows = null; S.sel = {}; reloadList(); rerender(); };
   /* v1154（UI案71 の A 案）：絞り込みを変えたら選択を外す（見えていない申請を承認しないため）。申請した人はこの端末で絞る（読み直さない） */
   W.wrSetFilter = function(k, v){
@@ -107390,18 +107399,163 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   }
 
   /* ---------------------------------------------------------------- 新しい申請・直す */
-  W.wrNew = function(kind, from){
+  /* ---------------------------------------------------------------- v1164：経費の申請の入口（マイページ・レシート管理・前の画面から同じ 1 つ）
+     仕様：docs/EXPENSE_SUBMIT_V1164_JA.md。出せる種類はサーバー（whoami の exp_kinds：G2 以上は 3 種・経理・事務Crew は建て替え）。
+     前の SQL（exp_kinds が無い）なら、前のサーバーの決まり（ガソリン代 G3・事前経費 G4・建て替え G2）で出す（画面とサーバーを食い違わせない）。 */
+  function oldKinds(me){
+    var r = me.role, g = Number(me.grade) || 0, k = [], top = ['ceo','gm','am'].indexOf(r) >= 0;
+    if (top || g >= 3) k.push('mileage');
+    if (top || r === 'office' || r === 'office_crew' || g >= 2) k.push('reimburse');
+    if (top || g >= 4) k.push('expense_pre');
+    return k;
+  }
+  function expKindsNow(){ if (!S.me) return []; return S.expKinds ? S.expKinds.slice() : oldKinds(S.me); }
+  function myHomeStore(){ try { return (typeof curStore !== 'undefined' && curStore && curStore !== 'ALL') ? String(curStore) : ''; } catch(e) { return ''; } }
+  W.wrExpKinds = function(){ return S.me ? expKindsNow() : null; };
+  /* 前の画面（1130 以前の端末・使い始める前に開いていた画面）に残った経費の申請を、GM・CEO のログインで写す（何度流しても同じ・写すのは無いものだけ） */
+  var legacyTried = '';
+  function legacyAuto(){
+    var me = S.me || {}; if (me.role !== 'gm' && me.role !== 'ceo') return;
+    var k = authKey(); if (legacyTried === k) return; legacyTried = k;
+    api({ action:'legacy_import' }, k).then(function(j){
+      var n = Number(j && j.inserted) || 0;
+      if (n > 0) { showToast(T('前の画面に残っていた経費の申請 ' + n + ' 件を、ワークセンターの「申請」に写しました','Copied ' + n + ' expense request(s) left on the earlier screens into the Work Center'), 'info'); if (onWrTab()) { S.rows = null; reloadList(); } }
+    }, function(){ legacyTried = ''; });
+  }
+  /* 入口：kind＝mileage・reimburse・expense_pre。pre＝{ p:中身, store, file, carried }（前の画面で入れた内容） */
+  W.wrStartExpense = function(kind, pre){
+    checkAuth();
+    if (!pinTok()) { showToast(errText('signin'), 'error'); return; }
+    if (!S.me) {
+      S.pendingNew = { kind:kind, from:null, pre:pre || null, start:true };
+      openModal('<div id="wr-form" style="width:100%">' + T('読み込み中…','Loading…') + '</div>');
+      if (S.load !== 'loading') { S.load = ''; load(); }
+      return;
+    }
+    if (!S.live) { closeModalDirect(); return oldEntry(kind); }
+    var ks = expKindsNow();
+    if (kind && ks.indexOf(kind) < 0) {
+      closeModalDirect();
+      showToast(ks.length ? T('この申請（' + kindL(kind) + '）は出せません。出せるもの：' + ks.map(kindL).join('・'), 'You cannot send this (' + kindL(kind) + '). You can send: ' + ks.map(kindL).join(', '))
+        : T('経費の申請（ガソリン代・建て替え経費・事前経費）は G2 以上が出せます','Expense requests (mileage, reimbursement, pre-approval) are for G2 and above'), 'error');
+      return;
+    }
+    S.view = 'mine';
+    W.wrNew(kind, null, pre || null);
+  };
+  /* 使い始める前（サーバーの live が false）：今までの画面 */
+  var OLD_OPEN = {};
+  function oldEntry(kind){
+    try {
+      if (kind === 'mileage') { go('mileage'); if (OLD_OPEN.openMileageModal) OLD_OPEN.openMileageModal(); return; }
+      if (kind === 'expense_pre') { go('expense'); if (OLD_OPEN.openExpenseModal) OLD_OPEN.openExpenseModal(); return; }
+      go('invoice'); if (typeof invoiceDocType !== 'undefined') invoiceDocType = 'Reimburse'; if (OLD_OPEN.openInvoiceModal) OLD_OPEN.openInvoiceModal();
+    } catch(e) {}
+  }
+  W.wrOpenMine = function(code){
+    checkAuth(); try { workTab = 'wr'; } catch(e) {}
+    S.view = 'mine'; S.openCode = (typeof code === 'string' && /^[A-Za-z0-9-]{1,40}$/.test(code)) ? code : ''; S.rows = null; if (S.load === 'done') S.load = '';
+    try { go('tasks'); } catch(e) { rerender(); }
+  };
+  function nextPlain(r){
+    var n = r && r.next; if (!n) return '';
+    var who = n.who === 'am' ? (n.name || 'AM') : n.who === 'gm' ? 'GM' : n.who === 'acct' ? T('経理','Accounting') : n.who === 'requester' ? T('あなた','You') : '';
+    var step = n.step === 'approve' ? T('承認待ち','to approve') : n.step === 'check' ? T('確認待ち','to check') : n.step === 'pay' ? T('精算待ち','to pay') : n.step === 'fix' ? T('修正待ち','to fix') : n.step === 'apply' ? T('反映待ち','to apply') : '';
+    return who && step ? (T(who + ' ' + step, who + ' ' + step)) : '';
+  }
+  /* 送ったあと：番号・今の状態・次の担当 */
+  function sentCard(j){
+    try {
+      var st = ST_L[j.status] ? T(ST_L[j.status][0], ST_L[j.status][1]) : (j.status || '');
+      openModal('<div style="font-size:15px;font-weight:700"><i class="ti ti-circle-check" style="color:var(--green)"></i> ' + T('申請しました','Submitted') + '</div>'
+        + '<div style="margin-top:10px;font-size:13px;line-height:1.9"><div>' + T('申請番号：','Number: ') + '<b id="wr-sent-code">' + esc(j.code || '') + '</b></div>'
+        + '<div>' + esc(kindL(j.kind)) + ' · ' + money(j.amount_cents) + '</div>'
+        + '<div>' + T('今の状態：','Status: ') + '<b id="wr-sent-st">' + esc(nextPlain(j) || st) + '</b></div></div>'
+        + '<div style="font-size:11px;color:var(--muted);margin-top:6px">' + T('「自分の申請」でいつでも見られます（だれの対応待ちか・差し戻しの理由も）。','You can see it any time in “My requests” (who it waits for, and any return reason).') + '</div>'
+        + '<div style="display:flex;gap:6px;margin-top:12px"><button class="btn btn-primary btn-sm" data-a="' + esc(j.code || '') + '" onclick="closeModalDirect();wrOpenMine(this.dataset.a)">' + T('自分の申請を見る','My requests') + '</button>'
+        + '<button class="btn btn-secondary btn-sm" onclick="closeModalDirect()">' + T('閉じる','Close') + '</button></div>');
+    } catch(e) {}
+  }
+  /* マイページ・レシート管理のカード：3 種の入口と自分の申請（新しい 5 件） */
+  /* req：いちばん新しい読み込みの番号（古い答えは使わない・busy は自分の答えでだけ外す＝#160 の Codex P3）。
+     at：最後に読み終えた（失敗も）時刻。失敗したら 30 秒は自動で読み直さない（描き直しのたびに読み直していた＝#160 の Codex P2） */
+  var MY = { rows:null, err:'', busy:false, key:'', at:0, req:0 }, myReq = 0;
+  W.wrMyExpRetry = function(){ MY.at = 0; MY.err = ''; paintMyExp(); };
+  W.wrMyExpCard = function(where){
+    try { if (typeof curStoreLogin !== 'undefined' && curStoreLogin) return ''; } catch(e) {}
+    if (!pinTok() || !liveSeen()) return '';
+    checkAuth();
+    if (!S.me && S.load !== 'loading' && S.load !== 'err') { S.load = ''; load(); }
+    var inner = myExpInner(), hide = !inner || (!S.me && typeof curRole !== 'undefined' && curRole === 'crew');   /* G1 は読み終わるまで出さない（出せる種類が無ければ出さない） */
+    return '<div class="card" id="wr-myexp" data-where="' + esc(where || '') + '"' + (hide ? ' style="display:none"' : '') + '>' + inner + '</div>';
+  };
+  function myExpInner(){
+    if (!S.me) return S.load === 'err' ? '<div style="font-size:12px">' + esc(S.err) + '</div>' : '<div style="font-size:12px;color:var(--muted)">' + T('経費の申請を読み込み中…','Loading expense requests…') + '</div>';
+    if (!S.live) return '';
+    var ks = expKindsNow();
+    if (!ks.length) return '';
+    var k = authKey(); if (MY.key !== k) { MY = { rows:null, err:'', busy:false, key:k, at:0, req:0 }; }
+    /* 開くたびに新しくする（ほかの端末の承認・経理の確認・精算を出す）。読み終わるまでは前の一覧のまま。
+       失敗したあとは 30 秒待つ（「もう一度」を押せばすぐ） */
+    var age = Date.now() - MY.at;
+    if (!MY.busy && (MY.err ? age > 30000 : (!MY.rows || age > 10000))) { MY.err = ''; myExpLoad(); }
+    var ico = { mileage:'ti-gas-station', reimburse:'ti-receipt', expense_pre:'ti-file-invoice' };
+    var h = '<div class="card-title"><i class="ti ti-files"></i>' + T('経費の申請','Expense requests') + '</div>'
+      + '<div style="display:flex;gap:6px;flex-wrap:wrap">' + ks.map(function(x){ return '<button class="btn btn-secondary btn-sm" data-wr-exp="' + x + '" data-a="' + x + '" onclick="wrStartExpense(this.dataset.a)"><i class="ti ' + ico[x] + '"></i> ' + esc(kindL(x)) + '</button>'; }).join('') + '</div>'
+      + '<div style="display:flex;align-items:center;margin-top:10px"><div style="font-size:12px;font-weight:700">' + T('自分の申請','My requests') + '</div>'
+      + '<button class="btn btn-secondary btn-sm" style="margin-left:auto" onclick="wrOpenMine()">' + T('すべて見る','See all') + '</button></div>';
+    var errLine = MY.err ? '<div style="font-size:11.5px;color:var(--muted);margin-top:4px">' + esc(MY.err)
+      + ' <button class="btn btn-secondary btn-sm" onclick="wrMyExpRetry()">' + T('もう一度','Retry') + '</button></div>' : '';
+    if (MY.err && !MY.rows) return h + errLine;
+    h += errLine;
+    if (!MY.rows) return h + '<div style="font-size:11.5px;color:var(--muted);margin-top:4px">' + T('読み込み中…','Loading…') + '</div>';
+    if (!MY.rows.length) return h + '<div style="font-size:11.5px;color:var(--muted);margin-top:4px">' + T('まだありません','None yet') + '</div>';
+    return h + MY.rows.map(function(r){
+      var st = r.kind === 'expense_pre' && r.status === 'done' ? T('事前承認済み','Pre-approved') : ST_L[r.status] ? T(ST_L[r.status][0], ST_L[r.status][1]) : r.status;   /* 事前経費は支払に入れない（実費はあとで建て替え経費などで） */
+      return '<div class="approval-item" style="cursor:pointer" data-wr-mine="' + esc(r.code) + '" data-a="' + esc(r.code) + '" onclick="wrOpenMine(this.dataset.a)"><div class="approval-header"><div class="approval-title">' + esc(r.code) + ' · ' + esc(kindL(r.kind)) + '</div>'
+        + '<span class="tag ' + (/^(paid|done|applied)$/.test(r.status) ? 'tag-green' : /^(rejected|apply_error)$/.test(r.status) ? 'tag-red' : /^withdrawn$/.test(r.status) ? 'tag-gray' : 'tag-yellow') + '">' + esc(st) + '</span></div>'
+        + '<div class="approval-meta">' + money(r.amount_cents) + (nextPlain(r) ? ' · ' + esc(nextPlain(r)) : '') + '</div></div>';
+    }).join('');
+  }
+  function myExpLoad(){
+    var k = authKey(), g = S.gen, n = ++myReq; MY.busy = true; MY.req = n;
+    api({ action:'list', scope:'mine', state:'all', limit:20 }, k).then(function(j){
+      if (MY.key !== k || MY.req !== n) return;   /* 前の人・前の読み込みの答え：使わない（今の読み込みの busy は触らない） */
+      MY.busy = false;
+      if (g !== S.gen) { MY.at = 0; return paintMyExp(); }   /* 読んでいるあいだに世代が変わった：使わずに読み直す */
+      MY.at = Date.now(); MY.err = '';
+      MY.rows = ((j && j.rows) || []).filter(function(r){ return KINDS.indexOf(r.kind) >= 0; }).slice(0, 5);
+      paintMyExp();
+    }, function(e){
+      if (MY.key !== k || MY.req !== n) return;
+      MY.busy = false; MY.at = Date.now(); MY.err = String(e && e.message || e); paintMyExp();
+    });
+  }
+  function paintMyExp(reload){
+    if (reload) { MY.rows = null; MY.err = ''; }
+    var el = document.getElementById('wr-myexp'); if (!el) return;
+    el.innerHTML = myExpInner();
+    if (!el.innerHTML) el.style.display = 'none'; else el.style.display = '';
+  }
+  W.wrNew = function(kind, from, pre){
     checkAuth();
     /* まだ読んでいない（前の画面から来た）：読んでから開く。使い始めているかはサーバーが決める */
     if (!S.me) {
-      S.pendingNew = { kind:kind, from:from || null };
+      S.pendingNew = { kind:kind, from:from || null, pre:pre || null };
       openModal('<div id="wr-form" style="width:100%">' + T('読み込み中…','Loading…') + '</div>');
       if (S.load !== 'loading') { S.load = ''; load(); }
       return;
     }
     if (!S.live && !from) { showToast(errText('not_live'), 'error'); return; }
+    /* v1164：新しい申請は、この人が出せる種類だけ（サーバーの exp_kinds）。1 つも無ければ開かない */
+    var ks = expKindsNow();
+    if (!from && !ks.length) { showToast(T('経費の申請（ガソリン代・建て替え経費・事前経費）は G2 以上が出せます','Expense requests (mileage, reimbursement, pre-approval) are for G2 and above'), 'error'); return; }
     var p = from ? (rawLegacy(from) ? legacyForm(from.kind, from.payload || {}) : Object.assign({}, from.payload)) : {};
-    S.form = { kind:KINDS.indexOf(kind) >= 0 ? kind : '', from:from || null, key:newKey(), dup:null, busy:false, p:p, store:from ? from.store_id : (storeOpts()[0] || ''), file:null };
+    var pr = (!from && pre && typeof pre === 'object') ? pre : {};
+    if (pr.p) Object.keys(pr.p).forEach(function(k){ if (pr.p[k] !== undefined && pr.p[k] !== null && pr.p[k] !== '') p[k] = pr.p[k]; });
+    var so = storeOpts(), st = from ? from.store_id : (pr.store && so.indexOf(pr.store) >= 0 ? pr.store : (so.indexOf(myHomeStore()) >= 0 ? myHomeStore() : (so[0] || '')));
+    S.form = { kind:(KINDS.indexOf(kind) >= 0 && (from || ks.indexOf(kind) >= 0)) ? kind : (!from && ks.length === 1 ? ks[0] : ''), from:from || null, key:newKey(), dup:null, busy:false, p:p, store:st,
+      file:(pr.file && typeof pr.file === 'object') ? pr.file : null, carried:!!pr.carried };
     openModal('<div id="wr-form" style="width:100%"></div>');
     drawForm();
   };
@@ -107431,7 +107585,8 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     var el = document.getElementById('wr-form'); if (!el || !S.form) return;
     var f = S.form, p = f.p, me = S.me || {};
     var h = '<div style="font-size:15px;font-weight:700">' + (f.from ? (f.from.status === 'returned' ? T('直して出し直す','Fix and resubmit') : T('直す（新しい版）','Edit (new version)')) + ' · ' + esc(f.from.code) : T('新しい申請','New request')) + '</div>';
-    if (!f.from) h += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">' + KINDS.map(function(k){ return '<button class="btn btn-sm ' + (f.kind === k ? 'btn-primary' : 'btn-secondary') + '" onclick="wrPick(\'' + k + '\')">' + esc(kindL(k)) + '</button>'; }).join('') + '</div>';
+    if (f.carried) h += '<div class="alert alert-info" style="font-size:11.5px;margin-top:8px">' + T('前の画面で入れた内容を写しました。確かめて「申請する」を押してください（まだ送っていません）。','What you entered on the earlier screen was copied here. Check it and press “Submit” (not sent yet).') + '</div>';
+    if (!f.from) h += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">' + expKindsNow().map(function(k){ return '<button class="btn btn-sm ' + (f.kind === k ? 'btn-primary' : 'btn-secondary') + '" onclick="wrPick(\'' + k + '\')">' + esc(kindL(k)) + '</button>'; }).join('') + '</div>';
     if (!f.kind) { el.innerHTML = h + '<div style="font-size:12px;color:var(--muted);margin-top:10px">' + T('種類を選んでください','Choose a kind') + '</div>'; return; }
     if (f.from && f.from.status === 'returned' && f.from.returned) h += '<div class="alert alert-warning" style="font-size:12px;margin-top:8px">' + T('差し戻しの理由：','Returned because: ') + esc(f.from.returned.reason || '') + '</div>';
     var so = storeOpts();
@@ -107447,13 +107602,15 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
         + '<label style="display:block;font-size:11.5px;margin-top:6px"><input id="wrf-emp" type="checkbox"' + (p.payer_is_employee !== false ? ' checked' : '') + '> ' + T('従業員','Employee') + '</label>'
         + inp('vendor', T('支払先（お店）','Vendor'), p.vendor, 'text', 'maxlength="200"') + sel('purpose', T('用途','Purpose'), p.purpose || RB_PURPOSES[0], RB_PURPOSES.map(function(v){ return [v, purposeL(v)]; }))
         + inp('pmemo', T('用途のメモ','Note'), p.purpose_memo, 'text', 'maxlength="600"') + inp('amount', T('金額（$）','Amount ($)'), cents2(p.amount_cents), 'number', 'step="0.01" min="0.01"')
-        + '<label style="display:block;font-size:11.5px;margin-top:6px">' + T('領収書（写真・PDF）','Receipt (photo / PDF)') + (p.receipt && (p.receipt.path || p.receipt.chat_file) ? ' <span style="color:var(--muted)">' + T('（今のまま。差し替えるときだけ選ぶ）','(kept; choose only to replace)') + '</span>' : '') + '<input id="wrf-file" type="file" accept="image/*,application/pdf" style="width:100%"></label>'
+        + '<label style="display:block;font-size:11.5px;margin-top:6px">' + T('領収書（写真・PDF）','Receipt (photo / PDF)') + (p.receipt && (p.receipt.path || p.receipt.chat_file) ? ' <span style="color:var(--muted)">' + T('（今のまま。差し替えるときだけ選ぶ）','(kept; choose only to replace)') + '</span>' : '') + (f.file && f.carried ? ' <span style="color:var(--muted)">' + T('（前の画面で選んだ「','(chosen on the earlier screen: “') + esc(f.file.name || '') + T('」を送ります。差し替えるときだけ選ぶ）','” will be sent; choose only to replace)') + '</span>' : '') + '<input id="wrf-file" type="file" accept="image/*,application/pdf" style="width:100%"></label>'
         + inp('memo', T('メモ','Memo'), p.memo, 'text', 'maxlength="600"');
     } else {
-      h += inp('date', T('実施日','Date'), p.date || hstToday(), 'date') + inp('dept', T('部門','Dept'), p.dept, 'text', 'maxlength="60"') + inp('project', T('プロジェクト','Project'), p.project, 'text', 'maxlength="200"')
-        + inp('purpose', T('目的','Purpose'), p.purpose, 'text', 'maxlength="200"') + inp('desc', T('内容','Description'), p.description, 'text', 'maxlength="600"') + inp('location', T('場所','Place'), p.location, 'text', 'maxlength="200"')
-        + inp('people', T('人数','People'), p.participants, 'number', 'min="1" max="1000" step="1"') + inp('pp', T('1 人あたり（$）','Per person ($)'), cents2(p.per_person_cents), 'number', 'step="0.01"')
-        + inp('total', T('合計（$）','Total ($)'), cents2(p.total_cents), 'number', 'step="0.01" min="0.01"') + inp('memo', T('メモ','Memo'), p.memo, 'text', 'maxlength="600"');
+      /* v1164：事前経費は買う前に分かることだけ（用途・予定額・予定日。領収書・実費は要らない＝あとで建て替え経費などで） */
+      h += '<div style="font-size:11px;color:var(--muted);margin-top:6px">' + T('買う前の申請です。用途と予定額を書いてください（領収書・実費はまだ要りません）。','Before buying: write the purpose and the planned amount (no receipt or actual cost yet).') + '</div>'
+        + inp('purpose', T('用途（目的）','Purpose'), p.purpose, 'text', 'maxlength="200"') + inp('total', T('予定額（$）','Planned amount ($)'), cents2(p.total_cents), 'number', 'step="0.01" min="0.01"')
+        + inp('date', T('予定日','Planned date'), p.date || hstToday(), 'date') + inp('dept', T('部門（任意）','Dept (optional)'), p.dept, 'text', 'maxlength="60"') + inp('project', T('プロジェクト（任意）','Project (optional)'), p.project, 'text', 'maxlength="200"') + inp('desc', T('内容','Description'), p.description, 'text', 'maxlength="600"') + inp('location', T('場所','Place'), p.location, 'text', 'maxlength="200"')
+        + inp('people', T('人数（任意）','People (optional)'), p.participants, 'number', 'min="1" max="1000" step="1"') + inp('pp', T('1 人あたり（$・任意）','Per person ($, optional)'), cents2(p.per_person_cents), 'number', 'step="0.01"')
+        + inp('memo', T('メモ','Memo'), p.memo, 'text', 'maxlength="600"');
     }
     if (f.from) h += inp('note', T('直した理由（任意）','Why (optional)'), f.note || '', 'text', 'maxlength="400"');
     if (f.dup) {
@@ -107530,6 +107687,8 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       S.form = null; closeModalDirect();
       showToast(T('申請しました：','Submitted: ') + j.code, 'success');
       S.view = f.from ? S.view : 'mine'; reloadList();
+      if (!f.from) sentCard(j);
+      paintMyExp(true);
     } catch(e) {
       f.busy = false;
       var msg = e.code === 'receipt' ? T('領収書を上げられませんでした（通信）。もう一度押すか、領収書なしで出してください（あとで直せます）','The receipt could not be uploaded. Press again, or send without it (you can edit later)') : String(e.message || e);
@@ -108595,9 +108754,25 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     W[name] = function(){ if (liveSeen() && (!test || test.apply(this, arguments))) return blocked(); return o.apply(this, arguments); };
   }
   ['approveMileage','rejectMileage','deleteMyMileage','mileageMonthEndClose','saveMileageRequest','approveExpense','rejectExpense','deleteMyExpense','saveExpenseRequest',
-   'approveReimburse','markReimbursePaid','undoReimbursePaid','saveReimbursement'].forEach(function(n){ wrap(n); });
+   'approveReimburse','markReimbursePaid','undoReimbursePaid'].forEach(function(n){ wrap(n); });
   var openNew = { openMileageModal:'mileage', openExpenseModal:'expense_pre' };
-  Object.keys(openNew).forEach(function(n){ var o = W[n]; if (typeof o !== 'function') return; W[n] = function(){ if (liveSeen()) { S.view = 'mine'; return W.wrNew(openNew[n]); } return o.apply(this, arguments); }; });
+  Object.keys(openNew).forEach(function(n){ var o = W[n]; if (typeof o !== 'function') return; OLD_OPEN[n] = o; W[n] = function(){ if (liveSeen()) return W.wrStartExpense(openNew[n]); return o.apply(this, arguments); }; });
+  /* v1164：レシート管理の「建て替え経費」。使い始めたら、種別を選んだ時点で入口へ（店は選んでいた店）。
+     前の画面で入れて「申請する」を押した（開いていた画面）ときは、入れた中身（支払った人・金額・支払先・用途・メモ・領収書）を写して入口へ（前は捨てていた） */
+  (function(){
+    var oi = W.openInvoiceModal; if (typeof oi === 'function') { OLD_OPEN.openInvoiceModal = oi; W.openInvoiceModal = function(){ try { if (liveSeen() && typeof invoiceDocType !== 'undefined' && invoiceDocType === 'Reimburse') { invoiceDocType = 'Receipt'; return W.wrStartExpense('reimburse', { store:W._invoiceStore || '' }); } } catch(e) {} return oi.apply(this, arguments); }; }
+    var od = W.setInvDocType; if (typeof od === 'function') W.setInvDocType = function(t){ if (t === 'Reimburse' && liveSeen()) { closeModalDirect(); return W.wrStartExpense('reimburse', { store:W._invoiceStore || '' }); } return od.apply(this, arguments); };
+    var os = W.saveReimbursement; if (typeof os === 'function') W.saveReimbursement = function(){
+      if (!liveSeen()) return os.apply(this, arguments);
+      var v = function(id){ var e = document.getElementById(id); return e ? String(e.value || '').trim() : ''; };
+      var amt = parseFloat(v('inv-reimburse-amount')), sel = document.getElementById('invoice-store'), payer = v('inv-payer');
+      var pre = { carried:true, store:sel ? sel.value : (W._invoiceStore || ''), file:W._invoicePhotoFile || null,
+        p:{ payer:payer, vendor:v('inv-vendor'), purpose:v('inv-purpose') || undefined, purpose_memo:v('inv-purpose-memo'), amount_cents:isFinite(amt) && amt > 0 ? Math.round(amt * 100) : undefined, date:hstToday() } };
+      try { var emps = (typeof getEmployees === 'function') ? getEmployees() : []; pre.p.payer_is_employee = !payer || emps.some(function(e){ return e && e.name === payer; }); } catch(e) {}
+      closeModalDirect();
+      return W.wrStartExpense('reimburse', pre);
+    };
+  })();
   var apType = function(id){ try{ var a = (ls('approvals', []) || []).find(function(x){ return x && x.id === id; }); return a && OLD_TYPES[a.type]; }catch(e){ return false; } };
   ['signoffApproval','rejectApprovalItem','overrideApproveAll','apFinalize','apAcctConfirm','reopenApproval'].forEach(function(n){ wrap(n, function(id){ return !!apType(id); }); });
   var banner = function(kind){ return liveSeen() ? '<div class="alert alert-info" style="font-size:12px;margin-bottom:10px"><i class="ti ti-arrow-right"></i><div>' + T('この申請（','These requests (') + esc(kindL(kind)) + T('）はワークセンターの「申請」に移りました。下の一覧は前の記録で、読むだけです。',') moved to the Work Center “Requests” tab. The list below is the earlier record, read only.') + ' <a href="#" onclick="workTab=\'wr\';go(\'tasks\');return false">' + T('申請を開く','Open Requests') + '</a></div></div>' : ''; };
@@ -108965,7 +109140,8 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       var m = C.msgs[tid] || (C.msgs[tid] = newMsgs()); mergeMsgs(m, [msg]);
       var r = C.threads[tid];
       if (r) { r.last_seq = Math.max(Number(r.last_seq) || 0, msg.seq); r.last_read = Math.max(Number(r.last_read) || 0, msg.seq); r.last_at = msg.at;
-        r.preview = { seq:msg.seq, name:msg.name, emp:msg.emp, text:msg.body ? String(msg.body).replace(/\s+/g, ' ').slice(0, 80) : filesLabel(msg.files), at:msg.at }; }
+        /* 本文が無ければ数も持つ（サーバーの preview.files と同じ形）→ 日英を切り替えても pvText が今の言葉で出す（#159 の Claude P3） */
+        r.preview = { seq:msg.seq, name:msg.name, emp:msg.emp, text:msg.body ? String(msg.body).replace(/\s+/g, ' ').slice(0, 80) : filesLabel(msg.files), files:msg.body ? undefined : filesCount(msg.files), at:msg.at }; }
       if (C.open === tid) paintPane('bottom'); paintList();
     }, function(e){
       if (g !== C.gen) return;
@@ -109290,13 +109466,13 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   /* 前の版の関数（添付を知らない）なら、そう言う */
   function fErr(e){ return e && e.code === 'unknown_action' ? errText('files_old') : (e && e.message) || errText(''); }
   function sizeL(n){ n = Number(n) || 0; return n >= 1048576 ? (n / 1048576).toFixed(1) + ' MB' : n >= 1024 ? Math.max(1, Math.round(n / 1024)) + ' KB' : n + ' B'; }
-  function filesLabel(fs){
-    fs = fs || []; var ph = fs.filter(function(f){ return f.kind === 'photo'; }).length, ot = fs.length - ph;
-    if (ph && !ot) return T('写真 ' + ph + ' 枚', ph + ' photo' + (ph > 1 ? 's' : ''));
-    if (!ph && ot === 1) return T('ファイル「' + (fs[0].name || '') + '」', 'File “' + (fs[0].name || '') + '”');
-    if (!ph && ot > 1) return T('ファイル ' + ot + ' 個', ot + ' files');
-    return ph ? T('写真 ' + ph + ' 枚・ファイル ' + ot + ' 個', ph + ' photos, ' + ot + ' files') : '';
+  /* 付けたファイルの数（サーバーの chat_files_count と同じ形：写真・ほか・ほかが 1 つならその名前） */
+  function filesCount(fs){
+    fs = fs || []; var ph = fs.filter(function(f){ return f.kind === 'photo'; }).length, oth = fs.filter(function(f){ return f.kind !== 'photo'; });
+    return { ph:ph, ot:oth.length, name:oth.length === 1 ? String(oth[0].name || '') : '' };
   }
+  /* 言い方は一覧（pvText）と同じ 1 つ（「1 photo · 2 files」）。前は英語で「1 photos, 1 files」になっていた */
+  function filesLabel(fs){ var c = filesCount(fs); return c.ph || c.ot ? pvText({ files:c }) : ''; }
   /* 種類を決める（写真は端末で JPEG に縮めるので、名前も .jpg に） */
   W.chatFileClass = function(file){
     if (!file) return { err:'file_type' };

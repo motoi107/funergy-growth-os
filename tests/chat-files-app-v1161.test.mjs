@@ -613,3 +613,28 @@ test('v1163 the list line for files only, deleted and hidden follows the screen 
   await srv.pg.exec('reset role'); await srv.pg.exec(old); await srv.pg.exec('set role service_role');
   assert.match(await listOf('en'), /Cam Crew：（削除されました）/, 'the old SQL still gives its Japanese text');
 });
+
+// #159 の Claude のレビュー（P3）：送った直後の自分の一覧の 1 行は、端末で作った文（filesLabel）だけで数を持たず、
+// 英語は「1 photos, 1 files」と一覧の言い方（pvText「1 photo · 1 file」）と違っていた。日英を切り替えても前の言葉のまま。
+test('#159 P3 right after sending files, my own list line uses the same wording and follows a language switch', async () => {
+  const srv = await server();
+  const a = await app(srv, 'E8', { lang: 'en' });
+  await start(a);
+  const tid = await openDm(a, 'E9');
+  await a.attach(file('IMG_0002.jpg', JPG(9000), 'image/jpeg'), file('menu.pdf', PDF, 'application/pdf')); await a.send();
+  const pv = a.S().threads[tid].preview;
+  assert.deepEqual(JSON.parse(JSON.stringify(pv.files)), { ph: 1, ot: 1, name: 'menu.pdf' }, 'the counts are kept with the line (same shape as chat_files_count)');
+  assert.match(text(a.D.getElementById('chat-list')), /You：1 photo · 1 file/);
+  a.ctx.t = ja => ja; a.show(); await a.idle();
+  assert.match(text(a.D.getElementById('chat-list')), /あなた：写真 1 枚・ファイル 1 個/, 'follows the language switch');
+  a.ctx.t = (ja, en) => en;
+  await a.attach(file('シフト.xlsx', ZIP)); await a.send();
+  assert.equal(a.S().threads[tid].preview.files.name, 'シフト.xlsx');
+  a.show(); await a.idle();
+  assert.match(text(a.D.getElementById('chat-list')), /You：File “シフト\.xlsx”/);
+  // 本文があれば数は持たない（本文を出す）
+  await a.type('メモ'); await a.attach(file('z.pdf', PDF)); await a.send();
+  assert.equal(a.S().threads[tid].preview.files, undefined);
+  a.show(); await a.idle();
+  assert.match(text(a.D.getElementById('chat-list')), /You：メモ/);
+});

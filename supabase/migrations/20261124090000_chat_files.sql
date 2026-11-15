@@ -30,11 +30,17 @@ end $$;
 -- #155・#156 の Codex（6880266210・6880661922）：名前が public・anon・authenticated の決まりだけでは足りない。
 --   anon・authenticated が入っているロール（grant storage_readers to anon など・継承でも SET ROLE でも）宛ての決まりも公開の鍵に効く → pg_has_role（MEMBER）で同じに見る。
 --   storage.objects の行の守り（RLS）が OFF・anon か authenticated が RLS を飛ばせる（BYPASSRLS）なら、決まりに関係なく読める → 止める。
+-- #158・#159 の Codex（6881786429・6881979126）：表の持ち主（とそのロールに入っている人）も RLS を飛ばせる。
+--   anon・authenticated が storage.objects の持ち主のロールに入っている（継承でも SET ROLE でも）・RLS を飛ばせるロール・superuser のロールに入っている・
+--   この SQL を流す人（＝表 chat_files の持ち主になる）のロールに入っている → どれも止める（ほかの用途の権限は変えない・Claude に知らせてもらう）。
 do $$ declare v text; begin
  if to_regclass('storage.objects') is not null then
   if not coalesce((select c.relrowsecurity from pg_class c join pg_namespace n on n.oid = c.relnamespace where n.nspname = 'storage' and c.relname = 'objects'), false)
-     or exists (select 1 from pg_roles r where r.rolname in ('anon','authenticated') and (r.rolbypassrls or r.rolsuper)) then
-   raise exception 'STOP: Storage（storage.objects）の行の守り（RLS）が効いていません（公開の鍵で chat-files も読めてしまう）。Claude に知らせてください（何も変えていません）';
+     or exists (select 1 from pg_roles u join pg_roles g on pg_has_role(u.oid, g.oid, 'MEMBER')
+                 where u.rolname in ('anon','authenticated')
+                   and (g.rolbypassrls or g.rolsuper or g.rolname = current_user
+                        or g.oid = (select c.relowner from pg_class c join pg_namespace n on n.oid = c.relnamespace where n.nspname = 'storage' and c.relname = 'objects'))) then
+   raise exception 'STOP: Storage（storage.objects）の行の守り（RLS）が効いていません（RLS が OFF・公開の鍵が RLS を飛ばせるロールか表の持ち主のロールに入っている＝公開の鍵で chat-files も読めてしまう）。Claude に知らせてください（何も変えていません）';
   end if;
   select string_agg(p.policyname, ', ' order by p.policyname) into v from pg_policies p
    where p.schemaname = 'storage' and p.tablename = 'objects' and p.permissive = 'PERMISSIVE'

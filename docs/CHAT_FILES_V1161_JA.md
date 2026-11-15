@@ -74,7 +74,7 @@ v1156 のチャット（`docs/CHAT_V1156_JA.md`）の上に、ファイルを付
 - **ロール経由の決まりを見落としていた（P2・Codex）**：Storage の確かめ（② の最初・① の 3・4・③ の 8）は、`roles` に `public`・`anon`・`authenticated` の名前が直接書いてある決まりだけを見ていた。anon・authenticated が入っている別のロール宛ての PERMISSIVE の決まり（例：`grant storage_readers to anon` と `to storage_readers using (true)`）も公開の鍵に効くのに、通していた（合成 DB で anon が chat-files の行を読めた）。
   - いまは `pg_has_role(anon か authenticated, 決まりのロール, 'MEMBER')` が true のロール宛ての決まりも同じに見る（何段の継承でも・`with inherit false` の SET ROLE だけでも）。anon が入っていないロール宛て（`service_role`・anon の上のロールなど）は今までどおり見ない。
   - あわせて、storage.objects の RLS が OFF か、anon・authenticated が RLS を飛ばせる（BYPASSRLS・superuser）なら、決まりに関係なく読めるので止める（② の最初・① の 6・③ の 10。新しい）。
-- 本番：11/14 05:39 HST の表は名前が直接 anon などの決まりだけを見る問い合わせだったので、ロール経由の決まりがあるかはまだ分からない。③（読むだけ）を流して 8・10 が OK なら、公開の鍵では chat-files を読めない。済（Moto さん 11/14 07:48 HST「問題なし」）：本番で 8・10 とも OK。② は流し直さなくてよい（`deploy/codex-p2-20261114/手順.md`）。
+- 本番：11/14 05:39 HST の表は名前が直接 anon などの決まりだけを見る問い合わせだったので、ロール経由の決まりがあるかはまだ分からない。③（読むだけ）を流して 8・10 が OK なら、この確かめが見る形（公開の鍵宛ての決まり・RLS が OFF・RLS を飛ばせる公開の鍵）では読めない。**訂正（#158・#159 の Codex）：これだけでは「公開の鍵で読めない」とは言えなかった**（表の持ち主のロールに公開の鍵が入っている形を見ていなかった＝9）。済（Moto さん 11/14 07:48 HST「問題なし」）：本番で 8・10 とも OK（前の 10 の決め方で）。② は流し直さなくてよい（`deploy/codex-p2-20261114/手順.md`）。
 - 試験（合成データ・PGlite）：deploy 8（足した 1：止めるもの 5 つ（ロール経由の `using (true)`・2 段・SET ROLE だけ・ほかのロールと一緒・ロール経由の chat-files）を ①②③ で・通るもの 3 つ（anon が入っていないロール・anon の上のロール・ロール経由でも 1 つの置き場所）・入れたあとに増えたロール経由の決まりとロールから anon を外したとき・RLS OFF と BYPASSRLS（anon・authenticated）・ロール経由の決まりで anon が chat-files を読めること・Storage が無い環境）。足した試験は直す前の SQL（main `2647441`）で落ちる。
 
 ## 8. v1163：一覧の 1 行の文を画面の言葉で（#155 の Codex P3）
@@ -84,3 +84,11 @@ v1156 のチャット（`docs/CHAT_V1156_JA.md`）の上に、ファイルを付
 - `text` は v1162 までの画面のために日本語のまま残す。前の SQL（`files`・`state` が無い）なら、v1163 の画面も `text` を出す。
 - ③ の 11（新しい）：`chat_row` が `chat_files_count` を使っているか。入れ方：`deploy/p3-v1163/手順.md`。
 - 試験（合成データ）：app 11（足した 1：英語・日本語・本文のあるとき・消したとき・検索・前の SQL）。
+
+## 9. #158・#159 の Codex（6881786429・6881979126）の直し（11/14・アプリ v1163 のまま・同じ SQL の置き換え）
+
+- **表の持ち主のロールを見ていなかった（P2・Codex）**：② の最初・① の 6・③ の 10 は、RLS が ON で anon・authenticated 自身に BYPASSRLS・superuser が無いことだけを見ていた。表の持ち主（とそのロールに入っている人）は RLS を飛ばせるので、anon が storage.objects の持ち主のロールに入っている（`grant 持ち主 to anon`）と、①②③ はすべて OK のまま、公開の鍵で chat-files の行を読めた（合成 DB で再現。本番がその形だとは確かめていない）。
+- いま：anon・authenticated が次のどれかのロールに入っていれば（`pg_has_role(…, 'MEMBER')`＝継承でも SET ROLE だけでも・自分自身も）止める：RLS を飛ばせるロール（BYPASSRLS）・superuser・storage.objects の持ち主・この SQL を流す人（② と ①＝表 chat_files の持ち主になる人）・表 chat_files の持ち主（③）。ほかの用途の権限は変えない（見つけたら止めて Claude に知らせてもらう）。anon の上のロール・ほかの表の持ち主は止めない。
+- まだ見ていない道：作った人の権限で動く関数（security definer）・view を通る読み方、Storage の API の設定。③ が OK でも、これらで読めないことまでは言えない。
+- 本番：② は流し直さなくてよい（変わったのは入れる前の止め方だけ。流しても同じ）。③（読むだけ）をもう一度流して 10 が OK か見る（`deploy/p3-v1163/手順.md`）。
+- 試験（合成データ・PGlite）：deploy（足した場面：持ち主のロールに入っていると anon が chat-files を読めること・storage.objects の持ち主（継承・SET ROLE だけ）・RLS を飛ばせるロール・superuser のロール・chat_files の持ち主・止めないもの（anon の上のロール・ほかの表の持ち主））。直す前の SQL で落ちる。
