@@ -1,5 +1,6 @@
 // まとめての手順（deploy/all-v1163-v1168/）：表の 01〜19 のファイルがあり、本番と同じ形の合成 DB（PGlite）に上から順に流すと
-// ① に STOP・② にエラー・③ に NG が出ない。上から全部をもう一度流しても壊れない（10 の 5 だけが「段が 7」で NG＝手順に書いたとおり）。
+// ① に STOP・② にエラー・③ に NG が出ない。上から全部をもう一度流しても最後の状態は同じ（10 の 5 だけが「段が 7」で NG）。
+// ただし途中（03 のあと 18 まで）はキーの守りが外れる（#164 の Codex 6888011035）ので、手順は 18 のあとの 03・15 の流し直しを止める。
 // 関数は v1168 の 1 ファイルだけ・Secrets の名前・マージの順・鍵が無いこと。合成データだけ（本番にはつながない）。
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -33,6 +34,7 @@ test('the steps: only the v1168 function file, the three secrets, the merge orde
   assert.match(H, /#160 → #161 → #162 → #163 → #164/);
   assert.match(H, /自分の端末をすべて 1168 にしてから/);
   assert.match(H, /止まった番号から/);
+  assert.match(H, /18 まで流したあとは、03（添付の SQL）・15（チャット改修の SQL）を流し直さないでください/);
   assert.match(H, /10 の 5 だけは「NG（段が 7）」/);
   const D = new URL('../deploy/all-v1163-v1168/', import.meta.url);
   assert.deepEqual(fs.readdirSync(D), ['手順.md'], 'only the steps: the SQL stays in each version folder, the private files never come here');
@@ -96,7 +98,7 @@ test('top to bottom once on a production-shaped database: no STOP in ①, every 
   assert.equal(pre17.find(r => r.check_name.startsWith('2.')).result, '4');
 });
 
-test('running everything again from the top (e.g. after an interruption) breaks nothing: only 10\'s check 5 says NG (stage 7), and 13・16・19 end OK', async () => {
+test('the final state after running everything again from the top is the same (only 10\'s check 5 says NG, stage 7; 13・16・19 end OK). This checks the end state only: between 03 and 18 the protection is off, so the steps forbid it', async () => {
   const pg = await prod();
   await runAll(pg);
   const res = await runAll(pg);
