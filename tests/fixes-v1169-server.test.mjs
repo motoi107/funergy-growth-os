@@ -262,6 +262,23 @@ test('v1170 fix (Codex #166 6891496601): after the only manager retires, opening
   assert.equal((await s3.ok('E6', { action: 'chat_remove', thread: t.id, emp: 'E6' })).removed, 1);
 });
 
+test('v1170 fix (Codex / Claude #166 P3): in an ordinary group with a manager, the member list says admin true / false (never null) and the manager comes first, as before', async () => {
+  const s = await setup();
+  const g = await s.ok('E7', { action: 'chat_create_group', title: 'Line', members: ['E6', 'E8'], client_key: s.key() });
+  for (const who of ['E6', 'E7', 'E8']) {
+    const m = await s.ok(who, { action: 'chat_messages', thread: g.id });
+    assert.deepEqual(m.members.map(x => typeof x.admin), ['boolean', 'boolean', 'boolean'], 'admin is true or false (not null)');
+    assert.deepEqual(m.members.map(x => [x.emp, x.admin]), [['E7', true], ...m.members.slice(1).map(x => [x.emp, false])], 'the manager first, the others false');
+    assert.deepEqual(m.members.slice(1).map(x => x.emp).sort(), ['E6', 'E8']);
+  }
+  // 管理する人の退職のあと：次に管理する人（E6）も true で前に並ぶ。ほかは false
+  await s.retire('E7');
+  const m6 = await s.ok('E6', { action: 'chat_messages', thread: g.id });
+  assert.deepEqual(m6.members.map(x => typeof x.admin), ['boolean', 'boolean', 'boolean']);
+  assert.deepEqual(m6.members.filter(x => !x.admin).map(x => x.emp), ['E8'], 'only E8 is not shown as a manager, and comes last');
+  assert.equal(m6.members[2].emp, 'E8');
+});
+
 test('(#161) 処理済み（今月）: read by the time it was processed (paid, else checked; Hawaii month), newest first, page by page, only requests the person can see', async () => {
   const s = await setup();
   const old = await s.submit('E7', { date: '2026-08-20' });   // 前の申請を今月精算した
