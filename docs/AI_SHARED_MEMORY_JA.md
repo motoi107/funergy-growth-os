@@ -7,7 +7,8 @@
 - 不具合：KPI推移の行は Excel（1〜6 月）のデータがある KPI だけ → LaLa は原価率・人件費率の行が無かった。直し：Excel のデータが無い店は 7 月以降に目標か実績がある KPI を出す（データのある店は前と同じ）・keyKpiStats を月ごとに 1 回・あとの暫定で確定の月を上書きしない・読むだけの SQL `db/pl-public-check.sql`。
 - 試験（合成データ）：meet-kpi-noseed-v1174 5・pl-public-check-sql 3（PGlite）・pl-import-v1162 25・関連（kpi-settings・mid-review-ui・annual-plan・storage-slim・labor-ui83）通る・meeting-budget と meeting-sales は前と同じ失敗だけ・static release pass/1174・模擬サーバーで 6 店の KPI推移を v1173 と比べた。CI に v1173・v1174 の試験を足した。
 - 独立レビュー・Codex はまだ。
-- 次：PR → Moto さんが `db/pl-public-check.sql` の結果 → マージ。そのあと A（総労働時間を h/営業日に）・B（アップセル対象商品）→ UI の続き。
+- PR #172（base main・#171 の上・この PR だけの差分は `5f37a68`）。
+- 次：Moto さんが `db/pl-public-check.sql` の結果 → マージ。そのあと A（総労働時間を h/営業日に）・B（アップセル対象商品）→ UI の続き。
 
 ## 2026-11-15 v1173：予実 › 人件費・勤怠の作り直し（UI案83 の 1〜5：A）と不具合 3 つ（Claude・ブランチ `claude/labor-ui83`・#169（v1172）の上・アプリだけ・本番未反映）
 
