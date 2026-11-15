@@ -49,7 +49,8 @@ const FNS = ['calcTipDistribution', 'tipWeightByRate', '_tipDecDay', '_tipDecDay
   'approveTip', 'applyTipRaise', 'tipRaisePreview', 'openTipRaiseModal', 'tipStampLegacy', 'tipDecStamp', 'tipDecDayStamp', 'tipDecClockAhead', 'tipDecClockMsg',
   '_tipDecided', '_tipReqT', '_tipDecSeen', 'todayJP', 'fmtJP',
   'tipPrevPeriodStart', 'tipBackInfo', 'tipBackConfirm', 'tipBackPull', 'tipBackRecheck', '_tipBackdated', 'tipConfirmKey', 'getTipConfirm',   // v1129
-  'setTipConfirm', '_lrStamp', '_lrObj', '_lrAt'];   // v1136：確定の記録はクラウドの年ごとの入れ物（tip_cf_<店>_<年> = { 初日: 記録 }）
+  'setTipConfirm', '_lrStamp', '_lrObj', '_lrAt',
+  'isFloorG1G2', 'gradeOf', 'gradeNum', 'empGrade'];   // v1169：G1・G2 には変更履歴を出さない（ここは GM の画面）   // v1136：確定の記録はクラウドの年ごとの入れ物（tip_cf_<店>_<年> = { 初日: 記録 }）
 
 function app(now) {
   const c = { console, STORE: {}, EMPS: [], LABOR: {}, TIPS: {}, TOASTS: [], RENDERS: [], CONFIRMS: [], NOTIFS: [], answer: true, EL: {}, CLOUD: {}, CLOUD_READS: [], cloudDown: false, MOVED: true };
@@ -63,6 +64,8 @@ function app(now) {
     var TIP_OPTIONS = [80, 90, 100];
     var _tipFromSel = {};
     var ROLE_ALIAS = { g2: 'sl', g4: 'am' };
+    var curStoreLogin = false, curRealRole = null;   // v1169
+    ${(() => { const i = SRC.indexOf('var GRADE_TITLES = {'); return SRC.slice(i, SRC.indexOf('\n};', i) + 3); })()}
     var STORES = [{ id: 'F01', name: 'Store One' }, { id: 'F02', name: 'Store Two' }];
     var ROLE_CONFIG = { gm: { name: 'Moto', canApprove: true }, crew: { name: 'Crew' } }, curRole = 'gm', curLang = 'ja', curStore = 'ALL', curUserName = 'Moto', curPage = 'tiprate';
     function t(ja){ return ja; }

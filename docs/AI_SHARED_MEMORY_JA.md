@@ -1,5 +1,16 @@
 # Claude / Codex 共通記録
 
+## 2026-11-14 v1169（急ぎ）：G1・G2 の画面から Tip Rate の変更履歴と現場の重点 KPI を外す（Claude・ブランチ `claude/g1g2-hide-1169`・main `cb60c55`（v1168）の上・アプリだけ・本番未反映）
+
+- 依頼：Moto さん 11/14 19:38 HST「G1とG2の画面からTip Rateの変更履歴と現場のKPIを至急非表示にしてください」。仕様・見分け方・限界：`docs/G1G2_HIDE_V1169_JA.md`。
+- 直し：`isFloorG1G2`（店のタブレット・本当の役割 g2・crew・office_crew・役割 sl で肩書きが G1・G2 → 隠す／ほかの役割は隠さない／読めなければ隠す）。`renderTipRate` の「Tip Rate 変更履歴」と `k2FocusCard` の field（マイページ・`renderSlFunergyNow`）を G1・G2 に出さない。G2 は curRole が sl に読み替わり `myGradeNum()` が 3 なので使わない。
+- Claude が決めたこと（Moto さんに伝える）：店のタブレットも隠す・事務Crew も隠す。
+- 限界：画面だけ。Tip Rate の記録（`spl_tip_requests_*`）は公開の鍵で読めるまま（v1146 は書き込みだけ止めた）。
+- 試験（合成データ）：g1g2-hide-v1169 3・kpi-settings-v1153 15（足した 1）・tip-start-date と chat-guard-app-v1168 の土台を合わせた・わざと壊す 10/10・static release pass/1169。
+- 版：main は 1168、PR #166（v1169）はまだマージされていないので、この急ぎを 1169 にし、#166 はこのあと 1170 に上げる（Claude）。
+- 同じ日の Moto さんの答え（ログイン・UI案80）：1 B（段階を上・主ボタンを下）・2 はい（本人確認の前に名前を出す）・3 はい（チャットの操作なしのロックを GM・CEO で止める）・4 分からない（独自ドメインとメールの送り手）→ 説明し直す。「ログインの UI 変更はまず社員に限定して試したい」。
+- 独立レビュー・Codex のレビューはまだ。
+
 ## 2026-11-14 まだ入れていないものをまとめて入れる手順（v1163 の SQL・#160〜#164）（Claude・ブランチ `claude/chat-guard-1168`・手順と試験だけ）
 
 - 依頼：Moto さん 11/14 16:17 HST「１回入れてないもの全部入れます　手順とCodeお願いします」。
