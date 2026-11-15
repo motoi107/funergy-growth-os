@@ -1,6 +1,6 @@
 # Claude / Codex 共通記録
 
-## 2026-11-14 v1168：チャットの守り（個人のチャット暗証番号・グループのキー・プッシュ通知）（UI案79 の残り・Claude・ブランチ `claude/chat-guard-1168`・#163（v1167）の上・SQL `20261128090000`・関数 work-requests fn 10・アプリ・本番未反映）
+## 2026-11-14 v1168：チャットの守り（個人のチャット暗証番号・グループのキー・プッシュ通知）（UI案79 の残り・Claude・ブランチ `claude/chat-guard-1168`・PR #164・#163（v1167）の上・SQL `20261128090000`・関数 work-requests fn 10・アプリ・本番未反映）
 
 - 依頼と決定：Moto さん 11/14 14:11 HST「次お願いします」（v1167 の次＝依頼書の 6 と 5 の残り・UI案79 の答え 1〜6 A。画面は UI案79 で決まっている）。仕様・Claude が決めたこと・完了の条件の表・限界：`docs/CHAT_GUARD_V1168_JA.md`。入れる一式：`deploy/chat-guard-v1168/`（① 確認 → ② SQL → ③ 確認 → ⑤ Secrets にプッシュの鍵 3 つ → ④ 関数（非公開の 1 ファイル）→ #160 → #161 → #162 → #163 → この PR → 端末を 1168 に）。
 - サーバー：表 5（`chat_guard`・`chat_sess`・`chat_sess_keys`・`chat_key_fails`・`chat_push_subs`・RLS ON・公開の鍵では読めない）・`chat_threads` にキーの列（`key_hash`・`key_rev` など）。`chat_actor`（どのチャットの関数も通る）が暗証番号、`chat_find`・`chat_msg_find`・`chat_files_access`・`chat_my_mentions`・`wr_receipt_from_chat` がキーを確かめる（423 `chat_pin_required`／`chat_key_required`）。`chat_sync` は暗証番号を開けていなければ数だけ（一覧・合図の印なし）。`chat_row` はキーを開けていなければ名前と数だけ。暗証番号・キーの印は関数が作る PBKDF2-SHA256（15 万回・塩 16 バイト）・開けた印（unlock）は sha256 だけ置く・12 時間／2 時間。続けて 5 回で止める（15 分 → 30 分 → … 24 時間・数えるのは確かめる前）。ロックで暗証番号の分・ログアウトで印を全部消す。キーを変えると `key_rev` が進んで前の印は使えない。プッシュは中身なし（VAPID ES256・送り先は FCM・Apple・Mozilla・Windows の送り先のサーバーだけ・30 秒に 1 回・今の参加者だけ・410 は消す）。`chat_stage` 4。
