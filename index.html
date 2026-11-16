@@ -1969,6 +1969,7 @@ i.ti-loader, i.ti-loader-2 { display:inline-block; animation:uxSpin 1s linear in
 .u9-bar > .form-select.u9-sel { width:auto; min-width:120px; flex:0 1 auto; }
 .u9-bar > .u9-q { flex:1 1 180px; min-width:140px; max-width:320px; }
 .u9-note { font-size:12px; color:var(--muted); margin:0 0 8px; }
+.u9-draft { display:inline-block; font-size:11px; font-weight:600; line-height:1.4; padding:0 6px; border-radius:8px; background:var(--accent-bg, #fff3e8); color:var(--accent); border:1px solid var(--accent); vertical-align:1px; }
 .u9-empty { text-align:center; color:var(--muted); font-size:13px; padding:18px 12px; }
 .ar-tbl td.u9-wrap { white-space:normal; min-width:120px; max-width:260px; overflow-wrap:anywhere; }
 @media (max-width:1279px) { .ar-tbl td.u9-wrap { min-width:84px; max-width:180px; } }   /* 1024〜1279px（iPad 横など）：表がカードに入るように折り返しの欄を細く */
@@ -22108,6 +22109,7 @@ if(typeof window.FUNERGY_WEB_OFFICE_NAVIGATE==='function')return window.FUNERGY_
   if(typeof bcForget==='function') bcForget();   /* v1109：ボーナスの締めの保存していない選び方も消す */
   if(typeof chatReset==='function') chatReset();   /* v1156：前の人のチャット（一覧・本文・書きかけ）を残さない */
   if(typeof grReset==='function') grReset();   /* v1157：前の人の Google の口コミの読み込みを残さない */
+  if(typeof u9Reset==='function') u9Reset();   /* v1180：前の人の選んだ人・絞り込み・スキルのコメントの書きかけを残さない */
   document.getElementById('app-shell').style.display = 'none';
   document.getElementById('login-screen').style.display = 'flex';
   /* v1037: 成功したときのまま「確認中…」で押せなくなっていたボタンを戻す（次の人がそのまま入れるように） */
@@ -22132,6 +22134,7 @@ if(typeof window.FUNERGY_WEB_OFFICE_NAVIGATE==='function')return window.FUNERGY_
   if(typeof bcForget==='function') bcForget();   /* v1109：ボーナスの締めの保存していない選び方も消す */
   if(typeof chatReset==='function') chatReset();   /* v1156：前の人のチャット（一覧・本文・書きかけ）を残さない */
   if(typeof grReset==='function') grReset();   /* v1157：前の人の Google の口コミの読み込みを残さない */
+  if(typeof u9Reset==='function') u9Reset();   /* v1180：前の人の選んだ人・絞り込み・スキルのコメントの書きかけを残さない */
   document.getElementById('app-shell').style.display = 'none';
   document.getElementById('login-screen').style.display = 'flex';
   /* v1037: 成功したときのまま「確認中…」で押せなくなっていたボタンを戻す（次の人がそのまま入れるように） */
@@ -48154,7 +48157,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1179';
+const APP_VERSION = '1180';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -89952,6 +89955,7 @@ function uiPcWatch1178(){
 var U9_PER = 50;
 function u9Mode(){ try { return (typeof arMode === 'function') ? arMode() : 'mid'; } catch (e) { return 'mid'; } }
 function u9St(){ return window._u9 || (window._u9 = { pg:{}, sel:{}, f:{}, q:{}, sort:{}, panel:{}, guard:{} }); }
+function u9Reset(){ window._u9 = null; window._sevnDraft = null; window._u9SkillCard = null; }
 function u9Page(key, rows){
   var S = u9St(), per = U9_PER, total = rows.length, pages = Math.max(1, Math.ceil(total / per));
   var p = Math.min(Math.max(1, Number(S.pg[key]) || 1), pages);
@@ -90194,11 +90198,59 @@ function u9PipeNoLeaderHtml(stores, rows){
 }
 
 /* ---------- 3. スキルレベル › 従業員別（UI案87 の 3：A） ---------- */
-function u9SkillGuard(){
-  var ta = document.querySelector('#u9p-skill textarea[id^="sevn-"]');
-  if (ta && String(ta.value || '').trim()) return confirm(t('保存していないコメントがあります。ほかの人を開きますか？（書いたコメントは消えます）','You have an unsaved comment. Open another person? (The comment will be lost)'));
-  return true;
+/* v1180（#177 の Codex の P2）：書きかけのコメントは人ごとに残す（この端末のメモリだけ・ログアウトで消す）。
+   ほかの人を開く・ページ送り・名前で探す・店の切り替え・描き直しのどれでも消えない。その人を開くと欄に戻る。 */
+function sevnDraftMap(){
+  var u = String((typeof curUserName !== 'undefined' && curUserName) || (typeof curRole !== 'undefined' && curRole) || '');
+  var D = window._sevnDraft;
+  if (!D || D._u !== u) { D = window._sevnDraft = { _u:u }; }
+  return D;
 }
+function sevnKeep(el){
+  try { if (!el || !/^sevn-/.test(el.id || '')) return; var D = sevnDraftMap(), v = String(el.value || ''); if (v.trim()) D[el.id] = v; else delete D[el.id];
+    el._sevnLast = String(el.value || '');   /* #178 の Codex の P2-1：この欄から最後に残した文 */
+    var nm = el.getAttribute ? el.getAttribute('data-n') : null; if (nm != null) u9DraftMarkSync(nm); } catch (e) {}
+}
+/* #178 の Codex の P2-1：描き直す前・ほかの人を開く前に集める欄。
+   ・閉じた箱（スマホの箱を閉じても #modal-body に残る古い欄）は集めない
+   ・打つたびに sevnKeep で残しているので、最後に残した文（無ければ描いたときの文）から変わっていない欄は集めない
+   （同じ人の欄が 2 つあっても、新しく打ったほうの書きかけを古い欄の文で戻さない） */
+function sevnCollect(){
+  try {
+    var ov = document.getElementById('modal-overlay');
+    var boxOpen = !!(ov && ov.classList && ov.classList.contains('open'));
+    document.querySelectorAll('textarea[id^="sevn-"]').forEach(function(ta){
+      if (!boxOpen && ta.closest && ta.closest('#modal-body')) return;
+      var last = (ta._sevnLast != null) ? ta._sevnLast : ta.defaultValue;
+      if (last != null && String(ta.value || '') === String(last)) return;
+      sevnKeep(ta);
+    });
+  } catch (e) {}
+}
+/* 一覧の行の「書きかけ」をその場で付け外し（PC は右のパネルで打っているとき・スマホは箱を閉じたとき、一覧は描き直さないので） */
+function u9DraftMarkSync(name){
+  try {
+    var on = sevnHasDraft(name);
+    document.querySelectorAll('#main-content [data-u9="skill"] [data-u9id]').forEach(function(r){
+      if (r.getAttribute('data-u9id') !== String(name)) return;
+      var mk = r.querySelector('.u9-draft');
+      if (on && !mk) {
+        var at = r.querySelector('.ar-sv') || r.querySelector('td b');
+        if (at && at.insertAdjacentHTML) at.insertAdjacentHTML('afterend', u9DraftMark(name));
+      } else if (!on && mk) {
+        if (mk.previousSibling && mk.previousSibling.nodeType === 3 && mk.previousSibling.nodeValue === ' ') mk.previousSibling.remove();
+        mk.remove();
+      }
+    });
+  } catch (e) {}
+}
+function sevnDraft(elId){ try { var v = sevnDraftMap()[elId]; return (typeof v === 'string' && /^sevn-/.test(elId)) ? v : ''; } catch (e) { return ''; } }
+function sevnHasDraft(name){ try { return !!sevnDraft('sevn-' + skillPosId(name)).trim(); } catch (e) { return false; } }
+function u9SkillGuard(){
+  sevnCollect();
+  return true;   /* 書きかけは残るので聞かない */
+}
+function u9DraftMark(name){ return sevnHasDraft(name) ? ' <span class="u9-draft">' + escapeHtml(t('書きかけ','Draft')) + '</span>' : ''; }
 function u9SkillStat(e, selStore){
   if (e.prep) { var ps = empStoresOf(e); if (selStore !== 'ALL') ps = ps.filter(function(sid){ return sid === selStore; }); return { total:null, lv3:null, zero:null, next:'', stores:ps.length ? ps : [e.store || ''] }; }
   var stores = ['office','office_crew'].includes(e.role) ? ['OFFICE'] : empStoresOf(e);
@@ -90217,18 +90269,19 @@ function u9SkillListHtml(staff, selStore, mode, card){
   var P = u9Page(key, vis), byName = {};
   P.slice.forEach(function(e){ byName[e.name] = e; });
   var h = '<div class="u9-bar">' + u9SearchHtml(key) + '<span class="u9-note" style="margin:0">' + escapeHtml(t('並び：名前順','Order: name')) + '</span></div>';
+  sevnCollect();   /* 描き直す前に今の欄を残す（閉じた箱の古い欄・打っていない欄は除く） */
   if (mode === 'pc') {
     u9St().guard[key] = u9SkillGuard;
     h += u9TableHtml({ key:key, empty:t('対象スタッフなし','No staff'),
       cols:[{ h:t('名前','Name') }, { h:t('店','Store'), cls:'u9-wrap' }, { h:'Tip' }, { h:t('点','Pts'), cls:'num' }, { h:'Lv3', cls:'num' }, { h:t('未習得','Not yet'), cls:'num' }, { h:t('次に取り組む','Next'), cls:'u9-wrap' }],
       rows:P.slice.map(function(e){ var s = u9SkillStat(e, selStore), rate = effectiveTipRate(e.name);
-        return { id:e.name, cells:[ '<b>' + escapeHtml(e.name) + '</b>', escapeHtml(s.stores.map(function(x){ return x === 'OFFICE' ? 'Office' : u9StoreName(x); }).join(' · ')),
+        return { id:e.name, cells:[ '<b>' + escapeHtml(e.name) + '</b>' + u9DraftMark(e.name), escapeHtml(s.stores.map(function(x){ return x === 'OFFICE' ? 'Office' : u9StoreName(x); }).join(' · ')),
           rate === 0 ? 'No' : rate + '%', s.total == null ? '—' : String(s.total), s.lv3 == null ? '—' : String(s.lv3), s.zero == null ? '—' : String(s.zero), escapeHtml(s.next || (e.prep ? t('プレップ評価（プレップLv）','Prep evaluation') : '—')) ] }; }),
       panel:function(id){ var e = byName[id] || getEmployees().find(function(y){ return y.name === id; }); return e ? card(e) : ''; } });
   } else {
     window._u9SkillCard = card;
     h += u9SpListHtml(key, P.slice.map(function(e){ var s = u9SkillStat(e, selStore), rate = effectiveTipRate(e.name);
-      return { id:e.name, t1:e.name, r1:'<span class="ar-sa">Tip ' + (rate === 0 ? 'No' : rate + '%') + '</span>',
+      return { id:e.name, t1:e.name, r1:u9DraftMark(e.name) + '<span class="ar-sa">Tip ' + (rate === 0 ? 'No' : rate + '%') + '</span>',
         t2:s.stores.map(function(x){ return x === 'OFFICE' ? 'Office' : u9StoreName(x); }).join(' · ') + (s.total == null ? ' · ' + t('プレップ','Prep') : ' · Lv3 ' + s.lv3 + ' · ' + t('未習得 ','Not yet ') + s.zero) }; }), 'u9SkillOpen', t('対象スタッフなし','No staff'));
   }
   return h + u9Pager(P);
@@ -90265,7 +90318,7 @@ function u9GmStaffHtml(){
   var crew = visibleStaffForManager().filter(function(e){ return e.role === 'crew' && !isLeaderTrackEmp(e) && growthStoreMatch(e); });
   var lead = visibleStaffForManager().filter(function(e){ return e.role !== 'ceo' && e.role !== 'gm' && e.role !== 'office' && e.role !== 'am' && isLeaderTrackEmp(e) && growthStoreMatch(e); });
   var grp = S.f[key] === 'leader' ? 'leader' : 'crew', leader = grp === 'leader';
-  var tot = function(nm){ var sk = getEmpSkills(nm) || {}; return Object.values(sk).reduce(function(a, x){ return a + ((x && x.status === '承認') ? (x.level || 0) : 0); }, 0); };
+  var _tc = Object.create(null), tot = function(nm){ if (nm in _tc) return _tc[nm]; var sk = getEmpSkills(nm) || {}; return (_tc[nm] = Object.values(sk).reduce(function(a, x){ return a + ((x && x.status === '承認') ? (x.level || 0) : 0); }, 0)); };   /* v1180：1 人 1 回だけ数える */
   var list = (leader ? lead : crew).filter(function(e){ return u9QMatch(key, e.name); }).sort(function(a, b){ return tot(b.name) - tot(a.name) || String(a.name).localeCompare(String(b.name)); });   /* Lv の合計が高い順（今と同じ） */
   var P = u9Page(key, list);
   var h = '<div data-u9="gm"><div class="u9-bar"><div class="phase-tabs" style="margin:0">'
@@ -90346,11 +90399,11 @@ function u9OjtDirty(){ return u9OjtDirtyK(ojtAdminKey); }
 function u9OjtGo(i){
   var d = window._ojtDraft; if (!d || !d.modules.length) return;
   try { var ae = document.activeElement; if (ae && ae.blur && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName)) ae.blur(); } catch (e) {}   /* 打っていた欄の onchange を先に（下書きに入れる） */
-  var S = u9St(); S.sel['ojt:' + ojtAdminKey] = Math.max(0, Math.min(d.modules.length - 1, i)); S.f['ojt:open'] = true;
+  var S = u9St(); S.sel['ojt:' + ojtAdminKey] = Math.max(0, Math.min(d.modules.length - 1, i)); S.f['ojt:open:' + ojtAdminKey] = true;
   renderPage('ojt_admin');
   try { setTimeout(function(){ var el = document.getElementById('u9-ojt-ed'); if (el && el.scrollIntoView) el.scrollIntoView({ block:'start' }); }, 0); } catch (e) {}
 }
-function u9OjtList(){ var S = u9St(); S.f['ojt:open'] = false; renderPage('ojt_admin'); }
+function u9OjtList(){ var S = u9St(); S.f['ojt:open:' + ojtAdminKey] = false; renderPage('ojt_admin'); }
 function u9OjtSave(){
   try { var ae = document.activeElement; if (ae && ae.blur && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName)) ae.blur(); } catch (e) {}
   ojtSaveDraft();
@@ -90386,7 +90439,7 @@ function u9OjtEditorHtml(d, axisOpts, aCol){
       + '<div class="u9-ojt-main" id="u9-ojt-ed"><div class="u9-ojt-h">' + escapeHtml(t('章 ','Chapter ') + (cur + 1) + ' / ' + d.modules.length) + '</div>'
       + u9OjtChapterHtml(d.modules[cur], cur, axisOpts, aCol) + u9OjtBar(d, cur) + '</div></div>';
   }
-  if (!S.f['ojt:open']) {
+  if (!S.f['ojt:open:' + ojtAdminKey]) {
     return '<div data-u9="ojt"><div class="u9-note">' + escapeHtml(t('章を押すと、その章だけを開いて直せます。「保存」は今と同じく全部の章をまとめて保存します。','Tap a chapter to edit it. "Save" saves all chapters at once, as before.')) + '</div>'
       + u9OjtChapterList(d, -1, aCol) + (u9OjtDirty() ? u9OjtBar(d, cur) : '') + '</div>';
   }
@@ -104908,15 +104961,49 @@ function addSkillEvalNote(name, text){
   text=String(text||'').trim(); if(!text) return false;
   var m=ls('skill_eval_log',{}); if(!m[name]) m[name]=[];
   m[name].push({date:nowJP(), by:(ROLE_CONFIG[curRole]||{}).name||curUserName||curRole, text:text});
-  lsSet('skill_eval_log', m); return true;
+  /* #178 の Codex の P2-2：保存できたかを返す（true＝保存した・false＝空・null＝この端末に保存できなかった＝容量不足など） */
+  return lsSet('skill_eval_log', m) === false ? null : true;
 }
 function deleteSkillEvalNote(name, idx){
-  var m=ls('skill_eval_log',{}); if(!m[name]) return; if(idx>=0&&idx<m[name].length){ m[name].splice(idx,1); lsSet('skill_eval_log', m); }
+  /* 同じく：true＝消して保存した・false＝無い・null＝保存できなかった */
+  var m=ls('skill_eval_log',{}); if(!m[name]) return false; if(idx>=0&&idx<m[name].length){ m[name].splice(idx,1); return lsSet('skill_eval_log', m) === false ? null : true; }
+  return false;
 }
 function submitSkillEvalNote(name, elId){
   var el=document.getElementById(elId); if(!el) return;
-  if(addSkillEvalNote(name, el.value)){ showToast('評価コメントを記録しました','success'); renderPage('skill'); }
-  else showToast('コメントを入力してください','warning');
+  var inBox = !!(el.closest && el.closest('#modal-body'));
+  var r = addSkillEvalNote(name, el.value);
+  if(r === true){
+    el.value=''; try{ delete sevnDraftMap()[elId]; }catch(e){} u9DraftMarkSync(name);   /* v1180：同じ文をもう一度送らない */
+    showToast(t('評価コメントを記録しました','Comment saved'),'success'); skillEvalRefresh(name, inBox);
+  }
+  else if(r === null){
+    /* #178 の Codex の P2-2：保存できなかったら入力と書きかけは残す（もう一度押せる） */
+    try { sevnKeep(el); } catch (e) {}
+    showToast(t('この端末に保存できませんでした。入力は残しています。容量を整理してから、もう一度「記録」を押してください','Could not save on this device. Your text is kept — free up storage and press Save again'),'error');
+  }
+  else showToast(t('コメントを入力してください','Please enter a comment'),'warning');   /* 失敗したら入力は残す */
+}
+/* v1180：記録・削除のあと。一覧（とPCの右のパネル）を描き直し、スマホの箱が開いていれば中身（履歴と欄）も新しくする */
+function skillEvalRefresh(name, inBox){
+  renderPage('skill');
+  if (inBox) { try { if (typeof u9SkillOpen === 'function') u9SkillOpen(name); } catch (e) {} }
+}
+function skillEvalFp(en){ en = en || {}; return String(en.date || '') + '|' + String(en.by || '') + '|' + String(en.text || ''); }
+/* v1180：削除は、画面に出ていたコメントと同じものだけ（あいだにほかで増えた・消えたときに別のコメントを消さない） */
+function skillEvalDelBtn(btn){
+  if (!btn) return;
+  var name = btn.getAttribute('data-n') || '', idx = Number(btn.getAttribute('data-i')), fp = btn.getAttribute('data-fp') || '';
+  if (!confirm(t('このコメントを削除しますか？','Delete this comment?'))) return;
+  var inBox = !!(btn.closest && btn.closest('#modal-body'));
+  var log = getSkillEvalLog(name), real = -1;
+  if (idx >= 0 && idx < log.length && skillEvalFp(log[idx]) === fp) real = idx;
+  else { for (var i = log.length - 1; i >= 0; i--) { if (skillEvalFp(log[i]) === fp) { real = i; break; } } }
+  if (real < 0) { showToast(t('このコメントはもうありません（ほかで消されたか、変わりました）','This comment is no longer there'),'warning'); skillEvalRefresh(name, inBox); return; }
+  var r = deleteSkillEvalNote(name, real);
+  if (r === null) { showToast(t('この端末に保存できなかったので、削除していません。容量を整理してから、もう一度押してください','Could not save on this device, so the comment was not deleted. Free up storage and try again'),'error'); return; }   /* #178 の Codex の P2-2 */
+  showToast(t('コメントを削除しました','Comment deleted'),'success');
+  skillEvalRefresh(name, inBox);
 }
 function skillEvalSectionHtml(name){
   var log = getSkillEvalLog(name);
@@ -104928,14 +105015,14 @@ function skillEvalSectionHtml(name){
     var realIdx = log.length-1-i;
     return '<div style="font-size:11px;padding:4px 0;border-bottom:1px dashed var(--border)">'
       +'<div style="color:var(--muted);font-size:10px;display:flex;gap:6px;align-items:center"><span>'+escapeHtml(en.date||'')+'</span><span>· '+escapeHtml(en.by||'')+'</span>'
-      +(canDel?'<button class="btn btn-secondary btn-sm" style="margin-left:auto;padding:0 6px;font-size:9px" onclick="if(confirm(\'このコメントを削除しますか？\')){deleteSkillEvalNote(\''+nm+'\','+realIdx+');renderPage(\'skill\');}">削除</button>':'')
+      +(canDel?'<button class="btn btn-secondary btn-sm" style="margin-left:auto;padding:0 6px;font-size:9px" data-n="'+escapeHtml(name)+'" data-i="'+realIdx+'" data-fp="'+escapeHtml(skillEvalFp(en))+'" onclick="skillEvalDelBtn(this)">'+t('削除','Delete')+'</button>':'')
       +'</div><div style="color:var(--tm);white-space:pre-wrap;margin-top:1px">'+escapeHtml(en.text||'')+'</div></div>';
-  }).join('') : '<div style="font-size:11px;color:var(--muted);padding:2px 0">まだコメントはありません</div>';
+  }).join('') : '<div style="font-size:11px;color:var(--muted);padding:2px 0">'+t('まだコメントはありません','No comments yet')+'</div>';
   return '<div style="margin-top:8px;border-top:1px solid var(--border);padding-top:8px">'
-    +'<div style="font-size:11px;font-weight:700;color:var(--tm);margin-bottom:4px"><i class="ti ti-message-2" style="color:var(--accent)"></i> 評価コメント'+(log.length?' <span style="color:var(--muted);font-weight:400">('+log.length+')</span>':'')+'</div>'
+    +'<div style="font-size:11px;font-weight:700;color:var(--tm);margin-bottom:4px"><i class="ti ti-message-2" style="color:var(--accent)"></i> '+t('評価コメント','Comments')+(log.length?' <span style="color:var(--muted);font-weight:400">('+log.length+')</span>':'')+'</div>'
     +'<div style="max-height:130px;overflow-y:auto;margin-bottom:6px">'+logHtml+'</div>'
-    +'<textarea id="'+elId+'" class="form-textarea" rows="2" placeholder="評価・フィードバックを記録（過去ログに追加）" style="font-size:12px"></textarea>'
-    +'<button class="btn btn-secondary btn-sm" style="margin-top:4px" onclick="submitSkillEvalNote(\''+nm+'\',\''+elId+'\')"><i class="ti ti-plus"></i> 記録</button>'
+    +'<textarea id="'+elId+'" class="form-textarea" rows="2" placeholder="'+escapeHtml(t('評価・フィードバックを記録（過去ログに追加）','Record an evaluation or feedback (added to the log)'))+'" style="font-size:12px" data-n="'+escapeHtml(name)+'" oninput="sevnKeep(this)">'+escapeHtml(sevnDraft(elId))+'</textarea>'
+    +'<button class="btn btn-secondary btn-sm" style="margin-top:4px" onclick="submitSkillEvalNote(\''+nm+'\',\''+elId+'\')"><i class="ti ti-plus"></i> '+t('記録','Save')+'</button>'
     +'</div>';
 }
 function renderSkillStaffView() {
