@@ -107,6 +107,8 @@ begin
 end $$;
 
 -- 見張り：pl_public の行を書き換えるとき、前の行と合わせる（列の型に合わせて作る）
+-- security definer にする理由：中で呼ぶ合わせる関数（fp_pl_public_join など）はアプリの鍵（anon・authenticated）から外す（下の revoke）。
+-- invoker だと、アプリの鍵の書き込みで見張りが合わせる関数を呼べず、合わせられないまま書いた値を通す（警告だけ）。表は読まない・search_path は固定
 do $$
 declare t text; conv text;
 begin
