@@ -3504,7 +3504,14 @@ async function syncTipLaborFromDB(storeId, guid, days, opts) {
     if (_tipLaborNewer(storeId, _bdA, 'L', _seq)) { skipped++; return; }   /* あとから始めた読み込みがもう勤怠を保存した日 */
     var labor = {}, _conf = {};
     list.forEach(emp=>{
-      if (isOrderOnlyAccount(emp.name)) return; // Order Only（注文専用アカウント）はレイバー/チップから除外
+      /* Order Only（注文専用アカウント）はレイバー/チップから除外（getTipLabor が名前で外す）。
+         v1175（Codex #173 の指摘）：勤怠の写しには Toast の名前のまま残す（従業員には結ばない）。Toast から直接取ったときと同じ形。
+         総労働時間の KPI が、業務用アカウントの一覧（4A）で「外すのをやめた」Order Only を数えられるように。給与・Tip は変わらない */
+      if (isOrderOnlyAccount(emp.name)) {
+        var _oos = emp.shifts||[], _ooh = _oos.length ? tipHoursFromShifts(storeId, _oos) : { lunch: emp.lunchHours||0, dinner: emp.dinnerHours||0 };
+        tipLaborPut(labor, _conf, String(emp.name), tipLaborWithGuid({ lunch: _ooh.lunch, dinner: _ooh.dinner, rawLunch: emp.lunchHours||0, rawDinner: emp.dinnerHours||0, shifts: _oos, toastName: emp.name }, emp), { conf:true });
+        return;
+      }
       var m = staff.find(s=>s.name===emp.name || (emp.name&&s.name.toLowerCase()===emp.name.toLowerCase()) || (emp.name&&s.name.includes(emp.name)) || (emp.name&&emp.name.includes(s.name)));
       var _r = toastAliasResolve(m, emp.name, _bdA, _aidx, storeId);   /* v1111：別名（店ごとの別名はこの店だけ）・同じ日の 2 つを足す */
       var key = _r.emp ? _r.emp.name : emp.name;
@@ -4188,7 +4195,7 @@ function k2HoursDays(sid, ym, opts){
   var cutoff=(opts.cutoff!==undefined) ? opts.cutoff : (ym===cur ? bizToday() : null);
   var st=null; try{ st=(getStoresAll()||[]).find(function(x){ return x.id===sid; })||null; }catch(e){ st=null; }
   var openDate=(st && typeof st.openDate==='string' && /^\d{4}-\d{2}-\d{2}$/.test(st.openDate)) ? st.openDate : null;
-  var isSys=k2SysMatcher(sid, ym);
+  var isSys=k2SysMatcher(sid, ym), hasList=!!k2SysAcctList(sid);
   var r1=function(v){ return Math.round(v*100)/100; };
   daysOfYm(ym).forEach(function(d){
     var dt=d.date;
@@ -4196,15 +4203,23 @@ function k2HoursDays(sid, ym, opts){
     if(openDate && dt<openDate) return;
     var dow=new Date(dt+'T00:00:00').getDay();
     var closed=false; try{ closed=(typeof dayClosureMode==='function' && dayClosureMode(sid, dt, dow)==='closed'); }catch(e){ closed=false; }
-    var raw=null; try{ raw=ls('tip_labor_'+sid+'_'+dt, null); }catch(e){ raw=null; }
+    /* getTipLabor が読む元（手で直した日は直した勤怠・ほかは勤怠の写し） */
+    var ovr=null; try{ ovr=(typeof getAttOverride==='function') ? getAttOverride(sid, dt) : null; }catch(e){ ovr=null; }
+    var raw=null; if(ovr && ovr.data && typeof ovr.data==='object') raw=ovr.data; else { try{ raw=ls('tip_labor_'+sid+'_'+dt, null); }catch(e){ raw=null; } }
     var lab=null; try{ lab=getTipLabor(sid, dt); }catch(e){ lab=null; }
     var h=0, ex=0;
     if(lab && typeof lab==='object'){
       Object.keys(lab).forEach(function(n){ var e=lab[n]; var v=Number(_laborHrs(e))||0; if(!(v>0)) return; if(isSys(n, e)) ex+=v; else h+=v; });
     }
-    /* getTipLabor が名前で先に外した Order Only（給与・Tip と同じ）も「外した時間」に出す */
-    if(raw && typeof raw==='object' && lab && raw!==lab && !(typeof getAttOverride==='function' && (getAttOverride(sid, dt)||{}).data)){
-      Object.keys(raw).forEach(function(n){ if(Object.prototype.hasOwnProperty.call(lab, n)) return; var e=raw[n]; if(!(isOrderOnlyAccount(n) || (e && isOrderOnlyAccount(e.toastName)))) return; var v=Number(_laborHrs(e))||0; if(v>0) ex+=v; });
+    /* getTipLabor が名前で先に外した Order Only（給与・Tip はこのまま外す）。
+       一覧のある店は一覧で決める（一覧にあって外す印のものだけ外す・外すのをやめた／一覧に無いものは実働）。一覧の無い店は今までどおり外す（v1175・Codex #173 の指摘） */
+    if(raw && typeof raw==='object' && lab && typeof lab==='object' && raw!==lab){
+      Object.keys(raw).forEach(function(n){
+        if(Object.prototype.hasOwnProperty.call(lab, n)) return;
+        var e=raw[n]; if(!(isOrderOnlyAccount(n) || (e && isOrderOnlyAccount(e.toastName)))) return;
+        var v=Number(_laborHrs(e))||0; if(!(v>0)) return;
+        if(!hasList || isSys(n, e)) ex+=v; else h+=v;
+      });
     }
     var has=!!(lab && typeof lab==='object');
     var row={ date:dt, kind:'', hours:r1(h), excluded:r1(ex) };
@@ -4223,6 +4238,7 @@ function k2HoursDaysAll(sids, ym, opts){
   (sids||[]).forEach(function(sid){ var r=k2HoursDays(sid, ym, opts); o.stores[sid]=r;
     o.openDays+=r.openDays; o.openHours+=r.openHours; o.pendingDays+=r.pendingDays; o.closedHours+=r.closedHours; o.totalHours+=r.totalHours; o.excludedHours+=r.excludedHours; });
   o.openHours=Math.round(o.openHours*100)/100; o.totalHours=Math.round(o.totalHours*100)/100;
+  o.closedHours=Math.round(o.closedHours*100)/100; o.excludedHours=Math.round(o.excludedHours*100)/100;   /* 足したときの小数の端（0.30000000000000004 など）を出さない */
   o.avg=o.openDays>0 ? Math.round(o.openHours/o.openDays*10)/10 : null;
   return o;
 }
@@ -4615,6 +4631,21 @@ function setKpiConfigStore(storeId, patch){
   var c=getKpiConfig(); if(!c.byStore || typeof c.byStore!=='object') c.byStore={};
   c.byStore[storeId]=Object.assign({}, c.byStore[storeId]||{}, patch);
   setKpiConfig(c);
+}
+/* v1175（Codex #173・#174 の指摘）：kpi_config を書いて、この保存で送った結果だけを待つ。
+   前の保存の結果（_lsPushP に残ったもの）を使わない（同期が OFF のとき・送らなかったときに、前の成功で「保存しました」と出さない）。
+   true＝クラウドに書けた／false＝未保存（同期 OFF・送れなかった・送らなかった・起動の途中） */
+function kpiCfgPush(write){
+  var P=(typeof _lsPushP!=='undefined' && _lsPushP) ? _lsPushP : null;
+  try{ if(P) delete P['kpi_config']; }catch(e){}
+  write();
+  var p=P ? P['kpi_config'] : null;
+  if(!p) return Promise.resolve(false);
+  return Promise.resolve(p).then(function(r){ return r===true; }, function(){ return false; });
+}
+/* 保存の答えが来たときに描き直すのは、まだ同じ画面（KPI設定の同じ店・同じタブ）を開いているときだけ（ほかの画面・店を開いていたら描き直さない） */
+function kpiSameView(sid, tab){
+  try{ return (typeof curPage!=='undefined' && curPage==='kpi_master') && window._kpiStore===sid && (!tab || window._kpiTab===tab); }catch(e){ return false; }
 }
 function clearKpiConfigStore(storeId, key){
   var c=getKpiConfig(); if(c.byStore && c.byStore[storeId]){ delete c.byStore[storeId][key];
@@ -103751,7 +103782,7 @@ function renderKpiManualTab(){
   var _upSt = (window._upsellSaveState && window._upsellSaveState.sid===sid) ? window._upsellSaveState : null;
   var upStHtml = !_upSt ? '' : (_upSt.ok
     ? `<span style="font-size:11px;color:var(--green)">${t('保存しました','Saved')}（${new Date(_upSt.at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}）</span>`
-    : `<span style="font-size:11px;color:var(--red);font-weight:700">${t('未保存：クラウドに送れませんでした','Not saved: could not reach the cloud')}</span> <button class="btn btn-secondary btn-sm" style="padding:3px 10px" onclick="saveUpsellGuids('${sid}')">${t('もう一度','Retry')}</button>`);
+    : `<span style="font-size:11px;color:var(--red);font-weight:700">${t('未保存：クラウドに送れませんでした','Not saved: could not reach the cloud')}</span> <button class="btn btn-secondary btn-sm" style="padding:3px 10px" onclick="${_upSt.kind==='clear'?`clearKpiCfgStore('${sid}','upsellGuids')`:`saveUpsellGuids('${sid}')`}">${t('もう一度','Retry')}</button>`);
   html += `<div class="card"><div class="card-title"><i class="ti ti-arrow-up-circle"></i>アップセル対象商品 <span style="font-size:10px;font-weight:400;color:var(--accent)">（${escapeHtml(store.name||sid)}${_upOwn?'':'・未設定なので全店共通を表示'}）</span></div>
     <div style="font-size:11px;color:var(--muted);margin-bottom:8px">トッピング/アップグレード等「アップセル」とみなす商品を指定（出数÷客数で比率計算）。${escapeHtml(store.name||sid)}のメニューから選択。<b>${escapeHtml(store.name||sid)}だけ</b>に適用（本部も店ごとに保存）。今は「トッピング/アップセル比率（出数÷客数）」に使い、日次進捗のアップグレード率とは別の数え方です。</div>
     <div style="margin-bottom:8px"><button class="btn btn-secondary btn-sm" onclick="showStoreModifiers('${sid}')"><i class="ti ti-list-details"></i> モディファイヤーの中身を表示</button> <span style="font-size:10px;color:var(--muted)">アップセルの多くはモディファイヤー（味噌汁・トッピング等）です。中身を確認できます。</span></div>`;
@@ -103925,13 +103956,14 @@ function saveAlcoholCats(sid){
 async function saveUpsellGuids(sid){
   var vals = Array.from(document.querySelectorAll('.kpi-upsell:checked')).map(c=>c.value);
   if (!canSetKpiStore(sid)) { showToast('編集権限がありません','warning'); return; }
-  setKpiConfigStore(sid,{upsellGuids:vals});
-  var r=false; try{ r=await Promise.resolve((typeof _lsPushP!=='undefined' && _lsPushP) ? _lsPushP['kpi_config'] : false); }catch(e){ r=false; }
-  var ok=(r===true);
+  var tab=window._kpiTab, seq=(window._upsellSaveSeq=(window._upsellSaveSeq||0)+1);
+  var ok=false; try{ ok=await kpiCfgPush(function(){ setKpiConfigStore(sid,{upsellGuids:vals}); }); }catch(e){ ok=false; }
+  if(seq!==window._upsellSaveSeq) return ok;   /* あとで押した保存の答えを待つ（古い答えで状態を書き換えない） */
   window._upsellSaveState={ sid:sid, ok:ok, at:Date.now() };
   if(ok) showToast(t('アップセル対象を保存しました','Upsell items saved'),'success');
   else showToast(t('この端末には保存しましたが、クラウドに送れていません（未保存）。もう一度押してください','Saved on this device but not sent to the cloud yet. Please retry'),'warning');
-  renderPage('kpi_master');
+  if(kpiSameView(sid, tab)) renderPage('kpi_master');
+  return ok;
 }
 /* モディファイヤーの中身表示: Toast注文(bowlDebug)から丼に付いたモディファイヤーを一覧（アップセルの中身確認用） */
 function _reloadStoreModifiers(sid){ var v=((document.getElementById('modDate')||{}).value)||''; loadStoreModifiers(sid, v.replace(/-/g,'')); }
@@ -103973,11 +104005,20 @@ function showStoreModifiers(sid){
   openModal(html);
   loadStoreModifiers(sid, bd);
 }
-function clearKpiCfgStore(sid, key){
+async function clearKpiCfgStore(sid, key){
   if (!canSetKpiStore(sid)) { showToast('編集権限がありません','warning'); return; }
-  clearKpiConfigStore(sid, key);
-  showToast('全店共通に戻しました','info');
-  renderPage('kpi_master');
+  /* v1175（Codex #173 の指摘）：クラウドに書けたときだけ「戻しました」。書けなければ未保存と出す */
+  var tab=window._kpiTab;
+  var ok=false; try{ ok=await kpiCfgPush(function(){
+    var c=getKpiConfig();
+    if(c.byStore && c.byStore[sid]){ delete c.byStore[sid][key]; if(!Object.keys(c.byStore[sid]).length) delete c.byStore[sid]; }
+    setKpiConfig(c);   /* もう無いときも送る（前に送れなかった戻しを送り直す） */
+  }); }catch(e){ ok=false; }
+  if(key==='upsellGuids') window._upsellSaveState={ sid:sid, ok:ok, at:Date.now(), kind:'clear' };
+  if(ok) showToast(t('全店共通に戻しました','Back to the all-store setting'),'info');
+  else showToast(t('この端末では全店共通に戻しましたが、クラウドに送れていません（未保存）。もう一度押してください','Reset on this device but not sent to the cloud (not saved). Please try again'),'warning');
+  if(kpiSameView(sid, tab)) renderPage('kpi_master');
+  return ok;
 }
 function saveTotoyaKpiCfg(){
   var sid = window._kpiStore;
