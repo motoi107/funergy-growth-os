@@ -11,7 +11,11 @@ function ctx(extra) {
     _meetKpiDef: () => ({ label: 'リピート率', labelEn: 'Repeat', icon: 'ti-repeat', lower: false, defG: 100, defY: 90 }), _meetInputBlock: () => '', _msEmpty: () => 'EMPTY',
     _msX: (W, n) => ({ x0: 30, y1: 120, top: 10, slot: (W - 40) / n }) }, extra || {});
   vm.createContext(c);
-  for (const n of ['getMeetThreshold', '_meetStatus', '_meetJudge', '_meetDiffStr', '_meetStatColor', '_meetStatTint', '_meetStatLabel', '_meetKpiTile', 'mrJudgeOf', '_msLDLine', 'repeatStats'])
+  // v1178（UI案86 の 5）：月次サマリーのグラフはスマホでは画面の幅で描く（_msPh・_msFs・_msW・_msSvg・CH_PC／CH_PH）
+  if (!('uiChartPhone' in c)) c.uiChartPhone = () => false;
+  if (!('uiChartPhoneW' in c)) c.uiChartPhoneW = () => 340;
+  vm.runInContext(html.match(/^var CH_PC=.*$/m)[0] + '\nCH=CH_PC;', c);
+  for (const n of ['getMeetThreshold', '_meetStatus', '_meetJudge', '_meetDiffStr', '_meetStatColor', '_meetStatTint', '_meetStatLabel', '_meetKpiTile', 'mrJudgeOf', '_msPh', '_msFs', '_msW', '_msSvg', '_msLDLine', 'repeatStats'])
     vm.runInContext(fn(n), c);
   vm.runInContext('var MR_LOWER = { fc:true, labor:true };', c);
   return c;
@@ -55,6 +59,11 @@ test('ランチ／ディナー別のグラフ：データの無い点は描か�
   assert.notEqual(zeros, 'EMPTY', '本当の 0% は空にしない');
   assert.equal((zeros.match(/<circle/g) || []).length, 2);
   assert.match(html, /return t>0\?Math\.round\(p\.ld\.lunch\.repeat\/t\*1000\)\/10:null;/);
+  // スマホ（v1178）でも同じ：データの無い点は描かない・文字 12px
+  const ph = ctx({ uiChartPhone: () => true });
+  const sp = ph._msLDLine(['1', '2', '3'], [{ label: 'D', color: 'A', values: [10, null, 20] }]);
+  assert.equal((sp.match(/<circle/g) || []).length, 2); assert.equal((sp.match(/<polyline/g) || []).length, 0);
+  assert.ok(/font-size="12"/.test(sp) && !/font-size="9"/.test(sp), 'スマホの文字は 12px');
 });
 
 test('リピート率の式：期間の数を足してから割る（RP の数に SR を含む前提）。0 件はデータなし', () => {

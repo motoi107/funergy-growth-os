@@ -64,8 +64,9 @@ const FNS = ['renderAcctReview', 'arStatusColor', 'arStatusRank', 'arYm', 'arDoc
   '_arFetchInvoices', 'arPullLatest', 'arFreshHtml', 'arSetStatus', 'arApprove', '_arApproveCore', 'arRejectModal', 'arRejectConfirm', 'deleteInvoiceDo', '_deleteInvoiceCore',
   'canDeleteInvoice', 'invIsIntake', 'invInGuardOld', 'invIsMine', 'renderReviewThread', 'addReviewThread', '_invDate', 'parseJaDate', 'invTouch',
   'acSetCat', 'acSetSub', '_acPend', '_acPendHtml', '_acRows', '_acDate', '_acYm', '_acStoreName', 'acUploadList', '_acStatus', '_acStCol', '_acStRank',
-  'renderAcctCenter', 'pageSync', 'pageSyncScope', '_syncMeta', 'getReimbursements', 'pendingAcctReviewCount', 'acFilterSet', 'lsSplitRO'];   // v1098: 読むだけの所は lsSplitRO（この試験の ls をそのまま使う）
-const VARS = ['AR_STATUSES', 'AC_TABS', 'AC_ST', '_acF', '_acCat', '_acSub', '_arBusy', '_arPull', 'SYNC_SCOPE_META', 'PAGE_SYNC_SCOPE'];
+  'renderAcctCenter', 'pageSync', 'pageSyncScope', '_syncMeta', 'getReimbursements', 'pendingAcctReviewCount', 'acFilterSet', 'lsSplitRO',
+  'arFilterRows', 'arRowsNow', 'arMode', 'arPageOf', 'arPagerHtml', 'arNextPlan', 'arAdvance'];   // v1178：ページ・形・次の未確認   // v1098: 読むだけの所は lsSplitRO（この試験の ls をそのまま使う）
+const VARS = ['AR_PER', 'AR_STATUSES', 'AC_TABS', 'AC_ST', '_acF', '_acCat', '_acSub', '_arBusy', '_arPull', 'SYNC_SCOPE_META', 'PAGE_SYNC_SCOPE'];
 
 function app(opt = {}) {
   const c = {
