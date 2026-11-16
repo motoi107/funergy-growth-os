@@ -1,13 +1,16 @@
 -- 読むだけ（v1174 の直し）。会計 PL の共有の保存（pl_public）の見張りが入ったかと、月・店ごとの「確定・暫定」の数。
--- 金額は出さない。結果は Claude との会話にだけ貼る。
+-- 金額は出さない。結果は Claude との会話にだけ貼る。1（追加の SQL）の前に流しても止まらない（setup の行が「無い」「関数なし」と NG になるだけ）。
 with t as (
   select data_type from information_schema.columns
    where table_schema = 'public' and table_name = 'app_settings' and column_name = 'value'
 ), j as (
+  -- 関数はまだ無いことがある（1 の前）。名前を直接書くと文全体がエラーになるので、あるときだけ文字の問い合わせで呼ぶ（Codex #173 6903935612 の 4）
   select case when to_regprocedure('public.fp_pl_public_join(jsonb,jsonb)') is null then null
-    else public.fp_pl_public_join(
-      '{"_at":1,"2026-10":{"F01":{"sales":100,"_at":1},"F02":{"sales":5,"prov":1,"_at":1}}}'::jsonb,
-      '{"_at":2,"2026-10":{"F01":{"sales":90,"prov":1,"_at":2},"F03":{"sales":7,"prov":1,"_at":2}}}'::jsonb) end as v
+    else (xpath('/row/v/text()', query_to_xml(
+      'select public.fp_pl_public_join('
+      || quote_literal('{"_at":1,"2026-10":{"F01":{"sales":100,"_at":1},"F02":{"sales":5,"prov":1,"_at":1}}}') || '::jsonb, '
+      || quote_literal('{"_at":2,"2026-10":{"F01":{"sales":90,"prov":1,"_at":2},"F03":{"sales":7,"prov":1,"_at":2}}}') || '::jsonb)::text as v',
+      false, true, '')))[1]::text::jsonb end as v
 ), s as (
   select a.value::text::jsonb as v from public.app_settings a where a.key = 'pl_public'
 ), m as (

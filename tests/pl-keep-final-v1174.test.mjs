@@ -487,3 +487,25 @@ test('the deploy folder carries the same SQL (byte for byte) and the steps menti
   const chk = fs.readFileSync(new URL('2_確かめ_読むだけ.sql', dir), 'utf8');
   assert.doesNotMatch(chk.replace(/--[^\n]*/g, ''), /\b(insert|update|delete|alter|drop|create|grant|revoke)\b/i, 'the check only reads');
 });
+
+test('Codex #173 (6903935612-4): the check runs before and after the SQL; before = NG rows (no error), after = all setup rows OK, data rows count finals', async () => {
+  const chk = fs.readFileSync(new URL('../deploy/pl-keep-final-v1174/2_確かめ_読むだけ.sql', import.meta.url), 'utf8');
+  const rows = async db => (await db.query(chk)).rows;
+  // 1 の前
+  const db = await cloudDb({ trigger: false, roles: true });
+  await putCloud(db, { _at: 1, '2026-10': { F01: FIN(100, 1), F02: PROV(5, 1) } });
+  let r = await rows(db);
+  const setup = x => x.filter(y => y.part === 'setup');
+  assert.equal(setup(r).length, 5);
+  assert.equal(setup(r).find(y => y.item === 'value column type').ok, 'OK');
+  assert.deepEqual(setup(r).filter(y => y.item !== 'value column type').map(y => y.ok), ['NG', 'NG', 'NG', 'NG']);
+  assert.equal(setup(r).find(y => y.item === 'join keeps the final and both new stores').result, '関数なし');
+  // 1 のあと
+  await db.exec(MIG);
+  r = await rows(db);
+  assert.deepEqual(setup(r).map(y => y.ok), ['OK', 'OK', 'OK', 'OK', 'OK']);
+  const d = r.filter(y => y.part === 'data');
+  assert.deepEqual(d.map(y => [y.item, y.result]), [['2026-10', '1 確定 / 2 店']]);
+  assert.doesNotMatch(JSON.stringify(d), /100|\$/, 'the data rows show counts only (no amounts)');
+  await db.close();
+});
