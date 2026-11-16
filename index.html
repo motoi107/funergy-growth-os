@@ -4180,7 +4180,8 @@ function k2IsSysName(sid, ym, n){
 /* v1175（11/15 の依頼の A・UI案84）：業務用アカウント（総労働時間から外す）。店ごとの Toast のアカウント ID の一覧。
    kpi_config.byStore[店].sysAcct = { "<Toast ID>": { name, on, src:'auto'|'manual', at, by } }（on:false は外すのをやめた印）。
    一覧がある店は一覧だけで外す（名前の一部・職種・従業員マスターに無いことでは外さない）。
-   ID の無い前の勤怠の写し（v1153 より前に取り込んだ日）は、一覧のアカウントの名前とちょうど同じ名前のときだけ外す。
+   ID の無い前の勤怠の写し（v1153 より前に取り込んだ日）は、一覧のアカウントの名前とちょうど同じ名前なら外す・
+   一覧で「外すのをやめた」名前なら外さない・どちらでもなければ前の名前の決まり（k2IsSysName）で決める（v1176・Claude #174 の P3-1）。
    一覧がまだ無い店は今までの決まり（k2IsSysName）。打刻・給与・Tip の元のデータは変えない（ここは KPI の数え方だけ） */
 function k2NormAcctName(n){ return String(n==null?'':n).normalize('NFKC').toLowerCase().replace(/\s+/g,' ').trim(); }
 function k2SysAcctList(sid){
@@ -4194,11 +4195,18 @@ function k2SysMatcher(sid, ym){
   if(list){
     var ids={}, names={};
     Object.keys(list).forEach(function(id){ var r=list[id]; if(!r || r.on===false) return; ids[id]=1; if(r.name) names[k2NormAcctName(r.name)]=1; });
+    var offNames={};
+    Object.keys(list).forEach(function(id){ var r=list[id]; if(r && r.on===false && r.name){ var k=k2NormAcctName(r.name); if(names[k]!==1) offNames[k]=1; } });
     return function(n, e){
       var gs=k2RecGuids(e);
       if(gs.length) return gs.some(function(g){ return ids[g]===1; });
       var nm=[n].concat(e && e.toastName ? [e.toastName] : []).concat(e && Array.isArray(e.toastNames) ? e.toastNames : []);
-      return nm.some(function(x){ return names[k2NormAcctName(x)]===1; });
+      if(nm.some(function(x){ return names[k2NormAcctName(x)]===1; })) return true;
+      if(nm.some(function(x){ return offNames[k2NormAcctName(x)]===1; })) return false;
+      /* v1176（Claude #174 の P3-1）：ID の無い前の勤怠の写しは、一覧の名前に無ければ前の名前の決まり（k2IsSysName）も見る。
+         一覧を作っても、直近 2 か月に出ていない名前・この端末に無い月の記録で、過去の月の総労働時間が増えないように。
+         一覧で「外すのをやめた」名前は外さない */
+      return nm.some(function(x){ try{ return k2IsSysName(sid, ym, x); }catch(_e){ return false; } });
     };
   }
   return function(n){ return k2IsSysName(sid, ym, n); };
@@ -4450,19 +4458,46 @@ function k2SysCarryOver(sid){
   return out;
 }
 var _k2SysBusy=false;
-async function k2SysSave(sid, map, msgOk){
+/* v1176（Codex #174 6903141004 の P2-2 と同じ形）：この保存で送った結果だけを待つ（kpiCfgPush）・
+   描き直すのは、保存を始めたときと同じ画面・店・タブを見ているときだけ（ほかの店・画面を開いていたら描き直さない） */
+async function k2SysSave(sid, map, msgOk, tab){
   if(!k2SysCanEdit(sid)){ showToast(t('業務用アカウントを変えられるのは GM・CEO と担当の AM です','Only GM, CEO and the assigned AM can change system accounts'),'warning'); return false; }
   if(_k2SysBusy) return false; _k2SysBusy=true;
+  if(tab===undefined){ try{ tab=window._kpiTab; }catch(e){ tab=null; } }
   try{
-    setKpiConfigStore(sid, { sysAcct:map });
+    var r=false;
+    try{ r=await kpiCfgPush(function(){ setKpiConfigStore(sid, { sysAcct:map }); }); }catch(e){ r=false; }
     try{ if(typeof mdCacheClear==='function') mdCacheClear(); }catch(e){}
-    var r=false; try{ r=await Promise.resolve((typeof _lsPushP!=='undefined' && _lsPushP) ? _lsPushP['kpi_config'] : false); }catch(e){ r=false; }
     window._k2SysState={ sid:sid, ok:(r===true), at:Date.now() };
     if(r===true){ if(msgOk) showToast(msgOk,'success'); }
     else showToast(t('この端末には入れましたが、クラウドに送れていません（未保存）。もう一度押してください','Saved on this device but not sent to the cloud (not saved). Please try again'),'warning');
     return r===true;
-  } finally { _k2SysBusy=false; renderPage('kpi_master'); }
+  } finally { _k2SysBusy=false; if(kpiSameView(sid, tab)) renderPage('kpi_master'); }
 }
+/* v1176（Claude #174 の P3-2・Codex #174 6903141004 が未解決として残した点）：一覧が無い店の引き継ぎは、先にクラウドの kpi_config を読んでから。
+   ・クラウドにこの店の一覧がもうある（ほかの端末が作った）→ 作らずに取り込む（ほかの端末の「外すのをやめた」を新しい時刻の「外す」で戻さない）
+   ・クラウドを読めない → 作らない（「もう一度」を出す）
+   ・クラウドにも、この端末にも無い → 前の決まりで外していた ID を引き継いで作る */
+async function k2SysCarry(sid){
+  var st=(window._k2SysCarried=window._k2SysCarried||{});
+  if(st[sid]==='busy' || st[sid]==='done') return false;
+  st[sid]='busy';
+  var tab=null; try{ tab=window._kpiTab; }catch(e){ tab=null; }
+  var redraw=function(){ try{ if(kpiSameView(sid, tab)) renderPage('kpi_master'); }catch(e){} };
+  var row; try{ row=(typeof wbFetchSetting==='function') ? await wbFetchSetting('kpi_config') : undefined; }catch(e){ row=undefined; }
+  if(row===undefined){ st[sid]='fail'; redraw(); return false; }
+  var cv=row.exists ? row.value : null; try{ if(typeof _stUnwrap==='function') cv=_stUnwrap(cv); }catch(e){}
+  var cl=(cv && typeof cv==='object' && cv.byStore && typeof cv.byStore==='object' && cv.byStore[sid] && typeof cv.byStore[sid]==='object') ? cv.byStore[sid].sysAcct : null;
+  if(cl && typeof cl==='object' && !Array.isArray(cl)){
+    var ok=false; try{ ok=(typeof pullSettingKey==='function') ? (await pullSettingKey('kpi_config'))===true : false; }catch(e){ ok=false; }
+    st[sid]=ok ? 'done' : 'fail'; redraw(); return false;
+  }
+  if(k2SysAcctList(sid) || !k2SysCanEdit(sid)){ st[sid]='done'; redraw(); return false; }   /* この端末にはもうある（まだ送れていない）・権限が無い */
+  var co=k2SysCarryOver(sid), n=Object.keys(co).length;
+  st[sid]='done';
+  return k2SysSave(sid, co, n ? t('前の決まりで外していたアカウントを一覧に引き継ぎました（'+n+' 件）','Carried over '+n+' accounts from the earlier rules') : t('一覧を作りました（前の決まりで外していたアカウントは今月・前の月にありません）','List created (no accounts matched the earlier rules)'), tab);
+}
+function k2SysCarryRetry(sid){ try{ if(window._k2SysCarried) delete window._k2SysCarried[sid]; }catch(e){} return k2SysCarry(sid); }
 function k2SysToggle(sid, id, on){
   if(!k2SysCanEdit(sid)) return;
   var cur=Object.assign({}, k2SysAcctList(sid)||{});
@@ -4481,11 +4516,8 @@ function renderKpiSysAcctTab(){
   var sid=window._kpiStore, cym=curYm(), can=k2SysCanEdit(sid);
   var list=k2SysAcctList(sid);
   /* 一覧がまだ無い店：足せる人が開いたら、前の決まりで外していた ID を一度だけ引き継ぐ（4A） */
-  if(!list && can && !_k2SysBusy && !(window._k2SysCarried||{})[sid]){
-    (window._k2SysCarried=window._k2SysCarried||{})[sid]=1;
-    var co=k2SysCarryOver(sid);
-    setTimeout(function(){ k2SysSave(sid, co, Object.keys(co).length ? t('前の決まりで外していたアカウントを一覧に引き継ぎました（'+Object.keys(co).length+' 件）','Carried over '+Object.keys(co).length+' accounts from the earlier rules') : t('一覧を作りました（前の決まりで外していたアカウントは今月・前の月にありません）','List created (no accounts matched the earlier rules)')); }, 0);
-  }
+  var carrySt=(window._k2SysCarried||{})[sid];
+  if(!list && can && !_k2SysBusy && !carrySt){ setTimeout(function(){ k2SysCarry(sid); }, 0); carrySt='busy'; }
   var acc=k2SysMonthAccounts(sid, cym), on=[], off=[];
   Object.keys(list||{}).forEach(function(id){ var r=list[id]; if(!r) return; (r.on===false?off:on).push({ id:id, r:r }); });
   var tail=function(id){ return '…'+String(id).slice(-4); };
@@ -4498,7 +4530,9 @@ function renderKpiSysAcctTab(){
     +'<span style="font-size:11px;color:var(--muted)">'+t('今月（前日まで）の時間','Hours this month (to yesterday)')+'</span></div></div>';
   h+='<div class="card"><div class="card-title"><i class="ti ti-user-off" style="color:var(--accent)"></i>'+t('業務用アカウント（総労働時間から外す）','System accounts (left out of labor hours)')+'</div>'
     +'<div class="k2-note" style="margin:-4px 0 8px">'+t('店ごとの Toast のアカウント ID で外します。名前の一部・職種（Server など）・従業員マスターに無いことだけでは外しません。','Excluded by the per-store Toast account ID — never by part of a name, a job (e.g. Server) or a missing master record.')+'</div>';
-  if(!list) h+='<div class="k2-note" style="padding:8px 0">'+(can?t('一覧を作っています…','Creating the list…'):t('この店はまだ一覧がありません。今は前の決まり（名前など）で外しています。GM・CEO か担当の AM がこの画面を開くと、前の決まりで外していたアカウントを一覧に引き継ぎます。','No list yet for this store; earlier rules (names) still apply. When GM, CEO or the assigned AM opens this screen, those accounts are carried over.'))+'</div>';
+  if(!list && can && carrySt==='fail') h+='<div class="k2h-warn"><i class="ti ti-alert-triangle"></i> '+t('クラウドの設定を読めなかったので、一覧はまだ作っていません（ほかの端末が作った一覧を上書きしないため）','Could not read the cloud settings, so the list was not created yet (so as not to overwrite a list made on another device)')
+    +' <button class="btn btn-secondary btn-sm" style="padding:2px 8px;font-size:11px;margin-left:6px" onclick="k2SysCarryRetry(\''+escapeHtml(sid)+'\')">'+t('もう一度','Retry')+'</button></div>';
+  else if(!list) h+='<div class="k2-note" style="padding:8px 0">'+(can?t('一覧を作っています…','Creating the list…'):t('この店はまだ一覧がありません。今は前の決まり（名前など）で外しています。GM・CEO か担当の AM がこの画面を開くと、前の決まりで外していたアカウントを一覧に引き継ぎます。','No list yet for this store; earlier rules (names) still apply. When GM, CEO or the assigned AM opens this screen, those accounts are carried over.'))+'</div>';
   if(window._k2SysState && window._k2SysState.sid===sid && !window._k2SysState.ok) h+='<div class="k2h-warn"><i class="ti ti-alert-triangle"></i> '+t('未保存：クラウドに送れていません','Not saved: not sent to the cloud')
     +(can&&list?' <button class="btn btn-secondary btn-sm" style="padding:2px 8px;font-size:11px;margin-left:6px" onclick="k2SysRetry(\''+escapeHtml(sid)+'\')">'+t('もう一度送る','Send again')+'</button>':'')+'</div>';
   h+='<div class="k2h-rows" style="max-height:none">';
@@ -5004,7 +5038,9 @@ function totoyaKpiCalc(sid, period){
     var _isMan=function(m){ return m!=null&&m!==''&&!isNaN(m); };
     var _upsR=function(r, manKey, val, src){ return _isMan(man[manKey]) ? {v:Number(man[manKey]), src:'手入力', na:val, naSrc:src} : {v:val, src:src, na:val, naSrc:src}; };
     if(_ups.st==='ok'){
-      var _okN=_ups.n.ok>0, _srcU=_okN?'アップセル設定':'アップセル設定（取り込み直し待ち）';
+      /* v1176（Claude #174 の P3-3）：v1176 より前に取り込んだ日が混ざる月は、率が一部の日だけと分かるように出どころに書く */
+      var _okN=_ups.n.ok>0, _ri=Number(_ups.n.reimport)||0;
+      var _srcU=_okN ? ('アップセル設定'+(_ri>0 ? '（一部の日だけ・取り込み直し待ち '+_ri+' 日）' : '')) : 'アップセル設定（取り込み直し待ち）';
       rA=_upsR(rA,'tMisoAll', _okN?_ups.all:null, _srcU);
       rU=_upsR(rU,'tMisoUp', _okN?_ups.succ:null, _srcU);
     } else if(_ups.st==='loading'){
@@ -107509,7 +107545,9 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     if(!v || typeof v !== 'object' || !ymOk(v.from) || v.from < FIRST) return null;
     var mods = Array.isArray(v.mods) ? v.mods.map(String).filter(function(k){ return k && !/^kind:aosa$/.test(k); }) : [];
     var ala = Array.isArray(v.ala) ? v.ala.map(String).filter(Boolean) : [];
-    return { from: v.from, mods: mods, modNames: (v.modNames && typeof v.modNames === 'object') ? v.modNames : {}, ala: ala,
+    /* id＝適用開始の月（v1176・Claude #174 の P3-1）：v1149 の合流は、どの記録にも id がある配列を id ごとに重ねる。
+       2 台が同じ店の別の月の版をほぼ同時に保存しても、片方の版が消えない（同じ月の版どうしは、あとで保存したほう） */
+    return { id: v.from, from: v.from, mods: mods, modNames: (v.modNames && typeof v.modNames === 'object') ? v.modNames : {}, ala: ala,
       alaNames: (v.alaNames && typeof v.alaNames === 'object') ? v.alaNames : {}, at: v.at || '', by: v.by || '' };
   }
   UPS.versions = function(sid){
@@ -107741,12 +107779,25 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     }, function(){ CANDS[sid] = { busy: false, at: Date.now(), st: 'err', mods: {}, days: 0 }; });
     return c;
   };
-  function editState(sid, ym){
+  /* 店ごとの下書き（v1176・Codex #174 6903141004 の P2-2）：W._upsEdits[店]。W._upsEdit は今見ている店の下書き。
+     rev は下書きを変えるたびに進む（保存のあいだに変えたかを見る）。who はだれの下書きか（ログインが替わったら使わない） */
+  function curWho(){ try{ return (typeof curUserName !== 'undefined' && curUserName) ? String(curUserName) : ''; }catch(e){ return ''; } }
+  function drafts(){ var m = W._upsEdits; if(!m || typeof m !== 'object') m = W._upsEdits = {}; return m; }
+  function draftFor(sid){
     var e = W._upsEdit;
-    if(!e || e.sid !== sid){
+    if(e && e.sid === sid){ drafts()[sid] = e; return e; }
+    e = drafts()[sid];
+    return e || null;
+  }
+  function editState(sid, ym){
+    var e = draftFor(sid);
+    if(e && e.who != null && e.who !== curWho()){ delete drafts()[sid]; e = null; }
+    if(!e){
       var cur = UPS.cfgFor(sid, ym) || null, min = ym < FIRST ? FIRST : ym;
-      e = W._upsEdit = { sid: sid, from: (cur && cur.from >= min) ? cur.from : min, mods: cur ? cur.mods.slice() : null, ala: cur ? cur.ala.slice() : [], names: {}, q: '', touched: false };
+      e = { sid: sid, from: (cur && cur.from >= min) ? cur.from : min, mods: cur ? cur.mods.slice() : null, ala: cur ? cur.ala.slice() : [], names: {}, q: '', touched: false, rev: 0, who: curWho() };
+      drafts()[sid] = e;
     }
+    W._upsEdit = e;
     return e;
   }
   function defaultMods(cands){
@@ -107814,7 +107865,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     var ss = (W._upsSave && W._upsSave.sid === sid) ? W._upsSave : null;
     if(can){
       if(e.touched) h += '<div style="font-size:11px;color:#b54708;margin-top:8px">' + T('まだ保存していない変更があります。', 'You have unsaved changes.') + '</div>';
-      h += '<div class="btn-row" style="margin-top:10px;align-items:center;flex-wrap:wrap"><button class="btn btn-primary btn-sm" onclick="FUNERGY_UPS.save(\'' + esc(sid) + '\')"' + (UPS._busy ? ' disabled' : '') + '><i class="ti ti-device-floppy"></i> ' + T('保存', 'Save') + '</button>';
+      h += '<div class="btn-row" style="margin-top:10px;align-items:center;flex-wrap:wrap"><button class="btn btn-primary btn-sm" onclick="FUNERGY_UPS.save(\'' + esc(sid) + '\')"' + (UPS._busyFor[sid] ? ' disabled' : '') + '><i class="ti ti-device-floppy"></i> ' + T('保存', 'Save') + '</button>';
       if(ss) h += ss.ok ? '<span style="font-size:11px;color:var(--green)">' + T('保存しました', 'Saved') + '（' + new Date(ss.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + '）</span>'
         : '<span style="font-size:11px;color:var(--red);font-weight:700">' + T('未保存：クラウドに送れませんでした', 'Not saved: could not reach the cloud') + '</span> <button class="btn btn-secondary btn-sm" style="padding:3px 10px" onclick="FUNERGY_UPS.save(\'' + esc(sid) + '\',true)">' + T('もう一度', 'Retry') + '</button>';
       h += '</div>';
@@ -107826,7 +107877,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     }
     return h + '</div>';
   };
-  UPS.setFrom = function(v){ var e = W._upsEdit; if(!e || !ymOk(v)) return; e.from = v; e.touched = true; };
+  UPS.setFrom = function(v){ var e = W._upsEdit; if(!e || !ymOk(v)) return; e.from = v; e.touched = true; e.rev = (Number(e.rev) || 0) + 1; };
   UPS.search = function(v){ var e = W._upsEdit; if(!e) return; e.q = String(v || ''); clearTimeout(UPS._qt); UPS._qt = setTimeout(function(){ try{ renderPage('kpi_master'); setTimeout(function(){ var el = document.querySelector('#ups-card input.form-input'); if(el){ el.focus(); try{ el.setSelectionRange(el.value.length, el.value.length); }catch(_e){} } }, 0); }catch(e){} }, 350); };
   UPS.toggle = function(kind, idx, on){
     var e = W._upsEdit; if(!e) return;
@@ -107840,13 +107891,14 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       var j = e.ala.indexOf(g); if(on && j < 0) e.ala.push(g); if(!on && j >= 0) e.ala.splice(j, 1);
       e.names['a:' + g] = (W._upsAlaNames || {})[g] || '';
     }
-    e.touched = true;
+    e.touched = true; e.rev = (Number(e.rev) || 0) + 1;
   };
-  UPS._busy = false;
+  UPS._busyFor = {};
   UPS.save = async function(sid, retry){
     if(!UPS.canEdit(sid)){ try{ showToast(T('編集権限がありません', 'No permission'), 'warning'); }catch(e){} return false; }
-    if(UPS._busy) return false;
-    var e = W._upsEdit; if(!e || e.sid !== sid) return false;
+    if(UPS._busyFor[sid]) return false;
+    var e = draftFor(sid); if(!e || e.sid !== sid) return false;
+    var rev0 = Number(e.rev) || 0, tab = null; try{ tab = W._kpiTab; }catch(_e){ tab = null; }
     var curYm = today().slice(0, 7), minYm = curYm < FIRST ? FIRST : curYm;
     if(!ymOk(e.from) || e.from < minYm){ try{ showToast(T('過去の月は変えられません（今月から）', 'Past months cannot be changed'), 'warning'); }catch(_e){} return false; }
     var mods = (e.mods || defaultMods(CANDS[sid])).filter(function(k){ return k && k !== 'kind:aosa' && !(CANDS[sid] && CANDS[sid].mods[k] && CANDS[sid].mods[k].k === 'aosa'); });
@@ -107856,19 +107908,26 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     mods.forEach(function(k){ modNames[k] = (c.mods[k] && c.mods[k].n) || e.names[k] || ''; });
     e.ala.forEach(function(g){ alaNames[g] = e.names['a:' + g] || ((W._upsAlaNames || {})[g]) || ''; });
     var who = ''; try{ who = (typeof curUserName !== 'undefined' && curUserName) ? String(curUserName) : ''; }catch(_e){}
-    vers.push({ from: e.from, mods: mods, modNames: modNames, ala: e.ala.slice(), alaNames: alaNames, at: new Date().toISOString(), by: who });
+    vers.push({ id: e.from, from: e.from, mods: mods, modNames: modNames, ala: e.ala.slice(), alaNames: alaNames, at: new Date().toISOString(), by: who });
     vers.sort(function(a, b){ return a.from < b.from ? -1 : 1; });
-    UPS._busy = true;
+    UPS._busyFor[sid] = true;
+    var write = function(){ setKpiConfigStore(sid, { upsell: vers }); };
     try{
-      setKpiConfigStore(sid, { upsell: vers });
+      /* この保存で送った結果だけを待つ（前の保存の結果で「保存しました」と出さない） */
+      var r = false;
+      try{ r = (typeof kpiCfgPush === 'function') ? await kpiCfgPush(write) : (write(), await Promise.resolve((typeof _lsPushP !== 'undefined' && _lsPushP) ? _lsPushP['kpi_config'] : false)); }catch(_e){ r = false; }
       Object.keys(RES).forEach(function(k){ if(k.indexOf(sid + '|') === 0) delete RES[k]; });
       try{ if(typeof mdCacheClear === 'function') mdCacheClear(); }catch(_e){}
-      var r = false; try{ r = await Promise.resolve((typeof _lsPushP !== 'undefined' && _lsPushP) ? _lsPushP['kpi_config'] : false); }catch(_e){ r = false; }
       W._upsSave = { sid: sid, ok: r === true, at: Date.now() };
-      if(r === true) W._upsEdit = null;
+      /* 保存した下書きだけを片づける：同じ店の下書きで、保存のあいだに変えていないときだけ（ほかの店の下書き・あとで変えた分は残す） */
+      if(r === true && draftFor(sid) === e && (Number(e.rev) || 0) === rev0){ delete drafts()[sid]; if(W._upsEdit === e) W._upsEdit = null; }
       try{ showToast(r === true ? T('保存しました', 'Saved') : T('この端末には入れましたが、クラウドに送れていません（未保存）。もう一度押してください', 'Saved on this device but not sent to the cloud (not saved). Please retry'), r === true ? 'success' : 'warning'); }catch(_e){}
       return r === true;
-    } finally { UPS._busy = false; try{ renderPage('kpi_master'); }catch(_e){} }
+    } finally {
+      delete UPS._busyFor[sid];
+      /* 描き直すのは、保存を始めたときと同じ画面・店・タブを見ているときだけ */
+      try{ var same = (typeof kpiSameView === 'function') ? kpiSameView(sid, tab) : (typeof curPage !== 'undefined' && curPage === 'kpi_master'); if(same) renderPage('kpi_master'); }catch(_e){}
+    }
   };
 })();
 /* ==== FUNERGY_UPS end ==== */

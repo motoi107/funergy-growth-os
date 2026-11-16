@@ -106,18 +106,19 @@ test('A example 2: Server 8h + unregistered real 6h + order only 3h + server def
   assert.equal(Math.round(1400 / r.totalHours), 100, 'sales per labor hour uses the same total');
 });
 
-test('A: the per-store list decides; names alone do not exclude real staff; old copies without an ID match the exact name only', () => {
+test('A: the per-store list decides; names alone do not exclude real staff; old copies without an ID: the list name, else the earlier name rules (v1176)', () => {
   const kpi = { byStore: { F01: { sysAcct: { 'g-sys': { name: 'Toast Generic Login', on: true }, 'g-off': { name: 'Kiosk', on: false } } } } };
   const labor = { 'F01_2026-11-03': {
     'Toast Generic Login': E(4, 'g-sys'),
     'Server': E(7, 'g-real-server'),                 // 職種の名前でも人なら外さない
     'Kiosk': E(2, 'g-off'),                          // 外すのをやめた ID は数える
-    'Toast Generic Login 2': E(1, ''),               // ID の無い前の写し：名前がちょうど同じでないので数える
+    'Toast Generic Login 2': E(1, ''),               // ID の無い前の写し：一覧の名前とは違う → 前の名前の決まり（v1176・Claude #174 の P3-1）で外す（一覧を作る前と同じ）
     'toast generic login': E(1.5, ''),               // ID の無い前の写し：一覧の名前とちょうど同じ → 外す
+    'Ann': E(1, ''),                                 // ID の無い前の写し：人の名前 → 数える
   } };
   const w = world({ stores: [{ id: 'F01' }], labor, kpi });
   const d = w.k2HoursDays('F01', '2026-11', { cutoff: '2026-11-04' }).days.find(x => x.date === '2026-11-03');
-  assert.equal(d.hours, 7 + 2 + 1); assert.equal(d.excluded, 4 + 1.5);
+  assert.equal(d.hours, 7 + 2 + 1); assert.equal(d.excluded, 4 + 1 + 1.5);
 });
 
 test('A: a store without a list keeps the current rules (name rules and IDs that had a system name)', () => {

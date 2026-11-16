@@ -12,6 +12,7 @@
 3c4. 済（Claude・ブランチ `claude/kpi-hours-upsell`・v1175）：A の計算の元（`k2HoursDays`）と店ごとの Toast ID の一覧・B の保存の不具合（本部も店ごと・クラウドに書けてから）（`docs/KPI_HOURS_UPSELL_V1175_JA.md`）・UI案84。次（Moto さん）：UI案84 の答え 6 つ。次（Claude）：A の画面の切り替え → B の hyper-worker（非公開）と SQL（機会ごとに 1 回・注文の明細を保存）→ ⑤ 本物の注文明細との照合 → UI の続き。
 3c3b. 済（Claude 11/15）：#172 の Codex（6901987716）の P2（別の端末の確定を古い暫定の写しで戻せる）を直した（合流・送ったあとの取り込み・取り込みの前の読み直し・データベースの見張り `20261202090000`・`docs/PL_IMPORT_V1162_JA.md` の 9）。次：Codex の再レビュー → Moto さんが `deploy/pl-keep-final-v1174/手順.md` と #166 → #174 の順のマージ。
 3c5. 済（Moto さん 11/15 12:22 HST）：UI案84 の答え（1 打刻を分けている・2A〜5A・6「11月から」）。済（Claude・ブランチ `claude/kpi-hours-screens`・v1176）：A の画面・業務用アカウントの一覧・B（アップセル対象をアップグレード率に）・SQL `20261201090000`・hyper-worker v1176（非公開・直接）（`docs/KPI_HOURS_UPSELL_V1176_JA.md`）。次：Codex → #173 → この PR → Moto さんが `deploy/upsell-v1176/手順.md` → 11 月を取り込み直す → 本物の注文明細と照合（⑤）。そのあと UI の続き。
+3c6. 済（Claude 11/15）：#174 の Codex（6903141004）の P2 3 とルーティンの P3 を直した（v1176 の文書の 6）。次：Codex の再レビュー（#172・#173・#174 の最新の head）→ Moto さんが #166 → #168 → #169 → #171 → #172 → #173 → #174 の順にマージ（#165・#170 はマージしない）。
 3d. 済（Claude 11/15）：Codex（#169 6900755891）の P3（static を決めている要素の確かめ）。次：Codex の再レビュー（#169 の最新の head）。
 3e. 止めたまま（Moto さん 11/15 10:15 HST）：2 つの Claude の協業（PR #170・下書き）。
 4. Moto さんに伝える（記録だけ）：Invoice（閲覧）の `inv.lines` の件（本番で起きるかは未確認）。

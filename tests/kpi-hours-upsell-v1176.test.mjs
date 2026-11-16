@@ -102,6 +102,9 @@ function world(o = {}) {
     var FUNERGY_UX = { bgRefresh: function(){ RENDERS++; } };
     var SUPABASE_URL='https://x', SUPABASE_ANON='k';
   `);
+  /* v1176（Codex #174）：保存の結果と描き直しは本物の kpiCfgPush・kpiSameView で */
+  run(c, fnSrc('kpiCfgPush')); run(c, fnSrc('kpiSameView'));
+  if (o.pushPromise) run(c, `setKpiConfigStore = function(sid, patch){ CFG.byStore=CFG.byStore||{}; CFG.byStore[sid]=Object.assign({}, CFG.byStore[sid]||{}, patch); _lsPushP['kpi_config']=PUSHP(); };`);
   run(c, UP_SRC + '\n' + UPS_SRC);
   c.FUNERGY_UP._getAll = fakeServer(o.db || {}, c.LOG, o.server || {});
   return c;
@@ -240,7 +243,9 @@ test('B totoyaKpiCalc: the setting decides the month; manual input still wins; l
   assert.equal(k.misoRate, null); assert.equal(k.src.misoUp, 'アップセル設定（読み込み中）');
   await settle(c);
   k = plain(run(c, `totoyaKpiCalc('F04-K','2026.11')`));
-  assert.equal(k.eff.misoAll, 10); assert.equal(k.eff.misoUp, 4); assert.equal(k.misoRate, 40); assert.equal(k.src.misoUp, 'アップセル設定');
+  assert.equal(k.eff.misoAll, 10); assert.equal(k.eff.misoUp, 4); assert.equal(k.misoRate, 40);
+  // 11/1 has Toast numbers but no v1176 rows → re-import is pending for that day: the source says the rate covers only part of the month (Claude #174 P3-3)
+  assert.equal(k.src.misoUp, 'アップセル設定（一部の日だけ・取り込み直し待ち 1 日）');
   assert.equal(k.ups.st, 'ok');
   // manual numbers keep priority
   c.MAN['F04-K|2026.11'] = { tMisoAll: 20, tMisoUp: 5 };
@@ -349,7 +354,7 @@ test('B wiring: the KPI settings tab shows the card for Totoya; the legacy card 
 
 /* ---------- A ---------- */
 const A_FNS = ['k2NormAcctName', 'k2SysAcctList', 'k2SysMatcher', 'k2DayIssues', 'k2HoursDays', 'k2HoursDaysM', 'k2HoursDaysAll', 'k2RecGuids', 'isOrderOnlyAccount', 'toastSystemAccount', '_laborHrs', 'k2IsSysName', 'k2SysGuids', 'k2MonthGuids', 'k2YmAdd', 'daysOfYm',
-  'k2SysCanEdit', 'k2SysMonthAccounts', 'k2SysCarryOver', 'k2SysSave', 'tipLaborWithGuid', 'tipLaborPut', '_toastShiftsOverlap'];
+  'k2SysCanEdit', 'k2SysMonthAccounts', 'k2SysCarryOver', 'k2SysSave', 'k2SysCarry', 'k2SysCarryRetry', 'kpiCfgPush', 'kpiSameView', 'tipLaborWithGuid', 'tipLaborPut', '_toastShiftsOverlap'];
 function aWorld({ today = '2026-11-16', labor = {}, kpi = {}, role = 'gm', realRole = null, amStores = [], over = {}, pushOk = true } = {}) {
   const LS = {}; Object.keys(labor).forEach(k => { LS['tip_labor_' + k] = labor[k]; }); LS.kpi_config = kpi;
   const c = { console, JSON, Math, Object, Array, String, Number, RegExp, Date, Promise, LS, OVER: over, TOASTS: [], PUSH: { ok: pushOk },
@@ -357,7 +362,11 @@ function aWorld({ today = '2026-11-16', labor = {}, kpi = {}, role = 'gm', realR
   c.window = c;
   vm.createContext(c);
   run(c, `
-    var curRole=ROLE, curRealRole=REAL, curUserName='Moto', _lsPushP={}, _k2SysBusy=false;
+    var curRole=ROLE, curRealRole=REAL, curUserName='Moto', _lsPushP={}, _k2SysBusy=false, curPage='kpi_master', RENDERS=0;
+    /* クラウドの kpi_config（合成）：CLOUD.fail で読めない。pullSettingKey は読めたら端末に入れる */
+    var CLOUD={ value:null, fail:false, pulls:0 };
+    async function wbFetchSetting(k){ if(CLOUD.fail) return undefined; return CLOUD.value==null ? { exists:false, value:null } : { exists:true, value:JSON.parse(JSON.stringify(CLOUD.value)) }; }
+    async function pullSettingKey(k){ CLOUD.pulls++; if(CLOUD.fail || CLOUD.value==null) return false; LS.kpi_config=JSON.parse(JSON.stringify(CLOUD.value)); return true; }
     function t(ja){ return ja; }
     function ls(k, d){ return Object.prototype.hasOwnProperty.call(LS, k) ? LS[k] : d; }
     function _lsRaw(k, d){ return ls(k, d); }
@@ -370,7 +379,7 @@ function aWorld({ today = '2026-11-16', labor = {}, kpi = {}, role = 'gm', realR
     function curYm(){ return TODAY.slice(0,7); } function bizToday(){ return TODAY; }
     function dayClosureMode(){ return null; }
     function myAmStores(){ return AMS; }
-    function mdCacheClear(){} function showToast(m,k){ TOASTS.push([m,k]); } function renderPage(){}
+    function mdCacheClear(){} function showToast(m,k){ TOASTS.push([m,k]); } function renderPage(){ RENDERS++; }
     function ceIsSystemAccount(n){ return /kiosk/i.test(String(n)); }
   `);
   A_FNS.forEach(n => run(c, fnSrc(n)));
@@ -432,4 +441,157 @@ test('A 4A: GM, CEO and the assigned AM edit the list; the earlier rules carry o
   const n = aWorld({ role: 'sl', labor });
   assert.equal(await run(n, `k2SysSave('F06', {}, 'ok')`), false);
   assert.equal(n.LS.kpi_config.byStore, undefined, 'no permission: nothing written');
+});
+
+/* ---------- Codex #174 6903141004 の P2-2・Claude #174 の P3（v1176 の直し） ---------- */
+function deferredPushes(c) {
+  const q = [];
+  c.PUSHP = () => new Promise(res => q.push(res));
+  return q;
+}
+
+test('Codex #174 P2-2: a save that finishes later clears only its own draft — another store’s draft and edits made during the save stay; it redraws only the same store and tab', async () => {
+  const recipes = [{ id: 'r1', name: 'Extra Ikura', toastGuid: 'A-IK', storeId: 'F04-K', category: 'Topping' }, { id: 'r3', name: 'Extra Egg', toastGuid: 'A-EG', storeId: 'F04-P', category: 'Topping' }];
+  const db = { toast_upgrade_days: [dayRow('R-K', '2026-11-10', 5, { 'M-CRAB': { n: 'Crab Miso', k: 'crab', q: 2 } }), dayRow('R-P', '2026-11-10', 5, { 'M-CRAB': { n: 'Crab Miso', k: 'crab', q: 2 } })] };
+  const c = world({ today: '2026-11-16', cfg: {}, recipes, db, pushPromise: true });
+  const q = deferredPushes(c);
+  run(c, `window._kpiStore='F04-K'; window._kpiTab='manual';`);
+  run(c, `FUNERGY_UPS.cardHtml('F04-K','2026.11')`); await settle(c); run(c, `FUNERGY_UPS.cardHtml('F04-K','2026.11')`);
+  run(c, `FUNERGY_UPS.toggle('ala', window._upsAlaKeys.indexOf('A-IK'), true)`);
+  // Codex's order: start saving F04-K → open F04-P and make a new unsaved draft → the F04-K save succeeds
+  const p1 = run(c, `FUNERGY_UPS.save('F04-K')`);
+  await settle(c);
+  assert.equal(q.length, 1, 'the F04-K push is waiting');
+  run(c, `window._kpiStore='F04-P'`);
+  run(c, `FUNERGY_UPS.cardHtml('F04-P','2026.11')`); await settle(c); run(c, `FUNERGY_UPS.cardHtml('F04-P','2026.11')`);
+  assert.ok(!run(c, `FUNERGY_UPS.cardHtml('F04-P','2026.11')`).includes('FUNERGY_UPS.save(\'F04-P\')" disabled'), 'saving F04-K does not lock the F04-P save button');
+  run(c, `FUNERGY_UPS.toggle('ala', window._upsAlaKeys.indexOf('A-EG'), true)`);
+  const before = c.RENDERS;
+  q.shift()(true);
+  assert.equal(await p1, true);
+  const pDraft = plain(run(c, `window._upsEdit`));
+  assert.equal(pDraft.sid, 'F04-P'); assert.deepEqual(pDraft.ala, ['A-EG']); assert.equal(pDraft.touched, true, 'the F04-P draft is kept');
+  assert.equal(run(c, `window._upsEdits['F04-K']`), undefined, 'the saved F04-K draft is cleared');
+  assert.equal(c.RENDERS, before, 'no redraw: the person is looking at F04-P now');
+  assert.ok(run(c, `FUNERGY_UPS.cardHtml('F04-P','2026.11')`).includes('まだ保存していない変更があります'));
+  // the same store: an edit made while the save was waiting stays as an unsaved draft
+  run(c, `window._kpiStore='F04-P'`);
+  const p2 = run(c, `FUNERGY_UPS.save('F04-P')`); await settle(c);
+  run(c, `FUNERGY_UPS.setFrom('2026-12')`);
+  const r0 = c.RENDERS;
+  q.shift()(true);
+  assert.equal(await p2, true);
+  const kept = plain(run(c, `window._upsEdit`));
+  assert.equal(kept.from, '2026-12', 'the edit after the save started is kept'); assert.equal(kept.touched, true);
+  assert.equal(c.RENDERS, r0 + 1, 'same store and tab → redraw once');
+  // a save with no edits in between clears the draft and redraws once
+  const p3 = run(c, `FUNERGY_UPS.save('F04-P')`); await settle(c);
+  q.shift()(true); assert.equal(await p3, true);
+  assert.equal(run(c, `window._upsEdit`), null);
+  assert.deepEqual(plain(c.CFG.byStore['F04-P'].upsell.map(v => v.from)), ['2026-11', '2026-12']);
+  // a different tab at completion → no redraw
+  run(c, `FUNERGY_UPS.cardHtml('F04-P','2026.11'); FUNERGY_UPS.setFrom('2027-01')`);
+  const p4 = run(c, `FUNERGY_UPS.save('F04-P')`); await settle(c);
+  run(c, `window._kpiTab='targets'`); const r4 = c.RENDERS;
+  q.shift()(true); assert.equal(await p4, true); assert.equal(c.RENDERS, r4);
+});
+
+test('Codex #174 P2-2: the result is the result of this save only (an earlier success does not say 保存しました); a draft of another login is not reused', async () => {
+  const c = world({ today: '2026-11-16', cfg: {}, recipes: [{ id: 'r1', name: 'Extra Ikura', toastGuid: 'A-IK', storeId: 'F04-K', category: 'Topping' }], pushPromise: true });
+  const q = deferredPushes(c);
+  run(c, `_lsPushP['kpi_config']=Promise.resolve(true); window._kpiStore='F04-K'`);
+  run(c, `FUNERGY_UPS.cardHtml('F04-K','2026.11'); FUNERGY_UPS.toggle('ala', window._upsAlaKeys.indexOf('A-IK'), true)`);
+  const p = run(c, `FUNERGY_UPS.save('F04-K')`); await settle(c);
+  q.shift()(false);
+  assert.equal(await p, false); assert.match(c.TOASTS.at(-1)[0], /未保存/);
+  assert.equal(plain(run(c, `window._upsEdit`)).touched, true, 'the draft is kept for the retry');
+  // Moto keeps editing (unsaved), then another person logs in on this device
+  run(c, `FUNERGY_UPS.setFrom('2026-12')`);
+  run(c, `curUserName='Yuki'`);
+  const e = plain((run(c, `FUNERGY_UPS.cardHtml('F04-K','2026.11')`), run(c, `window._upsEdit`)));
+  assert.equal(e.touched, false, 'another login does not see the earlier unsaved draft'); assert.equal(e.who, 'Yuki');
+  assert.equal(e.from, '2026-11', 'it starts again from the stored setting');
+});
+
+test('Claude #174 P3-1: upsell versions carry id = month, so the v1149 merge keeps versions saved on two devices for different months', () => {
+  const c = { console, JSON, Object, Array, String, Number };
+  vm.createContext(c);
+  run(c, 'var WB_ABS = { __wbAbsent:1 };\n' + ['_cjson', '_wbEq', '_wbPlain', '_wbOwn', '_wbIds', '_wbConf', 'wbMerge3', '_wbMergeIds'].map(fnSrc).join('\n'));
+  const w = world({ cfg: { byStore: { 'F04-K': { upsell: [{ from: '2026-11', mods: ['M-CRAB'], ala: [] }] } } } });
+  const nov = plain(run(w, `FUNERGY_UPS.versions('F04-K')`))[0];
+  assert.equal(nov.id, '2026-11');
+  const v = (from, m) => Object.assign({}, nov, { id: from, from, mods: [m] });
+  const base = { byStore: { 'F04-K': { upsell: [nov] } } };
+  const local = { byStore: { 'F04-K': { upsell: [nov, v('2026-12', 'M-UDON')] } } };   // this device added December
+  const cloud = { byStore: { 'F04-K': { upsell: [nov, v('2027-01', 'M-CHZ')] } } };   // another device added January
+  const m = plain(run(c, `wbMerge3(${JSON.stringify(base)}, ${JSON.stringify(local)}, ${JSON.stringify(cloud)}, { conf:[], prefer:'local' }, '')`));
+  assert.deepEqual(m.byStore['F04-K'].upsell.map(x => x.from).sort(), ['2026-11', '2026-12', '2027-01']);
+  // without ids (before the fix) one of the two would be lost
+  const strip = o => JSON.parse(JSON.stringify(o, (k, val) => k === 'id' ? undefined : val));
+  const m2 = plain(run(c, `wbMerge3(${JSON.stringify(strip(base))}, ${JSON.stringify(strip(local))}, ${JSON.stringify(strip(cloud))}, { conf:[], prefer:'local' }, '')`));
+  assert.equal(m2.byStore['F04-K'].upsell.length, 2, 'this is what happened before');
+  // a new version saved on this device has the id too
+  assert.match(UPS_SRC, /vers\.push\(\{ id: e\.from, from: e\.from/);
+});
+
+test('Claude #174 P3-2 (Codex: still open): the carry-over reads the cloud first — a list made on another device is taken in, not overwritten; no list is made while the cloud cannot be read', async () => {
+  const labor = { 'F06_2026-11-02': { Ann: LE(8, 'g-a'), 'Toast Generic Login': LE(3, 'g-sys') } };
+  // another device already made the list and stopped excluding g-sys
+  let c = aWorld({ labor });
+  c.LS.kpi_config = {};
+  run(c, `CLOUD.value = { byStore: { F06: { sysAcct: { 'g-sys': { name:'Toast Generic Login', on:false, src:'manual', at:'2026-11-15T00:00:00Z', by:'Yuki' } } } } }; window._kpiStore='F06';`);
+  assert.equal(await run(c, `k2SysCarry('F06')`), false);
+  assert.equal(c.LS.kpi_config.byStore.F06.sysAcct['g-sys'].on, false, 'the other device’s "stop excluding" stays');
+  assert.equal(run(c, `CLOUD.pulls`), 1);
+  assert.equal(c.TOASTS.length, 0, 'nothing was saved');
+  let r = plain(run(c, `k2HoursDays('F06','2026-11')`));
+  assert.equal(r.openHours, 11, 'g-sys counts');
+  // the cloud cannot be read → no list, a retry is offered
+  c = aWorld({ labor });
+  c.LS.kpi_config = {};
+  run(c, `CLOUD.fail = true; window._kpiStore='F06'`);
+  assert.equal(await run(c, `k2SysCarry('F06')`), false);
+  assert.equal((c.LS.kpi_config.byStore || {}).F06, undefined);
+  assert.equal(run(c, `window._k2SysCarried.F06`), 'fail');
+  // retry when the cloud is back and has no list → the list is made from the earlier rules
+  run(c, `CLOUD.fail = false; CLOUD.value = { drinkCats: [] }`);
+  assert.equal(await run(c, `k2SysCarryRetry('F06')`), true);
+  assert.deepEqual(Object.keys(c.LS.kpi_config.byStore.F06.sysAcct), ['g-sys']);
+  assert.equal(run(c, `window._k2SysCarried.F06`), 'done');
+  // a save that finishes while another store is open does not redraw
+  run(c, `window._kpiStore='F01'`); const r0 = run(c, `RENDERS`);
+  await run(c, `k2SysSave('F06', ${JSON.stringify({ 'g-sys': { name: 'Toast Generic Login', on: false } })}, 'ok', null)`);
+  assert.equal(run(c, `RENDERS`), r0);
+  run(c, `window._kpiStore='F06'`);
+  await run(c, `k2SysSave('F06', ${JSON.stringify({ 'g-sys': { name: 'Toast Generic Login', on: true } })}, 'ok', null)`);
+  assert.equal(run(c, `RENDERS`), r0 + 1);
+  // the screen asks the helper instead of writing on its own
+  const tab = fnSrc('renderKpiSysAcctTab');
+  assert.match(tab, /k2SysCarry\(sid\)/); assert.ok(!/k2SysSave\(sid, co/.test(tab));
+  assert.match(tab, /if\(!list && can && !_k2SysBusy && !carrySt\)/, 'after a failure the screen does not try again by itself (no loop of reads); the retry button does');
+  assert.match(tab, /k2SysCarryRetry\(/);
+});
+
+test('v1176: k2SysSave says 保存しました only for its own push (sync OFF → no push → 未保存, even after an earlier success)', async () => {
+  const c = aWorld({ kpi: {} });
+  run(c, `setKpiConfigStore = function(sid, p){ var k=LS.kpi_config; k.byStore=k.byStore||{}; k.byStore[sid]=Object.assign({}, k.byStore[sid]||{}, p); /* sync OFF: nothing is sent */ };
+    _lsPushP['kpi_config']=Promise.resolve(true);`);
+  assert.equal(await run(c, `k2SysSave('F06', { 'g-sys': { name:'Toast Generic Login', on:true } }, 'ok')`), false);
+  assert.match(c.TOASTS.at(-1)[0], /未保存/);
+  assert.equal(run(c, `window._k2SysState.ok`), false);
+});
+
+test('Claude #174 P3-1: with a list, ID-less old records still follow the earlier name rules (past months do not grow); a name the list stopped excluding counts', () => {
+  const labor = {
+    'F06_2026-08-04': { Ann: { rawLunch: 0, rawDinner: 8, lunch: 0, dinner: 8 }, 'Toast Generic Login': { rawLunch: 0, rawDinner: 2, lunch: 0, dinner: 2 } },
+    'F06_2026-11-02': { Ann: LE(8, 'g-a'), 'Kiosk 1': LE(1, 'g-k') }
+  };
+  let c = aWorld({ labor, kpi: { byStore: { F06: { sysAcct: { 'g-k': { name: 'Kiosk 1', on: true } } } } } });
+  let r = plain(run(c, `k2HoursDays('F06','2026-08')`));
+  assert.equal(r.openHours, 8, 'the ID-less "Toast Generic Login" record of August is still left out'); assert.equal(r.excludedHours, 2);
+  r = plain(run(c, `k2HoursDays('F06','2026-11')`));
+  assert.equal(r.openHours, 8); assert.equal(r.excludedHours, 1);
+  c = aWorld({ labor, kpi: { byStore: { F06: { sysAcct: { 'g-k': { name: 'Kiosk 1', on: true }, 'g-tgl': { name: 'Toast Generic Login', on: false } } } } } });
+  r = plain(run(c, `k2HoursDays('F06','2026-08')`));
+  assert.equal(r.openHours, 10, 'the list stopped excluding this name → it counts');
 });

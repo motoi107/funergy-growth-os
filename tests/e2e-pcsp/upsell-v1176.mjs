@@ -41,7 +41,7 @@ await A.page.waitForFunction(() => { try { const m = FUNERGY_UPS.month('F04-K', 
 const m = await A.page.evaluate(() => { const m = FUNERGY_UPS.month('F04-K', '2026-11'); return { st: m.st, all: m.all, M: m.M, alaRaw: m.alaRaw, overlap: m.overlap, succ: m.succ, nopp: m.nopp, rate: m.rate, re: m.n.reimport }; });
 ok('月の数：分母 130・モディファイヤー 52・アラカルト成立 13（重複 13・機会なし 13）・50%・取り込み直し 1 日', m.all === 130 && m.M === 52 && m.alaRaw === 26 && m.overlap === 13 && m.succ === 65 && m.nopp === 13 && m.rate === 50 && m.re === 1, m);
 const tk = await A.page.evaluate(() => { const k = totoyaKpiCalc('F04-K', '2026.11'); return { rate: k.misoRate, src: k.src.misoUp }; });
-ok('KPI（totoyaKpiCalc）も同じ 50%・出どころ「アップセル設定」', tk.rate === 50 && tk.src === 'アップセル設定', tk);
+ok('KPI（totoyaKpiCalc）も同じ 50%・出どころ「アップセル設定（一部の日だけ・取り込み直し待ち 1 日）」', tk.rate === 50 && tk.src === 'アップセル設定（一部の日だけ・取り込み直し待ち 1 日）', tk);
 txt = await openCard(A.page);
 ok('カードの内訳：50.0%・式・機会なし・取り込み直しの日', /50\.0%/.test(txt) && /\(52＋26−13\)÷130/.test(txt) && /機会なし/.test(txt) && /v1176 より前に取り込んだ日が 1 日/.test(txt), txt.slice(txt.indexOf('この月'), txt.indexOf('この月') + 600));
 const up = await A.page.evaluate(() => { const days = []; for (let i = 1; i <= 14; i++) days.push('2026-11-' + String(i).padStart(2, '0')); const s = FUNERGY_UP.stats(['F04-K'], days); const id = FUNERGY_UP.ctx(['F04-K'], days, { misoRate: 50, misoUp: s.up, misoAll: s.all }); const div = document.createElement('div'); div.innerHTML = FUNERGY_UP.html(id); return { all: s.all, up: s.up, rate: s.rate, t: div.innerText.slice(0, 1500) }; });
@@ -52,10 +52,23 @@ await A.ctx.close();
 let B = await open('gm2'); await login(B.page, 'OFFICE', D.login.gm);
 txt = await openCard(B.page);
 ok('別の端末：保存した版が出る（2026/11 から）', /2026\/11 から/.test(txt) && /アラカルト 1/.test(txt), txt.slice(0, 600));
+// 店ごとの下書き（Codex #174 の P2-2）：店を替えて戻っても、保存していない変更が残る・ほかの店の下書きにならない
+await B.page.evaluate(() => { FUNERGY_UPS.setFrom('2026-12'); window._kpiStore = 'F04-P'; renderPage('kpi_master'); }); await sleep(600);
+const pTxt = await B.page.evaluate(() => (document.getElementById('ups-card') || {}).innerText || '');
+await B.page.evaluate(() => { window._kpiStore = 'F04-K'; renderPage('kpi_master'); }); await sleep(600);
+const kTxt = await B.page.evaluate(() => (document.getElementById('ups-card') || {}).innerText || '');
+ok('店を替えて戻っても、保存していない変更が残る（ほかの店には出ない）', /まだ保存していない変更があります/.test(kTxt) && !/まだ保存していない変更があります/.test(pTxt), { p: pTxt.slice(-200), k: kTxt.slice(-200) });
+const sel = await B.page.evaluate(() => { const o = document.querySelector('#ups-card select option[selected]'); return o ? o.value : ''; });
+ok('戻った店の下書きは 2026-12 のまま', sel === '2026-12', sel);
 // 業務用アカウントのタブ
 await B.page.evaluate(() => { window._kpiTab = 'sysacct'; window._kpiStore = 'F01'; go('kpi_master'); }); await sleep(1200);
 const sa = await B.page.evaluate(() => document.getElementById('main-content').innerText);
 ok('業務用アカウントのタブが開く（GM は変えられる）', /業務用アカウント/.test(sa) && !/変えられるのは/.test(sa.slice(0, 2000)) , sa.slice(0, 600));
+// 一覧の引き継ぎ（Claude #174 の P3-2）：クラウドを読んでから作る → クラウドに F01 の一覧ができ、画面も一覧を出す
+const sysCloud = async page => page.evaluate(async () => { const r = await fetch(SUPABASE_URL + '/rest/v1/app_settings?key=eq.kpi_config&select=value', { headers: supaHeaders() }); const j = await r.json(); const v = j && j[0] && j[0].value; const u = (v && v.__st) ? v.v : v; return (((u && u.byStore) || {}).F01 || {}).sysAcct || null; });
+let sc = null; for (let i = 0; i < 30 && !sc; i++) { await sleep(500); sc = await sysCloud(B.page); }
+const sa2 = await B.page.evaluate(() => document.getElementById('main-content').innerText);
+ok('一覧はクラウドを読んでから作られ、クラウドに入る', !!sc && typeof sc === 'object' && !/一覧を作っています/.test(sa2), { sc, t: sa2.slice(0, 300) });
 await B.ctx.close();
 // スマホ（390px・タッチ）：カードがはみ出さない
 let S = await open('sp', 390, true); await login(S.page, 'OFFICE', D.login.gm);
