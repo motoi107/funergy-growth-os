@@ -33,7 +33,7 @@ function fnSrc(name) {
   throw new Error('unterminated: ' + name);
 }
 
-const FNS = ['k2NormAcctName','k2SysAcctList','k2SysMatcher','k2HoursDays','k2HoursDaysAll','k2RecGuids','isOrderOnlyAccount','toastSystemAccount','ceIsSystemAccount','_laborHrs','getTipLabor','k2IsSysName','k2SysGuids','k2MonthGuids','k2YmAdd','daysOfYm'];
+const FNS = ['k2NormAcctName','k2SysAcctList','k2SysMatcher','k2DayIssues','k2HoursDays','k2HoursDaysM','k2HoursDaysAll','k2RecGuids','isOrderOnlyAccount','toastSystemAccount','ceIsSystemAccount','_laborHrs','getTipLabor','k2IsSysName','k2SysGuids','k2MonthGuids','k2YmAdd','daysOfYm'];
 
 function world({ today = '2026-11-12', stores = [{ id: 'F06', bizDays: { 1: 'closed' } }], labor = {}, kpi = {}, closures = {} } = {}) {
   const LS = {};
@@ -57,9 +57,9 @@ function world({ today = '2026-11-12', stores = [{ id: 'F06', bizDays: { 1: 'clo
 }
 const E = (h, g, extra) => Object.assign({ rawLunch: 0, rawDinner: h, lunch: 0, dinner: h, toastGuid: g }, extra || {});
 
-test('v1175 version markers', () => {
-  assert.match(SRC, /const APP_VERSION = '1175'/);
-  assert.match(SW, /const SW_BUILD = '1175'/);
+test('v1175 version markers (1175 or later, page and SW the same)', () => {
+  const a = /const APP_VERSION = '(\d+)'/.exec(SRC)[1], b = /const SW_BUILD = '(\d+)'/.exec(SW)[1];
+  assert.ok(+a >= 1175, a); assert.equal(a, b);
 });
 
 test('A example 1: 8 business days, 336h → 42.0 h/business day; system accounts do not change it; a late import updates both sides', () => {
@@ -106,18 +106,19 @@ test('A example 2: Server 8h + unregistered real 6h + order only 3h + server def
   assert.equal(Math.round(1400 / r.totalHours), 100, 'sales per labor hour uses the same total');
 });
 
-test('A: the per-store list decides; names alone do not exclude real staff; old copies without an ID match the exact name only', () => {
+test('A: the per-store list decides; names alone do not exclude real staff; old copies without an ID: the list name, else the earlier name rules (v1176)', () => {
   const kpi = { byStore: { F01: { sysAcct: { 'g-sys': { name: 'Toast Generic Login', on: true }, 'g-off': { name: 'Kiosk', on: false } } } } };
   const labor = { 'F01_2026-11-03': {
     'Toast Generic Login': E(4, 'g-sys'),
     'Server': E(7, 'g-real-server'),                 // 職種の名前でも人なら外さない
     'Kiosk': E(2, 'g-off'),                          // 外すのをやめた ID は数える
-    'Toast Generic Login 2': E(1, ''),               // ID の無い前の写し：名前がちょうど同じでないので数える
+    'Toast Generic Login 2': E(1, ''),               // ID の無い前の写し：一覧の名前とは違う → 前の名前の決まり（v1176・Claude #174 の P3-1）で外す（一覧を作る前と同じ）
     'toast generic login': E(1.5, ''),               // ID の無い前の写し：一覧の名前とちょうど同じ → 外す
+    'Ann': E(1, ''),                                 // ID の無い前の写し：人の名前 → 数える
   } };
   const w = world({ stores: [{ id: 'F01' }], labor, kpi });
   const d = w.k2HoursDays('F01', '2026-11', { cutoff: '2026-11-04' }).days.find(x => x.date === '2026-11-03');
-  assert.equal(d.hours, 7 + 2 + 1); assert.equal(d.excluded, 4 + 1.5);
+  assert.equal(d.hours, 7 + 2 + 1); assert.equal(d.excluded, 4 + 1 + 1.5);
 });
 
 test('A: a store without a list keeps the current rules (name rules and IDs that had a system name)', () => {

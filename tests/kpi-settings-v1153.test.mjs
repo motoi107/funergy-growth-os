@@ -2,7 +2,7 @@
 //   ① 目標・使う／対象外は kpi_man_<YYYY.M>[店] の欄（tgt_・off_）。その月に無ければ前の月（24 か月まで）から引き継ぐ（6A）
 //   ② getStoreKpiTargets・keyKpiStats（会議）はその月の目標を使う。前の月・ほかの店は変わらない
 //   ③ 表の実績・目標・判定は会議と同じ関数・しきい値から（keyKpiStats・_meetApplyPl・meetingBudgetKpi・_meetStatus）
-//   ④ 総労働時間：人件費と同じ勤怠の時間。仕組みのアカウントは外す（今は名前で）。今月の計画は前日までの営業日の分だけ
+//   ④ 総労働時間：v1176 から 1 営業日あたり（h/営業日・k2HoursDays）。前の月間計画（tgt_laborHours）は換算せず横に出すだけ（3A）
 //   ⑤ 保存は変えた欄だけ（引き継いだ値と同じなら書かない・空にすると前の月から引き継ぐ・範囲の外は保存しない）
 //   ⑥ Google の口コミ（1A）：会議の実績は「その月に投稿された口コミの平均」（手入力 gAvg）
 //   ⑦ 重点 KPI のカード：G1〜G3＝現場の KPI だけ・G4＝管理の KPI。対象外は出さない。数字が無ければカードごと出さない
@@ -50,7 +50,7 @@ const run = (c, code) => vm.runInContext(code, c);
 
 const MERGE = ['_cjson', '_lrObj', '_lrOwn', '_lrAt', '_fsHas', '_fsT', '_fsObj', '_fsFiOf', '_fsCont', '_fsSubs', '_fsSameEntry', '_fsStamp'];
 const REAL = ['kpiManualKey', '_kpiManualRaw', 'getKpiManual', 'setKpiManual', 'getFormatKpi', 'getStoreKpiTargets', 'getStoreKpiOverride',
-  'periodForOffset', 'daysOfYm', 'isOrderOnlyAccount', 'toastSystemAccount', 'guestCountType', 'isDrinkRateStore',
+  'periodForOffset', 'daysOfYm', 'isOrderOnlyAccount', '_laborHrs', 'toastSystemAccount', 'guestCountType', 'isDrinkRateStore',
   '_meetKpiDef', 'getMeetThreshold', '_meetStatus', '_meetStatColor', '_meetStatLabel', '_meetDiffStr', 'fmtK'];
 
 const STORES = [
@@ -216,12 +216,12 @@ test('③ the table shows the meeting values and judges with the meeting thresho
   assert.equal(rowOf(T, 'ikuraShowerRate').act, 10);
   assert.equal(run(c2, `k2GuestLabel('F03')`), 'プレート数');
   // a future month: targets can be set, nothing is judged
-  setMan(c, 'F01', '2027.1', { tgt_reviewScore: 4.5, gAvg: 4.9, gCnt: 3, tgt_laborHours: 400 });
+  setMan(c, 'F01', '2027.1', { tgt_reviewScore: 4.5, gAvg: 4.9, gCnt: 3, tgt_laborHoursDay: 40 });
   const F = plain(run(c, `_k2ActualsRaw('F01','2027-01')`));
   assert.ok(F.future);
   assert.ok(F.rows.every(r => r.j === 'none'), 'nothing is judged, even a typed Google average');
   assert.ok(F.rows.filter(r => r.on).every(r => r.st === 'これから'));
-  assert.equal(rowOf(F, 'laborHours').tgt, 400, 'the plan for a later month can already be set');
+  assert.equal(rowOf(F, 'laborHours').tgt, 40, 'the target (h/business day) for a later month can already be set');
   // a drink store whose drink categories are not set: no rate even with sales (設定待ち)
   const c3 = device({ k: { 'F01|2026-10': kBase() }, drink: { 'F01|2026.10': { drink: 0, total: 94050, hasCfg: false } } });
   const D = rowOf(plain(run(c3, `_k2ActualsRaw('F01','2026-10')`)), 'drinkRate');
@@ -229,40 +229,52 @@ test('③ the table shows the meeting values and judges with the meeting thresho
   assert.equal(D.st, '設定待ち');
 });
 
-test('④ labor hours: the labor-cost hours of this store, system accounts left out; the plan is prorated by open days this month', () => {
-  const by = { 'Ann': { hours: 160 }, 'Ben': { hours: 120.5 }, 'Toast Generic Login': { hours: 6 }, 'Server Default': { hours: 4 }, 'Order Only': { hours: 3 }, 'Kiosk 1': { hours: 2 } };
-  const c = device({ k: { 'F06|2026-10': kBase(), 'F01|2026-10': kBase(), 'F06|2026-11': kBase() },
-    lc: { 'F06|2026-10': { byName: by, laborDays: 31, noLaborDays: [] }, 'F01|2026-10': { byName: by, laborDays: 30, noLaborDays: ['2026-10-05'] },
-          'F06|2026-11': { byName: { Ann: { hours: 60 }, Ben: { hours: 40 } }, laborDays: 12, noLaborDays: [] } },
-    closed: { 'F06|2026-11-03': 1, 'F06|2026-11-10': 1, 'F06|2026-11-17': 1, 'F06|2026-11-24': 1 } });
-  const h = plain(run(c, `k2LaborHours('F06','2026-10')`));
-  assert.equal(h.hours, 280.5);
-  assert.equal(h.excluded, 15, 'Toast Generic Login, LaLa Server Default, Order Only, Kiosk');
-  assert.equal(plain(run(c, `k2LaborHours('F01','2026-10')`)).hours, 284.5, 'Server Default is a person outside LaLa (F06 only)');
-  setMan(c, 'F06', '2026.10', { tgt_laborHours: 270 });
-  const A = plain(run(c, `_k2ActualsRaw('F06','2026-10')`));
-  const r = rowOf(A, 'laborHours');
-  assert.equal(r.act, 280.5);
-  assert.equal(r.j, 'over', 'over the plan');
-  assert.equal(r.diff, '計画差 +10.5h');
-  assert.equal(r.st, '確定');
-  assert.match(r.actNote, /15h を除外/);
-  // a missing attendance day keeps the month provisional
+/* v1176：勤怠の 1 件（休憩は打刻を外しているので足すだけ） */
+const LE = (h, g, extra) => Object.assign({ rawLunch: 0, rawDinner: h, lunch: 0, dinner: h, toastGuid: g }, extra || {});
+const pad = n => String(n).padStart(2, '0');
+test('④ (v1176) labor hours per business day: business-day hours ÷ business days; system accounts out; 2A pending days; old monthly plan not converted (3A)', () => {
+  const tl = {}, closed = { 'F06|2026-10-06': 1, 'F06|2026-10-13': 1, 'F06|2026-11-03': 1, 'F06|2026-11-10': 1 };
+  for (let d = 1; d <= 31; d++) {
+    const dt = '2026-10-' + pad(d);
+    if (d === 6) { tl['F06|' + dt] = { Ann: LE(3, 'G-ANN') }; continue; }        // 定休日の仕込み（休業日の時間）
+    if (d === 13 || d === 20) continue;                                          // 13 は定休・20 は勤怠を取り込んでいない
+    tl['F06|' + dt] = { Ann: LE(30, 'G-ANN'), Ben: LE(12, 'G-BEN'), 'Toast Generic Login': LE(4, 'G-SYS') };
+  }
+  tl['F06|2026-10-21'].Ann.openShifts = [{ inDate: '2026-10-21T17:00:00.000+0000' }];                        // 退勤なし（2A）
+  tl['F06|2026-10-22'].Ben.shifts = [{ inDate: '2026-10-22T20:00:00.000+0000', outDate: '2026-10-22T18:00:00.000+0000' }];   // 時刻不正（2A）
+  for (let d = 1; d <= 12; d++) { const dt = '2026-11-' + pad(d); if (!closed['F06|' + dt]) tl['F06|' + dt] = { Ann: LE(28, 'G-ANN'), Ben: LE(12, 'G-BEN') }; }
+  const c = device({ k: { 'F06|2026-10': kBase(), 'F06|2026-11': kBase(), 'F01|2026-10': kBase() }, tl, closed });
+  const h = plain(run(c, `k2HoursDays('F06','2026-10')`));
+  assert.equal(h.openDays, 26, '31 − 2 closed − 3 pending');
+  assert.equal(h.openHours, 26 * 42);
+  assert.equal(h.avg, 42);
+  assert.equal(h.closedHours, 3, 'prep on a closed day is counted apart');
+  assert.equal(h.excludedHours, 26 * 4, 'Toast Generic Login is left out');
+  assert.deepEqual(h.pendingWhy, { nolabor: 1, badtime: 1, noout: 1 });
+  setMan(c, 'F06', '2026.10', { tgt_laborHoursDay: 40, tgt_laborHours: 999 });
+  const r = rowOf(plain(run(c, `_k2ActualsRaw('F06','2026-10')`)), 'laborHours');
+  assert.equal(r.label, '1営業日あたりの総労働時間');
+  assert.equal(r.act, 42);
+  assert.equal(r.tgt, 40, 'the h/business-day target, not the old monthly plan');
+  assert.equal(r.j, 'over');
+  assert.equal(r.diff, '＋2.0 h/営業日');
+  assert.equal(r.st, '暫定・未集計 3営業日（勤怠なし 1・時刻不正 1・退勤なし 1）');
+  assert.match(r.actNote, /1092\.0h ÷ 26 営業日・業務用アカウント 104h を外した/);
+  // 3A: only the old monthly plan → 要設定, shown next to it, not converted
   setMan(c, 'F01', '2026.10', { tgt_laborHours: 300 });
-  const r2 = rowOf(plain(run(c, `_k2ActualsRaw('F01','2026-10')`)), 'laborHours');
-  assert.equal(r2.j, 'ok');
-  assert.equal(r2.st, '暫定：勤怠の無い日 1 日');
-  // this month: plan × open days before today ÷ open days in the month (4 closed days in November)
-  assert.equal(run(c, `k2OpenDays('F06','2026-11')`), 26);
-  assert.equal(run(c, `k2OpenDays('F06','2026-11','2026-11-13')`), 10, '11/1–11/12 minus 11/3 and 11/10');
-  const r3 = rowOf(plain(run(c, `_k2ActualsRaw('F06','2026-11')`)), 'laborHours');
-  assert.equal(r3.tgt, 270, 'the plan carries over from October');
-  assert.equal(r3.tgtJudge, Math.round(270 * 10 / 26 * 10) / 10);
-  assert.equal(r3.j, 'ok');
-  assert.match(r3.tgtNote, /営業日 10\/26 日/);
-  // no plan → waits for one
-  const r4 = rowOf(plain(run(c, `_k2ActualsRaw('F06','2026-09')`)), 'laborHours');
-  assert.equal(r4.j, 'none');
+  const o = rowOf(plain(run(c, `_k2ActualsRaw('F01','2026-10')`)), 'laborHours');
+  assert.equal(o.tgt, null); assert.equal(o.tgtJudge == null, true); assert.equal(o.j, 'none');
+  assert.deepEqual(o.oldPlan, { v: 300, ym: '2026-10' });
+  assert.equal(o.tgtNote, '要設定・前の目標：月 300h（10月）');
+  assert.equal(o.st, '要設定');
+  // this month: the average is not prorated; the target carries over from October
+  const n = rowOf(plain(run(c, `_k2ActualsRaw('F06','2026-11')`)), 'laborHours');
+  assert.equal(n.act, 40, '11/1–11/12 minus 11/3 and 11/10 = 10 business days, 400h');
+  assert.equal(n.tgt, 40); assert.equal(n.tgtJudge, 40, 'not prorated (an average)');
+  assert.equal(n.j, 'ok'); assert.equal(n.st, '暫定（前日まで）'); assert.equal(n.tgtNote, '1営業日あたり');
+  // a month with no target and no attendance waits
+  const w = rowOf(plain(run(c, `_k2ActualsRaw('F06','2026-09')`)), 'laborHours');
+  assert.equal(w.j, 'none'); assert.equal(w.act, null);
 });
 
 test('④b labor hours: a system account renamed in Toast is still left out by its Toast account ID (4A)', () => {
@@ -272,16 +284,17 @@ test('④b labor hours: a system account renamed in Toast is still left out by i
     'F01|2026-10-02': { 'Front Tablet': { toastName: 'Front Tablet', toastGuid: 'G-SYS', rawLunch: 4 }, Ann: { toastName: 'Ann', toastGuid: 'G-ANN', rawLunch: 6 } },
     'F01|2026-10-03': { 'Front Tablet': { toastName: 'Front Tablet', toastGuids: ['G-SYS'], rawLunch: 2 } }
   };
-  const lc = { 'F01|2026-10': { byName: { Ann: { hours: 100 }, 'Front Tablet': { hours: 6 } }, laborDays: 31, noLaborDays: [] } };
-  const c = device({ k: { 'F01|2026-10': kBase() }, lc, tl });
-  const h = plain(run(c, `k2LaborHours('F01','2026-10')`));
-  assert.equal(h.hours, 100, 'the renamed account is not counted');
-  assert.equal(h.excluded, 6);
-  assert.deepEqual(h.exNames, ['Front Tablet']);
+  // v1176：k2HoursDays（店の一覧がまだ無い店は前の決まり＝名前と、名前が仕組みのアカウントだったことのある ID）
+  const c = device({ k: { 'F01|2026-10': kBase() }, tl });
+  const h = plain(run(c, `k2HoursDays('F01','2026-10')`));
+  assert.equal(h.openHours, 6, 'the renamed account is not counted');
+  assert.equal(h.openDays, 2, '10/3 has only the system account: a confirmed zero-hour day still counts');
+  assert.equal(h.excludedHours, 6);
+  assert.deepEqual(Object.keys(h.excludedBy), ['Front Tablet']);
   // without the earlier day (no proof that G-SYS was a system account), the name alone does not exclude it
   const tl2 = Object.assign({}, tl); delete tl2['F01|2026-09-20'];
-  const c2 = device({ k: { 'F01|2026-10': kBase() }, lc, tl: tl2 });
-  assert.equal(plain(run(c2, `k2LaborHours('F01','2026-10')`)).hours, 106);
+  const c2 = device({ k: { 'F01|2026-10': kBase() }, tl: tl2 });
+  assert.equal(plain(run(c2, `k2HoursDays('F01','2026-10')`)).openHours, 12);
   // a person who shares no guid with a system account is never excluded
   assert.equal(plain(run(c, `k2IsSysName('F01','2026-10','Ann')`)), false);
 });
@@ -304,7 +317,8 @@ test('⑤ saving writes only what changed this month; an empty target carries th
   assert.equal(run(c, `k2SaveMonth('F09','2026-11')`), true);
   const r = rec('2026.11');
   assert.equal(r.tgt_repeatRate, 37.5);
-  assert.equal(r.tgt_laborHours, 420);
+  assert.equal(r.tgt_laborHoursDay, 420, 'v1176: the hours box is saved as h/business day (a new field)');
+  assert.ok(!('tgt_laborHours' in r), 'the old monthly plan field is not written');
   assert.equal(r.off_drinkRate, false, 'turned on: written as false (not deleted)');
   assert.ok(!('tgt_foodCost' in r), 'the inherited 31 is not copied into the month');
   assert.equal(r.gAvg, 4.7, 'the hand-entered review fields are kept');
@@ -430,7 +444,7 @@ test('⑤b the table renders every KPI with a target box only where it can be ch
   const c = device({ k: { 'F01|2026-10': kBase(), 'F01|2026-11': kBase() } });
   run(c, `window._kpiStore='F01'; window._k2Ym='2026-10';`);
   const html = run(c, `renderKpi2Store()`);
-  for (const no of ['① 売上', '② 客数', '③ 客単価', '④ リピート率', '⑤ 原価率', '⑥ 人件費率', '⑦ 総労働時間', '⑧ ドリンク比率', '⑨ アップグレード率', '⑩ いくらシャワー率', '⑪ Googleレビュー']) assert.ok(html.includes(no), no);
+  for (const no of ['① 売上', '② 客数', '③ 客単価', '④ リピート率', '⑤ 原価率', '⑥ 人件費率', '⑦ 1営業日あたりの総労働時間', '⑧ ドリンク比率', '⑨ アップグレード率', '⑩ いくらシャワー率', '⑪ Googleレビュー']) assert.ok(html.includes(no), no);
   for (const key of ['repeatRate', 'foodCost', 'laborPct', 'laborHours', 'drinkRate', 'reviewScore']) assert.ok(html.includes('id="k2t-' + key + '"'), key);
   for (const key of ['sales', 'guests', 'ppa']) assert.ok(!html.includes('id="k2t-' + key + '"'), key + ' has no box');
   assert.ok(!html.includes('id="k2t-misoUpgradeRate"'), 'an off KPI has no target box');
@@ -449,14 +463,15 @@ test('⑤b the table renders every KPI with a target box only where it can be ch
 });
 
 test('④b hours and Google show even when the meeting has no sales numbers for the month; not for future months', () => {
-  const c = device({ lc: { 'F06|2026-09': { byName: { Ann: { hours: 150 }, 'Toast Generic Login': { hours: 5 } }, laborDays: 30, noLaborDays: [] },
-                          'F06|2026-12': { byName: { Ann: { hours: 9 } }, laborDays: 1, noLaborDays: [] } } });
-  setMan(c, 'F06', '2026.9', { tgt_laborHours: 160, gAvg: 4.7, gCnt: 9, tgt_reviewScore: 4.5 });
+  const tl = {}; for (let d = 1; d <= 30; d++) tl['F06|2026-09-' + pad(d)] = { Ann: LE(5, 'G-ANN'), 'Toast Generic Login': LE(d === 1 ? 5 : 0, 'G-SYS') };
+  tl['F06|2026-12-01'] = { Ann: LE(9, 'G-ANN') };
+  const c = device({ tl });
+  setMan(c, 'F06', '2026.9', { tgt_laborHoursDay: 6, gAvg: 4.7, gCnt: 9, tgt_reviewScore: 4.5 });
   const A = plain(run(c, `_k2ActualsRaw('F06','2026-09')`));   // keyKpiStats throws here (no sales data) → k is null
   const h = rowOf(A, 'laborHours'), g = rowOf(A, 'reviewScore'), s = rowOf(A, 'sales');
   assert.equal(s.act, null, 'no sales numbers');
-  assert.equal(h.act, 150, 'hours come from attendance, not from the sales numbers');
-  assert.match(h.actNote, /5h を除外/);
+  assert.equal(h.act, 5, 'hours come from attendance, not from the sales numbers (150h ÷ 30 business days)');
+  assert.match(h.actNote, /業務用アカウント 5h を外した/);
   assert.equal(h.j, 'ok');
   assert.equal(g.act, 4.7, 'Google comes from the hand input');
   assert.match(g.actNote, /9 件の平均/);
@@ -497,16 +512,16 @@ test('⑥ Google in the meeting: the month average of the reviews posted that mo
 
 test('⑦ focus cards: G1–G3 see the floor KPIs only, G4 the management KPIs; off KPIs and empty cards are not shown', () => {
   const k = kBase({ pace: { budget: 49030, guestBudget: 1558 }, sales: 50210, guests: 1520 });
-  const c = device({ k: { 'F01|2026-11': k }, lc: { 'F01|2026-11': { byName: { Ann: { hours: 192 } }, laborDays: 12, noLaborDays: [] } },
-    drink: { 'F01|2026.11': { drink: 100, total: 300, hasCfg: true } } });
-  setMan(c, 'F01', '2026.11', { tgt_repeatRate: 35, tgt_laborHours: 420, gAvg: 4.6, gCnt: 5 });
+  const tl = {}; for (let d = 1; d <= 12; d++) tl['F01|2026-11-' + pad(d)] = { Ann: LE(16, 'G-ANN') };
+  const c = device({ k: { 'F01|2026-11': k }, tl, drink: { 'F01|2026.11': { drink: 100, total: 300, hasCfg: true } } });
+  setMan(c, 'F01', '2026.11', { tgt_repeatRate: 35, tgt_laborHoursDay: 15, gAvg: 4.6, gCnt: 5 });
   const f = run(c, `k2FocusCard('F01','field')`);
   for (const s of ['ToriTon の現場の重点 KPI', '客数', 'リピート率', 'ドリンク比率', 'Googleレビュー', '見るだけ', '11月・前日（11/12）まで', 'FT 2,410・RP 1,190・SR 274']) assert.ok(f.includes(s), s);
-  for (const s of ['>売上<', '>原価率<', '>人件費率<', '>総労働時間<', '>アップグレード率<']) assert.ok(!f.includes(s), 'no ' + s);
+  for (const s of ['>売上<', '>原価率<', '>人件費率<', '>1営業日あたりの総労働時間<', '>アップグレード率<']) assert.ok(!f.includes(s), 'no ' + s);
   assert.ok(f.includes('G4（店舗責任）の KPI です'), 'says where the store KPIs are');
   const m = run(c, `k2FocusCard('F01','mgmt')`);
-  for (const s of ['ToriTon の KPI', '>売上<', '>客単価<', '>原価率<', '>人件費率<', '>総労働時間<', '店舗責任（G4・自店）', 'KPI設定を開く']) assert.ok(m.includes(s), s);
-  assert.ok(m.includes('前日までの計画'), 'hours against the plan to date');
+  for (const s of ['ToriTon の KPI', '>売上<', '>客単価<', '>原価率<', '>人件費率<', '>1営業日あたりの総労働時間<', '店舗責任（G4・自店）', 'KPI設定を開く']) assert.ok(m.includes(s), s);
+  assert.ok(m.includes('目標 15.0 h/営業日') && m.includes('＋1.0 h/営業日'), 'hours per business day against the target (not prorated)');
   assert.ok(m.includes('現場の KPI（G1〜G3 が取り組む・あなたが見る）'));
   // off → not shown
   setMan(c, 'F01', '2026.11', { tgt_repeatRate: 35, off_repeatRate: true });
