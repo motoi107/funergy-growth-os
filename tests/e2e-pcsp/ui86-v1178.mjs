@@ -252,6 +252,12 @@ for (const [W, lang] of [[1440, 'ja'], [1024, 'en'], [768, 'ja'], [390, 'ja'], [
       ok(tag + '：離れると 2 列に描き直り、選んだ期間は残る', c3.pc2 && c3.v === cd.v, c3);
     } else ok(tag + '：診断と記録：変更の記録の期間がある（GM）', false, cd);
   }
+  /* #175 と同じ直し：描き直す画面は、開いた直後（何も打っていない）に「変えた入力」が無い（あると幅をまたいでも描き直さずに待ってしまう） */
+  for (const pg of ['acct_review', 'acct_center', 'acct_export', 'diag_center', 'monthly']) {
+    await run(page, p => go(p), pg); await sleep(500);
+    const df = await page.evaluate(() => { const d = uiDirtyFields(document.getElementById('main-content')); return { n: d.list.length, bad: d.bad, ids: d.list.map(x => x.id).slice(0, 5) }; });
+    ok(tag + '：' + pg + '：開いた直後に「変えた入力」が無い（描き直しが止まらない）', df.n === 0 && !df.bad, df);
+  }
   ok(tag + '：pageerror なし', errors.length === 0, errors.slice(0, 3));
   /* 写真は確かめが全部終わってから（スマホの真似では fullPage の写真のあと文字の大きさが変わったままになる。Playwright の都合） */
   if (SHOTS) for (const p of ['acct_review', 'settings', 'acct_export', 'diag_center', 'monthly']) { await run(page, p => go(p), p); await shot(page, p + '-' + W + '-' + lang); }

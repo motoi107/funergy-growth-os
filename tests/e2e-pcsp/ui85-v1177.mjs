@@ -277,6 +277,12 @@ for (const [W, lang] of [[1440, 'ja'], [1024, 'en'], [390, 'ja'], [390, 'en']]) 
     const ts = [...g.children]; return { n: ts.length, cols: new Set(ts.map(t => Math.round(t.getBoundingClientRect().left))).size, gtc: getComputedStyle(g).gridTemplateColumns.split(' ').length };
   });
   ok(tag + '：採用：.kpi-wrap の外の .kpi-grid は前の並び（' + (W >= 600 ? '4' : '2') + ' 列）', hg && hg.cols === (W >= 600 ? 4 : 2) && hg.gtc === (W >= 600 ? 4 : 2), hg);
+  /* #175：描き直す画面は、開いた直後（何も打っていない）に「変えた入力」が無い（あると幅をまたいでも描き直さずに待ってしまう） */
+  for (const [pg, code] of [['mypage', () => go('mypage')], ['cc_plan', () => { switchStore('ALL'); go('cc_plan'); setCcTab('setting'); }], ['lunch_challenge', () => { switchStore('F02'); go('lunch_challenge'); }], ['budget:initiative', () => { switchStore('F02'); setBudgetTab('initiative'); go('budget'); }]]) {
+    await run(page, code); await sleep(600);
+    const df = await page.evaluate(() => { const d = uiDirtyFields(document.getElementById('main-content')); return { n: d.list.length, bad: d.bad, ids: d.list.map(x => x.id).slice(0, 5) }; });
+    ok(tag + '：' + pg + '：開いた直後に「変えた入力」が無い（描き直しが止まらない）', df.n === 0 && !df.bad, df);
+  }
   ok(tag + '：pageerror なし', errors.length === 0, errors.slice(0, 3));
   if (SHOTS) {
     await run(page, () => { switchStore('F01'); setBudgetTab('daily'); go('budget'); }); await shot(page, 'daily-' + W + '-' + lang);

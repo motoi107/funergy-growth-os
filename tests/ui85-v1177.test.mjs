@@ -166,6 +166,22 @@ test('#175 P2-1：残せない入力（id が無い・描き直すと欄が無�
   const h = keepCtx(dd => dd.paint([])); h.d.paint([{ type: 'hidden', v: 'a' }]); h.d.root.kids[0].field.value = 'b'; assert.equal(h.c.uiRedrawKeep('mypage'), true);
 });
 
+test('#175：1 つ選ぶ欄は、selected の付いた選択肢が無くて先頭が選ばれているのを「変えた」と数えない（id の無い絞り込みで描き直しが止まらない）', () => {
+  const sel = (id, v, defs) => ({ id, tag: 'SELECT', v, options: ['a', 'b', 'c'].map((x, i) => ({ value: x, selected: x === v, defaultSelected: !!defs[i] })) });
+  // id の無い絞り込み：selected の付いたものが無い → ブラウザが先頭（a）を選ぶ＝変えていない
+  const a = keepCtx(dd => dd.paint([sel('', 'a', [])])); a.d.paint([sel('', 'a', [])]);
+  assert.equal(a.c.uiRedrawKeep('acct_review'), true); assert.deepEqual(a.calls, ['acct_review']);
+  // selected が b に付いている → b のままなら変えていない、c にしたら変えた（id があれば戻す）
+  const b = keepCtx(dd => dd.paint([sel('cl-days', 'b', [0, 1, 0])])); b.d.paint([sel('cl-days', 'b', [0, 1, 0])]);
+  assert.equal(b.c.uiDirtyFields(b.d.root).list.length, 0);
+  b.d.field('cl-days').value = 'c';
+  assert.equal(JSON.stringify(b.c.uiDirtyFields(b.d.root).list.map(x => x.v)), '["c"]');
+  assert.equal(b.c.uiRedrawKeep('diag_center'), true); assert.equal(b.d.field('cl-days').value, 'c', '選んだ値が残る');
+  // 先頭が既定のとき、ほかを選んだら変えた（id が無ければ待つ）
+  const c = keepCtx(dd => dd.paint([sel('', 'a', [])])); c.d.paint([sel('', 'a', [])]); c.d.root.kids[0].field.value = 'b';
+  assert.equal(c.c.uiRedrawKeep('acct_review'), false); assert.deepEqual(c.calls, []);
+});
+
 test('#175 P2-1：見張りは描けなかったら 1.5 秒ごとに待つ（入力中・箱を開いているときと同じ）・描けたら終わる', () => {
   const s = fnSrc('uiPcWatch1177');
   assert.match(s, /done = uiRedrawKeep\(curPage\)/);
