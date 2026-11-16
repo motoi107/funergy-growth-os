@@ -183,7 +183,12 @@ test('without aliases the result is the same as before (v1110) on random synthet
     const emps = [{ id: 'x1', name: 'Aoi Example' }, { id: 'x2', name: 'Kana Mori-Sample', status: k % 2 ? '退職' : '在籍' }, { id: 'x3', name: 'Ann' }, { id: 'x4', name: 'Ren Placeholder' }];
     A.EMPS = emps; B.EMPS = emps;
     await sync(A, rows); await sync(B, rows);
-    assert.deepEqual(plain(A.STORE), plain(B.STORE), 'case ' + k);
+    /* v1175（Codex #173 の指摘）：Order Only は勤怠の写しに Toast の名前のまま残す（給与・Tip は getTipLabor が名前で外す・人には結ばない）。
+       それを除けば v1110 と同じ。Order Only の行があった日は、その名前の件がある */
+    const a = plain(A.STORE);
+    rows.forEach(r => { const key = 'tip_labor_F04-P_' + r.business_date, has = r.data.some(e => e.name === 'Order Only');
+      if (a[key]) { assert.equal(!!a[key]['Order Only'], has, 'case ' + k + ' Order Only kept under its own name'); if (has) assert.equal(a[key]['Order Only'].toastName, 'Order Only'); delete a[key]['Order Only']; } });
+    assert.deepEqual(a, plain(B.STORE), 'case ' + k);
   }
 });
 

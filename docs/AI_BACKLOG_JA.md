@@ -9,7 +9,8 @@
 3c. 済（Claude 11/15）：G3・G1 の行の測り直し（`5889343`・店舗オペレーションの「⧉ 修正」の箱の 2 行は開けず）。済（Claude 11/15）：人件費・勤怠の UI案83。次（Moto さん）：UI案83 の答え（1〜5）。次（Claude）：答えのあと人件費・勤怠を作り直す → チップ・採用・Career Score・スキル・成長管理・OJT も画面ごとの UI 案から（Moto さんの決まり）。
 3c2. 済（Moto さん 11/15 10:59 HST「全部Aで」）：UI案83。済（Claude・ブランチ `claude/labor-ui83`）：v1173＝人件費・勤怠の PC・スマホと不具合 3 つ（`docs/PC_SP_LAYOUT_JA.md` の 12）・PR #171。次：Codex → #169 のあとにマージ → 端末を 1173 に → 実機。そのあとチップ・採用・Career Score・スキル・成長管理・OJT（画面ごとの UI 案から）。
 3c3. 済（Claude・ブランチ `claude/meet-lala-kpi`・v1174）：Moto さん 11/15 の依頼の C（PL の暫定の理由・LaLa の KPI推移の原価率・人件費率・あとの暫定で確定を上書きしない・読むだけの SQL）・PR #172。次：Moto さんが `db/pl-public-check.sql` → マージ。次（Claude）：A 総労働時間を h/営業日（営業日のカレンダー・店ごとの Toast アカウント ID の除外・目標の移し替え）→ B アップセル対象商品（保存・モディファイヤーとアラカルト・アップグレード率へ・1 回の機会で 1 回）→ UI の続き。B は hyper-worker（非公開）と SQL が要る。
-3c4. 済（Claude 11/15）：#172 の Codex（6901987716）の P2（別の端末の確定を古い暫定の写しで戻せる）を直した（合流・送ったあとの取り込み・取り込みの前の読み直し・データベースの見張り `20261202090000`・`docs/PL_IMPORT_V1162_JA.md` の 9）。次：Codex の再レビュー → Moto さんが `deploy/pl-keep-final-v1174/手順.md` と #166 → #174 の順のマージ。
+3c4. 済（Claude・ブランチ `claude/kpi-hours-upsell`・v1175）：A の計算の元（`k2HoursDays`）と店ごとの Toast ID の一覧・B の保存の不具合（本部も店ごと・クラウドに書けてから）（`docs/KPI_HOURS_UPSELL_V1175_JA.md`）・UI案84。次（Moto さん）：UI案84 の答え 6 つ。次（Claude）：A の画面の切り替え → B の hyper-worker（非公開）と SQL（機会ごとに 1 回・注文の明細を保存）→ ⑤ 本物の注文明細との照合 → UI の続き。
+3c3b. 済（Claude 11/15）：#172 の Codex（6901987716）の P2（別の端末の確定を古い暫定の写しで戻せる）を直した（合流・送ったあとの取り込み・取り込みの前の読み直し・データベースの見張り `20261202090000`・`docs/PL_IMPORT_V1162_JA.md` の 9）。次：Codex の再レビュー → Moto さんが `deploy/pl-keep-final-v1174/手順.md` と #166 → #174 の順のマージ。
 3d. 済（Claude 11/15）：Codex（#169 6900755891）の P3（static を決めている要素の確かめ）。次：Codex の再レビュー（#169 の最新の head）。
 3e. 止めたまま（Moto さん 11/15 10:15 HST）：2 つの Claude の協業（PR #170・下書き）。
 4. Moto さんに伝える（記録だけ）：Invoice（閲覧）の `inv.lines` の件（本番で起きるかは未確認）。

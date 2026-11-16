@@ -51,9 +51,9 @@ function rowsOf(h) {
 const kpiNames = h => rowsOf(h).map(r => r[0]).filter(x => /目標$/.test(x)).map(x => x.replace(/目標$/, '').trim());
 const PUB = { '2026-09': { F06: { sales: 20000, cogs: 6000, payroll: 9000 } }, '2026-10': { F06: { sales: 60000, cogs: 18000, payroll: 21000, prov: 1 } } };
 
-test('版：APP_VERSION と SW_BUILD は 1174', () => {
-  assert.match(html, /const APP_VERSION = '1174';/);
-  assert.match(sw, /const SW_BUILD = '1174';/);
+test('版：APP_VERSION と SW_BUILD は 1174 以上で同じ', () => {
+  const a = Number((/const APP_VERSION = '(\d+)';/.exec(html) || [])[1]), b = Number((/const SW_BUILD = '(\d+)';/.exec(sw) || [])[1]);
+  assert.ok(a >= 1174, String(a)); assert.equal(a, b);
 });
 
 test('seed の無い店（LaLa）：原価率・人件費率の行が出て、会計 PL の 9・10 月の率に PL の印', () => {
