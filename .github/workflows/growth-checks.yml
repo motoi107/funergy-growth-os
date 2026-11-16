@@ -91,6 +91,13 @@ jobs:
         run: node --test tests/meet-kpi-noseed-v1174.test.mjs tests/pl-public-check-sql.test.mjs
       - name: Check v1175 labor hours per business day (business days from the store calendar, today and closed days left out, days without attendance left out of both sides, closed-day prep hours kept for the period total, system accounts by the per-store Toast ID list, all stores over store-business-days) and the upsell save (HQ sees and saves the store's own setting; saved only after the cloud write; synthetic data)
         run: node --test tests/kpi-hours-day-v1175.test.mjs
+      - name: Check the v1174 fix for PR 172 (a final PL month is never overwritten by a provisional one, through the app merge by store, the send that takes the cloud final back, the import that reads the cloud first and the database trigger; two devices with stale copies, simultaneous imports, a re-send, a reload, an old app re-sending; the real app functions in a VM, the real SQL on PGlite; synthetic data)
+        run: node --test --test-concurrency=1 tests/pl-keep-final-v1174.test.mjs
+      - name: Check the v1174 PL trigger with two real PostgreSQL sessions (an upsert waits on the row lock and the trigger keeps the final and both stores, also when the first two imports overlap; temporary server, synthetic data; no skipped test)
+        run: |
+          set -o pipefail
+          node --test --test-concurrency=1 tests/pl-keep-final-pg-v1174.test.mjs | tee /tmp/pl-keep-final-pg.txt
+          grep -q '^# skipped 0$' /tmp/pl-keep-final-pg.txt
       - name: Check v1154 Workcenter bulk approval (only the three expense kinds a person can approve, sent with the version that was seen; a request changed or handled meanwhile is not approved; filters clear the selection; one approval per request; the accounting review list; the real screen module with the real handler and SQL in PGlite; synthetic data)
         run: node --test tests/wc-bulk-v1154.test.mjs
       - name: Check v1155 Workcenter stage 2 (budgets and the old approval tab kinds as one-number requests; AM then GM, the GM approves any step and the rest is recorded; budget versions; apply once; accounting checks; the bridge from the old screens, the bulk approval with budgets, the old buttons stop; the real SQL on PGlite, the real handler, the screen in a VM, the deploy files; synthetic data)

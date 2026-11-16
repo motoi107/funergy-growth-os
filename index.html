@@ -16635,8 +16635,12 @@ lost_receipts:  { merge: mergeReqTomb, covers: _coversReqTomb },
   supply_orders:   { merge: mergeReqTomb, covers: _coversReqTomb },
   expense_requests:{ merge: mergeReqTomb, covers: _coversReqTomb },
   /* v910: PL取込。月をキーにした入れ物なので、月単位で新しい方を採る。
-     取り込む端末が複数あっても、別の月を入れた分は消えない。 */
-  pl_public:      { merge: mergeMapByKey, covers: _coversMapByKey },
+     取り込む端末が複数あっても、別の月を入れた分は消えない。
+     v1174（PR #172 の Codex の P2）：月の中を店ごとに合流し、「確定」（暫定の印が無く売上がある）はいつも「暫定」に勝つ（mergePlPublic）。
+     前は月ごとに手元が勝った（月に _at が無い）ので、古い暫定を持つ端末が、ほかの端末の確定やほかの店を消せた。
+     strict：クラウドを読めなければ端末の写しで書かない。keepLocal・pullBack：送っているあいだの取り込みを消さず、クラウドが残した確定を手元にも入れる。
+     サーバーの見張り（supabase/migrations/20261202090000_pl_public_keep_final.sql）も同じ決まりで、ほかの端末と同時に書いても確定を残す。 */
+  pl_public:      { merge: mergePlPublic, covers: _coversPlPublic, strict: true, keepLocal: true, pullBack: true },
   m_store_kpi:    { merge: mergeMapByKey, covers: _coversMapByKey },
   m_format_kpi:   { merge: mergeMapByKey, covers: _coversMapByKey },
   invoices:       { merge: mergeInvoices, covers: _coversInvoices },
@@ -17693,6 +17697,92 @@ function _coversMapByKey(check, want){
   }
   return true;
 }
+/* ===== v1174（PR #172 の Codex の P2）：会計 PL の共有の保存（pl_public）の合流 =====
+   形：{ "2026-10": { "<店>": { sales, cogs, payroll, _at, prov? }, … }, …, _at }。
+   ・月と店は両方のものを残す（どちらかにしか無い月・店は消さない）。
+   ・同じ店・同じ月は「確定」（暫定の印が無く、売上が 0 より大きい）が「暫定」にいつも勝つ。同じ種類なら _at（取り込んだ時刻）の新しいほう。
+     _at も同じなら中身の文字の大きいほう（どの順で合わせても同じ答え）。
+   ・サーバーの見張り（fp_pl_public_join）も同じ決まり（_at も同じときだけ、サーバーはあとから書いたほう）。
+   どの順で合わせても同じ答えになる（入れ替え・まとめ方・2 回合わせても同じ）ので、端末とサーバーで何度合わせても確定は消えない。 */
+var PL_YM_RE = /^[0-9]{4}-[0-9]{2}$/;
+function _plIsObj(x){ return !!(x && typeof x==='object' && !Array.isArray(x)); }
+function _plIsNumPos(v){
+  if(typeof v==='number') return isFinite(v) && v>0;
+  if(typeof v==='string' && /^\s*[0-9]*\.?[0-9]+\s*$/.test(v)) return Number(v)>0;
+  return false;
+}
+/* 2＝確定・1＝暫定（ほかの記録も）。サーバーの fp_pl_public_join と同じ決め方 */
+function _plRecRank(r){
+  if(!_plIsObj(r)) return 0;
+  var p=r.prov, notProv=(p==null || p===false || p===0 || p==='');
+  return (notProv && _plIsNumPos(r.sales)) ? 2 : 1;
+}
+function _plAt(r){
+  var v=r && r._at;
+  if(typeof v==='number') return isFinite(v) ? v : 0;
+  if(typeof v==='string' && /^\s*[0-9]+(\.[0-9]+)?\s*$/.test(v)) return Number(v);
+  return 0;
+}
+function _plRecPick(cv, lv){
+  var rc=_plRecRank(cv), rl=_plRecRank(lv);
+  if(rc!==rl) return (rl>rc) ? lv : cv;
+  var ca=_plAt(cv), la=_plAt(lv);
+  if(ca!==la) return (la>ca) ? lv : cv;
+  return (String(_cjson(lv))>=String(_cjson(cv))) ? lv : cv;
+}
+function _plMergeMonth(cm, lm){
+  var out={}, keys={};
+  Object.keys(cm).forEach(function(k){ keys[k]=1; }); Object.keys(lm).forEach(function(k){ keys[k]=1; });
+  Object.keys(keys).forEach(function(s){
+    var a=cm[s], b=lm[s];
+    if(a==null) out[s]=b; else if(b==null) out[s]=a;
+    else if(_plIsObj(a) && _plIsObj(b)) out[s]=_plRecPick(a, b);
+    else out[s]=b;
+  });
+  return out;
+}
+function mergePlPublic(cloudMap, localMap){
+  var c=_plIsObj(cloudMap) ? cloudMap : {}, l=_plIsObj(localMap) ? localMap : {};
+  var out={}, keys={};
+  Object.keys(c).forEach(function(k){ keys[k]=1; }); Object.keys(l).forEach(function(k){ keys[k]=1; });
+  Object.keys(keys).forEach(function(k){
+    var cv=c[k], lv=l[k];
+    if(cv==null){ out[k]=lv; return; }
+    if(lv==null){ out[k]=cv; return; }
+    if(k==='_at'){ out[k]=(_plAt({_at:lv})>=_plAt({_at:cv})) ? lv : cv; return; }
+    if(PL_YM_RE.test(k) && _plIsObj(cv) && _plIsObj(lv)){ out[k]=_plMergeMonth(cv, lv); return; }
+    out[k]=_mapPick(cv, lv);
+  });
+  return out;
+}
+/* クラウドの値（check）が、送った値（want）の店・月をすべて持ち、確定・時刻で負けていないか */
+function _coversPlPublic(check, want){
+  if(!_plIsObj(check)) return false;
+  if(!_plIsObj(want)) return true;
+  for(var k in want){
+    if(!Object.prototype.hasOwnProperty.call(want, k) || k==='_at') continue;
+    var w=want[k], h=check[k];
+    if(w==null) continue;
+    if(h==null) return false;
+    if(PL_YM_RE.test(k) && _plIsObj(w) && _plIsObj(h)){
+      for(var s in w){
+        if(!Object.prototype.hasOwnProperty.call(w, s)) continue;
+        var ws=w[s], hs=h[s];
+        if(ws==null) continue;
+        if(hs==null) return false;
+        if(_plIsObj(ws) && _plIsObj(hs)){
+          var rw=_plRecRank(ws), rh=_plRecRank(hs);
+          if(rh<rw) return false;
+          if(rh===rw && _plAt(hs)<_plAt(ws)) return false;
+        }
+      }
+      continue;
+    }
+    var wa=Number(w&&w._at)||0, ha=Number(h&&h._at)||0;
+    if(wa && ha && ha<wa) return false;
+  }
+  return true;
+}
 var _opLastPushErr = {};   /* v744: キーごとの最後の失敗理由（未送信の原因表示に使う） */
 var _opLastPushWhy = {};   /* v1097: cas の道の最後の失敗の理由のコード（'stale' など）。知らせの分け方は文言ではなくこれで決める（PR #81 の Claude・Codex のレビュー P3） */
 /* v1034: 押し上げはクラウドを取りに行っている間（await）に、同じキーへ新しい保存が入ることがある。
@@ -17766,7 +17856,12 @@ function opMergePush(key, localVal, table){
         if(_u1===false){ _ok=false; _err='クラウドへの書き込みに失敗しました'; break; }
         var check = await _fetchOpValue(key, table, false, 45000);
         if(typeof _OP_READ_TMO!=='undefined' && check===_OP_READ_TMO) check=undefined;   /* 確かめの読み込みが答えない：書けたので、今までの「読めなかった」と同じに */
-        if(check===undefined || def.covers(check, merged)){ desired=merged; _ok=true; break; }
+        if(check===undefined || def.covers(check, merged)){
+          /* v1174（PR #172 Codex P2）：pullBack のキー（pl_public）は、クラウドが残したもの（ほかの端末が先に入れた確定の月など）を手元にも入れる。
+             covers は「書きたいものがクラウドに残ったか」だけを見るので、クラウドのほうが強い値（確定）を持っていても通る。そのままだと手元は暫定のまま */
+          if(def.pullBack && check && typeof check==='object'){ try{ merged = _opWriteBack(key, def, def.merge(check, merged)); }catch(e){} }
+          desired=merged; _ok=true; break;
+        }
         desired = def.merge(check, merged); // 誰かに上書きされた→取り込んで再試行
         _err='他の端末の更新と競合し、3回試しても確認できませんでした';
       }
@@ -31324,7 +31419,14 @@ function plFilePicked(el){
       try { r = parsePLWorkbook(XLSX.read(new Uint8Array(fr.result), {type:'array'}), { fileName:f.name }); }   /* v1162: ファイル名は「暫定」の判定に使う */
       catch(e){ if(box) box.innerHTML = '<div style="color:var(--red);font-size:12px">'+escapeHtml(t('解析できませんでした','Could not parse'))+': '+escapeHtml(String(e && e.message || e))+'</div>'; return; }
       _plImport = r;
-      if (box) box.innerHTML = _plPreviewHtml(r);
+      /* v1174（PR #172 Codex P2）：保存の前にクラウドの最新（pl_public）を読み、ほかの端末で確定にした月も「確定済み」に出す。
+         読めなくても取り込める（確定はクラウドとサーバーの見張りが残す）。読み終えるまで保存のボタンは出さない */
+      if (box) box.innerHTML = '<div style="font-size:12px;color:var(--muted)"><i class="ti ti-loader"></i> '+t('クラウドの最新を確かめています…','Checking the latest cloud copy…')+'</div>';
+      _plReadCloudPub().then(function(cp){
+        if (_plImport !== r) return;   /* ほかのファイルを選び直した */
+        r.cloudState = cp.state; r.cloudPub = cp.value;
+        if (box) box.innerHTML = _plPreviewHtml(r);
+      });
     };
     fr.onerror = function(){ if(box) box.innerHTML = '<div style="color:var(--red);font-size:12px">'+t('ファイルを読めませんでした','Could not read file')+'</div>'; };
     fr.readAsArrayBuffer(f);
@@ -31334,17 +31436,34 @@ function plFilePicked(el){
 }
 /* v1174：あとから取り込んだ「暫定」の月で、もう「確定」として保存した同じ店・同じ月を上書きしない（Moto さん 11/15 の依頼の C）。
    確定＝共有の保存（pl_public）か、この端末の保存（pl_actual）に、暫定の印の無い売上がある。確定版を取り込み直すのはいつでもできる。 */
-function _plKeepsFinal(x){
+function _plKeepsFinal(x, cloudPub){
   if (!x || !x.prov) return false;
   try {
-    var hit = function(o){ var r = o && o[x.ym] && o[x.ym][x.storeKey]; return !!(r && !r.prov && Number(r.sales) > 0); };
-    return hit(ls('pl_public', null)) || hit(ls('pl_actual', null));
+    /* v1174（PR #172 Codex P2）：確定の決め方は合流（_plRecRank）と同じ。保存の前に読んだクラウドの値（cloudPub）も見る */
+    var hit = function(o){ var r = o && o[x.ym] && o[x.ym][x.storeKey]; return _plRecRank(r) === 2; };
+    return hit(cloudPub) || hit(ls('pl_public', null)) || hit(ls('pl_actual', null));
   } catch(e){ return false; }
 }
+/* v1174：クラウドの pl_public を読む。{ state:'ok'|'none'|'fail', value } */
+function _plReadCloudPub(){
+  try {
+    if (typeof _fetchOpValue !== 'function') return Promise.resolve({ state:'fail', value:null });
+    return Promise.resolve(_fetchOpValue('pl_public', 'app_settings', true)).then(function(v){
+      if (v === undefined || (typeof _OP_READ_TMO !== 'undefined' && v === _OP_READ_TMO)) return { state:'fail', value:null };
+      if (v === null) return { state:'none', value:null };
+      return _plIsObj(v) ? { state:'ok', value:v } : { state:'fail', value:null };
+    }, function(){ return { state:'fail', value:null }; });
+  } catch(e){ return Promise.resolve({ state:'fail', value:null }); }
+}
 function _plPreviewHtml(r){
-  var keepF = r.rows.filter(function(x){ return x.ok && _plKeepsFinal(x); });
-  var good = r.rows.filter(function(x){ return x.ok && !_plKeepsFinal(x); });
+  var keepF = r.rows.filter(function(x){ return x.ok && _plKeepsFinal(x, r.cloudPub); });
+  var good = r.rows.filter(function(x){ return x.ok && !_plKeepsFinal(x, r.cloudPub); });
   var h = '';
+  if (r.cloudState === 'fail'){
+    h += '<div style="margin-bottom:8px;border:1px solid var(--border);border-radius:8px;padding:7px 8px;font-size:10.5px;line-height:1.7;color:var(--muted)">'
+      +  t('クラウドを読めませんでした（ほかの端末で確定にした月は、この画面の「確定済み」に出ないことがあります。取り込んでも、確定はクラウドに残ります）',
+           'Could not read the cloud copy (months finalized on another device may not show as final here; importing keeps the final months in the cloud)')+'</div>';
+  }
   if (keepF.length){
     h += '<div style="margin-bottom:8px;border:1px solid var(--border);border-radius:8px;padding:7px 8px;font-size:10.5px;line-height:1.7">'
       +  '<b>'+t('確定済みの月は暫定で上書きしません','Final months are not overwritten by a provisional PL')+'</b>：'
@@ -31434,11 +31553,19 @@ function backupPl(){
 function plImportSave(){
   var r = _plImport;
   if (!r || !r.rows.length){ showToast(t('取り込む内容がありません','Nothing to import'),'info'); return; }
-  var keepF = r.rows.filter(function(x){ return x.ok && _plKeepsFinal(x); });
-  var good = r.rows.filter(function(x){ return x.ok && !_plKeepsFinal(x); });
+  var keepF = r.rows.filter(function(x){ return x.ok && _plKeepsFinal(x, r.cloudPub); });
+  var good = r.rows.filter(function(x){ return x.ok && !_plKeepsFinal(x, r.cloudPub); });
   var act = ls('pl_actual', {}) || {};
-  var pub = ls('pl_public', {}) || {};
+  /* v1174（PR #172 Codex P2）：保存の前に読んだクラウドの値と手元を合わせてから書く（ほかの端末が入れた店・月・確定を手元の古い写しで消さない）。
+     取り込んだ時刻（_at）は、知っているどの時刻よりも後にする（端末の時計が遅れていても、同じ種類なら新しい取り込みが勝つ） */
+  var _pubLocal = ls('pl_public', {}); if (!_plIsObj(_pubLocal)) _pubLocal = {};
+  var _pubCloud = _plIsObj(r.cloudPub) ? r.cloudPub : {};
+  var pub = JSON.parse(JSON.stringify(mergePlPublic(_pubCloud, _pubLocal)));   /* 写し（読んだ値は変えない） */
   var now = Date.now(), n = 0;
+  var _recAt = function(ym, sk){
+    var a = _pubCloud[ym] && _pubCloud[ym][sk], b = _pubLocal[ym] && _pubLocal[ym][sk];
+    return Math.max(now, _plAt(a) + 1, _plAt(b) + 1);
+  };
   good.forEach(function(x){
     if (!act[x.ym]) act[x.ym] = {};
     if (!pub[x.ym]) pub[x.ym] = {};
@@ -31464,7 +31591,7 @@ function plImportSave(){
     } else if (x.detail) act[x.ym][x.storeKey].detail = x.detail;
     /* ★ opex と netop は入れない。利益 = sales-cogs-payroll-opex なので、
        opex を出すと引き算で利益が分かってしまう。 */
-    pub[x.ym][x.storeKey] = { sales:x.v.sales, cogs:x.v.cogs, payroll:x.v.payroll, _at:now };
+    pub[x.ym][x.storeKey] = { sales:x.v.sales, cogs:x.v.cogs, payroll:x.v.payroll, _at:_recAt(x.ym, x.storeKey) };
     /* v1162: 暫定の月の印（利益は入れない）。会議タブの印が「確定」ではなく「暫定」になる。確定版を取り込むと消える。 */
     if (x.prov) pub[x.ym][x.storeKey].prov = 1;
     n++;
@@ -31473,7 +31600,7 @@ function plImportSave(){
   /* v1162: 取り込んだ月だけ。暫定の月は（暫定）と書く。 */
   var _gm = {}; good.forEach(function(x){ _gm[x.ym] = _gm[x.ym] || !!x.prov; });
   Object.keys(_gm).forEach(function(m){ act._src[m] = 'PL取込 ' + (typeof todayJP==='function' ? todayJP() : '') + (_gm[m] ? '（暫定）' : ''); });
-  pub._at = now;
+  pub._at = Math.max(now, _plAt(_pubCloud) + 1, _plAt(_pubLocal) + 1);
   lsSet('pl_actual', act);
   lsSet('pl_public', pub);
   _plImport = null;

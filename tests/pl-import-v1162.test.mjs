@@ -32,6 +32,8 @@ function load(store = {}) {
   };
   vm.createContext(ctx);
   vm.runInContext(block('var PL_SHEET_MAP = {', '/* SheetJS は取り込みのときだけ読む'), ctx);
+  // v1174 の直し（PR #172 Codex P2）：保存は pl_public の合流（mergePlPublic）を使う
+  vm.runInContext((/^var PL_YM_RE = [^\n]+/m.exec(html) || [''])[0] + '\n' + ['_cjson', '_mapPick', '_plIsObj', '_plIsNumPos', '_plRecRank', '_plAt', '_plRecPick', '_plMergeMonth', 'mergePlPublic'].map(fnSrc).join('\n'), ctx);
   vm.runInContext(['_plKeepsFinal', '_plPreviewHtml', '_plStoreLabel', 'plImportSave'].map(fnSrc).join('\n') + '\nvar _plImport = null;', ctx);
   return Object.assign(ctx, { store, toasts });
 }
