@@ -165,14 +165,142 @@ test('B: HQ sees and saves the store setting (not the all-store list); "saved" o
   assert.doesNotMatch(save, /setKpiConfig\(cfg\)/, 'no longer writes the all-store list');
   let stored = null, toasts = [], pushed = true, rendered = 0;
   const ctx = { document: { querySelectorAll: () => [{ value: 'g1' }, { value: 'g2' }] }, canSetKpiStore: () => true,
-    setKpiConfigStore: (sid, p) => { stored = { sid, p }; }, _lsPushP: {}, showToast: (m, k) => toasts.push(k), renderPage: () => { rendered++; },
-    t: (j) => j, window: {}, Promise, Array, Date };
-  ctx._lsPushP = new Proxy({}, { get: () => Promise.resolve(pushed) });
-  vm.createContext(ctx); vm.runInContext(save, ctx);
+    _lsPushP: {}, showToast: (m, k) => toasts.push(k), renderPage: () => { rendered++; },
+    t: (j) => j, window: { _kpiStore: 'F02', _kpiTab: 'manual' }, curPage: 'kpi_master', Promise, Array, Date };
+  ctx.setKpiConfigStore = (sid, p) => { stored = { sid, p }; ctx._lsPushP.kpi_config = Promise.resolve(pushed); };
+  vm.createContext(ctx); vm.runInContext(fnSrc('kpiCfgPush'), ctx); vm.runInContext(fnSrc('kpiSameView'), ctx); vm.runInContext(save, ctx);
   return ctx.saveUpsellGuids('F02').then(() => {
     assert.deepEqual(JSON.parse(JSON.stringify(stored)), { sid: 'F02', p: { upsellGuids: ['g1', 'g2'] } });
     assert.equal(ctx.window._upsellSaveState.ok, true); assert.deepEqual(toasts, ['success']);
     pushed = false; toasts = [];
     return ctx.saveUpsellGuids('F02');
   }).then(() => { assert.equal(ctx.window._upsellSaveState.ok, false); assert.deepEqual(toasts, ['warning']); assert.equal(rendered, 2); });
+});
+
+/* ---- Codex #173 の指摘の直し（v1175） ---- */
+const IMPORT_FNS = ['syncTipLaborFromDB', 'tipLaborPut', 'tipLaborWithGuid', 'toastAliasIndex', 'toastAliasResolve', 'toastAliasFind', 'empToastAliases', '_toastAliasRec', 'toastAliasField', 'toastNameKey', '_toastShiftsOverlap', 'normalizeBusinessDate', '_tipLaborNewer', '_tipLaborMark'];
+function importWorld(rows, kpi, opts = {}) {
+  const w = world({ kpi, stores: [{ id: 'F06' }] });
+  const LS = {};
+  w.ls = (k, d) => (Object.prototype.hasOwnProperty.call(LS, k) ? LS[k] : (k === 'kpi_config' ? kpi : d));
+  w._lsRaw = w.ls; w.lsKeys = pre => Object.keys(LS).filter(k => k.startsWith(pre));
+  w.getAttOverride = (sid, dt) => (opts.ovr && opts.ovr[dt]) || null;
+  w.setTipLabor = (sid, d, data) => { LS['tip_labor_' + sid + '_' + d] = JSON.parse(JSON.stringify(data)); };
+  w.setCreditTipAdjLocal = () => {};
+  w.fetchTipLaborFromDB = async () => rows;
+  w.getEmployees = () => [{ id: 'e1', name: 'Real Person', status: '在籍' }];
+  w.tipHoursFromShifts = () => ({ lunch: 0, dinner: 0 });
+  vm.runInContext('var _tipLaborSeq = 0, _tipLaborSaved = {};', w);
+  IMPORT_FNS.forEach(n => vm.runInContext(fnSrc(n), w));
+  return { w, LS };
+}
+const OO_ROWS = () => [{ business_date: '2026-11-03', data: [
+  { name: 'Real Person', guid: 'g-real', lunchHours: 0, dinnerHours: 6, shifts: [] },
+  { name: 'Order Only', guid: 'g-oo', lunchHours: 0, dinnerHours: 8, shifts: [] },
+] }];
+
+test('Codex #173: an Order Only account the list marks "stop excluding" (on:false) counts as work; payroll/Tip still drop it', async () => {
+  const kpi = { byStore: { F06: { sysAcct: { 'g-oo': { name: 'Order Only', on: false } } } } };
+  const { w, LS } = importWorld(OO_ROWS(), kpi);
+  const r0 = await w.syncTipLaborFromDB('F06', 'guid-F06', [{ date: '2026-11-03' }]);
+  assert.equal(r0.updated, 1);
+  const copy = LS['tip_labor_F06_2026-11-03'];
+  assert.ok(copy['Order Only'], 'the import keeps the Order Only record under its Toast name');
+  assert.equal(copy['Order Only'].toastGuid, 'g-oo');
+  assert.equal(copy['Real Person'].rawDinner, 6, 'Order Only is not joined to a person');
+  // 給与・Tip が使う getTipLabor は今までどおり Order Only を外す
+  assert.deepEqual(Object.keys(w.getTipLabor('F06', '2026-11-03')), ['Real Person']);
+  // KPI：外すのをやめた → 実働 6 + 8
+  let d = w.k2HoursDays('F06', '2026-11', { cutoff: '2026-11-04' }).days.find(x => x.date === '2026-11-03');
+  assert.equal(d.hours, 14); assert.equal(d.excluded, 0);
+  // 一覧で外す（on:true）→ 外す
+  kpi.byStore.F06.sysAcct['g-oo'].on = true;
+  d = w.k2HoursDays('F06', '2026-11', { cutoff: '2026-11-04' }).days.find(x => x.date === '2026-11-03');
+  assert.equal(d.hours, 6); assert.equal(d.excluded, 8);
+  // 一覧はあるがこの ID が無い → 一覧だけで決めるので実働
+  kpi.byStore.F06.sysAcct = { 'g-other': { name: 'Kiosk', on: true } };
+  d = w.k2HoursDays('F06', '2026-11', { cutoff: '2026-11-04' }).days.find(x => x.date === '2026-11-03');
+  assert.equal(d.hours, 14); assert.equal(d.excluded, 0);
+  // 一覧の無い店は今までの決まり（外す）
+  delete kpi.byStore.F06;
+  d = w.k2HoursDays('F06', '2026-11', { cutoff: '2026-11-04' }).days.find(x => x.date === '2026-11-03');
+  assert.equal(d.hours, 6); assert.equal(d.excluded, 8);
+});
+
+test('Codex #173: a day fixed by hand uses the fixed copy for Order Only too', async () => {
+  const kpi = { byStore: { F06: { sysAcct: { 'g-oo': { name: 'Order Only', on: false } } } } };
+  const ovr = { '2026-11-03': { data: { 'Real Person': E(5, 'g-real'), 'Order Only': E(3, 'g-oo') } } };
+  const { w } = importWorld(OO_ROWS(), kpi, { ovr });
+  await w.syncTipLaborFromDB('F06', 'guid-F06', [{ date: '2026-11-03' }]);
+  let d = w.k2HoursDays('F06', '2026-11', { cutoff: '2026-11-04' }).days.find(x => x.date === '2026-11-03');
+  assert.equal(d.hours, 8, 'the fixed day: 5 + 3 (not the imported 6 + 8)'); assert.equal(d.excluded, 0);
+  kpi.byStore.F06.sysAcct['g-oo'].on = true;
+  d = w.k2HoursDays('F06', '2026-11', { cutoff: '2026-11-04' }).days.find(x => x.date === '2026-11-03');
+  assert.equal(d.hours, 5); assert.equal(d.excluded, 3);
+});
+
+test('Codex #173: all-store closed and excluded hours are rounded like the others', () => {
+  const labor = {
+    'F06_2026-11-02': { X: E(0.1, 'g') }, 'F01_2026-11-02': { Y: E(0.2, 'h') },
+    'F06_2026-11-03': { X: E(1, 'g'), 'Order Only': E(0.1, 'oo1') }, 'F01_2026-11-03': { Y: E(1, 'h'), 'Order Only': E(0.2, 'oo2') },
+  };
+  const w = world({ stores: [{ id: 'F06', bizDays: { 1: 'closed' } }, { id: 'F01', bizDays: { 1: 'closed' } }], labor });
+  const o = w.k2HoursDaysAll(['F06', 'F01'], '2026-11', { cutoff: '2026-11-04' });
+  assert.equal(o.closedHours, 0.3); assert.equal(o.excludedHours, 0.3);
+});
+
+test('Codex #173: saves wait for their own push (a stale earlier success does not say "saved"); re-render only on the same screen', async () => {
+  const ctxBase = () => {
+    const c = { Promise, Array, Date, Object, t: (j) => j, window: { _kpiStore: 'F02', _kpiTab: 'manual' }, curPage: 'kpi_master', toasts: [], rendered: 0 };
+    c.showToast = (m, k) => c.toasts.push(k); c.renderPage = () => { c.rendered++; };
+    c._lsPushP = { kpi_config: Promise.resolve(true) };   // 前の保存の成功が残っている
+    c.canSetKpiStore = () => true;
+    c.document = { querySelectorAll: () => [{ value: 'g1' }] };
+    vm.createContext(c);
+    ['kpiCfgPush', 'kpiSameView', 'saveUpsellGuids', 'clearKpiCfgStore'].forEach(n => vm.runInContext(fnSrc(n), c));
+    return c;
+  };
+  // 同期が OFF などでこの保存が送られなかった → 前の成功を使わず「未保存」
+  let c = ctxBase();
+  c.setKpiConfigStore = () => {};
+  assert.equal(await c.saveUpsellGuids('F02'), false);
+  assert.equal(c.window._upsellSaveState.ok, false); assert.deepEqual(c.toasts, ['warning']);
+  // 送った答えが返る前に別の画面を開いた → 描き直さない（画面を取り上げない）
+  c = ctxBase();
+  let res; c.setKpiConfigStore = () => { c._lsPushP.kpi_config = new Promise(r => { res = r; }); };
+  const p = c.saveUpsellGuids('F02');
+  c.curPage = 'dashboard';
+  res(true); assert.equal(await p, true);
+  assert.equal(c.rendered, 0); assert.equal(c.window._upsellSaveState.ok, true);
+  // 同じ画面でもほかの店を開いていたら描き直さない
+  c = ctxBase();
+  c.setKpiConfigStore = () => { c._lsPushP.kpi_config = new Promise(r => { res = r; }); };
+  const p2 = c.saveUpsellGuids('F02');
+  c.window._kpiStore = 'F05'; res(true); await p2;
+  assert.equal(c.rendered, 0);
+  // 続けて 2 回押した：前の保存の古い答えで状態を書き換えない
+  c = ctxBase();
+  const rs = []; c.setKpiConfigStore = () => { c._lsPushP.kpi_config = new Promise(r => rs.push(r)); };
+  const a1 = c.saveUpsellGuids('F02'), a2 = c.saveUpsellGuids('F02');
+  rs[1](false); await a2; rs[0](true); await a1;
+  assert.equal(c.window._upsellSaveState.ok, false, 'the later save decides');
+});
+
+test('Codex #173: 全店共通に戻す says done only after the cloud write; a failed reset retries the reset', async () => {
+  const c = { Promise, Array, Date, Object, t: (j) => j, window: { _kpiStore: 'F02', _kpiTab: 'manual' }, curPage: 'kpi_master', toasts: [], rendered: 0 };
+  c.showToast = (m, k) => c.toasts.push(k); c.renderPage = () => { c.rendered++; }; c.canSetKpiStore = () => true;
+  let cfg = { byStore: { F02: { upsellGuids: ['g1'], drinkCats: ['D'] } } }, pushed = false, sets = 0;
+  c.getKpiConfig = () => JSON.parse(JSON.stringify(cfg));
+  c.setKpiConfig = (v) => { cfg = v; sets++; c._lsPushP.kpi_config = Promise.resolve(pushed); };
+  c._lsPushP = { kpi_config: Promise.resolve(true) };
+  vm.createContext(c);
+  ['kpiCfgPush', 'kpiSameView', 'clearKpiCfgStore'].forEach(n => vm.runInContext(fnSrc(n), c));
+  assert.equal(await c.clearKpiCfgStore('F02', 'upsellGuids'), false);
+  assert.deepEqual(cfg, { byStore: { F02: { drinkCats: ['D'] } } });
+  assert.equal(c.window._upsellSaveState.ok, false); assert.equal(c.window._upsellSaveState.kind, 'clear'); assert.deepEqual(c.toasts, ['warning']);
+  pushed = true;   // もう一度：もう端末には無いが、送り直す
+  assert.equal(await c.clearKpiCfgStore('F02', 'upsellGuids'), true);
+  assert.equal(sets, 2); assert.equal(c.window._upsellSaveState.ok, true); assert.equal(c.toasts[1], 'info');
+  const card = SRC.slice(SRC.indexOf('function renderKpiManualTab'), SRC.indexOf('function saveAlcoholCats'));
+  assert.match(card, /_upSt\.kind==='clear'\?`clearKpiCfgStore\('\$\{sid\}','upsellGuids'\)`/);
 });
