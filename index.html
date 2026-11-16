@@ -519,6 +519,28 @@ body.shift-wide .main { max-width:1900px; }
 /* v1132：ワークセンターの申請の画面は箱を広げる（中身の最小幅で箱からはみ出して横にずれていた・v1131 から） */
 #modal-body:has(> #wr-detail), #modal-body:has(> #wr-form), #modal-body:has(> #wr-people) { max-width: min(680px, 96vw); }
 #modal-body:has(> #wr-tip), #modal-body:has(> #wr-view) { max-width: min(540px, 96vw); }
+/* v1171：アップグレード率の内訳（UI案81）。PC は 2 列・スマホ（820px 以下）は「まとめ／日別」のタブ */
+#modal-body:has(> .up-drill) { max-width: min(1100px, 96vw); }
+.up-drill .up-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); gap: 16px; align-items: start; }
+.up-drill .up-tabs { display: none; gap: 6px; margin-bottom: 8px; }
+.up-drill .up-tabs button { flex: 1; padding: 7px 10px; border-radius: 999px; border: 1px solid var(--border); background: var(--surface); color: var(--tm); font-weight: 700; font-size: 12px; }
+.up-drill[data-tab="sum"] .up-tabs button[data-t="sum"], .up-drill[data-tab="day"] .up-tabs button[data-t="day"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+.up-drill .up-tbl { width: 100%; font-size: 11.5px; white-space: nowrap; }
+.up-drill .up-tbl td, .up-drill .up-tbl th { font-variant-numeric: tabular-nums; }
+.up-drill .up-days tr.up-sel td { background: var(--surface2); font-weight: 700; }
+.up-drill .up-mut { color: var(--muted); }
+.up-drill .up-bowls td:first-child { white-space: normal; min-width: 7em; }
+@media (max-width: 820px) {
+  .up-drill .up-grid { display: block; }
+  .up-drill .up-orders thead { display: none; }
+  .up-drill .up-orders tr { display: grid; grid-template-columns: auto auto minmax(0, 1fr) auto; grid-template-areas: "no tm rs rs" "bw mo mo qt"; gap: 2px 8px; padding: 6px 0; border-bottom: 1px solid var(--border); }
+  .up-drill .up-orders td { border: 0; padding: 0; white-space: normal; }
+  .up-drill .up-orders td:nth-child(1) { grid-area: no; font-weight: 700; } .up-drill .up-orders td:nth-child(2) { grid-area: tm; }
+  .up-drill .up-orders td:nth-child(3) { grid-area: bw; } .up-drill .up-orders td:nth-child(4) { grid-area: mo; }
+  .up-drill .up-orders td:nth-child(5) { grid-area: qt; text-align: right; } .up-drill .up-orders td:nth-child(6) { grid-area: rs; text-align: right; }
+  .up-drill .up-tabs { display: flex; }
+  .up-drill[data-tab="sum"] .up-pane[data-pane="day"], .up-drill[data-tab="day"] .up-pane[data-pane="sum"] { display: none; }
+}
 #wr-detail table, #wr-form table, #wr-people table { max-width: 100%; }
 #wr-tip select, #wr-tip textarea, #wr-tip input { width: 100%; box-sizing: border-box; }
 .modal-close { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 20px; line-height: 1; }
@@ -4408,12 +4430,21 @@ function totoyaKpiCalc(sid, period){
   // toast_sales のモディファイア集計列（first_time_count等と同じ仕組み）を月内合計
   var da=(typeof getDailyActuals==='function')?_daRO(sid):{};
   var ymStr=(function(){ var p=String(period).split('.'); return p[0]+'-'+String(p[1]).padStart(2,'0'); })();
-  var dSum=function(field){ var has=false,s=0; Object.keys(da).forEach(function(d){ if(d.indexOf(ymStr)===0){ var v=(da[d]||{})[field]; if(v!=null&&!isNaN(v)){ s+=Number(v); has=true; } } }); return has?s:null; };
+  /* v1171（Moto さん 11/14：アップグレード率は「昨日まで」）：ハワイ時間の今日より前の日を足す（今日の途中の数を入れない）。
+     v1171 の直し（Moto さん 11/14 21:52 HST「いくらシャワーも昨日までに揃えてください」）：味噌汁・茶漬け（misoTotal・misoUpgrade）に加えて、
+     いくらシャワー・丼数（ikuraShower・ikuraBowls）も昨日まで。過去の月は変わらない。 */
+  var _upToday=''; try{ _upToday=(typeof bizToday==='function')?bizToday():''; }catch(e){}
+  var _curYm=_upToday ? _upToday.slice(0,7) : '';
+  var dRaw=function(field){ var has=false,any=false,s=0; Object.keys(da).forEach(function(d){ if(d.indexOf(ymStr)===0){ var v=(da[d]||{})[field]; if(v!=null&&!isNaN(v)){ any=true; if(!(_upToday && d>=_upToday)){ s+=Number(v); has=true; } } } }); return { v:has?s:null, any:any }; };
+  var dSum=function(field){ return dRaw(field).v; };
+  /* v1171 の直し（Codex #168 の P3）：今月は、Toast の数（日次の欄）を使っている店なら、昨日までの数が無くても menu_mix に切り替えない
+     （月の初日などに、タイルだけ menu_mix の数になって内訳と合わなくなるのを防ぐ）。過去の月は今までどおり */
+  var _toastField=function(field){ if(ymStr!==_curYm) return false; return Object.keys(da).some(function(d){ var v=(da[d]||{})[field]; return v!=null && !isNaN(v); }); };
   // 優先順位: 手入力 > Toast(モディファイア集計) > menu_mix(GUID/キーワード)
   var resolve=function(guids,kw,dailyField,manKey,tag){
-    var d=dSum(dailyField);
-    var a=(d!=null)?d:autoSum(guids,kw,tag);
-    var aSrc=(d!=null)?'Toast':(a!=null?'menu_mix':null);
+    var dr=dRaw(dailyField), d=dr.v, useT=(d!=null) || _toastField(dailyField);
+    var a=useT?d:autoSum(guids,kw,tag);
+    var aSrc=useT?'Toast':(a!=null?'menu_mix':null);
     var m=man[manKey];
     if(m!=null&&m!==''&&!isNaN(m)) return {v:Number(m), src:'手入力', na:a, naSrc:aSrc};
     return {v:a, src:aSrc, na:a, naSrc:aSrc};
@@ -4429,10 +4460,10 @@ function totoyaKpiCalc(sid, period){
     na:{misoAll:rA.na,misoUp:rU.na,ikura:rI.na,bowls:rB.na},
     man:{misoAll:man.tMisoAll,misoUp:man.tMisoUp,ikura:man.tIkura,bowls:man.tBowls},
     hits:_hits,   /* v933: menu_mix で当たった商品（原因追跡用） */
-    sel:{ a:(tcfg.misoAllGuids||[]).length+(_totoyaKw(tcfg.misoAllKw).length?1:0)+(dSum('misoTotal')!=null?1:0),
-          u:(tcfg.misoUpGuids||[]).length+(_totoyaKw(tcfg.misoUpKw).length?1:0)+(dSum('misoUpgrade')!=null?1:0),
-          i:(tcfg.ikuraGuids||[]).length+(_totoyaKw(tcfg.ikuraKw).length?1:0)+(dSum('ikuraShower')!=null?1:0),
-          b:(tcfg.ikuraBowlGuids||[]).length+(_totoyaKw(tcfg.ikuraBowlKw).length?1:0)+(dSum('ikuraBowls')!=null?1:0) },
+    sel:{ a:(tcfg.misoAllGuids||[]).length+(_totoyaKw(tcfg.misoAllKw).length?1:0)+(dRaw('misoTotal').any?1:0),
+          u:(tcfg.misoUpGuids||[]).length+(_totoyaKw(tcfg.misoUpKw).length?1:0)+(dRaw('misoUpgrade').any?1:0),
+          i:(tcfg.ikuraGuids||[]).length+(_totoyaKw(tcfg.ikuraKw).length?1:0)+(dRaw('ikuraShower').any?1:0),
+          b:(tcfg.ikuraBowlGuids||[]).length+(_totoyaKw(tcfg.ikuraBowlKw).length?1:0)+(dRaw('ikuraBowls').any?1:0) },
     misoRate:(misoAll!=null&&misoAll>0&&misoUp!=null)?Math.round(misoUp/misoAll*1000)/10:null,
     ikuraRate:(bowls!=null&&bowls>0&&ikura!=null)?Math.round(ikura/bowls*1000)/10:null
   };
@@ -35759,8 +35790,10 @@ function budKpiCard(stores, days, agg, isCur, wow){
   html += kpiTile('ti-coin',t('客単価（全体）','Avg check (all)'), k.ppa>0?'$'+k.ppa.toFixed(2):'—', k.ppaBudget!=null?'$'+k.ppaBudget.toFixed(2):'', ppaCol, wowBadge(wow.ppa,true,false,''), 'L '+(k.ppaLunch!=null?'$'+k.ppaLunch.toFixed(2):'—')+' ／ D '+(k.ppaDinner!=null?'$'+k.ppaDinner.toFixed(2):'—')+(k.ppaTO!=null?' ／ TO $'+k.ppaTO.toFixed(2):''), {title:t('客単価','Avg check'), body:_kpiDetailWrap(t('区分別の客単価、実績のある日の最低〜最高、曜日ごとの平均、前々月からの推移。','Check by segment, daily range, by weekday, and the 3-month trend.'), 'L '+(k.ppaLunch!=null?'$'+k.ppaLunch.toFixed(2):'—')+' ／ D '+(k.ppaDinner!=null?'$'+k.ppaDinner.toFixed(2):'—')+(k.ppaTO!=null?' ／ TO $'+k.ppaTO.toFixed(2):'')+checkRangeSub(stores,days)+checkDowTriSub(stores,days))});
   html += kpiTile('ti-percentage',t('原価率','Food cost %'), k.fcRate>0?k.fcRate.toFixed(1)+'%':'—', fcTgt+'%', fcCol, wowBadge(wow.fcPt,false,true,''), t('低いほど良い','Lower is better'), {title:t('原価率','Food cost %'), body:_kpiDetailWrap(t('原価の内訳：前月棚(期首)＋当月仕入＋食材移動(純)−当月棚(期末)。期末は入力まで0。あわせて業者別の仕入を前々月・前月と比較。','COGS breakdown, plus purchases by vendor vs the prior two months.'), (fcBreakdownSub(stores,days)||'')+fcVendorTriSub(stores,days))});
   html += kpiTile('ti-users-group',t('人件費率','Labor %'), k.laborRate>0?k.laborRate.toFixed(1)+'%':'—', lbTgt+'%', lbCol, '', t('低いほど良い（月累計）','Lower is better (MTD)'), {title:t('人件費率','Labor %'), body:_kpiDetailWrap(t('人件費(賃金)の内訳：G2以上／G1。税・保険等は含みません。あわせて1日あたりの総労働時間と人件費額の推移。','Payroll split G2+/G1, plus hours-per-day and payroll trend.'), (laborGradeSub(stores,days)||'')+laborTrendSub(stores,days))});
-  if (k.totoyaScope && k.misoRate!=null) html += kpiTile('ti-soup',t('アップグレード率 ★','Upgrade % ★'), k.misoRate.toFixed(1)+'%', k.misoTgt!=null?k.misoTgt+'%':'', rateCol(k.misoRate,k.misoTgt), '', null, {title:t('アップグレード率','Upgrade %'), body:_kpiDetailWrap(t('アップグレードした数 ÷ 対象の丼数（今は味噌汁を付けた数）。','Upgraded ÷ eligible bowls (now: miso soup added).'), misoSub(k))});
-  if (k.totoyaScope && k.ikuraRate!=null) html += kpiTile('ti-fish',t('いくらシャワー率 ★','Ikura shower % ★'), k.ikuraRate.toFixed(1)+'%', k.ikuraTgt!=null?k.ikuraTgt+'%':'', rateCol(k.ikuraRate,k.ikuraTgt), '', null, {title:t('いくらシャワー率','Ikura shower %'), body:_kpiDetailWrap(t('いくらシャワー数 ÷ 対象の丼数。','Ikura ÷ eligible bowls.'), ikuraSub(k))});
+  /* v1171（UI案81）：アップグレード率は FUNERGY_UP のタイル（前週比・分子 ÷ 分母・押すと内訳）。数は今までと同じ keyKpiStats（昨日まで） */
+  if (k.totoyaScope && window.FUNERGY_UP) { try { html += FUNERGY_UP.kpiTile(stores, days, k); } catch(e) { } }
+  else if (k.totoyaScope && k.misoRate!=null) html += kpiTile('ti-soup',t('アップグレード率 ★','Upgrade % ★'), k.misoRate.toFixed(1)+'%', k.misoTgt!=null?k.misoTgt+'%':'', rateCol(k.misoRate,k.misoTgt), '', null, {title:t('アップグレード率','Upgrade %'), body:_kpiDetailWrap(t("アップグレード（Crab・Today's・Udon・CHAZUKE）÷ 味噌汁・茶漬けの数（Aosa＋アップグレード）。昨日まで。","Upgrades (Crab / Today's / Udon / CHAZUKE) ÷ miso & chazuke (Aosa + upgrades). Through yesterday."), misoSub(k))});
+  if (k.totoyaScope && k.ikuraRate!=null) html += kpiTile('ti-fish',t('いくらシャワー率 ★','Ikura shower % ★'), k.ikuraRate.toFixed(1)+'%', k.ikuraTgt!=null?k.ikuraTgt+'%':'', rateCol(k.ikuraRate,k.ikuraTgt), '', null, {title:t('いくらシャワー率','Ikura shower %'), body:_kpiDetailWrap(t('いくらシャワー数 ÷ 対象の丼数。昨日まで。','Ikura ÷ eligible bowls. Through yesterday.'), ikuraSub(k))});
   if (k.drinkScope && k.drinkRate!=null) html += kpiTile('ti-glass-full',t('ドリンク比率','Drink ratio'), k.drinkRate.toFixed(1)+'%', k.drinkTgt!=null?k.drinkTgt+'%':'', rateCol(k.drinkRate,k.drinkTgt), '', null, {title:t('ドリンク比率','Drink ratio'), body:_kpiDetailWrap(t('店舗ごとのドリンク売上 ÷ 総売上と、お酒／ソフトの内訳・曜日別・前々月からの推移。お酒の対象カテゴリ設定に依存します。','Drink ÷ total per store, alcohol/soft split, by weekday, and the 3-month trend.'), (drinkSubDetail(k)||'')+drinkRatioTriSub(stores,days)+drinkTrendSub(stores,days))});
   html += `</div>
     <div style="font-size:10px;color:var(--muted);margin-top:6px">${t('前週比＝直近7日（昨日まで）とその前7日の比較（同曜日構成）。率のptは低下＝改善。','WoW = last 7 days (through yesterday) vs the prior 7 (same weekday mix). Lower pt on rates = improvement.')}</div></div>`;
@@ -38437,8 +38470,9 @@ function _kpiRow2(label, val, sub){
 }
 function misoSub(k){
   if(!k || k.misoRate==null) return '';
-  return _kpiRow2(t('味噌汁を付けた数','Miso attached'), (k.misoUp||0).toLocaleString())
-    + _kpiRow2(t('対象の丼数','Eligible bowls'), (k.misoAll||0).toLocaleString())
+  /* v1171：言葉の直し（数は同じ）。分子＝Crab・Today's・Udon・CHAZUKE、分母＝Aosa＋分子（丼の数ではない） */
+  return _kpiRow2(t('アップグレード（分子）','Upgrades (numerator)'), (k.misoUp||0).toLocaleString(), "Crab・Today's・Udon・CHAZUKE")
+    + _kpiRow2(t('味噌汁・茶漬けの数（分母）','Miso & chazuke (denominator)'), (k.misoAll||0).toLocaleString(), t('Aosa＋分子','Aosa + numerator'))
     + _kpiRow2(t('UP率','Rate'), k.misoRate.toFixed(1)+'%', k.misoTgt!=null?(t('目標','tgt')+' '+k.misoTgt+'%'):'')
     + _totoyaSrcRows(k.totoyaParts, 'srcMisoUp', 'srcMisoAll', t('分子','Num'), t('分母','Den'), 'misoUpgrade', 'misoTotal');
 }
@@ -38451,7 +38485,9 @@ function misoSub(k){
 function _totoyaDayRows(sid, ym, numField, denField){
   if(!sid || !ym) return '';
   var da={}; try{ da=(typeof getDailyActuals==='function')?(getDailyActuals(sid)||{}):{}; }catch(e){ return ''; }
-  var days=Object.keys(da).filter(function(d){ return d.indexOf(ym)===0; }).sort();
+  /* v1171: 率は昨日まで（Moto さん 11/14 21:52 HST）。日別の並びも同じ日までにして、合計とそろえる。 */
+  var _today=''; try{ _today=(typeof bizToday==='function')?bizToday():''; }catch(e){}
+  var days=Object.keys(da).filter(function(d){ return d.indexOf(ym)===0 && !(_today && d>=_today); }).sort();
   if(!days.length) return '';
   var cells=[], any=false, oddN=0;
   days.forEach(function(d){
@@ -46543,7 +46579,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1170';
+const APP_VERSION = '1171';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -105792,6 +105828,368 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   };
 })();
 /* ==== FUNERGY_VT end ==== */
+/* ==== FUNERGY_UP start（v1171・Moto さん 11/14：アップグレード率の内訳・UI案81・昨日まで）====
+   Totoya のアップグレード率（分子 Crab・Today's・Udon・CHAZUKE ÷ 分母 Aosa＋分子）を、店・日・丼・注文まで見られるようにする。
+   ・率と日ごとの数は日次実績（toast_sales を写したもの）の misoTotal（分母）・misoUpgrade（分子）。ハワイ時間の昨日まで。期間・店を足してから割る。
+   ・種類ごとの数（Aosa・Crab・Today's・Udon・CHAZUKE）と注文ごとの行は、hyper-worker v1171 が書く toast_upgrade_days・toast_upgrade_lines
+     （公開の鍵で読むだけ）。v1171 より前に取り込んだ日は印が無い＝「明細なし（取り込み直すと入る）」。印の数が日次実績と違う日は使わない（注意を出す）。
+   ・前週比：直近 7 日（昨日まで）とその前の 7 日。店ごと・同じ曜日の対で、どちらかの日に数が無ければ両方から落とす（wowStats と同じ考え方）。
+   ・お客さんの情報は出さない（注文番号・時刻・丼・モディファイヤー・数だけ）。何も書かない（読むだけ）。 */
+(function(){
+  'use strict';
+  var W = window;
+  var UP = W.FUNERGY_UP = W.FUNERGY_UP || {};
+  var CTX = W._upCtx = W._upCtx || {}, seq = 0;
+  var KINDS = ['aosa', 'crab', 'today', 'udon', 'chazuke'];
+  function T(ja, en){ try{ return typeof t === 'function' ? t(ja, en) : ja; }catch(e){ return ja; } }
+  function esc(s){ return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;'); }
+  function ds(d){ return typeof d === 'string' ? d : (d && d.date) || ''; }
+  function dow(s){ var p = s.split('-'); return new Date(+p[0], +p[1] - 1, +p[2]).getDay(); }
+  function num(v){ return v == null || v === '' || !isFinite(Number(v)) ? null : Number(v); }
+  function today(){ try{ return bizToday(); }catch(e){ return new Date().toISOString().slice(0, 10); } }
+  function addDays(s, n){ var p = s.split('-'); var d = new Date(Date.UTC(+p[0], +p[1] - 1, +p[2] + n)); return d.toISOString().slice(0, 10); }
+  function md(s){ return s ? (+s.slice(5, 7)) + '/' + (+s.slice(8, 10)) : ''; }
+  function fmt(n){ var v = Number(n || 0); return Math.abs(v - Math.round(v)) < 1e-9 ? Math.round(v).toLocaleString() : (Math.round(v * 100) / 100).toLocaleString(); }
+  function pct1(a, b){ return b > 0 ? Math.round(a / b * 1000) / 10 : null; }
+  function pctS(a, b){ var v = pct1(a, b); return v == null ? '—' : v.toFixed(1) + '%'; }
+  function sidOf(st){ return st && (st.id || st); }
+  function storeObj(sid){ try{ return (getStoresAll() || []).find(function(x){ return x.id === sid; }) || { id: sid, name: sid }; }catch(e){ return { id: sid, name: sid }; } }
+  function isToto(sid){ try{ return typeof isTotoyaStore === 'function' ? isTotoyaStore(sid) : /^F04/.test(sid); }catch(e){ return false; } }
+  function closedOn(sid, s){ try{ return typeof dayClosureMode === 'function' && dayClosureMode(sid, s, dow(s)) === 'closed'; }catch(e){ return false; } }
+  function hm(iso){
+    if(!iso) return '';
+    try{ var d = new Date(iso); if(isNaN(d.getTime())) return ''; var h = new Date(d.getTime() - 10 * 3600 * 1000); return String(h.getUTCHours()).padStart(2, '0') + ':' + String(h.getUTCMinutes()).padStart(2, '0'); }catch(e){ return ''; }
+  }
+  function kindLabel(k){
+    return k === 'aosa' ? T('Aosa（通常の味噌汁）', 'Aosa (regular miso)') : k === 'crab' ? T('Crab（味噌汁）', 'Crab (miso)') : k === 'today' ? T("Today's（味噌汁）", "Today's (miso)")
+      : k === 'udon' ? T('Udon（味噌汁）', 'Udon (miso)') : k === 'chazuke' ? T('CHAZUKE（茶漬け）', 'CHAZUKE (chazuke)') : esc(k);
+  }
+  function reasonLabel(r){
+    return r === 'void_order' ? T('注文の取消', 'order voided') : r === 'void_check' ? T('会計の取消', 'check voided') : r === 'void_selection' ? T('品の取消', 'item voided') : esc(r || '');
+  }
+
+  /* ---------- 1 日の状態：ok＝数がある／closed＝店休／missing＝取り込めていない（売上 0 ではない） ---------- */
+  UP.day = function(sid, s, ov){
+    ov = ov || {};
+    if(num(ov.misoTotal) != null) return 'ok';
+    if(closedOn(sid, s)) return 'closed';
+    return 'missing';
+  };
+  UP.scope = function(scopeStores){
+    var out = [];
+    (scopeStores || []).forEach(function(st){ var sid = sidOf(st); if(sid && typeof sid === 'string' && isToto(sid) && out.indexOf(sid) < 0) out.push(sid); });
+    return out;
+  };
+  /* 期間（昨日まで）の店ごと・日ごとの数 */
+  UP.stats = function(scopeStores, days){
+    var td = today(), o = { stores: UP.scope(scopeStores), per: {}, all: 0, up: 0, n: { ok: 0, closed: 0, missing: 0 }, days: [] };
+    o.stores.forEach(function(sid){
+      var da = {}; try{ da = _daRO(sid) || {}; }catch(e){}
+      var ps = o.per[sid] = { all: 0, up: 0, n: { ok: 0, closed: 0, missing: 0 }, days: [] };
+      (days || []).forEach(function(d){
+        var s = ds(d); if(!s || s >= td) return;
+        var ov = da[s] || {}, k = UP.day(sid, s, ov);
+        var all = num(ov.misoTotal), up = num(ov.misoUpgrade);
+        if(k === 'ok'){ ps.all += all; ps.up += (up || 0); o.all += all; o.up += (up || 0); }
+        ps.n[k]++; o.n[k]++;
+        var row = { sid: sid, d: s, k: k, all: all, up: k === 'ok' ? (up || 0) : null };
+        ps.days.push(row); o.days.push(row);
+      });
+      ps.rate = pct1(ps.up, ps.all);
+    });
+    o.rate = pct1(o.up, o.all);
+    o.days.sort(function(a, b){ return a.d < b.d ? 1 : a.d > b.d ? -1 : (a.sid < b.sid ? -1 : 1); });
+    return o;
+  };
+  /* 前週比：直近 7 日（昨日まで）とその前の 7 日。店ごとに同じ曜日の対で、どちらかに数が無ければ両方落とす */
+  UP.wow = function(scopeStores){
+    var td = today(), sids = UP.scope(scopeStores), cur = { all: 0, up: 0 }, prev = { all: 0, up: 0 }, paired = 0, dropped = [];
+    var offs = {};
+    sids.forEach(function(sid){
+      var da = {}; try{ da = _daRO(sid) || {}; }catch(e){}
+      for(var i = 1; i <= 7; i++){
+        var a = addDays(td, -i), b = addDays(td, -i - 7), oa = da[a] || {}, ob = da[b] || {};
+        var aa = num(oa.misoTotal), ba = num(ob.misoTotal);
+        if(aa == null || ba == null){ dropped.push({ sid: sid, d: a, p: b }); continue; }
+        cur.all += aa; cur.up += num(oa.misoUpgrade) || 0; prev.all += ba; prev.up += num(ob.misoUpgrade) || 0; paired++; offs[i] = 1;
+      }
+    });
+    var rc = pct1(cur.up, cur.all), rp = pct1(prev.up, prev.all);
+    return {
+      cur: cur, prev: prev, rateCur: rc, ratePrev: rp,
+      pt: (rc != null && rp != null) ? Math.round((rc - rp) * 10) / 10 : null,
+      rel: (rc != null && rp != null && rp > 0) ? Math.round((rc - rp) / rp * 1000) / 10 : null,
+      pairs: paired, days: Object.keys(offs).length, dropped: dropped,
+      from: addDays(td, -7), to: addDays(td, -1), pfrom: addDays(td, -14), pto: addDays(td, -8)
+    };
+  };
+  UP.ctx = function(scopeStores, days, k){
+    var id = 'u' + (++seq);
+    CTX[id] = { stores: UP.scope(scopeStores), days: (days || []).map(ds).filter(Boolean), k: k || {}, srv: null, lines: {}, pick: null };
+    var ks = Object.keys(CTX); if(ks.length > 40) ks.slice(0, ks.length - 40).forEach(function(x){ delete CTX[x]; });
+    return id;
+  };
+
+  /* ---------- タイル（重要 KPI） ---------- */
+  UP.kpiTile = function(scopeStores, days, k){
+    k = k || {};
+    var sids = UP.scope(scopeStores); if(!sids.length) return '';
+    var id = UP.ctx(sids, days, k), w = UP.wow(sids);
+    var tgt = num(k.misoTgt), v = num(k.misoRate);
+    var col = v == null ? 'var(--muted)' : (tgt != null ? (v >= tgt ? 'var(--green)' : v >= tgt * 0.9 ? 'var(--yellow)' : 'var(--red)') : 'var(--tm)');
+    var badge = (w.pt != null && typeof wowBadge === 'function') ? wowBadge(w.pt, true, true, '') : '';
+    var sub = (num(k.misoAll) > 0) ? T('分子 ', 'Num ') + fmt(k.misoUp || 0) + ' ÷ ' + T('分母 ', 'den ') + fmt(k.misoAll) + T(' 件', '') : T('まだ数がありません（昨日まで）', 'No counts yet (through yesterday)');
+    return '<div onclick="FUNERGY_UP.open(\'' + id + '\')" style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:10px 12px;cursor:pointer">'
+      + '<div style="font-size:10.5px;color:var(--muted);display:flex;align-items:center;gap:4px"><i class="ti ti-soup"></i><span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + T('アップグレード率 ★', 'Upgrade % ★') + '</span>' + (tgt != null ? '<span style="margin-left:auto;white-space:nowrap">' + T('目標', 'Target') + ' ' + tgt + '%</span>' : '') + '</div>'
+      + '<div style="display:flex;align-items:baseline;gap:6px;margin-top:4px;flex-wrap:wrap"><span style="font-size:19px;font-weight:800;color:' + col + '">' + (v != null ? v.toFixed(1) + '%' : '—') + '</span>' + badge + '</div>'
+      + '<div style="font-size:10px;color:var(--muted);margin-top:3px">' + sub + '</div>'
+      + '<div style="font-size:9px;color:var(--accent2);margin-top:5px;display:flex;align-items:center;gap:3px;font-weight:600"><i class="ti ti-hand-finger"></i>' + T('内訳を見る ›', 'See breakdown ›') + '</div></div>';
+  };
+
+  /* ---------- サーバーの明細（読むだけ） ---------- */
+  UP._get = async function(path){
+    var res = await fetch(SUPABASE_URL + '/rest/v1/' + path, { headers: { apikey: SUPABASE_ANON, Authorization: 'Bearer ' + SUPABASE_ANON } });
+    var txt = ''; try{ txt = await res.text(); }catch(e){}
+    var j = null; try{ j = txt ? JSON.parse(txt) : null; }catch(e){}
+    if(!res.ok){ var code = (j && (j.code || '')) || ''; return { err: (res.status === 404 || code === '42P01' || code === 'PGRST205') ? 'notable' : 'http' + res.status }; }
+    return Array.isArray(j) ? { rows: j } : { err: 'shape' };
+  };
+  /* v1171 の直し（Codex #168 の P2）：明細は 1,000 行ずつ、空のページが返るまで読む（サーバーの 1 回の上限に左右されない）。
+     50,000 行で止める（cut）。途中で読めなければ err（途中までの行は使わない） */
+  UP.PAGE = 1000; UP.CAP = 50000;
+  UP._getAll = async function(path){
+    var out = [], off = 0, n = 0;
+    for(;;){
+      var r = await UP._get(path + '&limit=' + UP.PAGE + '&offset=' + off);
+      if(r.err) return { err: r.err };
+      if(!r.rows.length) return { rows: out };
+      out = out.concat(r.rows); off += r.rows.length;
+      if(out.length >= UP.CAP || ++n >= 500) return { rows: out, cut: true };
+    }
+  };
+  UP.loadDays = async function(id){
+    var c = CTX[id]; if(!c) return;
+    var dd = c.days.filter(function(s){ return s < today(); }); if(!dd.length){ c.srv = { by: {}, err: [] }; paint(id); return; }
+    var out = { by: {}, err: [], notable: false };
+    for(var i = 0; i < c.stores.length; i++){
+      var sid = c.stores[i], st = storeObj(sid);
+      if(!st.toastGuid){ out.err.push(st.name + T('（GUID 未設定）', ' (no GUID)')); continue; }
+      try{
+        /* 日の印もページごとに読む（サーバーの 1 回の上限より長い期間でも欠けない） */
+        var r = await UP._getAll('toast_upgrade_days?restaurant_guid=eq.' + encodeURIComponent(st.toastGuid) + '&business_date=gte.' + dd[0] + '&business_date=lte.' + dd[dd.length - 1] + '&order=business_date.asc');
+        if(r.cut){ out.err.push(st.name); continue; }
+        if(r.err){ if(r.err === 'notable') out.notable = true; else out.err.push(st.name); continue; }
+        out.by[sid] = {}; r.rows.forEach(function(x){ if(x && x.business_date) out.by[sid][String(x.business_date).slice(0, 10)] = x; });
+      }catch(e){ out.err.push(st.name); }
+    }
+    if(!CTX[id]) return;
+    c.srv = out; paint(id);
+    if(!c.pick){ var o = UP.stats(c.stores, c.days), first = o.days.filter(function(x){ return x.k === 'ok'; })[0]; if(first) UP.pickDay(id, first.sid, first.d, true); }
+  };
+  /* 印が使えるか：印があり、分母・分子が日次実績と同じ */
+  function mark(c, sid, s){
+    var m = c.srv && c.srv.by[sid] && c.srv.by[sid][s]; if(!m) return { st: 'none' };
+    var da = {}; try{ da = _daRO(sid) || {}; }catch(e){}
+    var ov = da[s] || {};
+    if(num(m.total) !== num(ov.misoTotal) || num(m.upgrade) !== (num(ov.misoUpgrade) || 0)) return { st: 'diff', m: m, ov: ov };
+    return { st: 'ok', m: m };
+  }
+  UP.mark = function(id, sid, s){ var c = CTX[id]; return c ? mark(c, sid, s) : { st: 'none' }; };
+  UP.kindSums = function(id){
+    var c = CTX[id]; if(!c) return null;
+    var o = UP.stats(c.stores, c.days), s = { aosa: 0, crab: 0, today: 0, udon: 0, chazuke: 0, all: 0, up: 0, daysOk: 0, daysWith: 0, diff: 0 };
+    o.days.forEach(function(x){
+      if(x.k !== 'ok') return; s.daysOk++;
+      var mk = mark(c, x.sid, x.d); if(mk.st === 'diff'){ s.diff++; return; } if(mk.st !== 'ok') return;
+      s.daysWith++; KINDS.forEach(function(k){ s[k] += num(mk.m[k]) || 0; }); s.all += num(mk.m.total) || 0; s.up += num(mk.m.upgrade) || 0;
+    });
+    return s;
+  };
+  UP.pickDay = async function(id, sid, s, auto){
+    var c = CTX[id]; if(!c) return;
+    c.pick = { sid: sid, d: s };
+    if(!auto){ try{ var box = document.getElementById('up-drill-' + id); if(box) box.setAttribute('data-tab', 'day'); }catch(e){} }
+    paintDay(id);
+    /* 読み終えて数が印と合ったものだけ覚える（合わない・途中で切れた・読めなかったものは、もう一度押すと読み直す） */
+    var key = sid + '|' + s, L0 = c.lines[key]; if(L0 && (L0.busy || L0.ok)) return;
+    var mk = mark(c, sid, s); if(mk.st !== 'ok') return;
+    var st = storeObj(sid); if(!st.toastGuid) return;
+    c.lines[key] = { busy: true };
+    paintDay(id);
+    var r; try{ r = await UP._getAll('toast_upgrade_lines?restaurant_guid=eq.' + encodeURIComponent(st.toastGuid) + '&business_date=eq.' + s + '&order=opened_at.asc,line_key.asc'); }catch(e){ r = { err: 'net' }; }
+    if(!CTX[id]) return;
+    if(r.err){ c.lines[key] = { err: r.err }; paintDay(id); return; }
+    var sm = lineSums(r.rows), m2 = mark(c, sid, s);
+    var same = m2.st === 'ok' && Math.round(sm.all) === num(m2.m.total) && Math.round(sm.up) === num(m2.m.upgrade);
+    c.lines[key] = { rows: r.rows, cut: !!r.cut, ok: same && !r.cut };
+    paintDay(id);
+  };
+  function lineSums(rows){ var a = 0, u = 0; (rows || []).forEach(function(r){ if(r.counted === false) return; var q = num(r.qty) || 0; a += q; if(r.kind !== 'aosa') u += q; }); return { all: a, up: u }; }
+  /* 画面から：店は番号で渡す（店の ID を onclick の文字に入れない） */
+  UP.pickAt = function(id, si, s){ var c = CTX[id]; if(!c || !/^\d{4}-\d{2}-\d{2}$/.test(String(s))) return; var sid = c.stores[si]; if(sid) return UP.pickDay(id, sid, s); };
+  UP.tab = function(id, tb){ var box = document.getElementById('up-drill-' + id); if(box) box.setAttribute('data-tab', tb === 'day' ? 'day' : 'sum'); };
+  UP.open = function(id){
+    if(!CTX[id]) return;
+    try{ if(typeof haptic === 'function') haptic('tap'); }catch(e){}
+    openModal(UP.html(id));
+    UP.loadDays(id);
+  };
+
+  /* ---------- 画面 ---------- */
+  function box(label, val, sub, hi){
+    return '<div style="flex:1 1 110px;min-width:0;border:' + (hi ? '2px solid var(--accent)' : '1px solid var(--border)') + ';border-radius:10px;padding:8px 10px;background:var(--surface)">'
+      + '<div style="font-size:11px;color:' + (hi ? 'var(--accent)' : 'var(--muted)') + ';font-weight:' + (hi ? '700' : '400') + '">' + label + '</div>'
+      + '<div style="font-size:' + (hi ? '24' : '18') + 'px;font-weight:800;font-variant-numeric:tabular-nums">' + val + '</div>'
+      + (sub ? '<div style="font-size:10.5px;color:var(--muted)">' + sub + '</div>' : '') + '</div>';
+  }
+  function h3(txt){ return '<div style="font-size:13px;font-weight:700;margin:14px 0 6px">' + txt + '</div>'; }
+  UP.html = function(id){
+    var c = CTX[id]; if(!c) return '';
+    var o = UP.stats(c.stores, c.days), k = c.k || {}, w = UP.wow(c.stores);
+    var dd = c.days.filter(function(s){ return s < today(); });
+    var range = dd.length ? (md(dd[0]) + '〜' + md(dd[dd.length - 1])) : '';
+    var names = c.stores.map(function(s){ return storeObj(s).name; }).join('・');
+    var tgt = num(k.misoTgt);
+    var h = '<div id="up-drill-' + id + '" class="up-drill" data-tab="sum">';
+    h += '<div class="modal-title"><i class="ti ti-soup"></i> ' + T('アップグレード率の内訳', 'Upgrade rate breakdown') + ' <button class="modal-close" onclick="closeModalDirect()">×</button></div>';
+    h += '<div style="font-size:12px;color:var(--muted);margin-bottom:8px">' + esc(names) + (range ? ' · ' + esc(range) + T('（ハワイ時間・昨日まで）', ' (Hawaii time, through yesterday)') : '') + '</div>';
+    h += '<div class="up-tabs" role="tablist"><button type="button" onclick="FUNERGY_UP.tab(\'' + id + '\',\'sum\')" data-t="sum">' + T('まとめ', 'Summary') + '</button><button type="button" onclick="FUNERGY_UP.tab(\'' + id + '\',\'day\')" data-t="day">' + T('日別', 'By day') + '</button></div>';
+    h += '<div class="up-grid"><div class="up-pane" data-pane="sum">';
+    /* 率・目標・式 */
+    var rate = o.rate;
+    var tgtLine = tgt != null ? (T('目標 ', 'Target ') + tgt + '%' + (rate != null ? ' · ' + T('差 ', 'diff ') + ((rate - tgt) >= 0 ? '+' : '') + (Math.round((rate - tgt) * 10) / 10).toFixed(1) + 'pt' : '')) : T('目標は未設定（KPI設定）', 'No target (KPI settings)');
+    h += '<div style="display:flex;flex-wrap:wrap;gap:8px">' + box(T('アップグレード率', 'Upgrade rate'), rate != null ? rate.toFixed(1) + '%' : '—', tgtLine, true) + '</div>';
+    var man = (k.totoyaParts || []).filter(function(p){ return c.stores.indexOf(p.sid) >= 0 && (p.srcMisoUp === '手入力' || p.srcMisoAll === '手入力'); });
+    if(man.length) h += '<div style="margin-top:6px;padding:7px 10px;border-radius:8px;background:#fff8ef;font-size:11px;line-height:1.6">' + T('KPI 設定で手入力の数を使っている店があります（', 'Some stores use numbers typed in KPI settings (') + esc(man.map(function(p){ return storeObj(p.sid).name; }).join('、')) + T('）。タイルの率はその数、ここの内訳は Toast の数です。', '). The tile uses those; this breakdown uses Toast.') + '</div>';
+    /* v1171 の直し（Codex #168 の P3）：タイルが menu_mix（月の出数）の数を使っている店も知らせる（期間と出どころが内訳と違う） */
+    var mm = (k.totoyaParts || []).filter(function(p){ return c.stores.indexOf(p.sid) >= 0 && (p.srcMisoUp === 'menu_mix' || p.srcMisoAll === 'menu_mix'); });
+    if(mm.length) h += '<div style="margin-top:6px;padding:7px 10px;border-radius:8px;background:#fff8ef;font-size:11px;line-height:1.6">' + T('Toast の数が無いので、月の出数（menu_mix）で数えている店があります（', 'Some stores have no Toast numbers and use the monthly item mix (menu_mix) (') + esc(mm.map(function(p){ return storeObj(p.sid).name; }).join('、')) + T('）。タイルの率はその月の出数（今日の分も入ることがあります）、ここの内訳は Toast の昨日までの数です。', '). The tile uses the monthly mix (it may include today); this breakdown uses Toast through yesterday.') + '</div>';
+    h += '<div style="margin-top:8px;padding:9px 11px;border-radius:10px;background:var(--surface2);font-size:11.5px;line-height:1.75">'
+      + '<b>' + T('分子（アップグレード）', 'Numerator (upgrade)') + '</b> ＝ ' + T("丼に Crab・Today's・Udon の味噌汁、または CHAZUKE（茶漬け）を付けた数", "Crab / Today's / Udon miso or CHAZUKE added to a bowl") + '<br>'
+      + '<b>' + T('分母', 'Denominator') + '</b> ＝ ' + T('Aosa（通常の味噌汁）＋ 分子', 'Aosa (regular miso) + numerator') + '<br>'
+      + '<span style="color:var(--muted)">' + T('丼の数・客数ではありません。テイクアウトの丼も入ります。取消は入りません。期間・店を足してから割ります。', 'Not bowls or guests. Takeout bowls count. Voids do not. Summed over days and stores, then divided.') + '</span></div>';
+    h += '<div id="up-kinds-' + id + '">' + kindsHtml(id) + '</div>';
+    /* 前週比 */
+    h += h3(T('前週比', 'Week over week'));
+    h += '<div style="overflow-x:auto"><table class="tbl up-tbl"><thead><tr><th></th><th>' + T('直近7日', 'Last 7 days') + '<br><span class="up-mut">' + md(w.from) + '〜' + md(w.to) + '</span></th><th>' + T('その前の7日', 'Prior 7 days') + '<br><span class="up-mut">' + md(w.pfrom) + '〜' + md(w.pto) + '</span></th></tr></thead><tbody>'
+      + '<tr><td>' + T('分子', 'Num') + '</td><td>' + fmt(w.cur.up) + '</td><td>' + fmt(w.prev.up) + '</td></tr>'
+      + '<tr><td>' + T('分母', 'Den') + '</td><td>' + fmt(w.cur.all) + '</td><td>' + fmt(w.prev.all) + '</td></tr>'
+      + '<tr><td>' + T('率', 'Rate') + '</td><td><b>' + (w.rateCur != null ? w.rateCur.toFixed(1) + '%' : '—') + '</b></td><td>' + (w.ratePrev != null ? w.ratePrev.toFixed(1) + '%' : '—') + '</td></tr>'
+      + '</tbody></table></div>';
+    h += '<div style="font-size:11.5px;margin-top:4px">' + T('率の差 ', 'Rate diff ') + '<b>' + (w.pt != null ? (w.pt >= 0 ? '+' : '') + w.pt.toFixed(1) + 'pt' : '—') + '</b> · ' + T('相対 ', 'relative ') + (w.rel != null ? (w.rel >= 0 ? '+' : '') + w.rel.toFixed(1) + '%' : '—') + '</div>';
+    if(w.dropped.length) h += '<div class="up-mut" style="font-size:10.5px;margin-top:2px">' + T('数が無い日は、前後の同じ曜日の日といっしょに外しました（', 'Days without counts were dropped with their pair (') + esc(w.dropped.slice(0, 6).map(function(x){ return (c.stores.length > 1 ? storeObj(x.sid).name + ' ' : '') + md(x.d) + T('（対 ', ' (pair ') + md(x.p) + T('）', ')'); }).join('、')) + (w.dropped.length > 6 ? T(' ほか', ' and more') : '') + T('）。', ').') + '</div>';
+    h += '</div><div class="up-pane" data-pane="day">';
+    h += h3(T('日ごと', 'By day')) + '<div id="up-days-' + id + '">' + daysHtml(id) + '</div>';
+    h += '<div id="up-day-' + id + '">' + dayHtml(id) + '</div>';
+    h += '</div></div>';
+    h += '<div class="up-mut" style="font-size:10.5px;margin-top:10px;line-height:1.6">' + T('種類ごとの数と注文の明細は、hyper-worker v1171 から取り込んだ日だけ出ます（前に取り込んだ日は、期間一括取り込みで取り込み直すと入ります）。お客さんの情報は出しません。', "Counts by kind and order lines appear only for days imported with hyper-worker v1171 (re-import earlier days). No customer information is shown.") + '</div>';
+    return h + '</div>';
+  };
+  function kindsHtml(id){
+    var c = CTX[id]; if(!c) return '';
+    var o = UP.stats(c.stores, c.days), h = '';
+    if(!c.srv){
+      return '<div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:8px">' + box(T('分子（アップグレード）', 'Numerator'), fmt(o.up), '') + box(T('分母', 'Denominator'), fmt(o.all), '') + '</div><div class="up-mut" style="font-size:11px;margin-top:6px">' + T('種類ごとの数を読んでいます…', 'Loading counts by kind…') + '</div>';
+    }
+    var s = UP.kindSums(id);
+    var miso = s.crab + s.today + s.udon;
+    var part = s.daysWith < s.daysOk;
+    h += '<div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:8px">'
+      + box(T('味噌汁のアップグレード', 'Miso upgrades'), s.daysWith ? fmt(miso) : '—', "Crab・Today's・Udon")
+      + box(T('茶漬け', 'Chazuke'), s.daysWith ? fmt(s.chazuke) : '—', 'CHAZUKE')
+      + box(T('合計（分子）', 'Total (numerator)'), fmt(o.up), T('分母 ', 'of ') + fmt(o.all))
+      + '</div>';
+    if(c.srv.notable) h += '<div style="margin-top:6px;padding:7px 10px;border-radius:8px;background:#fdecea;color:#8a1c13;font-size:11px">' + T('サーバーの準備（SQL）がまだなので、種類ごとの数と注文の明細は出せません。率と日ごとの数は出ています。', 'The server setup (SQL) is not done yet, so counts by kind and order lines are unavailable. Rates and daily counts are shown.') + '</div>';
+    if(c.srv.err && c.srv.err.length) h += '<div style="margin-top:6px;color:var(--red);font-size:11px">' + T('読めなかった店：', 'Could not read: ') + esc(c.srv.err.join('、')) + '</div>';
+    if(s.diff) h += '<div style="margin-top:6px;padding:7px 10px;border-radius:8px;background:#fff8ef;font-size:11px">' + T('明細の数と画面の数が違う日が ', 'Days where lines differ from the screen: ') + s.diff + T(' 日あります（その日は種類ごとの数に入れていません）。期間一括取り込みで取り込み直してください。', ' (left out of counts by kind). Please re-import.') + '</div>';
+    if(!s.daysWith){ if(!c.srv.notable) h += '<div class="up-mut" style="font-size:11px;margin-top:6px">' + T('この期間は明細のある日がありません（取り込み直すと入ります）。', 'No days with lines in this period (re-import to add them).') + '</div>'; return h; }
+    h += h3(T('モディファイヤーごと', 'By modifier') + (part ? ' <span class="up-mut" style="font-weight:400;font-size:11px">' + T('（明細のある ', '(days with lines: ') + s.daysWith + ' / ' + s.daysOk + T(' 日）', ')') + '</span>' : ''));
+    h += '<div style="overflow-x:auto"><table class="tbl up-tbl"><thead><tr><th>' + T('モディファイヤー', 'Modifier') + '</th><th>' + T('数', 'Qty') + '</th><th>' + T('割合（分母）', 'Share') + '</th><th>' + T('数え方', 'Counts as') + '</th></tr></thead><tbody>';
+    KINDS.forEach(function(kd){ h += '<tr><td>' + kindLabel(kd) + '</td><td>' + fmt(s[kd]) + '</td><td>' + pctS(s[kd], s.all) + '</td><td>' + (kd === 'aosa' ? T('分母だけ', 'den. only') : T('分子と分母', 'num. & den.')) + '</td></tr>'; });
+    h += '</tbody></table></div>';
+    h += '<div style="font-size:11.5px;margin-top:6px">' + T('分母 ', 'Den. ') + '= Aosa ' + fmt(s.aosa) + ' ＋ ' + T('アップグレード ', 'upgrades ') + fmt(s.up) + ' ＝ <b>' + fmt(s.all) + '</b>' + (part ? T('（明細のある日だけ）', ' (days with lines)') : '') + '</div>';
+    return h;
+  }
+  function daysHtml(id){
+    var c = CTX[id]; if(!c) return '';
+    var o = UP.stats(c.stores, c.days); if(!o.days.length) return '<div class="up-mut" style="font-size:11px">' + T('昨日までの日がありません。', 'No days through yesterday.') + '</div>';
+    var multi = c.stores.length > 1;
+    var h = '<div style="overflow-x:auto"><table class="tbl up-tbl up-days"><thead><tr><th>' + T('日', 'Day') + '</th>' + (multi ? '<th>' + T('店', 'Store') + '</th>' : '') + '<th>' + T('味噌汁', 'Miso') + '</th><th>' + T('茶漬け', 'Chazuke') + '</th><th>' + T('合計', 'Total') + '</th><th>' + T('分母', 'Den.') + '</th><th>' + T('率', 'Rate') + '</th></tr></thead><tbody>';
+    o.days.forEach(function(x){
+      var sel = c.pick && c.pick.sid === x.sid && c.pick.d === x.d;
+      var cells;
+      if(x.k === 'missing') cells = '<td colspan="5" style="color:var(--red)">' + T('取り込めていません（売上 0 ではありません）', 'Not imported (not zero sales)') + '</td>';
+      else if(x.k === 'closed') cells = '<td colspan="5" class="up-mut">' + T('店休', 'Closed') + '</td>';
+      else {
+        var mk = c.srv ? mark(c, x.sid, x.d) : { st: 'wait' };
+        var mi = mk.st === 'ok' ? fmt((num(mk.m.crab) || 0) + (num(mk.m.today) || 0) + (num(mk.m.udon) || 0)) : (mk.st === 'diff' ? '<span title="' + esc(T('明細の数と違う', 'differs from lines')) + '" style="color:#b54708">!</span>' : '—');
+        var ch = mk.st === 'ok' ? fmt(num(mk.m.chazuke) || 0) : '—';
+        cells = '<td>' + mi + '</td><td>' + ch + '</td><td>' + fmt(x.up) + '</td><td>' + fmt(x.all) + '</td><td><b>' + pctS(x.up, x.all) + '</b></td>';
+      }
+      h += '<tr class="' + (sel ? 'up-sel' : '') + '"' + (x.k === 'ok' && /^\d{4}-\d{2}-\d{2}$/.test(x.d) ? ' style="cursor:pointer" onclick="FUNERGY_UP.pickAt(\'' + id + '\',' + c.stores.indexOf(x.sid) + ',\'' + x.d + '\')"' : '') + '><td>' + md(x.d) + '</td>' + (multi ? '<td>' + esc(storeObj(x.sid).name) + '</td>' : '') + cells + '</tr>';
+    });
+    return h + '</tbody></table></div><div class="up-mut" style="font-size:10.5px;margin-top:3px">' + T('日を押すと、その日の丼と注文が出ます。', 'Tap a day to see its bowls and orders.') + '</div>';
+  }
+  function dayHtml(id){
+    var c = CTX[id]; if(!c || !c.pick) return '';
+    var sid = c.pick.sid, s = c.pick.d, nm = storeObj(sid).name;
+    var da = {}; try{ da = _daRO(sid) || {}; }catch(e){}
+    var ov = da[s] || {};
+    var h = h3(esc(md(s)) + (c.stores.length > 1 ? ' · ' + esc(nm) : '') + ' <span class="up-mut" style="font-weight:400;font-size:11px">' + T('分子 ', 'num ') + fmt(num(ov.misoUpgrade) || 0) + ' ÷ ' + T('分母 ', 'den ') + fmt(num(ov.misoTotal) || 0) + ' ＝ ' + pctS(num(ov.misoUpgrade) || 0, num(ov.misoTotal) || 0) + '</span>');
+    if(!c.srv) return h + '<div class="up-mut" style="font-size:11px">' + T('読んでいます…', 'Loading…') + '</div>';
+    var mk = mark(c, sid, s);
+    if(c.srv.notable) return h + '<div class="up-mut" style="font-size:11px">' + T('サーバーの準備（SQL）がまだです。', 'Server setup (SQL) is not done yet.') + '</div>';
+    if(mk.st === 'none') return h + '<div style="padding:8px 10px;border-radius:8px;background:var(--surface2);font-size:11.5px;line-height:1.6">' + T('この日の注文の明細はまだありません（hyper-worker v1171 より前に取り込んだ日）。期間一括取り込みで取り込み直すと入ります。', 'No order lines for this day yet (imported before hyper-worker v1171). Re-import with the period import to add them.') + '</div>';
+    if(mk.st === 'diff') return h + '<div style="padding:8px 10px;border-radius:8px;background:#fff8ef;font-size:11.5px;line-height:1.6">' + T('明細の数（分子 ', 'Lines (num ') + fmt(mk.m.upgrade) + ' / ' + T('分母 ', 'den ') + fmt(mk.m.total) + T('）と画面の数（', ') differ from the screen (') + fmt(num(ov.misoUpgrade) || 0) + ' / ' + fmt(num(ov.misoTotal) || 0) + T('）が違います。この日を取り込み直してください。', '). Please re-import this day.') + '</div>';
+    var L = c.lines[sid + '|' + s];
+    if(!L || L.busy) return h + '<div class="up-mut" style="font-size:11px">' + T('注文の明細を読んでいます…', 'Loading order lines…') + '</div>';
+    if(L.err) return h + '<div style="color:var(--red);font-size:11px">' + T('注文の明細を読めませんでした。もう一度押してください。', 'Could not load order lines. Tap again.') + '</div>';
+    var rows = L.rows || [];
+    var cnt = rows.filter(function(r){ return r.counted !== false; });
+    var sm = lineSums(rows), sumAll = sm.all, sumUp = sm.up;
+    /* 数が合わない・多すぎて途中までしか読めなかったときは、丼ごとの数を出さない（足りない数を本当の数に見せない） */
+    if(L.cut) return h + '<div style="padding:8px 10px;border-radius:8px;background:#fff8ef;font-size:11.5px;line-height:1.6">' + T('この日の明細は多すぎて、最初の ', 'This day has too many lines; only the first ') + fmt(rows.length) + T(' 行までしか読めませんでした。丼ごとの数は出していません。', ' could be loaded. Bowl totals are not shown.') + '</div>';
+    if(Math.round(sumAll) !== num(mk.m.total) || Math.round(sumUp) !== num(mk.m.upgrade)) return h + '<div style="padding:8px 10px;border-radius:8px;background:#fff8ef;font-size:11.5px;line-height:1.6">' + T('明細の行の合計（分子 ', 'Line totals (num ') + fmt(sumUp) + ' / ' + T('分母 ', 'den ') + fmt(sumAll) + T('）が印の数と違います。取り込みの途中かもしれません。少し待ってこの日をもう一度押してください（読み直します）。続くときは、この日を取り込み直してください。丼ごとの数は出していません。', ') differ from the day mark. It may be mid-import. Wait a moment and tap this day again (it reloads). If it continues, re-import this day. Bowl totals are not shown.') + '</div>';
+    /* 丼ごと */
+    var bowls = {}, order = [];
+    cnt.forEach(function(r){
+      var key = (r.bowl_guid || '') + '|' + (r.bowl_name || '') + '|' + (r.takeout ? 'to' : 'in');   /* 店内とテイクアウトは別の行 */
+      if(!bowls[key]){ bowls[key] = { name: r.bowl_name || T('（名前なし）', '(no name)'), guid: r.bowl_guid || '', to: !!r.takeout, aosa: 0, crab: 0, today: 0, udon: 0, chazuke: 0 }; order.push(key); }
+      var b = bowls[key]; if(KINDS.indexOf(r.kind) >= 0) b[r.kind] += num(r.qty) || 0;
+    });
+    order.sort(function(a, b){ var A = bowls[a], B = bowls[b]; var ta = A.aosa + A.crab + A.today + A.udon + A.chazuke, tb = B.aosa + B.crab + B.today + B.udon + B.chazuke; return tb - ta; });
+    h += '<div style="font-size:12px;font-weight:700;margin:4px 0">' + T('丼ごと', 'By bowl') + '</div>';
+    h += '<div style="overflow-x:auto"><table class="tbl up-tbl up-bowls"><thead><tr><th>' + T('丼', 'Bowl') + '</th><th>Aosa</th><th>Crab</th><th>Today\'s</th><th>Udon</th><th>CHAZUKE</th><th>' + T('分母', 'Den.') + '</th><th>' + T('分子', 'Num.') + '</th></tr></thead><tbody>';
+    order.forEach(function(key){
+      var b = bowls[key], up = b.crab + b.today + b.udon + b.chazuke;
+      h += '<tr><td>' + esc(b.name) + (b.to ? ' <span class="up-mut">TO</span>' : '') + (b.guid ? '<br><span class="up-mut" style="font-size:9.5px">ID …' + esc(String(b.guid).slice(-6)) + '</span>' : '') + '</td><td>' + fmt(b.aosa) + '</td><td>' + fmt(b.crab) + '</td><td>' + fmt(b.today) + '</td><td>' + fmt(b.udon) + '</td><td>' + fmt(b.chazuke) + '</td><td>' + fmt(b.aosa + up) + '</td><td><b>' + fmt(up) + '</b></td></tr>';
+    });
+    h += '</tbody></table></div>';
+    /* 注文ごと */
+    var MAX = 300, list = rows.slice().sort(function(a, b){ var x = String(a.opened_at || ''), y = String(b.opened_at || ''); return x < y ? -1 : x > y ? 1 : (String(a.line_key) < String(b.line_key) ? -1 : 1); });
+    h += '<div style="font-size:12px;font-weight:700;margin:10px 0 4px">' + T('注文ごと', 'By order') + ' <span class="up-mut" style="font-weight:400;font-size:11px">' + list.length + T(' 行', ' lines') + '</span></div>';
+    h += '<div style="overflow-x:auto"><table class="tbl up-tbl up-orders"><thead><tr><th>' + T('注文番号', 'Order #') + '</th><th>' + T('時刻', 'Time') + '</th><th>' + T('丼', 'Bowl') + '</th><th>' + T('モディファイヤー', 'Modifier') + '</th><th>' + T('数', 'Qty') + '</th><th>' + T('計上・理由', 'Counted / reason') + '</th></tr></thead><tbody>';
+    list.slice(0, MAX).forEach(function(r){
+      var counted = r.counted !== false;
+      var res = !counted ? '<span style="color:var(--muted)">' + T('対象外（', 'Excluded (') + reasonLabel(r.reason) + T('）', ')') + '</span>' : (r.kind === 'aosa' ? T('分母だけ', 'den. only') : '<b style="color:var(--green)">' + T('計上（分子）', 'Counted (num.)') + '</b>');
+      h += '<tr' + (counted ? '' : ' style="opacity:.6"') + '><td>' + esc(r.order_no || '—') + (r.check_no && r.check_no !== '1' ? '<span class="up-mut"> #' + esc(r.check_no) + '</span>' : '') + '</td><td>' + esc(hm(r.opened_at)) + (r.meal ? ' <span class="up-mut">' + esc(r.meal) + '</span>' : '') + '</td><td>' + esc(r.bowl_name || '') + (r.takeout ? ' <span class="up-mut">TO</span>' : '') + '</td><td>' + esc(r.mod_name || '') + '</td><td>' + fmt(r.qty) + '</td><td>' + res + '</td></tr>';
+    });
+    h += '</tbody></table></div>';
+    if(list.length > MAX) h += '<div class="up-mut" style="font-size:10.5px;margin-top:3px">' + T('最初の ', 'Showing first ') + MAX + T(' 行だけ出しています（ほか ', ' lines (') + (list.length - MAX) + T(' 行）。', ' more).') + '</div>';
+    return h;
+  }
+  function paint(id){
+    var a = document.getElementById('up-kinds-' + id); if(a) a.innerHTML = kindsHtml(id);
+    var b = document.getElementById('up-days-' + id); if(b) b.innerHTML = daysHtml(id);
+    paintDay(id);
+  }
+  function paintDay(id){
+    var d = document.getElementById('up-day-' + id); if(d) d.innerHTML = dayHtml(id);
+    var b = document.getElementById('up-days-' + id); if(b && CTX[id] && CTX[id].srv) b.innerHTML = daysHtml(id);
+  }
+  UP._paint = paint;
+})();
+/* ==== FUNERGY_UP end ==== */
 </script>
 <script>
 /* ==== FUNERGY_STATUS（v1137）：保存・同期・診断の状態と、自動の同期と、「設定 › 診断と記録」====
