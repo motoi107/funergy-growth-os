@@ -89511,9 +89511,12 @@ function uiDirtyFields(root){
     var tp = String(el.type || '').toLowerCase(), d = false, c = false, v;
     if (tp === 'button' || tp === 'submit' || tp === 'reset' || tp === 'image' || tp === 'hidden') return;
     if (el.tagName === 'SELECT') {
-      d = [].some.call(el.options || [], function(o){ return !!o.selected !== !!o.defaultSelected; });
-      if (d && el.multiple) { bad = true; return; }
-      v = el.value;
+      var os = [].slice.call(el.options || []);
+      if (el.multiple) { if (os.some(function(o){ return !!o.selected !== !!o.defaultSelected; })) bad = true; return; }
+      /* 1 つ選ぶ欄：selected の付いた選択肢が無ければ、ブラウザは先頭を選ぶ（それは「変えた」ではない） */
+      var dz = null; os.forEach(function(o){ if (o.defaultSelected) dz = o; });
+      var dv = dz ? dz.value : ((el.size > 1 || !os.length) ? '' : os[0].value);
+      d = String(el.value) !== String(dv); v = el.value;
     } else if (tp === 'checkbox' || tp === 'radio') { d = !!el.checked !== !!el.defaultChecked; c = true; v = !!el.checked; }
     else if (tp === 'file') { if (el.files && el.files.length) bad = true; return; }
     else { d = String(el.value) !== String(el.defaultValue); v = el.value; }
