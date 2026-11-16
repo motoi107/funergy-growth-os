@@ -231,7 +231,52 @@ for (const [W, lang] of [[1440, 'ja'], [1024, 'en'], [390, 'ja'], [390, 'en']]) 
     ok(tag + '：1440 → 390 にするとマイページを描き直す', !rs.pair && !rs.pos, rs);
     await page.setViewportSize({ width: 1440, height: 900 }); await sleep(1500);
     ok(tag + '：390 → 1440 に戻すと PC の形', await page.evaluate(() => !!document.querySelector('.mp-pair')));
+    /* #175 の Codex・Claude の P2-1：月間行動計画 › 設定で、まだ保存していない目標・必須のチェックを、幅をまたいだ描き直しで消さない（フォーカスあり・なし・両方向） */
+    await run(page, () => { switchStore('ALL'); go('cc_plan'); setCcTab('setting'); });
+    const ids = await page.evaluate(() => { const t = document.querySelector('table.cc-mx input[id^="ct-"]'), q = document.querySelector('#main-content input[id^="cq-"]'); return { t: t && t.id, q: q && q.id, tv: t && t.defaultValue, qv: q && q.defaultChecked }; });
+    ok(tag + '：月間行動計画 › 設定に目標の欄と必須のチェックがある', ids.t && ids.q, ids);
+    const st = () => page.evaluate(([t, q]) => { const a = document.getElementById(t), b = document.getElementById(q); return { mx: !!document.querySelector('table.cc-mx'), tv: a && a.value, td: a && a.defaultValue, qc: b && b.checked, qd: b && b.defaultChecked, foc: document.activeElement && document.activeElement.id }; }, [ids.t, ids.q]);
+    if (ids.t && ids.q) {
+      await page.fill('#' + ids.t, '999');
+      await page.evaluate(q => { const b = document.getElementById(q); b.checked = !b.checked; }, ids.q);
+      await page.evaluate(() => document.activeElement && document.activeElement.blur());
+      // フォーカスなしで PC → スマホ
+      await page.setViewportSize({ width: 390, height: 844 }); await sleep(2200);
+      let s1 = await st();
+      ok(tag + '：フォーカスなし 1440 → 390：スマホの形に描き直し、打った目標と外した必須が残る（保存はしない）', !s1.mx && s1.tv === '999' && s1.td !== '999' && s1.qc === !ids.qv && s1.qd === ids.qv, s1);
+      // フォーカスあり（入力中）でスマホ → PC：入力中は描き直さず、離れたら描き直して残す
+      await page.focus('#' + ids.t); await page.keyboard.press('End'); await page.keyboard.type('7');
+      await page.setViewportSize({ width: 1440, height: 900 }); await sleep(2200);
+      let s2 = await st();
+      ok(tag + '：フォーカスあり 390 → 1440：入力中は描き直さない（文字が消えない）', s2.tv === '9997' && s2.foc === ids.t && !s2.mx, s2);
+      await page.evaluate(() => document.activeElement && document.activeElement.blur()); await sleep(2200);
+      let s3 = await st();
+      ok(tag + '：離れると PC の表に描き直し、9997 と外した必須が残る（保存はしない）', s3.mx && s3.tv === '9997' && s3.td !== '9997' && s3.qc === !ids.qv, s3);
+      // フォーカスありで PC → スマホ
+      await page.focus('#' + ids.t); await page.keyboard.press('End'); await page.keyboard.type('1');
+      await page.setViewportSize({ width: 390, height: 844 }); await sleep(2200);
+      let s4 = await st();
+      ok(tag + '：フォーカスあり 1440 → 390：入力中は描き直さない', s4.tv === '99971' && s4.mx, s4);
+      await page.evaluate(() => document.activeElement && document.activeElement.blur()); await sleep(2200);
+      let s5 = await st();
+      ok(tag + '：離れるとスマホの形に描き直し、99971 と外した必須が残る', !s5.mx && s5.tv === '99971' && s5.td !== '99971' && s5.qc === !ids.qv, s5);
+      // フォーカスなしでスマホ → PC
+      await page.setViewportSize({ width: 1440, height: 900 }); await sleep(2200);
+      let s6 = await st();
+      ok(tag + '：フォーカスなし 390 → 1440：PC の表に描き直し、値が残る', s6.mx && s6.tv === '99971' && s6.qc === !ids.qv, s6);
+      // 何も打っていない画面はふつうに描き直す（前のまま）：別の画面へ移って戻ると保存済みの値
+      await run(page, () => go('mypage')); await run(page, () => { go('cc_plan'); setCcTab('setting'); });
+      let s7 = await st();
+      ok(tag + '：保存していない値は、ほかの画面へ移ると捨てる（保存はされていない）', s7.tv === ids.tv && s7.qc === ids.qv, s7);
+    }
   }
+  /* #175 の Codex・Claude の P2-2：.kpi-wrap の外の .kpi-grid（採用の 4 枚など）は前の並び（600px から 4 列・それより狭いと 2 列） */
+  await run(page, () => go('hiring')); await sleep(1500);
+  const hg = await page.evaluate(() => {
+    const g = [...document.querySelectorAll('#main-content .kpi-grid')].find(x => !x.closest('.kpi-wrap') && x.children.length >= 4); if (!g) return null;
+    const ts = [...g.children]; return { n: ts.length, cols: new Set(ts.map(t => Math.round(t.getBoundingClientRect().left))).size, gtc: getComputedStyle(g).gridTemplateColumns.split(' ').length };
+  });
+  ok(tag + '：採用：.kpi-wrap の外の .kpi-grid は前の並び（' + (W >= 600 ? '4' : '2') + ' 列）', hg && hg.cols === (W >= 600 ? 4 : 2) && hg.gtc === (W >= 600 ? 4 : 2), hg);
   ok(tag + '：pageerror なし', errors.length === 0, errors.slice(0, 3));
   if (SHOTS) {
     await run(page, () => { switchStore('F01'); setBudgetTab('daily'); go('budget'); }); await shot(page, 'daily-' + W + '-' + lang);
