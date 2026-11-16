@@ -228,6 +228,29 @@ for (const [W, lang] of [[1440, 'ja'], [1024, 'en'], [768, 'ja'], [390, 'ja'], [
     ok(tag + '：1440 → 390 で経理レビューがスマホの形に描き直る', sw.sp && !sw.pc, sw);
     await page.setViewportSize({ width: 1440, height: 900 }); await sleep(1500);
     ok(tag + '：390 → 1440 で PC の形に戻る', await page.evaluate(() => !!document.querySelector('#main-content .ar-pc')));
+    /* #175 と同じ直し（uiRedrawKeep）：絞り込み（押すとすぐ描き直す）を変えたあとも幅をまたげば描き直る・絞り込みは残る */
+    const fs0 = await page.evaluate(() => { const s = [...document.querySelectorAll('#main-content select')].find(x => /arSetFilter\('Store'/.test(x.getAttribute('onchange') || '')); if (!s) return null; const o = [...s.options].find(o => o.value && !o.selected); if (!o) return null; s.value = o.value; s.dispatchEvent(new Event('change')); return o.value; });
+    await sleep(1200);
+    await page.setViewportSize({ width: 390, height: 844 }); await sleep(2200);
+    const fs1 = await page.evaluate(() => ({ sp: !!document.querySelector('#main-content .ar-sp'), st: window._arStore }));
+    ok(tag + '：絞り込みを変えたあとも 1440 → 390 で描き直り、絞り込みは残る', fs0 && fs1.sp && fs1.st === fs0, { fs0, fs1 });
+    await page.setViewportSize({ width: 1440, height: 900 }); await sleep(2200);
+    await page.evaluate(() => { window._arStore = 'ALL'; });
+    /* 診断と記録：変更の記録の期間（まだ「表示」を押していない）は幅をまたいでも消えない（フォーカスなし・あり） */
+    await run(page, () => go('diag_center'));
+    const cd = await page.evaluate(() => { const s = document.getElementById('cl-days'); if (!s) return null; const o = [...s.options].find(o => !o.selected); s.value = o.value; return { v: o.value, def: [...s.options].find(o => o.defaultSelected).value }; });
+    if (cd) {
+      await page.setViewportSize({ width: 900, height: 900 }); await sleep(2200);
+      const c1 = await page.evaluate(() => ({ pc2: !!document.querySelector('#main-content .dc-pc'), v: (document.getElementById('cl-days') || {}).value }));
+      ok(tag + '：診断と記録：1440 → 900 で 1 列に描き直り、選んだ期間（未適用）は残る', !c1.pc2 && c1.v === cd.v, { cd, c1 });
+      await page.focus('#cl-days');
+      await page.setViewportSize({ width: 1440, height: 900 }); await sleep(2200);
+      const c2 = await page.evaluate(() => ({ pc2: !!document.querySelector('#main-content .dc-pc'), v: document.getElementById('cl-days').value, foc: document.activeElement && document.activeElement.id }));
+      ok(tag + '：診断と記録：選ぶ欄にフォーカスがあるあいだは描き直さない', !c2.pc2 && c2.v === cd.v && c2.foc === 'cl-days', c2);
+      await page.evaluate(() => document.activeElement && document.activeElement.blur()); await sleep(2200);
+      const c3 = await page.evaluate(() => ({ pc2: !!document.querySelector('#main-content .dc-pc'), v: document.getElementById('cl-days').value }));
+      ok(tag + '：離れると 2 列に描き直り、選んだ期間は残る', c3.pc2 && c3.v === cd.v, c3);
+    } else ok(tag + '：診断と記録：変更の記録の期間がある（GM）', false, cd);
   }
   ok(tag + '：pageerror なし', errors.length === 0, errors.slice(0, 3));
   /* 写真は確かめが全部終わってから（スマホの真似では fullPage の写真のあと文字の大きさが変わったままになる。Playwright の都合） */

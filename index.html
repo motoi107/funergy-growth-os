@@ -1782,8 +1782,8 @@ i.ti-loader, i.ti-loader-2 { display:inline-block; animation:uxSpin 1s linear in
    1 つ 128px 以上で全部が入れば 1 行・入らなければ 2 行に分ける・スマホ（置ける幅が狭い）は 2 列。
    「タップで内訳」の行はやめて右上の「›」（タイル全体を押すと今と同じ内訳）。数・内訳は変えない */
 .kpi-wrap { container-type:inline-size; container-name:kpi; }
-.kpi-grid { display:grid; gap:8px; grid-template-columns:repeat(2,minmax(0,1fr)); }
-@supports not (container-type:inline-size) { .kpi-grid { grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); } }
+.kpi-wrap > .kpi-grid { display:grid; gap:8px; grid-template-columns:repeat(2,minmax(0,1fr)); }   /* #175 の Codex・Claude の P2：新しいタイルの並びだけ（.kpi-wrap の中）。ほかの .kpi-grid（PC 4 列）は前のまま */
+@supports not (container-type:inline-size) { .kpi-wrap > .kpi-grid { grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); } }
 @container kpi (min-width:384px) { .kpi-grid[data-kn="3"] { grid-template-columns:repeat(3,minmax(0,1fr)); } }
 @container kpi (min-width:512px) { .kpi-grid[data-kn="4"] { grid-template-columns:repeat(4,minmax(0,1fr)); } }
 @container kpi (min-width:384px) { .kpi-grid[data-kn="5"] { grid-template-columns:repeat(3,minmax(0,1fr)); } }
@@ -89723,8 +89723,48 @@ function mpLayout(html, mgr){
   uiPcWatch1177();
   return out;
 }
+/* #175 の Codex の P2：幅をまたいだ描き直しで、まだ保存していない入力を消さない。
+   描き直す前に #main-content の入力欄のうち初めの値から変わったもの（value≠defaultValue・checked≠defaultChecked・選んだ項目≠初め）を覚え、
+   描き直したあと同じ id の欄に戻す（onchange などは呼ばない＝保存はしない・打った値が残るだけ）。
+   id の無い欄・ファイル・複数選びが変わっていれば描き直さずに待つ（false）。描き直したら同じ id の欄が無かったときは、前の画面（中身ごと）に戻して待つ */
+function uiDirtyFields(root){
+  var list = [], bad = false;
+  if (!root || !root.querySelectorAll) return { list: list, bad: false };
+  root.querySelectorAll('input, textarea, select').forEach(function(el){
+    var tp = String(el.type || '').toLowerCase(), d = false, c = false, v;
+    if (tp === 'button' || tp === 'submit' || tp === 'reset' || tp === 'image' || tp === 'hidden') return;
+    if (el.tagName === 'SELECT') {
+      d = [].some.call(el.options || [], function(o){ return !!o.selected !== !!o.defaultSelected; });
+      if (d && el.multiple) { bad = true; return; }
+      v = el.value;
+    } else if (tp === 'checkbox' || tp === 'radio') { d = !!el.checked !== !!el.defaultChecked; c = true; v = !!el.checked; }
+    else if (tp === 'file') { if (el.files && el.files.length) bad = true; return; }
+    else { d = String(el.value) !== String(el.defaultValue); v = el.value; }
+    if (!d) return;
+    if (!el.id) { bad = true; return; }
+    list.push({ id: el.id, tag: el.tagName, c: c, v: v });
+  });
+  return { list: list, bad: bad };
+}
+function uiRedrawKeep(page){
+  var root = document.getElementById('main-content');
+  var df = uiDirtyFields(root);
+  if (df.bad) return false;
+  if (!df.list.length) { renderPage(page); return true; }
+  var sig = page + '|' + JSON.stringify(df.list);
+  if (window._uiKeepNo === sig) return false;   /* 前に戻したときと同じ入力なら、描いてみるのもやめる（重い画面を何度も描かない） */
+  var keep = document.createDocumentFragment();
+  while (root.firstChild) keep.appendChild(root.firstChild);
+  var back = function(){ while (root.firstChild) root.removeChild(root.firstChild); root.appendChild(keep); window._uiKeepNo = sig; return false; };
+  try { renderPage(page); } catch (e) { return back(); }
+  var els = df.list.map(function(f){ var e = document.getElementById(f.id); return (e && root.contains(e) && e.tagName === f.tag) ? e : null; });
+  if (els.some(function(e){ return !e; })) return back();
+  df.list.forEach(function(f, i){ if (f.c) els[i].checked = f.v; else els[i].value = f.v; });
+  window._uiKeepNo = null;
+  return true;
+}
 /* v1177：幅が 1024px をまたいだら、2 列・1 列の形が変わる画面（マイページ・月間行動計画）を開いているときだけ描き直す。
-   見張りは 1 つ。箱を開いている・入力中は待つ（従業員マスター・人件費と同じ決まり） */
+   見張りは 1 つ。箱を開いている・入力中は待つ（従業員マスター・人件費と同じ決まり）。まだ保存していない入力は残す（uiRedrawKeep） */
 function uiPcWatch1177(){
   if (window._u77Mq || !window.matchMedia) return;
   try {
@@ -89738,7 +89778,9 @@ function uiPcWatch1177(){
         var ov = document.getElementById('modal-overlay'), ae = document.activeElement;
         var typing = !!(ae && ae !== document.body && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName));
         if ((ov && ov.classList.contains('open')) || typing) { clearTimeout(on._t); on._t = setTimeout(on, 1500); return; }
-        try { renderPage(curPage); } catch (e) { }
+        var done = true;
+        try { done = uiRedrawKeep(curPage); } catch (e) { }
+        if (!done) { clearTimeout(on._t); on._t = setTimeout(on, 1500); }   /* 入力を残せないあいだは描き直さずに待つ（保存・取り消し・ほかの画面へ移ると終わる） */
       };
       return on;
     };
@@ -89761,7 +89803,9 @@ function uiPcWatch1178(){
         var ov = document.getElementById('modal-overlay'), ae = document.activeElement;
         var typing = !!(ae && ae !== document.body && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName));
         if ((ov && ov.classList.contains('open')) || typing) { clearTimeout(on._t); on._t = setTimeout(on, 1500); return; }
-        try { renderPage(curPage); } catch (e) { }
+        var done = true;
+        try { done = uiRedrawKeep(curPage); } catch (e) { }
+        if (!done) { clearTimeout(on._t); on._t = setTimeout(on, 1500); }   /* #175 と同じ：まだ保存していない入力（経理出力の期間・設定の欄など）は描き直しで消さない。残せないあいだは待つ */
       };
       return on;
     };

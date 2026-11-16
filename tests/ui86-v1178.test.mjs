@@ -241,7 +241,8 @@ test('幅をまたいだら描き直す：見張りは 1 つ・箱を開いて�
   const ov = { open: false, classList: { contains: k => k === 'open' && ov.open } };
   const doc = { activeElement: null, body: {}, getElementById: id => (id === 'modal-overlay' ? ov : null) };
   doc.activeElement = doc.body;
-  const c = ctxOf({ document: doc, curPage: 'acct_export', renderPage: p => drawn.push(p), setTimeout: (f, ms) => { timers.push(f); return timers.length; }, clearTimeout: () => {},
+  let hold = false;   // #175 と同じ：描き直しは uiRedrawKeep を通す（まだ保存していない入力を残せないあいだは false）
+  const c = ctxOf({ document: doc, curPage: 'acct_export', uiRedrawKeep: p => { if (hold) return false; drawn.push(p); return true; }, renderPage: () => { throw new Error('renderPage を直接呼ばない'); }, setTimeout: (f, ms) => { timers.push(f); return timers.length; }, clearTimeout: () => {},
     window: { matchMedia: q => ({ matches: false, addEventListener: (e, f) => { (ls[q] = ls[q] || []).push(f); } }) } });
   vm.runInContext(s, c); c.uiPcWatch1178(); c.uiPcWatch1178();
   assert.equal(ls['(min-width:1024px)'].length, 1, '見張りは 1 つ（2 回呼んでも）');
@@ -252,4 +253,8 @@ test('幅をまたいだら描き直す：見張りは 1 つ・箱を開いて�
   c.curPage = 'acct_export'; fire('(max-width:767px)'); assert.deepEqual(drawn, ['acct_export'], '767px の見張りに経理出力は入っていない（形が変わらない）');
   c.curPage = 'monthly'; fire('(max-width:767px)'); assert.deepEqual(drawn, ['acct_export', 'monthly']);
   c.curPage = 'dashboard'; fire('(min-width:1024px)'); fire('(max-width:767px)'); assert.equal(drawn.length, 2, 'ほかの画面は描き直さない');
+  // 入力を残せないあいだは描き直さずに 1.5 秒ごとに待ち、残せるようになったら描く
+  c.curPage = 'acct_review'; hold = true; timers.length = 0; fire('(min-width:1024px)'); assert.equal(drawn.length, 2); assert.equal(timers.length, 1, '待つ');
+  hold = false; timers.pop()(); assert.deepEqual(drawn.slice(-1), ['acct_review']); assert.equal(timers.length, 0, '描けたら終わる');
+  assert.ok(!/renderPage\(curPage\)/.test(s), '描き直しは必ず uiRedrawKeep を通す');
 });

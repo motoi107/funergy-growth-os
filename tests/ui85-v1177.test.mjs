@@ -107,3 +107,82 @@ test('どの案でも直す：ランチ・ディナーのまとめ（スマホ�
   assert.ok(!/font-size:(?:[0-9]|10)(?:\.\d+)?px/.test(ct), 'キャッシュチップの箱に 11px 未満の文字が無い');
   assert.match(HTML, /if \(a && !\(a\.classList && a\.classList\.contains\('modal-overlay'\)\)\) return false;/, '箱の外側（閉じる onclick）を「押せる要素の中」と数えない');
 });
+
+/* ---------- #175 の Codex・Claude のレビュー（P2 2 つ）の直し ---------- */
+// 小さな合成の DOM（本番にはつながない）：#main-content の子と入力欄だけ
+function fakeDom() {
+  const byId = () => all().find(Boolean);
+  const mkField = (o) => ({ tagName: o.tag || 'INPUT', type: o.type || 'text', id: o.id || '', value: o.v ?? '', defaultValue: o.v ?? '', checked: !!o.ck, defaultChecked: !!o.ck, multiple: !!o.multi, options: o.options || [], files: o.files || null });
+  const root = { kids: [], get firstChild() { return this.kids[0] || null; }, appendChild(n) { if (n && n.isFrag) { this.kids.push(...n.kids); n.kids = []; } else this.kids.push(n); return n; }, removeChild(n) { this.kids.splice(this.kids.indexOf(n), 1); return n; },
+    querySelectorAll() { return this.kids.filter(k => k.field).map(k => k.field); }, contains(e) { return this.kids.some(k => k.field === e); } };
+  function all() { return root.kids.map(k => k.field); }
+  void byId;
+  const doc = { getElementById: id => (id === 'main-content' ? root : (all().find(f => f && f.id === id) || null)), createDocumentFragment: () => ({ isFrag: true, kids: [], appendChild(n) { const i = root.kids.indexOf(n); if (i >= 0) root.kids.splice(i, 1); this.kids.push(n); return n; } }) };
+  const paint = defs => { root.kids = defs.map(d => ({ field: mkField(d) })); };
+  return { root, doc, paint, field: id => all().find(f => f && f.id === id) };
+}
+const KEEP_FNS = ['uiDirtyFields', 'uiRedrawKeep'];
+function keepCtx(render) {
+  const d = fakeDom(); const calls = [];
+  const c = ctxOf({ document: d.doc, window: {}, renderPage: p => { calls.push(p); render(d, p); } });
+  vm.runInContext(KEEP_FNS.map(fnSrc).join('\n'), c); return { c, d, calls };
+}
+
+test('#175 P2-1：幅をまたいだ描き直しで、まだ保存していない目標・必須のチェックを消さない（同じ id の欄に戻す・保存は呼ばない）', () => {
+  // 月間行動計画 › 設定：PC の表とスマホの形で欄の id は同じ（ct-指標-店・cq-指標）。描き直すと保存済みの値（100・必須）に戻る
+  const saved = [{ id: 'ct-sales-F01', v: '100' }, { id: 'cq-sales', type: 'checkbox', ck: true }, { id: 'ct-sales-F02', v: '50' }];
+  const { c, d, calls } = keepCtx(dd => dd.paint(saved));
+  d.paint(saved);
+  d.field('ct-sales-F01').value = '999'; d.field('cq-sales').checked = false;   // 打っただけ（保存していない）
+  assert.equal(c.uiRedrawKeep('cc_plan'), true);
+  assert.deepEqual(calls, ['cc_plan'], '描き直した');
+  assert.equal(d.field('ct-sales-F01').value, '999', '打った目標が残る（999 → 100 に戻らない）');
+  assert.equal(d.field('cq-sales').checked, false, '外した必須が残る');
+  assert.equal(d.field('ct-sales-F02').value, '50', '触っていない欄は保存済みのまま');
+  // 残った値はまだ「保存していない」（保存ボタンで保存できる）
+  const df = c.uiDirtyFields(d.root); assert.equal(df.list.length, 2);
+});
+
+test('#175 P2-1：残せない入力（id が無い・描き直すと欄が無くなる）は描き直さずに待つ。前の画面は中身ごとそのまま・同じ入力では何度も描かない', () => {
+  // id の無い欄が変わっている → 描かない
+  const a = keepCtx(dd => dd.paint([{ v: 'x' }]));
+  a.d.paint([{ v: 'x' }]); a.d.root.kids[0].field.value = 'y';
+  assert.equal(a.c.uiRedrawKeep('cc_plan'), false); assert.deepEqual(a.calls, [], 'id の無い欄が変わっていれば描かない');
+  // 描き直すと同じ id の欄が無い → 前の画面（打った値ごと）に戻す
+  const b = keepCtx(dd => dd.paint([{ id: 'other', v: '1' }]));
+  b.d.paint([{ id: 'ct-x-F01', v: '100' }]); b.d.field('ct-x-F01').value = '999';
+  assert.equal(b.c.uiRedrawKeep('cc_plan'), false);
+  assert.equal(b.d.field('ct-x-F01').value, '999', '前の画面に戻り、打った値もそのまま');
+  assert.equal(b.d.field('other'), undefined, '描き直した中身は捨てる');
+  assert.equal(b.c.uiRedrawKeep('cc_plan'), false); assert.equal(b.calls.length, 1, '同じ入力ならもう一度描いてみない（重い画面を何度も描かない）');
+  // 変わっていなければふつうに描き直す・ファイルを選んでいる・複数選びが変わっている → 待つ
+  const e = keepCtx(dd => dd.paint([{ id: 'q', v: '1' }])); e.d.paint([{ id: 'q', v: '1' }]);
+  assert.equal(e.c.uiRedrawKeep('mypage'), true); assert.deepEqual(e.calls, ['mypage']);
+  const f = keepCtx(dd => dd.paint([])); f.d.paint([{ id: 'f', type: 'file', files: [1] }]); assert.equal(f.c.uiRedrawKeep('mypage'), false);
+  const ms = () => [{ id: 's', tag: 'SELECT', multi: true, options: [{ selected: false, defaultSelected: false }, { selected: false, defaultSelected: false }] }];
+  const g = keepCtx(dd => dd.paint(ms())); g.d.paint(ms()); g.d.field('s').options.forEach(o => { o.selected = true; });
+  assert.equal(g.c.uiRedrawKeep('mypage'), false); assert.deepEqual(g.calls, [], '複数選びが変わっていれば描かない（値 1 つでは戻せない）');
+  // ボタン・hidden は数えない
+  const h = keepCtx(dd => dd.paint([])); h.d.paint([{ type: 'hidden', v: 'a' }]); h.d.root.kids[0].field.value = 'b'; assert.equal(h.c.uiRedrawKeep('mypage'), true);
+});
+
+test('#175 P2-1：見張りは描けなかったら 1.5 秒ごとに待つ（入力中・箱を開いているときと同じ）・描けたら終わる', () => {
+  const s = fnSrc('uiPcWatch1177');
+  assert.match(s, /done = uiRedrawKeep\(curPage\)/);
+  assert.match(s, /if \(!done\) \{ clearTimeout\(on\._t\); on\._t = setTimeout\(on, 1500\); \}/);
+  assert.ok(!/renderPage\(curPage\)/.test(s), '描き直しは必ず uiRedrawKeep を通す');
+});
+
+test('#175 P2-2：新しいタイルの並び（2 列・数ごとの列）は .kpi-wrap の中だけ。ほかの .kpi-grid（PC 4 列）は前のまま', () => {
+  const css = HTML.slice(0, HTML.indexOf('</style>', HTML.indexOf('.kpi-wrap {')));
+  assert.match(HTML, /\.kpi-grid \{ display: grid; grid-template-columns: repeat\(2, 1fr\); gap: 10px; \}\n@media\(min-width:600px\) \{ \.kpi-grid \{ grid-template-columns: repeat\(4, 1fr\); \} \}/, '前の決まり（600px から 4 列）');
+  // 素の .kpi-grid { … } は前の 2 か所だけ。新しい決まりは .kpi-wrap > .kpi-grid か .kpi-grid[data-kn]
+  const plain = [...css.matchAll(/(.{0,14})\.kpi-grid\s*\{/g)].filter(m => !/\.kpi-wrap\s*>\s*$/.test(m[1])).map(m => m[0]);
+  assert.equal(plain.length, 2, '素の .kpi-grid の決まりは前の 2 つだけ ' + JSON.stringify(plain));
+  const scoped = [...css.matchAll(/\.kpi-wrap\s*>\s*\.kpi-grid\s*\{/g)].length;
+  assert.equal(scoped, 2, '新しい並びと fallback は .kpi-wrap > .kpi-grid だけ');
+  assert.match(css, /\.kpi-wrap > \.kpi-grid \{ display:grid; gap:8px; grid-template-columns:repeat\(2,minmax\(0,1fr\)\); \}/);
+  assert.match(css, /@supports not \(container-type:inline-size\) \{ \.kpi-wrap > \.kpi-grid \{/);
+  // 並べ方の決まり（data-kn）は .kpi-wrap > .kpi-grid と同じ強さであとに書く（効く）
+  assert.ok(css.indexOf('.kpi-grid[data-kn="4"]') > css.indexOf('.kpi-wrap > .kpi-grid {'));
+});
