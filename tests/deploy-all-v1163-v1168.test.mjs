@@ -1,5 +1,7 @@
 // まとめての手順（deploy/all-v1163-v1168/）：表の 01〜19 のファイルがあり、本番と同じ形の合成 DB（PGlite）に上から順に流すと
-// ① に STOP・② にエラー・③ に NG が出ない。上から全部をもう一度流しても壊れない（10 の 5 だけが「段が 7」で NG＝手順に書いたとおり）。
+// ① に STOP・② にエラー・③ に NG が出ない。上から全部をもう一度流しても最後の状態は同じ（10 の 5 だけが「段が 7」で NG）。
+// 前は途中（03 のあと 18 まで）でキーの守りが外れた（#164 の Codex 6888011035）。v1169 から、前の版のチャットの SQL は新しい段の上では止まる
+// （STOP・何も変えない）ので、もう一度流しても 03・15 は止まるだけで、守りは一度も外れない（どの段のあとでもチャットの関数が同じ）。
 // 関数は v1168 の 1 ファイルだけ・Secrets の名前・マージの順・鍵が無いこと。合成データだけ（本番にはつながない）。
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -33,6 +35,7 @@ test('the steps: only the v1168 function file, the three secrets, the merge orde
   assert.match(H, /#160 → #161 → #162 → #163 → #164/);
   assert.match(H, /自分の端末をすべて 1168 にしてから/);
   assert.match(H, /止まった番号から/);
+  assert.match(H, /18 まで流したあとは、03（添付の SQL）・15（チャット改修の SQL）を流し直さないでください/);
   assert.match(H, /10 の 5 だけは「NG（段が 7）」/);
   const D = new URL('../deploy/all-v1163-v1168/', import.meta.url);
   assert.deepEqual(fs.readdirSync(D), ['手順.md'], 'only the steps: the SQL stays in each version folder, the private files never come here');
@@ -63,13 +66,18 @@ const kind = p => /\/0_件数/.test(p) ? 'count' : /\/1_最初に確認/.test(p)
 const lastRows = res => ((res.filter(r => r.fields && r.fields.length).pop()) || { rows: [] }).rows;
 const bad = rows => rows.filter(r => !/^（参考）/.test(String(Object.values(r)[0] ?? ''))).filter(r => Object.values(r).some(v => /^(STOP|NG)/.test(String(v ?? ''))));
 
-async function runAll(pg) {
+// チャットの関数の中身（名前と本文の指紋）。守り（暗証番号・キー）はこの関数の中にあるので、これが変わらなければ守りは外れていない
+const chatFns = async pg => (await pg.query(`select string_agg(p.proname || ':' || md5(p.prosrc), ',' order by p.proname, md5(p.prosrc)) v
+  from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname like 'chat%'`)).rows[0].v;
+
+async function runAll(pg, each) {
   const out = [];
   for (const r of ROWS) {
     const k = kind(r.path);
     let rows = [], err = null;
     try { rows = lastRows(await pg.exec(rd(r.path))); } catch (e) { err = e.message; }
     out.push({ ...r, k, rows, err, bad: bad(rows) });
+    if (each) await each(r);
   }
   return out;
 }
@@ -96,13 +104,18 @@ test('top to bottom once on a production-shaped database: no STOP in ①, every 
   assert.equal(pre17.find(r => r.check_name.startsWith('2.')).result, '4');
 });
 
-test('running everything again from the top (e.g. after an interruption) breaks nothing: only 10\'s check 5 says NG (stage 7), and 13・16・19 end OK', async () => {
+test('running everything again from the top (v1169): 03 and 15 stop and change nothing, the chat functions never change at any step (the protection is never off), and the end state is the same (only 10\'s check 5 says NG, stage 7)', async () => {
   const pg = await prod();
   await runAll(pg);
-  const res = await runAll(pg);
-  for (const x of res) assert.equal(x.err, null, `${x.n}: ${x.err}`);
+  const fns0 = await chatFns(pg), changed = [];
+  const res = await runAll(pg, async r => { if (await chatFns(pg) !== fns0) changed.push(r.n); });
+  assert.deepEqual(changed, [], 'no step changed the chat functions');
+  for (const x of res) {
+    if (x.n === '03' || x.n === '15') assert.match(String(x.err), /^STOP: これより新しいチャットの SQL（段 4）が入っています/, x.n);
+    else assert.equal(x.err, null, `${x.n}: ${x.err}`);
+  }
   const ng = res.filter(x => x.bad.length).map(x => [x.n, x.bad.map(r => Object.values(r)[0])]);
   assert.equal(ng.length, 1, JSON.stringify(ng));
   assert.equal(ng[0][0], '10'); assert.match(String(ng[0][1][0]), /^5\./);
-  for (const n of ['13', '16', '19']) assert.deepEqual(res.find(x => x.n === n).bad, [], n);
+  for (const n of ['04', '13', '16', '19']) assert.deepEqual(res.find(x => x.n === n).bad, [], n);
 });

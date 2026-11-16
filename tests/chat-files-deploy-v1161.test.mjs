@@ -66,7 +66,7 @@ test('before the chat the pre-check says STOP and the SQL changes nothing; a sto
   assert.match(pre4('3.'), /^—/); assert.match(pre4('5.'), /^—/);
 });
 
-test('on top of the chat: pre-check, the SQL (twice), post-check all OK; a public bucket is made private; the chat SQL run again is caught and fixed', async () => {
+test('on top of the chat: pre-check, the SQL (twice), post-check all OK; a public bucket is made private; the chat SQL run again stops (v1169) and changes nothing', async () => {
   const pg = await base();
   for (const f of WR) await pg.exec(M(f));
   await pg.exec(CHAT);
@@ -86,11 +86,10 @@ test('on top of the chat: pre-check, the SQL (twice), post-check all OK; a publi
   const r1156 = (await pg.query(fs.readFileSync(new URL('3_確認_読むだけ.sql', D1156), 'utf8'))).rows.filter(r => !/^（参考）/.test(r.check_name) && !r.check_name.startsWith('9.'));
   assert.ok(r1156.every(r => r.result === 'OK'), JSON.stringify(r1156));
   assert.equal(((await pg.query(fs.readFileSync(new URL('1_最初に確認_読むだけ.sql', D1156), 'utf8'))).rows.find(r => r.check_name.startsWith('3.')) || {}).result, 'OK', 'chat_files is not a stranger to the v1156 pre-check');
-  // あとでチャットの SQL を流し直す → 5・6 が NG → この 2 をもう一度 → OK
-  await pg.exec(CHAT);
-  const P2 = by(await rowsOf(pg, '3_確認_読むだけ.sql'));
-  assert.match(P2('5.'), /^NG/); assert.match(P2('6.'), /^NG/);
-  await pg.exec(read('2_SQL_添付.sql'));
+  // あとでチャットの SQL を流し直す → v1169 から止まって何も変えない（前は 5・6 が NG になり、この 2 をもう一度流す必要があった）
+  const fnsBefore = (await pg.query(`select string_agg(p.proname || md5(p.prosrc), ',' order by p.proname, md5(p.prosrc)) v from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname like 'chat%'`)).rows[0].v;
+  await assert.rejects(pg.exec(CHAT), /STOP: これより新しいチャットの SQL（段 2）が入っています/);
+  assert.equal((await pg.query(`select string_agg(p.proname || md5(p.prosrc), ',' order by p.proname, md5(p.prosrc)) v from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname like 'chat%'`)).rows[0].v, fnsBefore, 'no chat function changed');
   post = await rowsOf(pg, '3_確認_読むだけ.sql');
   assert.ok(okAll(post), JSON.stringify(post));
 });

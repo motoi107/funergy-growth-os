@@ -75,16 +75,15 @@ test('after the UI79 SQL: the pre-check is all OK (stage 3, first time); the che
   assert.equal(by(await rowsOf(pg, '1_最初に確認_読むだけ.sql'))('2.'), '4');
 });
 
-test('running the older chat SQL again after 2 turns 1 and 4 to NG (the protection would be off); the attachments → UI79 → 2 order fixes it', async () => {
+test('running the older chat SQL again after 2 stops (v1169) and changes nothing (before, 1 and 4 turned NG: the protection was off); 2 itself can run again', async () => {
   const pg = await base();
   await pg.exec(read('2_SQL_チャットの守り.sql'));
-  await pg.exec(UI79);
-  let post = by(await rowsOf(pg, '3_確認_読むだけ.sql'));
-  assert.match(post('1.'), /^NG/); assert.match(post('4.'), /^NG/);
-  await pg.exec(CHAT);
-  post = by(await rowsOf(pg, '3_確認_読むだけ.sql'));
-  assert.match(post('4.'), /^NG/, 'the v1156 chat_actor has no PIN check');
-  await pg.exec(FILES); await pg.exec(UI79); await pg.exec(read('2_SQL_チャットの守り.sql'));
+  const fns = async () => (await pg.query(`select string_agg(p.proname || md5(p.prosrc), ',' order by p.proname, md5(p.prosrc)) v from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname like 'chat%'`)).rows[0].v;
+  const before = await fns();
+  for (const [sql, n] of [[UI79, 4], [CHAT, 4], [FILES, 4]]) await assert.rejects(pg.exec(sql), new RegExp(`STOP: これより新しいチャットの SQL（段 ${n}）が入っています`));
+  assert.equal(await fns(), before, 'no chat function changed');
+  assert.ok(okAll(await rowsOf(pg, '3_確認_読むだけ.sql')), 'the protection is still on');
+  await pg.exec(read('2_SQL_チャットの守り.sql'));
   assert.ok(okAll(await rowsOf(pg, '3_確認_読むだけ.sql')));
 });
 

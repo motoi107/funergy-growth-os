@@ -1,7 +1,7 @@
 -- v1167 チャット改修（UI案79）：2 を流したあとの確認（読むだけ・何も変えない）。「result」に NG が 1 つも無ければ OK。（参考）は数を見るだけ。
 -- 出るのは数と OK／NG だけ（会話の中身・名前は出ない）。2 の前に流しても止まらない（管理する人の列は、あるときだけ query_to_xml で読む）。
 select '1. SQL の段（チャット 3＝UI案79）' as check_name,
-  case when public.chat_stage('{}'::jsonb)->>'chat' = '3' then 'OK' else 'NG（チャットか添付の SQL を流し直した？ この 2 をもう一度）' end as result
+  case when coalesce((public.chat_stage('{}'::jsonb)->>'chat')::int, 0) >= 3 then 'OK' else 'NG（この 2 をもう一度）' end as result
 union all select '2. 管理する人の列（admin）がある',
   case when exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'chat_members' and column_name = 'admin')
     then 'OK' else 'NG（2 をもう一度流す）' end

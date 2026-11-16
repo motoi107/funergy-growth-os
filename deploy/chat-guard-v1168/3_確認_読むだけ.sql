@@ -1,7 +1,7 @@
 -- v1168 チャットの守り：2 を流したあとの確認（読むだけ・何も変えない）。「result」に NG が 1 つも無ければ OK。（参考）は数を見るだけ。
 -- 出るのは数と OK／NG だけ（会話の中身・名前・暗証番号・キーは出ない）。2 の前に流しても止まらない。
 select '1. SQL の段（チャット 4＝守り）' as check_name,
-  case when public.chat_stage('{}'::jsonb)->>'chat' = '4' then 'OK' else 'NG（2 をもう一度。チャット改修の SQL を流し直したら、この 2 も流し直す）' end as result
+  case when coalesce((public.chat_stage('{}'::jsonb)->>'chat')::int, 0) >= 4 then 'OK' else 'NG（2 をもう一度流す）' end as result
 union all select '2. 守りの表がある（暗証番号・開けた印・キーの印・続けて間違えた数・通知の送り先）',
   case when to_regclass('public.chat_guard') is not null and to_regclass('public.chat_sess') is not null and to_regclass('public.chat_sess_keys') is not null
     and to_regclass('public.chat_key_fails') is not null and to_regclass('public.chat_push_subs') is not null then 'OK' else 'NG（2 をもう一度流す）' end

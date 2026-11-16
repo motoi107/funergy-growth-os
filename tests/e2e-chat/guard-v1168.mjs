@@ -51,7 +51,7 @@ await login(LEE, 'F01', 'Lee Two');
 await login(CAM, 'F01', 'Cam Crew');
 await login(SAM, 'F01', 'Sam Three');
 const me = await api(GM, { action: 'whoami' });
-ok('environment: the function is fn 10 and the chat SQL is 4', me.ok && me.j.fn === 10 && me.j.chat === 4, me.ok ? { fn: me.j.fn, chat: me.j.chat, push: me.j.push } : me);
+ok('environment: the function is fn 11 (v1169) and the chat SQL is 4 or later', me.ok && me.j.fn === 11 && me.j.chat >= 4, me.ok ? { fn: me.j.fn, chat: me.j.chat, push: me.j.push } : me);
 
 // ---------------------------------------------------------------- 両方オフ（v1167 と同じ）
 await SAM.page.evaluate(() => chatAPI({ action: 'chat_open_dm', to: 'e10' }).then(r => chatGo(r.id))); await sleep(1500);

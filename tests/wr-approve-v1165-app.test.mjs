@@ -36,7 +36,9 @@ function fnSrc(name) {
   throw new Error('no end ' + name);
 }
 
-async function server({ fix = true } = {}) {
+// v1169：チャット改修・守りと直しの SQL（処理済み（今月）を処理した日で読む wr_acct_done が入る）
+const V1169 = ['20261127090000_chat_ui79', '20261128090000_chat_guard', '20261129090000_fixes_v1169'].map(M);
+async function server({ fix = true, v1169 = false } = {}) {
   const pg = new PGlite();
   await pg.exec(`create role anon; create role authenticated; create role service_role bypassrls;
     create table public.manager_auth(user_id uuid primary key default gen_random_uuid(), role text, emp_id text);
@@ -52,6 +54,7 @@ async function server({ fix = true } = {}) {
   }
   for (const f of MIGS) await pg.exec(M(f));
   if (fix) await pg.exec(FIX);
+  if (v1169) for (const q of V1169) await pg.exec(q);
   await pg.exec('update public.wr_settings set live = true');
   await pg.exec('set role service_role');
   const db = { async rpc(name, p) { const r = await pg.query(`select public.${name}($1::jsonb) as v`, [JSON.stringify(p ?? {})]); return r.rows[0].v; } };
@@ -278,6 +281,28 @@ test('3A: accounting review has 確認待ち / 確認済み・処理待ち / 処
   const gm = await app(s, 'E2', { page: 'acct_review' });
   const hg = await gm.acct();
   assert.match(hg, /（見るだけ）/); assert.doesNotMatch(hg, />確認する</);
+});
+
+test('v1169（#161）: 処理済み（今月） is read by the day it was processed: an old request paid this month is shown; with the older SQL it says it uses the earlier way', async () => {
+  for (const v1169 of [true, false]) {
+    const s = await server({ v1169 });
+    let old = await s.approved('E8', 3300);
+    old = await s.act('E3', old, 'check');
+    await s.act('E3', await s.ok('E3', { action: 'get', id: old.id }), 'pay', { pay_date: today(), pay_method: 'Check' });
+    // 4 か月前に申請した（前の読み方は申請した日で 2 か月前までしか読まない）
+    await s.pg.exec(`reset role; update public.wr_requests set submitted_at = submitted_at - interval '120 days', created_at = created_at - interval '120 days' where id = '${old.id}'; set role service_role;`);
+    const ac = await app(s, 'E3', { role: 'office', page: 'acct_review' });
+    await ac.acct();
+    ac.ctx.wrAcctTab('done'); await ac.settle(); ac.ctx.renderWrAcct(); await ac.settle();
+    const h = ac.ctx.renderWrAcct();
+    if (v1169) {
+      assert.match(h, new RegExp(old.code), 'the old request processed this month is in');
+      assert.doesNotMatch(h, /前の読み方/);
+    } else {
+      assert.match(h, /サーバーが前の版なので、前の読み方（申請した日で 2 か月前まで・1,000 件）で出しています/);
+      assert.doesNotMatch(h, new RegExp(old.code), 'the earlier way misses it (and says so)');
+    }
+  }
 });
 
 test('4B: accounting links the actual (reimbursement) to the pre-approval from the detail; the pre-approval shows its actual; unlink', async () => {

@@ -11,6 +11,7 @@ const M = f => fs.readFileSync(new URL('../supabase/migrations/' + f + '.sql', i
 const MIGS = ['20261104090000_work_requests', '20261105090000_work_requests_eval', '20261106090000_work_requests_apply_claim', '20261107090000_work_requests_ui68', '20261120090000_work_requests_stage2'];
 const CHAT_SQL = M('20261121090000_chat'), FILES_SQL = M('20261124090000_chat_files'), UI79_SQL = M('20261127090000_chat_ui79');
 export const GUARD_SQL = M('20261128090000_chat_guard');
+const FIX_SQL = M('20261129090000_fixes_v1169');   // v1169：関数 v1169 はキー付きのグループをこの SQL（chat_create_group_k）で作る
 
 const PEOPLE = [
   ['E1', 'Cora CEO', 'ceo', 'CEO', 'OFFICE', 'ceo'], ['E2', 'Gabe GM', 'gm', 'General Manager', 'OFFICE', 'gm'], ['E3', 'Ann Acct', 'office', 'Accountant', 'OFFICE', 'office'],
@@ -20,7 +21,7 @@ const PEOPLE = [
 const NAME = Object.fromEntries(PEOPLE.map(p => [p[0], p[1]]));
 const EP = who => 'https://fcm.googleapis.com/fcm/send/dev-' + who;
 
-async function setup({ guard = true, twice = false, push = true } = {}) {
+async function setup({ guard = true, twice = false, push = true, fix = true } = {}) {
   const pg = new PGlite();
   await pg.exec(`create role anon; create role authenticated; create role service_role bypassrls;
     alter default privileges in schema public grant all on tables to anon, authenticated;
@@ -41,7 +42,7 @@ async function setup({ guard = true, twice = false, push = true } = {}) {
   }
   for (const f of MIGS) await pg.exec(M(f));
   await pg.exec(CHAT_SQL); await pg.exec(FILES_SQL); await pg.exec(UI79_SQL);
-  if (guard) { await pg.exec(GUARD_SQL); if (twice) await pg.exec(GUARD_SQL); }
+  if (guard) { await pg.exec(GUARD_SQL); if (twice) await pg.exec(GUARD_SQL); if (fix) await pg.exec(FIX_SQL); }
   await pg.exec('update public.wr_settings set live = true; set role service_role');
   const calls = [], params = [];
   const db = { async rpc(name, p) { calls.push(name); params.push([name, p]); const r = await pg.query(`select public.${name}($1::jsonb) as v`, [JSON.stringify(p ?? {})]); return r.rows[0].v; } };
@@ -73,13 +74,13 @@ async function setup({ guard = true, twice = false, push = true } = {}) {
   return { pg, db, calls, params, call, ok, key, send, msgs, group, pushed, status, flush, q, qx, logins };
 }
 
-test('the SQL needs the UI79 SQL first (STOP), runs twice, says chat 4; the function is fn 10; only the server key can run or read any of it', async () => {
+test('the SQL needs the UI79 SQL first (STOP), runs twice, says chat 4 (5 with the v1169 fixes); the function is fn 11; only the server key can run or read any of it', async () => {
   const pg = new PGlite();
   await pg.exec(`create role anon; create role authenticated; create role service_role bypassrls;`);
   await assert.rejects(pg.exec(GUARD_SQL), /STOP: 先にチャット/);
   const { ok, q } = await setup({ twice: true });
   const me = await ok('E7', { action: 'whoami' });
-  assert.equal(me.fn, 10); assert.equal(me.chat, 4); assert.equal(me.push, true);
+  assert.equal(me.fn, 11); assert.equal(me.chat, 5); assert.equal(me.push, true);
   const fns = ['chat_guard_get', 'chat_pin_begin', 'chat_pin_end', 'chat_pin_save', 'chat_relock', 'chat_key_begin', 'chat_key_end', 'chat_key_save',
     'chat_push_save', 'chat_push_drop', 'chat_push_check', 'chat_push_targets', 'chat_push_result', 'chat_sess_open', 'chat_gate_actor', 'chat_actor', 'chat_find_nokey', 'wr_receipt_from_chat'];
   for (const f of fns) {
@@ -373,8 +374,11 @@ test('without the push keys: no push and starting push says push_off; before the
   assert.equal((await b.call('E7', { action: 'chat_messages', thread: g2.id }, 'a'.repeat(64))).status, 200, 'the mark is ignored by the older SQL');
   assert.equal((await b.send('E6', g2.id, 'hi')).status, 200); await b.flush();
   assert.equal((await b.ok('E7', { action: 'whoami' })).chat, 3);
-  const g3 = await b.group('E7', ['E6'], { key: 'later-key' });
-  assert.equal(g3.key_failed, true, 'the group is made; the key waits for the SQL');
+  // v1169（Codex #164 の P2）：キー付きのグループは、作るのとキーを 1 つの取引で（chat_create_group_k）。SQL がまだなら作らない（守りの無い会話を残さない）
+  const before = (await b.q(`select count(*)::int n from public.chat_threads`))[0].n;
+  assert.deepEqual(await b.call('E7', { action: 'chat_create_group', title: 'Later', members: ['E6'], client_key: b.key(), key: 'later-key' }),
+    { status: 503, body: { error: 'fix_old' } }, 'no group without the key when the SQL is older');
+  assert.equal((await b.q(`select count(*)::int n from public.chat_threads`))[0].n, before, 'nothing was made');
 });
 
 test('helpers: PIN and key shapes, PBKDF2 marks, push hosts, and the VAPID header signs for the endpoint origin and sends no body', async () => {
