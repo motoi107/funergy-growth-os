@@ -389,7 +389,8 @@ test('the change log card: only CEO・GM・経理・事務Crew; the filters go t
   await C.SG.clLoad(true);
   assert.match(C.doc.getElementById('cl-list').innerHTML, /v1151/);
   // the card is in 設定 › 診断と記録 for those who can see it
-  assert.match(source, /if\(full && W\.FUNERGY_SIGNAL && FUNERGY_SIGNAL\.canLog && FUNERGY_SIGNAL\.canLog\(\)\) h \+= card\('ti-history-toggle', T\('変更の記録'/);
+  // v1178（UI案86 の 4：PC は 2 列）から、診断と記録のカードは並べる前に R に積む（中身・出す人は同じ）
+  assert.match(source, /if\(full && W\.FUNERGY_SIGNAL && FUNERGY_SIGNAL\.canLog && FUNERGY_SIGNAL\.canLog\(\)\) (?:h \+= |R\.push\()card\('ti-history-toggle', T\('変更の記録'/);
 });
 
 test('ssCall: the device header goes to secure-state only after it answered clfn:1, and is dropped if the function stops accepting it', async () => {
