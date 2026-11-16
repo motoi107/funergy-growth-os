@@ -4772,32 +4772,44 @@ async function k2SysSave(sid, map, msgOk, tab){
    ・クラウドにこの店の一覧がもうある（ほかの端末が作った）→ 作らずに取り込む（ほかの端末の「外すのをやめた」を新しい時刻の「外す」で戻さない）
    ・クラウドを読めない → 作らない（「もう一度」を出す）
    ・クラウドにも、この端末にも無い → 前の決まりで外していた ID を引き継いで作る */
+/* #179 の Codex（6913975960）の要修正：クラウドの一覧は、ほかの店の保存を待ったあとにも読み直す（待っているあいだにほかの端末が作った一覧を、前の決まりで作り直さない）。
+   読めなければ作らない。返す値：undefined＝読めなかった・null＝無い・オブジェクト＝ある */
+async function k2SysCloudList(sid){
+  var row; try{ row=(typeof wbFetchSetting==='function') ? await wbFetchSetting('kpi_config') : undefined; }catch(e){ row=undefined; }
+  if(row===undefined) return undefined;
+  var cv=row.exists ? row.value : null; try{ if(typeof _stUnwrap==='function') cv=_stUnwrap(cv); }catch(e){}
+  var cl=(cv && typeof cv==='object' && cv.byStore && typeof cv.byStore==='object' && cv.byStore[sid] && typeof cv.byStore[sid]==='object') ? cv.byStore[sid].sysAcct : null;
+  return (cl && typeof cl==='object' && !Array.isArray(cl)) ? cl : null;
+}
 async function k2SysCarry(sid){
   var st=(window._k2SysCarried=window._k2SysCarried||{});
   if(st[sid]==='busy' || st[sid]==='done') return false;
   st[sid]='busy';
   var tab=null; try{ tab=window._kpiTab; }catch(e){ tab=null; }
   var redraw=function(){ try{ if(kpiSameView(sid, tab)) renderPage('kpi_master'); }catch(e){} };
-  var row; try{ row=(typeof wbFetchSetting==='function') ? await wbFetchSetting('kpi_config') : undefined; }catch(e){ row=undefined; }
-  if(row===undefined){ st[sid]='fail'; (window._k2SysCarryWhy=window._k2SysCarryWhy||{})[sid]='read'; redraw(); return false; }
-  var cv=row.exists ? row.value : null; try{ if(typeof _stUnwrap==='function') cv=_stUnwrap(cv); }catch(e){}
-  var cl=(cv && typeof cv==='object' && cv.byStore && typeof cv.byStore==='object' && cv.byStore[sid] && typeof cv.byStore[sid]==='object') ? cv.byStore[sid].sysAcct : null;
-  if(cl && typeof cl==='object' && !Array.isArray(cl)){
-    var ok=false; try{ ok=(typeof pullSettingKey==='function') ? (await pullSettingKey('kpi_config'))===true : false; }catch(e){ ok=false; }
-    st[sid]=ok ? 'done' : 'fail'; redraw(); return false;
+  var why=function(w){ st[sid]='fail'; (window._k2SysCarryWhy=window._k2SysCarryWhy||{})[sid]=w; redraw(); return false; };
+  /* 1 回目：クラウドを読む → 2 回目以降：ほかの店の保存を待ったあとにもう一度読む */
+  for(var round=0; round<2; round++){
+    var cl=await k2SysCloudList(sid);
+    if(cl===undefined) return why('read');
+    if(cl){
+      var ok=false; try{ ok=(typeof pullSettingKey==='function') ? (await pullSettingKey('kpi_config'))===true : false; }catch(e){ ok=false; }
+      st[sid]=ok ? 'done' : 'fail'; if(!ok) (window._k2SysCarryWhy=window._k2SysCarryWhy||{})[sid]='read'; redraw(); return false;
+    }
+    if(k2SysAcctList(sid) || !k2SysCanEdit(sid)){ st[sid]='done'; redraw(); return false; }   /* この端末にはもうある（まだ送れていない）・権限が無い */
+    if(!_k2SysBusy) break;
+    /* v1181（Codex #174 6904393429 の P3-1）：ほかの店の保存の途中（_k2SysBusy）だと k2SysSave は何もせずに false を返すので、
+       先に「済み」にせず、その保存が終わるのを待ってから（クラウドを読み直して）作る */
+    if(round===1) return why('busy');
+    for(var w=0; _k2SysBusy && w<150; w++){ await new Promise(function(res){ setTimeout(res, 200); }); }
+    if(_k2SysBusy) return why('busy');
   }
-  if(k2SysAcctList(sid) || !k2SysCanEdit(sid)){ st[sid]='done'; redraw(); return false; }   /* この端末にはもうある（まだ送れていない）・権限が無い */
-  /* v1181（Codex #174 6904393429 の P3-1）：ほかの店の保存の途中（_k2SysBusy）だと k2SysSave は何もせずに false を返すので、
-     先に「済み」にせず、その保存が終わるのを待ってから作る。作れなかったら（一覧がまだ無い）「もう一度」を出す */
-  for(var w=0; _k2SysBusy && w<150; w++){ await new Promise(function(res){ setTimeout(res, 200); }); }
-  if(k2SysAcctList(sid)){ st[sid]='done'; redraw(); return false; }   /* 待っているあいだにこの端末で作られた */
-  if(_k2SysBusy){ st[sid]='fail'; (window._k2SysCarryWhy=window._k2SysCarryWhy||{})[sid]='busy'; redraw(); return false; }
   var co=k2SysCarryOver(sid), n=Object.keys(co).length;
-  var ok=await k2SysSave(sid, co, n ? t('前の決まりで外していたアカウントを一覧に引き継ぎました（'+n+' 件）','Carried over '+n+' accounts from the earlier rules') : t('一覧を作りました（前の決まりで外していたアカウントは今月・前の月にありません）','List created (no accounts matched the earlier rules)'), tab);
+  var ok2=await k2SysSave(sid, co, n ? t('前の決まりで外していたアカウントを一覧に引き継ぎました（'+n+' 件）','Carried over '+n+' accounts from the earlier rules') : t('一覧を作りました（前の決まりで外していたアカウントは今月・前の月にありません）','List created (no accounts matched the earlier rules)'), tab);
   /* この端末に一覧ができていれば済み（クラウドに送れていなければ k2SysSave の「未保存・もう一度」が出る）。できていなければ「もう一度」 */
   if(k2SysAcctList(sid)) st[sid]='done'; else { st[sid]='fail'; (window._k2SysCarryWhy=window._k2SysCarryWhy||{})[sid]='save'; }
   redraw();
-  return ok;
+  return ok2;
 }
 function k2SysCarryRetry(sid){ try{ if(window._k2SysCarried) delete window._k2SysCarried[sid]; if(window._k2SysCarryWhy) delete window._k2SysCarryWhy[sid]; }catch(e){} return k2SysCarry(sid); }
 function k2SysToggle(sid, id, on){
@@ -5279,7 +5291,7 @@ function kpiCfgUnsavedMsg(lead){
   return t(jp+'クラウドに送れていません（未保存）。もう一度押してください', en+'it was not sent to the cloud (not saved). Please try again');
 }
 /* v1181（#174 の Claude のルーティンの P3-2）：ログアウトで KPI設定の下書き（アップセル対象・トッピング/アップセル比率）を捨てる */
-function kpiDraftReset(){ try{ window._upsEdits=null; window._upsEdit=null; window._upsellDraft=null; }catch(e){} }
+function kpiDraftReset(){ try{ window._upsEdits=null; window._upsEdit=null; window._upsellDraft=null; }catch(e){} }   /* _upsellDraft：店ごとの下書き（#179 の Codex の P2 で店ごとの地図に） */
 /* 保存の答えが来たときに描き直すのは、まだ同じ画面（KPI設定の同じ店・同じタブ）を開いているときだけ（ほかの画面・店を開いていたら描き直さない） */
 function kpiSameView(sid, tab){
   try{ return (typeof curPage!=='undefined' && curPage==='kpi_master') && window._kpiStore===sid && (!tab || window._kpiTab===tab); }catch(e){ return false; }
@@ -105899,24 +105911,34 @@ function saveAlcoholCats(sid){
 /* v1175（UI案84・B）：店ごとに保存（本部も）。クラウドに書けたときだけ「保存しました」。書けなければ「未保存」と「もう一度」 */
 /* v1181（Codex #173 6904392963・#174 6904393429 の P3）：保存の答えを待つあいだに足した・外したチェックは、答えのあとの描き直しで消さない。
    画面のチェックが保存した中身と違えば、この店の下書きとして残し（メモリだけ・ログインした人ごと・ログアウトで捨てる）、「保存していない変更」と出す */
-function upsellDraftFor(sid){
-  var d=window._upsellDraft; var u=''; try{ u=(typeof curUserName!=='undefined' && curUserName) ? String(curUserName) : ''; }catch(e){}
-  return (d && d.sid===sid && d.u===u && Array.isArray(d.vals)) ? d : null;
+/* #179 の Codex（6913975960）の P2：下書きは店ごとに残す（1 つだけだと、ほかの店を保存したときに前の店の下書きを消していた）。
+   ログインした人が変わったら前の人の分は捨てる。保存・全店共通に戻す・描き直しは、その店の分だけを触る */
+function upsellDraftMap(){
+  var u=''; try{ u=(typeof curUserName!=='undefined' && curUserName) ? String(curUserName) : ''; }catch(e){}
+  var D=window._upsellDraft;
+  if(!D || typeof D!=='object' || D._u!==u || !D.by){ D=window._upsellDraft={ _u:u, by:{} }; }
+  return D;
 }
+function upsellDraftFor(sid){
+  var D=window._upsellDraft; var u=''; try{ u=(typeof curUserName!=='undefined' && curUserName) ? String(curUserName) : ''; }catch(e){}
+  if(!D || D._u!==u || !D.by) return null;
+  var v=D.by[sid]; return Array.isArray(v) ? { sid:sid, u:u, vals:v } : null;
+}
+function upsellDraftDrop(sid){ try{ var D=window._upsellDraft; if(D && D.by) delete D.by[sid]; }catch(e){} }
 function upsellKeepDom(sid, saved){
   try{
     var box=document.querySelectorAll('.kpi-upsell'); if(!box || !box.length) return;
     var cur=Array.from(document.querySelectorAll('.kpi-upsell:checked')).map(function(c){ return c.value; });
     var a=cur.slice().sort().join('\n'), b=(saved||[]).slice().sort().join('\n');
-    var u=''; try{ u=(typeof curUserName!=='undefined' && curUserName) ? String(curUserName) : ''; }catch(e){}
-    window._upsellDraft = (a===b) ? null : { sid:sid, u:u, vals:cur };
+    var D=upsellDraftMap();
+    if(a===b) delete D.by[sid]; else D.by[sid]=cur;
   }catch(e){}
 }
 async function saveUpsellGuids(sid){
   var vals = Array.from(document.querySelectorAll('.kpi-upsell:checked')).map(c=>c.value);
   if (!canSetKpiStore(sid)) { showToast('編集権限がありません','warning'); return; }
   var tab=window._kpiTab, seq=(window._upsellSaveSeq=(window._upsellSaveSeq||0)+1);
-  if(upsellDraftFor(sid)) window._upsellDraft=null;   /* 今の画面のチェックを保存する（下書きはここで使い終わる） */
+  upsellDraftDrop(sid);   /* 今の画面のチェックを保存する（この店の下書きはここで使い終わる・ほかの店の下書きは残す） */
   var ok=false; try{ ok=await kpiCfgPush(function(){ setKpiConfigStore(sid,{upsellGuids:vals}); }); }catch(e){ ok=false; }
   if(seq!==window._upsellSaveSeq) return ok;   /* あとで押した保存・全店共通に戻すの答えを待つ（古い答えで状態を書き換えない） */
   window._upsellSaveState={ sid:sid, ok:ok, at:Date.now() };
@@ -105970,7 +105992,7 @@ async function clearKpiCfgStore(sid, key){
   /* v1175（Codex #173 の指摘）：クラウドに書けたときだけ「戻しました」。書けなければ未保存と出す */
   var tab=window._kpiTab;
   /* v1181（Codex #173・#174 の P3）：アップセル対象は保存と同じ世代の番号に入る（古い答えで新しい保存の状態を書き換えない）。下書きも捨てる */
-  var seq=null; if(key==='upsellGuids'){ seq=(window._upsellSaveSeq=(window._upsellSaveSeq||0)+1); if(upsellDraftFor(sid)) window._upsellDraft=null; }
+  var seq=null; if(key==='upsellGuids'){ seq=(window._upsellSaveSeq=(window._upsellSaveSeq||0)+1); upsellDraftDrop(sid); }
   var ok=false; try{ ok=await kpiCfgPush(function(){
     var c=getKpiConfig();
     if(c.byStore && c.byStore[sid]){ delete c.byStore[sid][key]; if(!Object.keys(c.byStore[sid]).length) delete c.byStore[sid]; }
