@@ -302,7 +302,7 @@ test('5 OJT：「×」と正解の丸に押す範囲（PC 32px・タッチ 44px�
 /* ---------- 共通の守り ---------- */
 test('幅をまたいだら描き直す（4 つの画面・箱と入力中は待つ・残せない入力があれば待つ）', () => {
   const src = fnSrc('uiPcWatch1179');
-  assert.match(src, /var pages = \['leadership', 'skill', 'growth_mgr', 'ojt_admin'\];/);
+  assert.match(src, /var pages = \['leadership', 'skill', 'growth_mgr', 'ojt_admin'(, '[a-z_]+')*\];/);   /* v1182 で食材管理・人材の残りを後ろに足した */
   assert.match(src, /if \(\(ov && ov\.classList\.contains\('open'\)\) \|\| typing\) \{ clearTimeout\(on\._t\); on\._t = setTimeout\(on, 1500\); return; \}/);
   assert.match(src, /try \{ done = uiRedrawKeep\(curPage\); \} catch \(e\) \{ \}\n      if \(!done\)/);
   assert.match(src, /add\(mq, on\); add\(window\.matchMedia\('\(max-width:767px\)'\), on\);/);

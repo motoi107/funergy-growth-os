@@ -82,11 +82,12 @@ const toasts = page => page.evaluate(() => Array.from(document.querySelectorAll(
 {
   const { ctx, page, errors } = await open('gm');
   await login(page, 'OFFICE', D.login.gm);
+  await page.evaluate(() => { window._u11HrTab = 'apps'; });   /* v1182（UI案88）：応募者は「応募者」のタブ */
   const t = await goWait(page, 'hiring', /Hana Applicant/);
   ok('GM: the hiring page lists every applicant (from the function)', ['Hana Applicant', 'Ivo Applicant', 'Jo Applicant', 'Kim Applicant', 'Lou Again'].every(n => t.includes(n)), t.length);
   ok('GM: the name with HTML is shown as text', t.includes(XSS_NAME));
   ok('GM: every applicant and reject entry is on the device', (await onDevice(page, 'applicants') || []).length === 6 && (await onDevice(page, 'reject_log') || []).length === 3);
-  ok('GM: “過去応募履歴あり” for the applicant rejected at another store', /過去応募履歴あり|過去に不採用/.test(t));
+  ok('GM: “過去応募履歴あり” for the applicant rejected at another store', /過去応募履歴あり|過去に不採用/.test(t) || await page.evaluate(() => [...document.querySelectorAll('#main-content [title="過去応募履歴あり"]')].some(e => /Lou Again/.test(e.closest('tr, .u9-sprow, .card').innerText))));   /* v1182：表では「過去応募」の印（title に過去応募履歴あり） */
   // 画面から足す
   await page.locator('button', { hasText: '応募者を追加' }).first().click(); await sleep(500);
   await page.fill('#ap-name', 'Mia Walkin');
@@ -114,6 +115,7 @@ const toasts = page => page.evaluate(() => Array.from(document.querySelectorAll(
 {
   const { ctx, page, errors } = await open('sl');
   await login(page, D.login.slStore, D.login.sl);
+  await page.evaluate(() => { window._u11HrTab = 'apps'; });   /* v1182（UI案88）：応募者は「応募者」のタブ */
   const t = await goWait(page, 'hiring', /Ivo Applicant/);
   ok('SL: their store\'s applicants (brand and store name)', t.includes('Ivo Applicant') && t.includes('Jo Applicant') && t.includes('Lou Again'), t.length);
   ok('SL: nothing from other stores or 未分類', !t.includes('Mia Walkin') && !t.includes('Kim Applicant'));

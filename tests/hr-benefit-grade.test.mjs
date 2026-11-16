@@ -35,7 +35,9 @@ function fnSrc(name) {
 }
 // A top-level function ends at the first line that is only "}" (the brace scanner above trips on some long template strings)
 function topFn(name) { const i = SRC.search(new RegExp('^(async )?function ' + name + '\\(', 'm')); if (i < 0) throw new Error('not found: ' + name); return SRC.slice(i, SRC.indexOf('\n}\n', i) + 2); }
-function anyFn(name) { try { const t = fnSrc(name); new Function(t); return t; } catch (e) { return topFn(name); } }
+// v1182：括弧を数える読み方が長い文字列で迷うと、ほかの関数（行頭の function）まで読み込んで通ってしまうことがある（renderHR）。
+// そのときは行頭の "}" までの読み方を使う。
+function anyFn(name) { try { const t = fnSrc(name); if (/\nfunction /.test(t)) throw new Error('overrun'); new Function(t); return t; } catch (e) { return topFn(name); } }
 function blockSrc(start) { const i = SRC.indexOf(start); if (i < 0) throw new Error('not found: ' + start); let d = 0, j = SRC.indexOf('{', i); for (; j < SRC.length; j++) { if (SRC[j] === '{' || SRC[j] === '[') d++; else if (SRC[j] === '}' || SRC[j] === ']') { d--; if (d === 0) break; } } return SRC.slice(i, SRC.indexOf(';', j) + 1); }
 
 const FNS = ['ghNormG', 'ghDate', 'ghT', 'ghAdd', 'ghDays', 'ghHire', 'ghResign', 'ghAll', 'ghCmp', 'ghRecs', 'ghTimeline', 'ghSegments', 'gradeOf', 'gradeNum', 'empGrade',
