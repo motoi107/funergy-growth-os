@@ -178,7 +178,7 @@ test('2 パイプライン：組織図はたたみ、開いたかはこの端末
 /* ---------- 3. スキル ---------- */
 test('3 スキル：店ごとの点・Lv3・未習得・次に取り組む／プレップの人は点を出さない／書きかけのコメントを聞く', () => {
   const c = u9Ctx(1440, { empStoresOf: e => e.stores, skillScoreStore: (n, s) => ({ total: s === 'S1' ? 5 : 2, lv3: 1 }), getEmpSkillsStore: () => ({ Grill: { status: '承認', level: 2 } }),
-    getStorePositions: () => ['Grill', 'Fry', 'Host'], nextSkillSuggestions: () => ['「Fry」を習得（→Lv1）'], effectiveTipRate: n => n === 'B' ? 0 : 90, skillPosId: n => String(n) }, ['u9SkillStat', 'u9SkillListHtml', 'u9SkillGuard', 'u9DraftMark', 'sevnHasDraft', 'sevnDraft', 'sevnDraftMap', 'sevnKeep']);
+    getStorePositions: () => ['Grill', 'Fry', 'Host'], nextSkillSuggestions: () => ['「Fry」を習得（→Lv1）'], effectiveTipRate: n => n === 'B' ? 0 : 90, skillPosId: n => String(n) }, ['u9SkillStat', 'u9SkillListHtml', 'u9SkillGuard', 'u9DraftMark', 'sevnHasDraft', 'sevnDraft', 'sevnDraftMap', 'sevnKeep', 'sevnCollect']);
   assert.deepEqual(JSON.parse(JSON.stringify(c.u9SkillStat({ name: 'A', stores: ['S1', 'S2'] }, 'ALL'))), { total: 7, lv3: 2, zero: 4, next: '「Fry」を習得（→Lv1）', stores: ['S1', 'S2'] });
   assert.equal(c.u9SkillStat({ name: 'A', stores: ['S1', 'S2'] }, 'S2').total, 2, '店を選んだらその店だけ');
   assert.equal(c.u9SkillStat({ name: 'P', prep: true, stores: ['S1'] }, 'ALL').total, null);
@@ -188,7 +188,7 @@ test('3 スキル：店ごとの点・Lv3・未習得・次に取り組む／プ
   assert.match(h, /<td>No<\/td>/); assert.match(h, /<td>90%<\/td>/); assert.match(h, /プレップ評価/);
   assert.equal(c.u9St().guard.skill, c.u9SkillGuard);
   /* v1180：書きかけは人ごとに残すので聞かない（tests/skill-comment-v1180.test.mjs） */
-  const c3 = u9Ctx(1440, { document: { querySelector: () => null, querySelectorAll: () => [] }, confirm: () => { throw new Error('聞かない'); } }, ['u9SkillGuard', 'sevnKeep', 'sevnDraftMap']);
+  const c3 = u9Ctx(1440, { document: { querySelector: () => null, querySelectorAll: () => [] }, confirm: () => { throw new Error('聞かない'); } }, ['u9SkillGuard', 'sevnKeep', 'sevnCollect', 'sevnDraftMap']);
   assert.equal(c3.u9SkillGuard(), true);
   const src = fnSrc('renderSkillStaffView');
   assert.match(src, /uiPcWatch1179\(\)/); assert.match(src, /u9SkillListHtml\(staff, selStore, _m9/); assert.match(src, /u9Page\('skill', staff\)/);

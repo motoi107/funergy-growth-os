@@ -133,6 +133,32 @@ const toastsOf = page => page.evaluate(() => [...document.querySelectorAll('.toa
   await page.evaluate(() => { const b = document.querySelector('#u9p-skill button[onclick="skillEvalDelBtn(this)"]'); if (b) b.click(); }); await sleep(1100);
   page._acceptNext = false;
   ok(tag + '：削除すると 1 件減る（確かめのあと）', await logN(page, first) === n0 && dialogs.some(d => /削除しますか/.test(d)), { n: await logN(page, first) });
+  /* #178 の Codex の P2-1：狭い幅で箱に書く → 閉じる（箱の欄は #modal-body に残る）→ 広げて PC のパネルで追記 → ほかの人 → 戻る */
+  const pickId = async id => { await page.evaluate(id => { const tr = [...document.querySelectorAll('#main-content tr.u9-row')].find(r => r.getAttribute('data-u9id') === id); tr.click(); }, id); await sleep(400); };
+  await page.setViewportSize({ width: 390, height: 844 }); await sleep(2500);
+  await page.evaluate(n => { const b = [...document.querySelectorAll('#main-content .u9-sprow')].find(x => x.getAttribute('data-u9id') === n); b.click(); }, first); await sleep(900);
+  await page.click('#modal-body textarea[id^="sevn-"]'); await page.keyboard.type('狭い幅の文'); await sleep(200);
+  await closeBox(page); await sleep(500);
+  await page.setViewportSize({ width: 1440, height: 900 }); await sleep(2500);
+  const stale = await page.evaluate(() => { const ov = document.getElementById('modal-overlay'); const t = document.querySelector('#modal-body textarea[id^="sevn-"]'); return { closed: !(ov && ov.classList.contains('open')), staleTa: t ? t.value : null }; });
+  ok(tag + '：#178 前提：閉じた箱に古い欄が残っている（この試験がその道を通る）', stale.closed && stale.staleTa === '狭い幅の文', stale);
+  await pickId(first);
+  ok(tag + '：#178 広げるとパネルに箱で書いた文', await panelTa(page) === '狭い幅の文', await panelTa(page));
+  await page.click('#u9p-skill textarea[id^="sevn-"]'); await page.keyboard.press('End'); await page.keyboard.type('・PCで追記'); await sleep(200);
+  await pickRow(page, 3); await pickId(first);
+  ok(tag + '：#178 P2-1：ほかの人へ移って戻っても追記が残る（閉じた箱の古い欄で戻さない）', await panelTa(page) === '狭い幅の文・PCで追記', await panelTa(page));
+  await page.fill('#u9q-skill', 'zzzz'); await sleep(1300); await page.fill('#u9q-skill', ''); await sleep(1300); await pickId(first);
+  ok(tag + '：#178 P2-1：名前で探して描き直しても追記が残る', await panelTa(page) === '狭い幅の文・PCで追記', await panelTa(page));
+  /* #178 の Codex の P2-2：この端末に保存できないとき（容量不足など）は欄を残し、成功と言わない */
+  const nB = await logN(page, first);
+  await page.evaluate(() => { window._lsSetOrig178 = lsSet; window.lsSet = function (k, v) { if (k === 'skill_eval_log') return false; return window._lsSetOrig178(k, v); }; });
+  await page.evaluate(() => [...document.querySelectorAll('#u9p-skill button')].find(b => /記録/.test(b.innerText)).click()); await sleep(900);
+  const tf = await toastsOf(page);
+  ok(tag + '：#178 P2-2：保存できないと欄も書きかけも残り、「記録しました」と出さない', await logN(page, first) === nB && await panelTa(page) === '狭い幅の文・PCで追記' && /保存できませんでした/.test(tf) && !/記録しました/.test(tf) && await page.evaluate(id => sevnHasDraft(id), first), { n: await logN(page, first), ta: await panelTa(page), tf });
+  await page.evaluate(() => { window.lsSet = window._lsSetOrig178; });
+  await page.evaluate(() => [...document.querySelectorAll('#u9p-skill button')].find(b => /記録/.test(b.innerText)).click()); await sleep(1100);
+  await pickId(first);
+  ok(tag + '：#178 P2-2：保存できるようになったら同じ欄でもう一度押せる', await logN(page, first) === nB + 1 && await panelTa(page) === '', { n: await logN(page, first), ta: await panelTa(page) });
   /* ログアウトで書きかけと選んだ人を消す */
   await page.click('#u9p-skill textarea[id^="sevn-"]').catch(() => {}); await page.keyboard.type('x');
   const lo = await page.evaluate(() => { window._forceLogout = true; doLogout(); return { d: window._sevnDraft, u: window._u9 }; });

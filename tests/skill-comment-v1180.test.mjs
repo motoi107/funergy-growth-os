@@ -17,7 +17,7 @@ function fnSrc(name, from = 0) {
 }
 const esc = x => String(x == null ? '' : x).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 const U9_BASE = ['arMode', 'u9Mode', 'u9St', 'u9Reset', 'u9Page', 'u9Pager', 'u9GoPage', 'u9SetF', 'u9SetV', 'u9QMatch', 'u9SearchHtml', 'u9TableHtml', 'u9Pick', 'u9SpListHtml', 'u9StoreName', 'u9Q'];
-const SEVN = ['sevnDraftMap', 'sevnKeep', 'sevnDraft', 'sevnHasDraft', 'u9DraftMark', 'u9DraftMarkSync', 'u9SkillGuard'];
+const SEVN = ['sevnDraftMap', 'sevnKeep', 'sevnCollect', 'sevnDraft', 'sevnHasDraft', 'u9DraftMark', 'u9DraftMarkSync', 'u9SkillGuard'];
 const mm = w => q => { const m = q.match(/\((min|max)-width:\s*(\d+)px\)/); const v = +m[2]; return { matches: m[1] === 'min' ? w >= v : w <= v, addEventListener() {} }; };
 function ctx(extra = {}, fns = [], width = 1440) {
   const c = { Math, Number, String, Object, Array, JSON, isNaN, isFinite, parseInt, parseFloat, console, Date, RegExp,
@@ -78,8 +78,9 @@ test('P2-2：ほかの人を開く・ページ送り・名前で探す・店の�
   assert.match(h, /<textarea id="sevn-A"[^>]*oninput="sevnKeep\(this\)">書いている途中<\/textarea>/);
   l.window._sevnDraft = { _u: 'Moto', 'sevn-A': '</textarea><img src=x onerror=alert(1)>' };
   assert.match(l.skillEvalSectionHtml('A'), /&lt;\/textarea&gt;&lt;img src=x onerror=alert\(1\)&gt;<\/textarea>/, '書きかけは文字として戻す');
-  /* u9SkillListHtml は描き直す前に、まだ画面にある欄を残す */
-  assert.match(fnSrc('u9SkillListHtml'), /querySelectorAll\('textarea\[id\^="sevn-"\]'\)\.forEach\(function\(ta\)\{ sevnKeep\(ta\); \}\)/);
+  /* u9SkillListHtml は描き直す前に、まだ画面にある欄を残す（#178 の直し：閉じた箱の古い欄・打っていない欄は除く sevnCollect） */
+  assert.match(fnSrc('u9SkillListHtml'), /\bsevnCollect\(\);/);
+  assert.match(fnSrc('u9SkillGuard'), /\bsevnCollect\(\);/);
 });
 
 test('一覧の印：書きかけのある人に「書きかけ」（PC の名前の列・スマホの行）', () => {
@@ -172,4 +173,83 @@ test('P3：スマホの OJT の「章を開いている」は OJT の種類ご�
   const h = c.u9GmStaffHtml();
   assert.equal(calls, 30, '並べるときに getEmpSkills は 1 人 1 回');
   assert.match(h, /data-u9id="P/);
+});
+
+/* ---- #178（v1180）の Codex（6912814353）の P2 2 つ ---- */
+/* 画面の欄の代わり：closest('#modal-body') と defaultValue（描いたときの値）を持つ */
+const mkTa = (id, value, o = {}) => ({ id, value, defaultValue: o.dv, closest: s => (o.box && s === '#modal-body') ? {} : null, getAttribute: () => null });
+const docWith = (tas, boxOpen) => ({ querySelector: () => null, querySelectorAll: s => /sevn-/.test(s) ? tas : [],
+  getElementById: id => id === 'modal-overlay' ? { classList: { contains: c => c === 'open' && !!boxOpen } } : null });
+
+test('#178 P2-1：狭い幅で箱に書く → 閉じる → PC のパネルで追記 → ほかの人へ：閉じた箱に残った古い欄で新しい書きかけを戻さない（Codex の手順）', () => {
+  const tas = [];
+  const c = ctx({ confirm: () => { throw new Error('聞かない'); } });
+  c.document = docWith(tas, true);
+  /* 箱（スマホの幅）で書く → 箱を閉じる（closeModalDirect は open を外すだけで、中の欄は #modal-body に残る） */
+  const boxTa = mkTa('sevn-B', '', { box: true, dv: '' }); boxTa.value = '最初の文'; c.sevnKeep(boxTa);
+  c.document = docWith(tas, false);
+  /* 幅を広げて PC のパネルで追記（描いたときは書きかけの「最初の文」） */
+  const pcTa = mkTa('sevn-B', '最初の文', { dv: '最初の文' }); pcTa.value = '最初の文。追記した文'; c.sevnKeep(pcTa);
+  /* 画面の並び：パネルの欄 → 閉じた箱の欄（#modal-body は下にある） */
+  tas.push(pcTa, boxTa);
+  assert.equal(c.u9SkillGuard(), true);
+  assert.equal(c.sevnDraft('sevn-B'), '最初の文。追記した文', 'ほかの人を開いても新しい書きかけのまま');
+  /* 一覧の描き直し（ページ送り・探す・店）の前の収集も同じ */
+  c.sevnCollect(); assert.equal(c.sevnDraft('sevn-B'), '最初の文。追記した文');
+});
+
+test('#178 P2-1：閉じた箱の欄は集めない（守り 1）・打っていない欄は集めない（守り 2）・打った欄は集める', () => {
+  /* 守り 1 だけで止まる形：閉じた箱の欄が描いたときと違う値（印も無い）でも、箱が閉じていれば集めない */
+  let c = ctx(); c.sevnKeep(mkTa('sevn-B', '新しい'));
+  c.document = docWith([mkTa('sevn-B', '古い', { box: true, dv: '' })], false);
+  c.sevnCollect(); assert.equal(c.sevnDraft('sevn-B'), '新しい', '閉じた箱の欄は使わない');
+  /* 箱が開いていれば、箱の欄の打った文を集める */
+  c = ctx();
+  c.document = docWith([mkTa('sevn-B', '箱で打った', { box: true, dv: '' })], true);
+  c.sevnCollect(); assert.equal(c.sevnDraft('sevn-B'), '箱で打った');
+  /* 守り 2 だけで止まる形：箱の外の欄でも、描いたときの値のまま（打っていない）なら集めない */
+  c = ctx(); c.sevnKeep(mkTa('sevn-B', '新しい'));
+  c.document = docWith([mkTa('sevn-B', '古い', { dv: '古い' })], false);
+  c.sevnCollect(); assert.equal(c.sevnDraft('sevn-B'), '新しい', '描いたままの欄で上書きしない');
+  /* 最後に残した文のままの欄も集めない（_sevnLast） */
+  c = ctx(); const ta = mkTa('sevn-B', '', { dv: '' }); ta.value = 'A'; c.sevnKeep(ta); c.sevnKeep(mkTa('sevn-B', 'AB'));
+  c.document = docWith([ta], false); c.sevnCollect(); assert.equal(c.sevnDraft('sevn-B'), 'AB');
+  /* 打ったのに残っていない欄（入力の知らせが来なかった）は集める */
+  c = ctx(); c.document = docWith([mkTa('sevn-C', '打った', { dv: '' })], false);
+  c.sevnCollect(); assert.equal(c.sevnDraft('sevn-C'), '打った');
+  /* 中身を消した欄（描いたときは書きかけ）は書きかけも消す */
+  c = ctx(); c.sevnKeep(mkTa('sevn-D', '書きかけ'));
+  c.document = docWith([mkTa('sevn-D', '', { dv: '書きかけ' })], false);
+  c.sevnCollect(); assert.equal(c.sevnDraft('sevn-D'), '');
+});
+
+test('#178 P2-2：この端末に保存できなかったら、欄も書きかけも残し、成功と言わない・描き直さない（もう一度押せる）', () => {
+  const c = logCtx([]);
+  c.lsSet = () => false;   /* 容量不足などで保存できない */
+  const el = { id: 'sevn-B', value: '保存できない文', closest: s => s === '#modal-body' ? {} : null, getAttribute: () => null };
+  c.document.getElementById = () => el;
+  c.sevnKeep(el);
+  c.submitSkillEvalNote('B', 'sevn-B');
+  assert.equal(el.value, '保存できない文', '欄は残す'); assert.equal(c.sevnDraft('sevn-B'), '保存できない文', '書きかけも残す');
+  assert.equal(c.toasts.at(-1)[1], 'error'); assert.ok(!c.toasts.some(x => x[1] === 'success'), '「記録しました」と言わない');
+  assert.deepEqual(c.renders, []); assert.deepEqual(c.opened, []);
+  assert.equal(c.addSkillEvalNote('B', 'x'), null, '保存できなかったら null'); assert.equal(c.addSkillEvalNote('B', '  '), false, '空なら false');
+  /* 保存できるようになったら同じ欄でもう一度押せる */
+  c.lsSet = (k, v) => { c.store[k] = JSON.parse(JSON.stringify(v)); return true; };
+  c.submitSkillEvalNote('B', 'sevn-B');
+  assert.equal(c.store.skill_eval_log.B.length, 1); assert.equal(c.store.skill_eval_log.B[0].text, '保存できない文');
+  assert.equal(el.value, ''); assert.equal(c.sevnDraft('sevn-B', ''), ''); assert.equal(c.toasts.at(-1)[1], 'success');
+});
+
+test('#178 P2-2：削除を保存できなかったら「削除しました」と言わない・描き直さない', () => {
+  const A = { date: '11/01', by: 'GM', text: 'a' };
+  const c = logCtx([A], { confirm: () => true });
+  c.lsSet = () => false;
+  const b = { getAttribute: k => ({ 'data-n': 'B', 'data-i': '0', 'data-fp': c.skillEvalFp(A) })[k], closest: () => null };
+  c.skillEvalDelBtn(b);
+  assert.equal(c.toasts.at(-1)[1], 'error'); assert.ok(!c.toasts.some(x => x[1] === 'success'));
+  assert.deepEqual(c.renders, []); assert.equal(c.store.skill_eval_log.B.length, 1);
+  assert.equal(c.deleteSkillEvalNote('B', 0), null); assert.equal(c.deleteSkillEvalNote('Z', 0), false); assert.equal(c.deleteSkillEvalNote('B', 5), false);
+  c.lsSet = (k, v) => { c.store[k] = JSON.parse(JSON.stringify(v)); return true; };
+  c.skillEvalDelBtn(b); assert.equal(c.store.skill_eval_log.B.length, 0); assert.equal(c.toasts.at(-1)[1], 'success'); assert.deepEqual(c.renders, ['skill']);
 });
