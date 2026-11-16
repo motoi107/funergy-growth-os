@@ -5,7 +5,7 @@
 1. 済（Moto さん 15:46 HST）：UI案85 の答え。済（Claude・ブランチ `claude/ui85-1177`）：v1177＝予実の残り・ダッシュボード（`docs/PC_SP_LAYOUT_JA.md` の 13）。済（Moto さん 11/15 21:02 HST）：#175 をマージ。次（Moto さん）：端末を新しい版に → 実機（iPhone で日次進捗のタイルとたたみ・PC でマイページの 2 列）。
 2. 済（Moto さん 16:33 HST「全部A」）：UI案86（経理・設定）。済（Claude・ブランチ `claude/ui86-1178`）：v1178（`docs/PC_SP_LAYOUT_JA.md` の 14）。済（Moto さん 11/15 21:02 HST）：#176 をマージ。次（Moto さん）：端末を新しい版に → 実機。
 2b. 済（Claude）：#175 の Codex（6906965380）・ルーティン（6906905900）の P2 2 つ（未保存の入力を描き直しで消さない・新しいタイルの並びは `.kpi-wrap` の中だけ）を `claude/ui85-1177` で直した（13b）。済：#175 の最後の head の Codex（P1・P2 なし・P3 だけ）→ P3 は v1179 で直した。
-3. 済（Claude 11/15）：UI案87（Career Score・スキル・成長管理・OJT・8 枚・決めてほしいこと 5・推奨は A）。済（Moto さん 11/15 20:51 HST「次は全部Aいきます」）：答え。済（Moto さん 21:02 HST）：#175・#176 をマージ。済（Claude・ブランチ `claude/ui87-1179`）：v1179（`docs/PC_SP_LAYOUT_JA.md` の 15・#175／#176 の Codex の P3 も）。次：PR → Codex → マージ → 端末を 1179 に → 実機（iPhone で Career Score の箱・OJT の 1 章・PC で表とパネル）。そのあと 1・4。
+3. 済（Claude 11/15）：UI案87（Career Score・スキル・成長管理・OJT・8 枚・決めてほしいこと 5・推奨は A）。済（Moto さん 11/15 20:51 HST「次は全部Aいきます」）：答え。済（Moto さん 21:02 HST）：#175・#176 をマージ。済（Claude・ブランチ `claude/ui87-1179`）：v1179（`docs/PC_SP_LAYOUT_JA.md` の 15・#175／#176 の Codex の P3 も）・PR #177。次：Codex → マージ → 端末を 1179 に → 実機（iPhone で Career Score の箱・OJT の 1 章・PC で表とパネル）。そのあと 1・4。
 4. 次（Claude・小さい直し）：#173・#174 の Codex（6904392963・6904393429）の P3＝古い「トッピング/アップセル比率」のカードの保存待ちのあいだのチェック（`saveUpsellGuids`）・「全店共通に戻す」を保存の世代に（`clearKpiCfgStore`）・業務用アカウントの一覧の初期化（`k2SysCarry` が保存前に「済み」）。Claude のルーティンの P3（booting・deferred の文言・ログアウトで下書きを捨てる・ID の無い前の勤怠の名前の説明）。
 5. まだ（Moto さん）：v1176 の手順（`deploy/upsell-v1176/手順.md`）・11 月の取り込み直し・本物の注文明細との照合。PL の手順は SQL が先。
 
