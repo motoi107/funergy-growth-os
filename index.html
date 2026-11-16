@@ -13041,7 +13041,7 @@ if(typeof window.FUNERGY_WEB_OFFICE_WRITE==='function')window.FUNERGY_WEB_OFFICE
   // 本番移行フェーズ1: マスターはSupabaseにも書き込む（両方書き込み・安全策）
   // 端末に保存できなかった場合でも push は行う。ここで送っておかないと入力内容がどこにも残らない。
   try{ if(SUPA_SYNC_ENABLED && !(typeof _supaBooting!=='undefined' && _supaBooting) && _prevTxt!==_json && typeof _pendEditAtMark==='function') _pendEditAtMark(key, _prevTxt, _json); }catch(e){}   /* v1136 */
-  try { if (SUPA_SYNC_ENABLED) _pushWithOutbox(key, val); } catch(e){ console.warn('supa sync skip', e); }
+  try { if (SUPA_SYNC_ENABLED) { _pushWithOutbox(key, val); try { window._lsPushSeq = (window._lsPushSeq || 0) + 1; (window._lsPushed || (window._lsPushed = {}))[key] = window._lsPushSeq; } catch (_) {} } } catch(e){ console.warn('supa sync skip', e); }   /* #178 の Codex（再レビュー）の P2：送ったかを呼ぶ側が見分けられるように（端末に保存できなくても送っている） */
   return _ok;
 }).apply(this,arguments);
 }
@@ -104981,30 +104981,55 @@ function nextSkillSuggestions(name, sid){
 }
 /* 評価コメントログ（従業員別・per-name同期） */
 function getSkillEvalLog(name){ var m=ls('skill_eval_log',{}); return (m[name]||[]).slice(); }
-function addSkillEvalNote(name, text){
+function addSkillEvalNote(name, text, op){
   text=String(text||'').trim(); if(!text) return false;
   var m=ls('skill_eval_log',{}); if(!m[name]) m[name]=[];
-  m[name].push({date:nowJP(), by:(ROLE_CONFIG[curRole]||{}).name||curUserName||curRole, text:text});
-  /* #178 の Codex の P2-2：保存できたかを返す（true＝保存した・false＝空・null＝この端末に保存できなかった＝容量不足など） */
-  return lsSet('skill_eval_log', m) === false ? null : true;
+  /* #178 の Codex（再レビュー）の P2：同じ操作（同じ番号）がもう入っていれば足さない（送ったあとクラウドから取り込んでから押し直したとき） */
+  if(op && m[name].some(function(en){ return en && en.id === op; })) return 'had';
+  var en={date:nowJP(), by:(ROLE_CONFIG[curRole]||{}).name||curUserName||curRole, text:text}; if(op) en.id=op;
+  m[name].push(en);
+  /* true＝保存した・false＝空・'had'＝もう入っている・'sent'＝この端末には保存できなかったがクラウドへは送った・null＝保存も送信もできなかった */
+  return skillEvalWrite(name, m);
 }
 function deleteSkillEvalNote(name, idx){
-  /* 同じく：true＝消して保存した・false＝無い・null＝保存できなかった */
-  var m=ls('skill_eval_log',{}); if(!m[name]) return false; if(idx>=0&&idx<m[name].length){ m[name].splice(idx,1); return lsSet('skill_eval_log', m) === false ? null : true; }
+  /* 同じく：true＝消して保存した・false＝無い・'sent'＝この端末には保存できなかったが削除は送った・null＝保存も送信もできなかった */
+  var m=ls('skill_eval_log',{}); if(!m[name]) return false; if(idx>=0&&idx<m[name].length){ m[name].splice(idx,1); return skillEvalWrite(name, m); }
   return false;
 }
+/* #178 の Codex（再レビュー）の P2：lsSet は端末に保存できなくてもクラウドへ送る。送ったか（'sent'）・送っていないか（null）を分けて返す */
+function skillEvalWrite(name, m){
+  var s0 = window._lsPushSeq || 0;
+  if (lsSet('skill_eval_log', m) !== false) return true;
+  var P = window._lsPushed || {}, pk = (typeof _splitPrefix === 'function' ? _splitPrefix('skill_eval_log') : 'spl_skill_eval_log_') + name;
+  return ((P[pk] || 0) > s0 || (P.skill_eval_log || 0) > s0) ? 'sent' : null;
+}
+/* 同じ欄の同じ文の「記録」は同じ番号（押し直しても 2 件にしない）。文を変えたら新しい番号 */
+function sevnOpFor(elId, text){
+  var D = sevnDraftMap(), k = 'op:' + elId, p = D[k];
+  if (p && p.text === text) return p.op;
+  var op = 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  D[k] = { op: op, text: text };
+  return op;
+}
+function sevnOpClear(elId){ try { delete sevnDraftMap()['op:' + elId]; } catch (e) {} }
 function submitSkillEvalNote(name, elId){
   var el=document.getElementById(elId); if(!el) return;
   var inBox = !!(el.closest && el.closest('#modal-body'));
-  var r = addSkillEvalNote(name, el.value);
-  if(r === true){
-    el.value=''; try{ delete sevnDraftMap()[elId]; }catch(e){} u9DraftMarkSync(name);   /* v1180：同じ文をもう一度送らない */
-    showToast(t('評価コメントを記録しました','Comment saved'),'success'); skillEvalRefresh(name, inBox);
+  var txt = String(el.value || '').trim();
+  var r = addSkillEvalNote(name, el.value, txt ? sevnOpFor(elId, txt) : '');
+  if(r === true || r === 'had'){
+    el.value=''; try{ delete sevnDraftMap()[elId]; }catch(e){} sevnOpClear(elId); u9DraftMarkSync(name);   /* v1180：同じ文をもう一度送らない */
+    showToast(r === 'had' ? t('このコメントはもう記録されています（前に押した分が届いていました）','This comment is already saved (your earlier save arrived)') : t('評価コメントを記録しました','Comment saved'),'success'); skillEvalRefresh(name, inBox);
+  }
+  else if(r === 'sent'){
+    /* #178 の Codex（再レビュー）の P2：送ってはいる。入力と番号を残す（もう一度押しても同じ番号なので 2 件にならない） */
+    try { sevnKeep(el); } catch (e) {}
+    showToast(t('この端末には保存できませんでしたが、クラウドへは送っています。届いたかは右上の「保存」で確かめてください。入力は残しています（同じ文でもう一度押しても 2 件にはなりません）','Could not save on this device, but it was sent to the cloud. Check the save status at the top right. Your text is kept (pressing Save again will not add it twice)'),'warning');
   }
   else if(r === null){
-    /* #178 の Codex の P2-2：保存できなかったら入力と書きかけは残す（もう一度押せる） */
+    /* #178 の Codex の P2-2：保存も送信もできなかったら入力と書きかけは残す（もう一度押せる） */
     try { sevnKeep(el); } catch (e) {}
-    showToast(t('この端末に保存できませんでした。入力は残しています。容量を整理してから、もう一度「記録」を押してください','Could not save on this device. Your text is kept — free up storage and press Save again'),'error');
+    showToast(t('この端末に保存できず、クラウドへも送っていません。入力は残しています。容量を整理してから、もう一度「記録」を押してください','Not saved on this device and not sent to the cloud. Your text is kept — free up storage and press Save again'),'error');
   }
   else showToast(t('コメントを入力してください','Please enter a comment'),'warning');   /* 失敗したら入力は残す */
 }
@@ -105025,7 +105050,8 @@ function skillEvalDelBtn(btn){
   else { for (var i = log.length - 1; i >= 0; i--) { if (skillEvalFp(log[i]) === fp) { real = i; break; } } }
   if (real < 0) { showToast(t('このコメントはもうありません（ほかで消されたか、変わりました）','This comment is no longer there'),'warning'); skillEvalRefresh(name, inBox); return; }
   var r = deleteSkillEvalNote(name, real);
-  if (r === null) { showToast(t('この端末に保存できなかったので、削除していません。容量を整理してから、もう一度押してください','Could not save on this device, so the comment was not deleted. Free up storage and try again'),'error'); return; }   /* #178 の Codex の P2-2 */
+  if (r === null) { showToast(t('この端末に保存できず、クラウドへも送っていないので、削除していません。容量を整理してから、もう一度押してください','Not saved on this device and not sent to the cloud, so the comment was not deleted. Free up storage and try again'),'error'); return; }   /* #178 の Codex の P2-2 */
+  if (r === 'sent') { showToast(t('この端末には保存できませんでしたが、削除はクラウドへ送っています。届いたかは右上の「保存」で確かめてください（この端末ではまだ残って見えます）','Could not save on this device, but the delete was sent to the cloud. Check the save status at the top right (it may still show here)'),'warning'); return; }   /* #178 の Codex（再レビュー）の P2：「削除していません」と言い切らない */
   showToast(t('コメントを削除しました','Comment deleted'),'success');
   skillEvalRefresh(name, inBox);
 }

@@ -154,11 +154,25 @@ const toastsOf = page => page.evaluate(() => [...document.querySelectorAll('.toa
   await page.evaluate(() => { window._lsSetOrig178 = lsSet; window.lsSet = function (k, v) { if (k === 'skill_eval_log') return false; return window._lsSetOrig178(k, v); }; });
   await page.evaluate(() => [...document.querySelectorAll('#u9p-skill button')].find(b => /記録/.test(b.innerText)).click()); await sleep(900);
   const tf = await toastsOf(page);
-  ok(tag + '：#178 P2-2：保存できないと欄も書きかけも残り、「記録しました」と出さない', await logN(page, first) === nB && await panelTa(page) === '狭い幅の文・PCで追記' && /保存できませんでした/.test(tf) && !/記録しました/.test(tf) && await page.evaluate(id => sevnHasDraft(id), first), { n: await logN(page, first), ta: await panelTa(page), tf });
+  ok(tag + '：#178 P2-2：保存できないと欄も書きかけも残り、「記録しました」と出さない', await logN(page, first) === nB && await panelTa(page) === '狭い幅の文・PCで追記' && /保存できず/.test(tf) && !/記録しました/.test(tf) && await page.evaluate(id => sevnHasDraft(id), first), { n: await logN(page, first), ta: await panelTa(page), tf });
   await page.evaluate(() => { window.lsSet = window._lsSetOrig178; });
   await page.evaluate(() => [...document.querySelectorAll('#u9p-skill button')].find(b => /記録/.test(b.innerText)).click()); await sleep(1100);
   await pickId(first);
   ok(tag + '：#178 P2-2：保存できるようになったら同じ欄でもう一度押せる', await logN(page, first) === nB + 1 && await panelTa(page) === '', { n: await logN(page, first), ta: await panelTa(page) });
+  /* #178 の Codex（再レビュー）の P2：端末に保存できなくても本物の lsSet は送る → 取り込んでから押し直しても 2 件にしない */
+  const nS = await logN(page, first);
+  await page.click('#u9p-skill textarea[id^="sevn-"]'); await page.keyboard.type('送った文'); await sleep(200);
+  await page.evaluate(() => { window._lwvOrig178 = _lsWriteVerified; window._lsWriteVerified = function (k, j) { if (/^spl_skill_eval_log_/.test(k)) return false; return window._lwvOrig178(k, j); }; });
+  await page.evaluate(() => [...document.querySelectorAll('#u9p-skill button')].find(b => /記録/.test(b.innerText)).click()); await sleep(1500);
+  const ts = await toastsOf(page);
+  ok(tag + '：#178 再レビュー P2：送ったときは「クラウドへは送っています」・欄は残す・端末の一覧は増えない', /クラウドへは送っています/.test(ts) && await panelTa(page) === '送った文' && await logN(page, first) === nS, { ts: ts.slice(0, 160), ta: await panelTa(page), n: await logN(page, first) });
+  await page.evaluate(() => { window._lsWriteVerified = window._lwvOrig178; });
+  await page.evaluate(async n => { await pullOpKey('spl_skill_eval_log_' + n); }, first); await sleep(500);
+  ok(tag + '：#178 再レビュー P2：クラウドから取り込むと 1 件増える', await logN(page, first) === nS + 1, await logN(page, first));
+  await pickId(first);
+  await page.evaluate(() => [...document.querySelectorAll('#u9p-skill button')].find(b => /記録/.test(b.innerText)).click()); await sleep(1200);
+  const t2 = await toastsOf(page);
+  ok(tag + '：#178 再レビュー P2：取り込んだあと押し直しても 2 件にしない・欄を空に', await logN(page, first) === nS + 1 && await panelTa(page) === '' && /もう記録されています/.test(t2), { n: await logN(page, first), ta: await panelTa(page), t2: t2.slice(0, 160) });
   /* ログアウトで書きかけと選んだ人を消す */
   await page.click('#u9p-skill textarea[id^="sevn-"]').catch(() => {}); await page.keyboard.type('x');
   const lo = await page.evaluate(() => { window._forceLogout = true; doLogout(); return { d: window._sevnDraft, u: window._u9 }; });
