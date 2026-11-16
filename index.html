@@ -4764,7 +4764,7 @@ async function k2SysSave(sid, map, msgOk, tab){
     try{ if(typeof mdCacheClear==='function') mdCacheClear(); }catch(e){}
     window._k2SysState={ sid:sid, ok:(r===true), at:Date.now() };
     if(r===true){ if(msgOk) showToast(msgOk,'success'); }
-    else showToast(t('この端末には入れましたが、クラウドに送れていません（未保存）。もう一度押してください','Saved on this device but not sent to the cloud (not saved). Please try again'),'warning');
+    else showToast(kpiCfgUnsavedMsg(),'warning');
     return r===true;
   } finally { _k2SysBusy=false; if(kpiSameView(sid, tab)) renderPage('kpi_master'); }
 }
@@ -4779,7 +4779,7 @@ async function k2SysCarry(sid){
   var tab=null; try{ tab=window._kpiTab; }catch(e){ tab=null; }
   var redraw=function(){ try{ if(kpiSameView(sid, tab)) renderPage('kpi_master'); }catch(e){} };
   var row; try{ row=(typeof wbFetchSetting==='function') ? await wbFetchSetting('kpi_config') : undefined; }catch(e){ row=undefined; }
-  if(row===undefined){ st[sid]='fail'; redraw(); return false; }
+  if(row===undefined){ st[sid]='fail'; (window._k2SysCarryWhy=window._k2SysCarryWhy||{})[sid]='read'; redraw(); return false; }
   var cv=row.exists ? row.value : null; try{ if(typeof _stUnwrap==='function') cv=_stUnwrap(cv); }catch(e){}
   var cl=(cv && typeof cv==='object' && cv.byStore && typeof cv.byStore==='object' && cv.byStore[sid] && typeof cv.byStore[sid]==='object') ? cv.byStore[sid].sysAcct : null;
   if(cl && typeof cl==='object' && !Array.isArray(cl)){
@@ -4787,11 +4787,19 @@ async function k2SysCarry(sid){
     st[sid]=ok ? 'done' : 'fail'; redraw(); return false;
   }
   if(k2SysAcctList(sid) || !k2SysCanEdit(sid)){ st[sid]='done'; redraw(); return false; }   /* この端末にはもうある（まだ送れていない）・権限が無い */
+  /* v1181（Codex #174 6904393429 の P3-1）：ほかの店の保存の途中（_k2SysBusy）だと k2SysSave は何もせずに false を返すので、
+     先に「済み」にせず、その保存が終わるのを待ってから作る。作れなかったら（一覧がまだ無い）「もう一度」を出す */
+  for(var w=0; _k2SysBusy && w<150; w++){ await new Promise(function(res){ setTimeout(res, 200); }); }
+  if(k2SysAcctList(sid)){ st[sid]='done'; redraw(); return false; }   /* 待っているあいだにこの端末で作られた */
+  if(_k2SysBusy){ st[sid]='fail'; (window._k2SysCarryWhy=window._k2SysCarryWhy||{})[sid]='busy'; redraw(); return false; }
   var co=k2SysCarryOver(sid), n=Object.keys(co).length;
-  st[sid]='done';
-  return k2SysSave(sid, co, n ? t('前の決まりで外していたアカウントを一覧に引き継ぎました（'+n+' 件）','Carried over '+n+' accounts from the earlier rules') : t('一覧を作りました（前の決まりで外していたアカウントは今月・前の月にありません）','List created (no accounts matched the earlier rules)'), tab);
+  var ok=await k2SysSave(sid, co, n ? t('前の決まりで外していたアカウントを一覧に引き継ぎました（'+n+' 件）','Carried over '+n+' accounts from the earlier rules') : t('一覧を作りました（前の決まりで外していたアカウントは今月・前の月にありません）','List created (no accounts matched the earlier rules)'), tab);
+  /* この端末に一覧ができていれば済み（クラウドに送れていなければ k2SysSave の「未保存・もう一度」が出る）。できていなければ「もう一度」 */
+  if(k2SysAcctList(sid)) st[sid]='done'; else { st[sid]='fail'; (window._k2SysCarryWhy=window._k2SysCarryWhy||{})[sid]='save'; }
+  redraw();
+  return ok;
 }
-function k2SysCarryRetry(sid){ try{ if(window._k2SysCarried) delete window._k2SysCarried[sid]; }catch(e){} return k2SysCarry(sid); }
+function k2SysCarryRetry(sid){ try{ if(window._k2SysCarried) delete window._k2SysCarried[sid]; if(window._k2SysCarryWhy) delete window._k2SysCarryWhy[sid]; }catch(e){} return k2SysCarry(sid); }
 function k2SysToggle(sid, id, on){
   if(!k2SysCanEdit(sid)) return;
   var cur=Object.assign({}, k2SysAcctList(sid)||{});
@@ -4824,7 +4832,9 @@ function renderKpiSysAcctTab(){
     +'<span style="font-size:11px;color:var(--muted)">'+t('今月（前日まで）の時間','Hours this month (to yesterday)')+'</span></div></div>';
   h+='<div class="card"><div class="card-title"><i class="ti ti-user-off" style="color:var(--accent)"></i>'+t('業務用アカウント（総労働時間から外す）','System accounts (left out of labor hours)')+'</div>'
     +'<div class="k2-note" style="margin:-4px 0 8px">'+t('店ごとの Toast のアカウント ID で外します。名前の一部・職種（Server など）・従業員マスターに無いことだけでは外しません。','Excluded by the per-store Toast account ID — never by part of a name, a job (e.g. Server) or a missing master record.')+'</div>';
-  if(!list && can && carrySt==='fail') h+='<div class="k2h-warn"><i class="ti ti-alert-triangle"></i> '+t('クラウドの設定を読めなかったので、一覧はまだ作っていません（ほかの端末が作った一覧を上書きしないため）','Could not read the cloud settings, so the list was not created yet (so as not to overwrite a list made on another device)')
+  if(!list && can && carrySt==='fail') h+='<div class="k2h-warn"><i class="ti ti-alert-triangle"></i> '+((((window._k2SysCarryWhy||{})[sid])||'read')==='read'
+      ? t('クラウドの設定を読めなかったので、一覧はまだ作っていません（ほかの端末が作った一覧を上書きしないため）','Could not read the cloud settings, so the list was not created yet (so as not to overwrite a list made on another device)')
+      : t('一覧をまだ作れていません（ほかの店の保存と重なったか、この端末に保存できませんでした）','The list was not created yet (it overlapped with another store’s save, or could not be saved on this device)'))
     +' <button class="btn btn-secondary btn-sm" style="padding:2px 8px;font-size:11px;margin-left:6px" onclick="k2SysCarryRetry(\''+escapeHtml(sid)+'\')">'+t('もう一度','Retry')+'</button></div>';
   else if(!list) h+='<div class="k2-note" style="padding:8px 0">'+(can?t('一覧を作っています…','Creating the list…'):t('この店はまだ一覧がありません。今は前の決まり（名前など）で外しています。GM・CEO か担当の AM がこの画面を開くと、前の決まりで外していたアカウントを一覧に引き継ぎます。','No list yet for this store; earlier rules (names) still apply. When GM, CEO or the assigned AM opens this screen, those accounts are carried over.'))+'</div>';
   if(window._k2SysState && window._k2SysState.sid===sid && !window._k2SysState.ok) h+='<div class="k2h-warn"><i class="ti ti-alert-triangle"></i> '+t('未保存：クラウドに送れていません','Not saved: not sent to the cloud')
@@ -5255,9 +5265,21 @@ function kpiCfgPush(write){
   try{ if(P) delete P['kpi_config']; }catch(e){}
   write();
   var p=P ? P['kpi_config'] : null;
-  if(!p) return Promise.resolve(false);
-  return Promise.resolve(p).then(function(r){ return r===true; }, function(){ return false; });
+  window._kpiCfgPushWhy=null;
+  if(!p){ window._kpiCfgPushWhy='none'; return Promise.resolve(false); }
+  return Promise.resolve(p).then(function(r){ window._kpiCfgPushWhy=r; return r===true; }, function(){ window._kpiCfgPushWhy=false; return false; });
 }
+/* v1181（#174 の Claude のルーティンの P3-1）：送れなかった理由ごとの文。起動の途中（'booting'）・クラウドの設定をまだ読み込んでいない（'deferred'）は
+   「送れていません」だけだと分かりにくいので分ける。答え（true／false）は今までどおり。lead＝'clear'（全店共通に戻す）か、それ以外（保存） */
+function kpiCfgUnsavedMsg(lead){
+  var why=window._kpiCfgPushWhy, clr=(lead==='clear');
+  var jp=clr?'この端末では全店共通に戻しましたが、':'この端末には入れましたが、', en=clr?'Reset on this device, but ':'Saved on this device, but ';
+  if(why==='booting') return t(jp+'アプリの起動の途中なのでクラウドに送っていません（未保存）。少し待ってからもう一度押してください', en+'the app is still starting so it was not sent to the cloud (not saved). Wait a moment and try again');
+  if(why==='deferred') return t(jp+'クラウドの設定をまだ読み込んでいないので送っていません（未保存・送信待ち）。少し待ってからもう一度押してください', en+'the cloud settings are not loaded yet so it was not sent (not saved, waiting to send). Wait a moment and try again');
+  return t(jp+'クラウドに送れていません（未保存）。もう一度押してください', en+'it was not sent to the cloud (not saved). Please try again');
+}
+/* v1181（#174 の Claude のルーティンの P3-2）：ログアウトで KPI設定の下書き（アップセル対象・トッピング/アップセル比率）を捨てる */
+function kpiDraftReset(){ try{ window._upsEdits=null; window._upsEdit=null; window._upsellDraft=null; }catch(e){} }
 /* 保存の答えが来たときに描き直すのは、まだ同じ画面（KPI設定の同じ店・同じタブ）を開いているときだけ（ほかの画面・店を開いていたら描き直さない） */
 function kpiSameView(sid, tab){
   try{ return (typeof curPage!=='undefined' && curPage==='kpi_master') && window._kpiStore===sid && (!tab || window._kpiTab===tab); }catch(e){ return false; }
@@ -22110,6 +22132,7 @@ if(typeof window.FUNERGY_WEB_OFFICE_NAVIGATE==='function')return window.FUNERGY_
   if(typeof chatReset==='function') chatReset();   /* v1156：前の人のチャット（一覧・本文・書きかけ）を残さない */
   if(typeof grReset==='function') grReset();   /* v1157：前の人の Google の口コミの読み込みを残さない */
   if(typeof u9Reset==='function') u9Reset();   /* v1180：前の人の選んだ人・絞り込み・スキルのコメントの書きかけを残さない */
+  if(typeof kpiDraftReset==='function') kpiDraftReset();   /* v1181：KPI設定の下書きも捨てる */
   document.getElementById('app-shell').style.display = 'none';
   document.getElementById('login-screen').style.display = 'flex';
   /* v1037: 成功したときのまま「確認中…」で押せなくなっていたボタンを戻す（次の人がそのまま入れるように） */
@@ -22135,6 +22158,7 @@ if(typeof window.FUNERGY_WEB_OFFICE_NAVIGATE==='function')return window.FUNERGY_
   if(typeof chatReset==='function') chatReset();   /* v1156：前の人のチャット（一覧・本文・書きかけ）を残さない */
   if(typeof grReset==='function') grReset();   /* v1157：前の人の Google の口コミの読み込みを残さない */
   if(typeof u9Reset==='function') u9Reset();   /* v1180：前の人の選んだ人・絞り込み・スキルのコメントの書きかけを残さない */
+  if(typeof kpiDraftReset==='function') kpiDraftReset();   /* v1181：KPI設定の下書きも捨てる */
   document.getElementById('app-shell').style.display = 'none';
   document.getElementById('login-screen').style.display = 'flex';
   /* v1037: 成功したときのまま「確認中…」で押せなくなっていたボタンを戻す（次の人がそのまま入れるように） */
@@ -48157,7 +48181,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1180';
+const APP_VERSION = '1181';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -105631,6 +105655,9 @@ function renderKpiManualTab(){
   /* v1175（UI案84・B）：本部も「この店の設定」（店に無ければ全店共通）を見て、店ごとに保存する。前は本部だけ全店共通を見せて全店共通に保存し、
      店の設定がある店では本部の保存が率に効かなかった（模擬の画面で確かめた） */
   var upSel = cfgStore.upsellGuids||[];
+  /* v1181（Codex #173・#174 の P3）：保存の答えを待つあいだに変えたチェック（まだ保存していない）は、描き直しても残す */
+  var _upDraft = upsellDraftFor(sid);
+  if (_upDraft) upSel = _upDraft.vals.slice();
   var cfgScopeLabel = isCfgGlobal ? '全店共通' : (store.name+'のみ');
   var cfgEditable = canManual; // canSetKpiStore(sid)
   // 全店のメニューからカテゴリ一覧を集める
@@ -105667,9 +105694,9 @@ function renderKpiManualTab(){
   var _upOwn = !!(((getKpiConfig().byStore||{})[sid]||{}).upsellGuids);
   var upOvHint = (_upOwn && cfgEditable) ? `<button class="btn btn-secondary btn-sm" style="padding:3px 10px" onclick="clearKpiCfgStore('${sid}','upsellGuids')">全店共通に戻す</button>` : '';
   var _upSt = (window._upsellSaveState && window._upsellSaveState.sid===sid) ? window._upsellSaveState : null;
-  var upStHtml = !_upSt ? '' : (_upSt.ok
+  var upStHtml = (_upDraft ? `<span style="font-size:11px;color:var(--red);font-weight:700">${t('保存していない変更があります（保存の途中に変えたチェック）。もう一度「保存」を押してください','Unsaved changes (boxes changed while saving). Press Save again')}</span> ` : '') + (!_upSt ? '' : (_upSt.ok
     ? `<span style="font-size:11px;color:var(--green)">${t('保存しました','Saved')}（${new Date(_upSt.at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}）</span>`
-    : `<span style="font-size:11px;color:var(--red);font-weight:700">${t('未保存：クラウドに送れませんでした','Not saved: could not reach the cloud')}</span> <button class="btn btn-secondary btn-sm" style="padding:3px 10px" onclick="${_upSt.kind==='clear'?`clearKpiCfgStore('${sid}','upsellGuids')`:`saveUpsellGuids('${sid}')`}">${t('もう一度','Retry')}</button>`);
+    : `<span style="font-size:11px;color:var(--red);font-weight:700">${t('未保存：クラウドに送れませんでした','Not saved: could not reach the cloud')}</span> <button class="btn btn-secondary btn-sm" style="padding:3px 10px" onclick="${_upSt.kind==='clear'?`clearKpiCfgStore('${sid}','upsellGuids')`:`saveUpsellGuids('${sid}')`}">${t('もう一度','Retry')}</button>`));
   html += `<div class="card"><div class="card-title"><i class="ti ti-arrow-up-circle"></i>${t('トッピング/アップセル比率の対象商品（出数÷客数）','Items for the topping/upsell ratio (sold ÷ guests)')} <span style="font-size:10px;font-weight:400;color:var(--accent)">（${escapeHtml(store.name||sid)}${_upOwn?'':'・未設定なので全店共通を表示'}）</span></div>
     <div style="font-size:11px;color:var(--muted);margin-bottom:8px">トッピング/アップグレード等「アップセル」とみなす商品を指定（出数÷客数で比率計算）。${escapeHtml(store.name||sid)}のメニューから選択。<b>${escapeHtml(store.name||sid)}だけ</b>に適用（本部も店ごとに保存）。ここで選んだ商品は「トッピング/アップセル比率（出数÷客数）」だけに使います。${(typeof isTotoyaStore==='function' && isTotoyaStore(sid))?'アップグレード率に入れるものは、下の「アップグレード率に入れるもの」で選びます。':'アップグレード率とは別の数え方です。'}</div>
     <div style="margin-bottom:8px"><button class="btn btn-secondary btn-sm" onclick="showStoreModifiers('${sid}')"><i class="ti ti-list-details"></i> モディファイヤーの中身を表示</button> <span style="font-size:10px;color:var(--muted)">アップセルの多くはモディファイヤー（味噌汁・トッピング等）です。中身を確認できます。</span></div>`;
@@ -105844,16 +105871,32 @@ function saveAlcoholCats(sid){
   renderPage('kpi_master');
 }
 /* v1175（UI案84・B）：店ごとに保存（本部も）。クラウドに書けたときだけ「保存しました」。書けなければ「未保存」と「もう一度」 */
+/* v1181（Codex #173 6904392963・#174 6904393429 の P3）：保存の答えを待つあいだに足した・外したチェックは、答えのあとの描き直しで消さない。
+   画面のチェックが保存した中身と違えば、この店の下書きとして残し（メモリだけ・ログインした人ごと・ログアウトで捨てる）、「保存していない変更」と出す */
+function upsellDraftFor(sid){
+  var d=window._upsellDraft; var u=''; try{ u=(typeof curUserName!=='undefined' && curUserName) ? String(curUserName) : ''; }catch(e){}
+  return (d && d.sid===sid && d.u===u && Array.isArray(d.vals)) ? d : null;
+}
+function upsellKeepDom(sid, saved){
+  try{
+    var box=document.querySelectorAll('.kpi-upsell'); if(!box || !box.length) return;
+    var cur=Array.from(document.querySelectorAll('.kpi-upsell:checked')).map(function(c){ return c.value; });
+    var a=cur.slice().sort().join('\n'), b=(saved||[]).slice().sort().join('\n');
+    var u=''; try{ u=(typeof curUserName!=='undefined' && curUserName) ? String(curUserName) : ''; }catch(e){}
+    window._upsellDraft = (a===b) ? null : { sid:sid, u:u, vals:cur };
+  }catch(e){}
+}
 async function saveUpsellGuids(sid){
   var vals = Array.from(document.querySelectorAll('.kpi-upsell:checked')).map(c=>c.value);
   if (!canSetKpiStore(sid)) { showToast('編集権限がありません','warning'); return; }
   var tab=window._kpiTab, seq=(window._upsellSaveSeq=(window._upsellSaveSeq||0)+1);
+  if(upsellDraftFor(sid)) window._upsellDraft=null;   /* 今の画面のチェックを保存する（下書きはここで使い終わる） */
   var ok=false; try{ ok=await kpiCfgPush(function(){ setKpiConfigStore(sid,{upsellGuids:vals}); }); }catch(e){ ok=false; }
-  if(seq!==window._upsellSaveSeq) return ok;   /* あとで押した保存の答えを待つ（古い答えで状態を書き換えない） */
+  if(seq!==window._upsellSaveSeq) return ok;   /* あとで押した保存・全店共通に戻すの答えを待つ（古い答えで状態を書き換えない） */
   window._upsellSaveState={ sid:sid, ok:ok, at:Date.now() };
   if(ok) showToast(t('アップセル対象を保存しました','Upsell items saved'),'success');
-  else showToast(t('この端末には保存しましたが、クラウドに送れていません（未保存）。もう一度押してください','Saved on this device but not sent to the cloud yet. Please retry'),'warning');
-  if(kpiSameView(sid, tab)) renderPage('kpi_master');
+  else showToast(kpiCfgUnsavedMsg(),'warning');
+  if(kpiSameView(sid, tab)){ upsellKeepDom(sid, vals); renderPage('kpi_master'); }
   return ok;
 }
 /* モディファイヤーの中身表示: Toast注文(bowlDebug)から丼に付いたモディファイヤーを一覧（アップセルの中身確認用） */
@@ -105900,14 +105943,17 @@ async function clearKpiCfgStore(sid, key){
   if (!canSetKpiStore(sid)) { showToast('編集権限がありません','warning'); return; }
   /* v1175（Codex #173 の指摘）：クラウドに書けたときだけ「戻しました」。書けなければ未保存と出す */
   var tab=window._kpiTab;
+  /* v1181（Codex #173・#174 の P3）：アップセル対象は保存と同じ世代の番号に入る（古い答えで新しい保存の状態を書き換えない）。下書きも捨てる */
+  var seq=null; if(key==='upsellGuids'){ seq=(window._upsellSaveSeq=(window._upsellSaveSeq||0)+1); if(upsellDraftFor(sid)) window._upsellDraft=null; }
   var ok=false; try{ ok=await kpiCfgPush(function(){
     var c=getKpiConfig();
     if(c.byStore && c.byStore[sid]){ delete c.byStore[sid][key]; if(!Object.keys(c.byStore[sid]).length) delete c.byStore[sid]; }
     setKpiConfig(c);   /* もう無いときも送る（前に送れなかった戻しを送り直す） */
   }); }catch(e){ ok=false; }
+  if(seq!=null && seq!==window._upsellSaveSeq) return ok;   /* あとで押した保存の答えを待つ */
   if(key==='upsellGuids') window._upsellSaveState={ sid:sid, ok:ok, at:Date.now(), kind:'clear' };
   if(ok) showToast(t('全店共通に戻しました','Back to the all-store setting'),'info');
-  else showToast(t('この端末では全店共通に戻しましたが、クラウドに送れていません（未保存）。もう一度押してください','Reset on this device but not sent to the cloud (not saved). Please try again'),'warning');
+  else showToast(kpiCfgUnsavedMsg('clear'),'warning');
   if(kpiSameView(sid, tab)) renderPage('kpi_master');
   return ok;
 }
@@ -109445,7 +109491,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       W._upsSave = { sid: sid, ok: r === true, at: Date.now() };
       /* 保存した下書きだけを片づける：同じ店の下書きで、保存のあいだに変えていないときだけ（ほかの店の下書き・あとで変えた分は残す） */
       if(r === true && draftFor(sid) === e && (Number(e.rev) || 0) === rev0){ delete drafts()[sid]; if(W._upsEdit === e) W._upsEdit = null; }
-      try{ showToast(r === true ? T('保存しました', 'Saved') : T('この端末には入れましたが、クラウドに送れていません（未保存）。もう一度押してください', 'Saved on this device but not sent to the cloud (not saved). Please retry'), r === true ? 'success' : 'warning'); }catch(_e){}
+      try{ showToast(r === true ? T('保存しました', 'Saved') : ((typeof kpiCfgUnsavedMsg === 'function') ? kpiCfgUnsavedMsg() : T('この端末には入れましたが、クラウドに送れていません（未保存）。もう一度押してください', 'Saved on this device but not sent to the cloud (not saved). Please retry')), r === true ? 'success' : 'warning'); }catch(_e){}
       return r === true;
     } finally {
       delete UPS._busyFor[sid];
