@@ -3,7 +3,7 @@
 // 確かめること：
 //   1A Career Score：PC は表と右のパネル（50 人ずつ・4 つの数で絞る・グレード・店・名前）／スマホは 1 行の一覧 → 全画面の箱／あいだは今のカードを 50 人ずつ
 //   2A 育成パイプライン：組織図はたたむ（開いたかを覚える）・リーダー不在の店・候補の表とパネル（担当軸）
-//   3A スキル（従業員別）：表とパネル・書きかけのコメントがあると別の人を開く前に聞く
+//   3A スキル（従業員別）：表とパネル・書きかけのコメントは人ごとに残る（v1180 から聞かない）
 //   4A 成長管理：スタッフ別は表と右の成長ジャーニー・「全画面で開く」から戻ると位置が戻る／OJT進捗一覧の並び・絞り込み
 //   5A OJT管理：PC は章の一覧と 1 章・スマホは章の一覧 → 1 章（前・次・保存を下に止める）・保存していない変更・移る前に聞く
 //      選択式の正解（前は押しても入らなかった）・「×」と正解の丸の押す範囲（タッチ 44px・となりと重ならない）
@@ -170,17 +170,15 @@ for (const [W, lang] of [[1440, 'ja'], [1024, 'en'], [768, 'ja'], [390, 'ja'], [
   const s0 = await L(page);
   if (pc) {
     ok(tag + '：PC：スキルは表 50 行と右のパネル（今のカード）', s0.tb && s0.rows === 50 && s0.pn && s0.fit && await page.evaluate(() => /Tip/.test(document.querySelector('#main-content .u9-panel').innerText)), s0);
-    const ta = await page.evaluate(() => { const t = document.querySelector('#u9p-skill textarea[id^="sevn-"]'); if (!t) return null; t.value = 'メモ'; return t.id; });
+    const ta = await page.evaluate(() => { const t = document.querySelector('#u9p-skill textarea[id^="sevn-"]'); if (!t) return null; t.value = 'メモ'; t.dispatchEvent(new Event('input', { bubbles: true })); return t.id; });
     if (ta) {
-      const before = (await L(page)).sel;
-      page._acceptNext = false;
+      /* v1180（#177 の Codex の P2）：書きかけは人ごとに残すので聞かない。戻ると欄に戻る（tests/e2e-pcsp/skill-comment-v1180.mjs） */
+      const before = (await L(page)).sel, d0 = dialogs.length;
       await page.evaluate(() => document.querySelectorAll('#main-content tr.u9-row')[3].click()); await sleep(400);
       const after = (await L(page)).sel;
-      ok(tag + '：PC：書きかけのコメントがあると別の人を開く前に聞く（やめると同じ人のまま）', dialogs.some(d => /保存していないコメント|unsaved comment/.test(d)) && after === before, { before, after });
-      page._acceptNext = true;
-      await page.evaluate(() => document.querySelectorAll('#main-content tr.u9-row')[3].click()); await sleep(400);
-      page._acceptNext = false;
-      ok(tag + '：PC：「OK」なら別の人に移る', (await L(page)).sel !== before);
+      ok(tag + '：PC：書きかけのコメントがあっても聞かずに別の人を開く（書きかけは残る）', dialogs.length === d0 && after !== before, { before, after });
+      await page.evaluate(b => [...document.querySelectorAll('#main-content tr.u9-row')].find(r => r.getAttribute('data-u9id') === b).click(), before); await sleep(400);
+      ok(tag + '：PC：戻ると書きかけが欄に戻る', await page.evaluate(() => (document.querySelector('#u9p-skill textarea[id^="sevn-"]') || {}).value) === 'メモ');
     } else ok(tag + '：PC：パネルにコメントの欄がある（GM）', false);
   } else if (phone) {
     ok(tag + '：スマホ：スキルは 1 行の一覧', s0.sp === 50 && s0.spMinH >= 44, s0);
