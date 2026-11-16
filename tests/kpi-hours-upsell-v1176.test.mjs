@@ -103,7 +103,7 @@ function world(o = {}) {
     var SUPABASE_URL='https://x', SUPABASE_ANON='k';
   `);
   /* v1176（Codex #174）：保存の結果と描き直しは本物の kpiCfgPush・kpiSameView で */
-  run(c, fnSrc('kpiCfgPush')); run(c, fnSrc('kpiSameView'));
+  run(c, fnSrc('kpiCfgPush')); run(c, fnSrc('kpiCfgUnsavedMsg')); run(c, fnSrc('kpiSameView'));
   if (o.pushPromise) run(c, `setKpiConfigStore = function(sid, patch){ CFG.byStore=CFG.byStore||{}; CFG.byStore[sid]=Object.assign({}, CFG.byStore[sid]||{}, patch); _lsPushP['kpi_config']=PUSHP(); };`);
   run(c, UP_SRC + '\n' + UPS_SRC);
   c.FUNERGY_UP._getAll = fakeServer(o.db || {}, c.LOG, o.server || {});
@@ -355,7 +355,7 @@ test('B wiring: the KPI settings tab shows the card for Totoya; the legacy card 
 
 /* ---------- A ---------- */
 const A_FNS = ['k2NormAcctName', 'k2SysAcctList', 'k2SysMatcher', 'k2DayIssues', 'k2HoursDays', 'k2HoursDaysM', 'k2HoursDaysAll', 'k2RecGuids', 'isOrderOnlyAccount', 'toastSystemAccount', '_laborHrs', 'k2IsSysName', 'k2SysGuids', 'k2MonthGuids', 'k2YmAdd', 'daysOfYm',
-  'k2SysCanEdit', 'k2SysMonthAccounts', 'k2SysCarryOver', 'k2SysSave', 'k2SysCarry', 'k2SysCarryRetry', 'kpiCfgPush', 'kpiSameView', 'tipLaborWithGuid', 'tipLaborPut', '_toastShiftsOverlap'];
+  'k2SysCanEdit', 'k2SysMonthAccounts', 'k2SysCarryOver', 'k2SysSave', 'k2SysCloudList', 'k2SysCarry', 'k2SysCarryRetry', 'kpiCfgPush', 'kpiCfgUnsavedMsg', 'kpiSameView', 'tipLaborWithGuid', 'tipLaborPut', '_toastShiftsOverlap'];
 function aWorld({ today = '2026-11-16', labor = {}, kpi = {}, role = 'gm', realRole = null, amStores = [], over = {}, pushOk = true } = {}) {
   const LS = {}; Object.keys(labor).forEach(k => { LS['tip_labor_' + k] = labor[k]; }); LS.kpi_config = kpi;
   const c = { console, JSON, Math, Object, Array, String, Number, RegExp, Date, Promise, LS, OVER: over, TOASTS: [], PUSH: { ok: pushOk },
