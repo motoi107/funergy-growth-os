@@ -34,7 +34,7 @@ function ctx(extra = {}, fns = [], width = 1440) {
 function logCtx(log, extra = {}, fns = []) {
   const store = { skill_eval_log: { B: log } };
   const c = ctx({ ls: (k, d) => JSON.parse(JSON.stringify(store[k] || d)), lsSet: (k, v) => { store[k] = JSON.parse(JSON.stringify(v)); }, nowJP: () => '2026/11/15 23:00', ROLE_CONFIG: { gm: { name: 'GM' } }, ...extra },
-    ['getSkillEvalLog', 'addSkillEvalNote', 'deleteSkillEvalNote', 'submitSkillEvalNote', 'skillEvalRefresh', 'skillEvalFp', 'skillEvalDelBtn', 'skillEvalSectionHtml'].concat(fns));
+    ['getSkillEvalLog', 'addSkillEvalNote', 'deleteSkillEvalNote', 'skillEvalWrite', 'sevnOpFor', 'sevnOpClear', 'submitSkillEvalNote', 'skillEvalRefresh', 'skillEvalFp', 'skillEvalDelBtn', 'skillEvalSectionHtml'].concat(fns));
   c.store = store;
   c.u9SkillOpen = n => c.opened.push(n);
   return c;
@@ -252,4 +252,74 @@ test('#178 P2-2：削除を保存できなかったら「削除しました」�
   assert.equal(c.deleteSkillEvalNote('B', 0), null); assert.equal(c.deleteSkillEvalNote('Z', 0), false); assert.equal(c.deleteSkillEvalNote('B', 5), false);
   c.lsSet = (k, v) => { c.store[k] = JSON.parse(JSON.stringify(v)); return true; };
   c.skillEvalDelBtn(b); assert.equal(c.store.skill_eval_log.B.length, 0); assert.equal(c.toasts.at(-1)[1], 'success'); assert.deepEqual(c.renders, ['skill']);
+});
+
+/* #178 の Codex（再レビュー 6914598890）の P2：本物の lsSet（端末に保存できなくてもクラウドへ送る）で、押し直しても 2 件にしない */
+function realLsCtx({ localOk = true, sync = true, pushThrows = false } = {}) {
+  const local = { skill_eval_log: JSON.stringify({ B: [] }) };
+  const st = { localOk, sent: [] };
+  const ta = { id: 'sevn-B', value: '', closest: () => null, getAttribute: () => 'B' };
+  const c = ctx({
+    _SPLIT_KEYS: {}, SUPA_SYNC_ENABLED: sync, _supaBooting: false, _lsEscalatedAt: 0, _empLastQueueOk: undefined,
+    _lsStoreGet: k => local[k] == null ? null : local[k],
+    _lsWriteVerified: (k, j) => { if (!st.localOk) return false; local[k] = j; return true; },
+    _lsFreeOldLaborKeys() {}, freeRecoverableSpace() {}, _lsClearSaveFailure() {}, _lsNoteSaveFailure() {},
+    _pushWithOutbox: (k, v) => { if (pushThrows) throw new Error('offline'); st.sent.push([k, JSON.parse(JSON.stringify(v))]); },
+    ls: (k, d) => { const v = local[k]; return v == null ? d : JSON.parse(v); },
+    nowJP: () => '2026/11/16 08:00', ROLE_CONFIG: { gm: { name: 'GM' } }, confirm: () => true,
+    document: { querySelector: () => null, querySelectorAll: () => [], getElementById: id => id === 'sevn-B' ? ta : null }
+  }, ['lsSet', 'getSkillEvalLog', 'addSkillEvalNote', 'deleteSkillEvalNote', 'skillEvalWrite', 'sevnOpFor', 'sevnOpClear', 'submitSkillEvalNote', 'skillEvalRefresh', 'skillEvalFp', 'skillEvalDelBtn']);
+  c.u9SkillOpen = () => {};
+  return { c, local, st, ta, ingest() { const last = st.sent[st.sent.length - 1]; local[last[0]] = JSON.stringify(last[1]); } };
+}
+
+test('#178 の Codex（再レビュー）の P2：端末に保存できず送ったあと、取り込んでから押し直しても 2 件にしない', () => {
+  const h = realLsCtx({ localOk: false });
+  h.ta.value = '良かった点';
+  h.c.submitSkillEvalNote('B', 'sevn-B');
+  assert.equal(h.st.sent.length, 1, '本物の lsSet は端末に保存できなくても送る');
+  assert.equal(h.ta.value, '良かった点', '入力は残す');
+  assert.match(h.c.toasts.at(-1)[0], /クラウドへは送っています/); assert.equal(h.c.toasts.at(-1)[1], 'warning');
+  assert.doesNotMatch(h.c.toasts.at(-1)[0], /もう一度「記録」を押してください/, '単純な押し直しを促さない');
+  /* 送った分をクラウドから取り込む → 容量が戻る → 同じ欄をもう一度押す */
+  h.ingest(); h.st.localOk = true;
+  h.c.submitSkillEvalNote('B', 'sevn-B');
+  assert.equal(h.c.getSkillEvalLog('B').length, 1, '同じ操作は足さない（Codex の手順では 2 件になっていた）');
+  assert.equal(h.ta.value, '', '記録済みなので欄を空に');
+  assert.match(h.c.toasts.at(-1)[0], /もう記録されています/);
+  assert.ok(!('op:sevn-B' in h.c.window._sevnDraft), '番号も消す');
+});
+
+test('#178 の Codex（再レビュー）の P2：取り込む前に押し直しても、送る中身は同じ 1 件（同じ番号）', () => {
+  const h = realLsCtx({ localOk: false });
+  h.ta.value = 'A';
+  h.c.submitSkillEvalNote('B', 'sevn-B'); h.c.submitSkillEvalNote('B', 'sevn-B');
+  assert.equal(h.st.sent.length, 2);
+  const a = h.st.sent[0][1].B, b = h.st.sent[1][1].B;
+  assert.equal(b.length, 1, '2 回目も 1 件だけ'); assert.equal(a[0].id, b[0].id, '同じ番号');
+  /* 文を変えたら新しいコメント（新しい番号） */
+  h.ingest(); h.st.localOk = true; h.ta.value = 'A（直した）'; h.c.submitSkillEvalNote('B', 'sevn-B');
+  const log = h.c.getSkillEvalLog('B');
+  assert.equal(log.length, 2); assert.notEqual(log[0].id, log[1].id);
+});
+
+test('#178 の Codex（再レビュー）の P2：送れなかったとき（同期 OFF・送信の失敗）は「送っていません」と出し、入力を残す', () => {
+  for (const o of [{ localOk: false, sync: false }, { localOk: false, pushThrows: true }]) {
+    const h = realLsCtx(o);
+    h.ta.value = 'x'; h.c.submitSkillEvalNote('B', 'sevn-B');
+    assert.equal(h.ta.value, 'x'); assert.match(h.c.toasts.at(-1)[0], /クラウドへも送っていません/); assert.equal(h.c.toasts.at(-1)[1], 'error');
+  }
+  const ok = realLsCtx(); ok.ta.value = 'y'; ok.c.submitSkillEvalNote('B', 'sevn-B');
+  assert.equal(ok.ta.value, ''); assert.equal(ok.c.getSkillEvalLog('B').length, 1); assert.match(ok.c.toasts.at(-1)[0], /記録しました/);
+});
+
+test('#178 の Codex（再レビュー）の P2：削除は、送ったときは「削除していません」と言い切らない', () => {
+  const mk = o => { const h = realLsCtx(o); h.local.skill_eval_log = JSON.stringify({ B: [{ date: 'd', by: 'GM', text: 'z' }] }); return h; };
+  const btn = { getAttribute: k => ({ 'data-n': 'B', 'data-i': '0', 'data-fp': 'd|GM|z' })[k], closest: () => null };
+  const a = mk({ localOk: false }); a.c.skillEvalDelBtn(btn);
+  assert.equal(a.st.sent.length, 1); assert.equal(a.st.sent[0][1].B.length, 0, '削除は送っている');
+  assert.match(a.c.toasts.at(-1)[0], /削除はクラウドへ送っています/); assert.doesNotMatch(a.c.toasts.at(-1)[0], /削除していません/);
+  const b = mk({ localOk: false, sync: false }); b.c.skillEvalDelBtn(btn);
+  assert.match(b.c.toasts.at(-1)[0], /削除していません/);
+  const c2 = mk({}); c2.c.skillEvalDelBtn(btn); assert.match(c2.c.toasts.at(-1)[0], /削除しました/); assert.equal(c2.c.getSkillEvalLog('B').length, 0);
 });
