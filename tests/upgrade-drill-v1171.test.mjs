@@ -48,6 +48,7 @@ function make(daily, extra = {}) {
   };
   ctx.window = ctx;
   vm.createContext(ctx);
+  vm.runInContext(fnSrc('kpiTileHtml'), ctx);   // v1177：タイルは共通の形（kpiTileHtml）
   vm.runInContext(MOD, ctx);
   return ctx;
 }
@@ -170,7 +171,7 @@ test('タイル：率は keyKpiStats の数・目標・前週比 pt・分子 ÷ 
   const html = c.FUNERGY_UP.kpiTile([{ id: 'F04-K' }], NOV, { misoRate: 24.6, misoTgt: 25, misoUp: 32, misoAll: 130 });
   assert.match(html, /アップグレード率 ★/); assert.match(html, /24\.6%/); assert.match(html, /目標 25%/);
   assert.match(html, /<badge 10pt>/, '前週比は pt');
-  assert.match(html, /分子 32 ÷ 分母 130 件/); assert.match(html, /内訳を見る ›/);
+  assert.match(html, /分子 32 ÷ 分母 130 件/); assert.match(html, /class="kpi-go"/, 'v1177：押せるタイルは右上の「›」'); assert.match(html, /role="button"/);
   assert.match(html, /var\(--yellow\)/, '目標の 9 割以上は黄');
   assert.equal(c.FUNERGY_UP.kpiTile([{ id: 'F01' }], NOV, { misoRate: 10 }), '');
   const none = c.FUNERGY_UP.kpiTile([{ id: 'F04-K' }], NOV, { misoRate: null, misoTgt: 25 });

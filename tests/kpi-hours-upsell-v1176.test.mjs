@@ -131,8 +131,9 @@ const CFG_SPEC = { byStore: { 'F04-K': { upsell: [{ from: '2026-11', mods: ['M-C
 const DA_K = { 'F04-K': { '2026-11-01': { misoTotal: 9, misoUpgrade: 3 }, '2026-11-02': { misoTotal: 10, misoUpgrade: 4 } } };
 
 test('v1176 version markers (page and SW the same)', () => {
-  assert.match(SRC, /const APP_VERSION = '1176'/);
-  assert.match(SW, /const SW_BUILD = '1176'/);
+  // v1177 からは 1176 以上・ページと SW が同じ
+  const a = +(SRC.match(/const APP_VERSION = '(\d+)'/) || [])[1], s = +(SW.match(/const SW_BUILD = '(\d+)'/) || [])[1];
+  assert.ok(a >= 1176 && a === s, a + ' / ' + s);
 });
 
 test('B spec example: (3 + 2 − 1) ÷ 10 = 40%; unchecking the a la carte item gives 30%; 機会なし is not counted', async () => {

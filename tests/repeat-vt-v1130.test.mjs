@@ -43,6 +43,7 @@ function make(daily, extra = {}) {
   ctx.window = ctx;
   vm.createContext(ctx);
   vm.runInContext(fnSrc('repeatStats'), ctx);
+  vm.runInContext(fnSrc('kpiTileHtml'), ctx);   // v1177：タイルは共通の形（kpiTileHtml）
   vm.runInContext(MOD, ctx);
   return ctx;
 }
