@@ -5,7 +5,9 @@
 - Moto さんの答え（11/17 12:27 HST）：UI案76「全部A」・UI案91「A」。仕様・試験・限界：`docs/PL_TREND_V1188_JA.md`。SQL・関数の変更なし。
 - UI案76：管理者セキュアページ › 会計 PL のタブ「費用」→「推移」（上の 3 つ＝売上・営業利益（Net Operating Income）・最終利益（Net Income）と前の月との差・最終利益の棒（暫定は斜線・無い月は「—」）・営業利益 → 最終利益の図・月ごとの表（販管費は区分にひらく）・区分の科目ごとの画面）。概要の上にも 3 つの数。名前をそろえた（営業利益＝NOI・最終利益＝NI。本部予算のタブの「計画 営業利益」は前のまま）。取り込む前に「保存すると変わること」（変わる額の大きい順）。要分類の科目を GM・CEO・経理が決める（`pl_expense_class`・全部の端末で共有・区分と科目名と決めた人の名前だけ・金額とメールは入れない・クラウドを読んでから・先に決まった科目は上書きしない）。3 科目の初期の区分（GET の上乗せ分＝変動費・酒類の手数料＝固定費・出張＝裁量費）。保存のしかた・会議タブと中間レビューの数は変えていない。
 - UI案91：KPI設定 › 業務用アカウントに、ID の無い前の記録を名前で 外す／数える 表（月を選ぶ・人はたたむ・理由は数え方と同じ関数）と「勤怠データでこの月を開く」。日次進捗の内訳を「ID で」「名前で」に分けた（合計は同じ）。表示だけ。
-- 試験（合成データ）：pl-trend-ui76-v1188 15・kpi-sysacct-noid-v1188・pl-import-v1162・pl-keep-final-v1174・わざと壊す 27/27・static release pass/1188。全体の比べは下の行。
+- 試験（合成データ）：pl-trend-ui76-v1188 15・kpi-sysacct-noid-v1188 6・pl-import-v1162・pl-keep-final-v1174・わざと壊す 27/27・static release pass/1188。
+- 全体（重い 2 つ以外・4 並列）：3,169 件のうち 38 件が落ちる。37 件は main（`52fa275`）でも同じ名前・同じ数で落ちる（bot-center 2・bot-database 2・chat-deploy-v1156 1・cooking-sake 4・cs-card-icons 1・cs-grade-rollback 1・cs-grade-view 1・cs-strengths 1・ingredient-transfers 1・meeting-budget 14・meeting-sales 4・next-v1090 1・perf-v1098 1・specialist-career 2・toast-alias 1）。残り 1 件は kpi-sysacct-noid-v1188 の前の版との比べが `git show HEAD` を読んでいた（コミットしたあと HEAD は新しい版）→ v1187 の main `52fa275` と比べ、CI で取ってくるように直した（`7738f14`・単独で 6/6）。handbook-progress は重いときに時間切れ（単独で 33/33）。
+- PR #189（base main）。
 - 独立レビュー・Codex のレビューはまだ。実機・本番のデータは未確認。
 - 同じ日の Moto さんの答え（11/17 12:38 HST・ログインの UI案92）：1 A（Supabase のパスキー・ベータ）・2 A（GM だけ）・3 送り手は GM の会社のメールを Gmail API で（**アドレスはリポジトリに書かない**）・4 A（招待は 7 日）・5 B（12 時間は入ったまま・開くたびにパスキーを聞かない）・6 A（GM・CEO・経理のメールとパスワードは残す）・7 A（v1183 の試しはやめる）・8 A（上に「パスキーでログイン」）・9 A（共有の端末はパスキーを残さない・QR／コード）・10 A（ログインが先・そのあと (b) RLS の 1 段目）。→ v1189（このあと）。
 - 次：PR → Codex → Moto さんがマージ（アプリだけ）→ GM・CEO・経理の端末を 1188 に → 推移のタブで 3 科目の区分と要分類を確かめる。

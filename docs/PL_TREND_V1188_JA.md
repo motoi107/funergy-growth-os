@@ -68,6 +68,7 @@ KPI設定 › 業務用アカウント（GM・CEO・担当の AM）：
 - わざと壊す 27 通りすべてで落ちる（1 回目 26：並べ替えを外しても、試験の並びがもともと大きい順で気づかなかった → 逆の並びで渡すようにした）。
 - `tests/kpi-sysacct-noid-v1188.test.mjs`（UI案91）・`tests/pl-import-v1162.test.mjs`（新しく足した関数を読む・3 科目の初期の区分）・`tests/pl-keep-final-v1174.test.mjs`（同じ）。
 - static release pass/1188。
+- 全体（重い 2 つ以外・4 並列）：落ちるのは main（`52fa275`）でも同じ名前・同じ数で落ちる 37 件だけ（kpi-sysacct-noid-v1188 の前の版との比べが `git show HEAD` を読んでいた 1 件は、v1187 の main `52fa275` と比べるように直した）。
 
 ## 7. 限界
 
