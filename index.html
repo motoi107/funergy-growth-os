@@ -3937,6 +3937,8 @@ function toastAliasCatchUp(){
 async function syncTipLaborFromDB(storeId, guid, days, opts) {
   if (!guid) return { updated: 0, diag:'GUID未設定' };
   var _seq = ++_tipLaborSeq;
+  /* v1187：No Tip の数えに使うときの、読み込みを始めたときのログインとハワイの日付（Codex #187 P2-3・Claude のルーティン P3-1） */
+  var _ntTk = (typeof _tipNtWho === 'function') ? _tipNtWho() : null, _ntAsOf = (typeof _tipNtToday === 'function') ? _tipNtToday() : null, _ntSeen = [];
   var rows = await fetchTipLaborFromDB(guid, days[0].date, days[days.length-1].date, opts && opts.signal);
   if (opts && ((opts.signal && opts.signal.aborted) || (typeof opts.alive === 'function' && !opts.alive())))
     return { updated: 0, rowCount: 0, emptyData: 0, rawDates: [], savedDates: [], skipped: 0, fetchErr: true, stale: true, diag: '古い読み込み（保存していない）' };
@@ -3948,6 +3950,7 @@ async function syncTipLaborFromDB(storeId, guid, days, opts) {
     var list = row.data || [];
     // v635: クレジットTip調整額を取り込み（data空でも保持）。DBがクリアされたらローカルもクリア。
     var _bdA = normalizeBusinessDate(row.business_date);
+    _ntSeen.push(_bdA);
     if (!_tipLaborNewer(storeId, _bdA, 'A', _seq)) {   /* あとから始めた読み込み・あとの保存がもう書いた日は書かない */
       _tipLaborMark(storeId, _bdA, 'A', _seq);
       var _hasA = (+row.lunch_credit_tip_adj||0)!==0 || (+row.dinner_credit_tip_adj||0)!==0 || row.lunch_credit_tip_adj_reason || row.dinner_credit_tip_adj_reason;
@@ -3958,8 +3961,8 @@ async function syncTipLaborFromDB(storeId, guid, days, opts) {
         lAt:row.lunch_credit_tip_adj_at||'', dAt:row.dinner_credit_tip_adj_at||''
       } : null);
     }
-    if (!Array.isArray(list) || !list.length) { emptyData++; return; }
-    if (_tipLaborNewer(storeId, _bdA, 'L', _seq)) { skipped++; return; }   /* あとから始めた読み込みがもう勤怠を保存した日 */
+    if (!Array.isArray(list) || !list.length) { emptyData++; if (typeof _tipNtRecordDay === 'function') _tipNtRecordDay(storeId, _bdA, {}, _seq, _ntTk); return; }   /* v1187：DB に勤怠の無い日＝シフト 0 */
+    var _skipL = _tipLaborNewer(storeId, _bdA, 'L', _seq);   /* あとから始めた読み込みがもう勤怠を保存した日（v1187：表は作って No Tip の数えに使う・端末には書かない） */
     var labor = {}, _conf = {};
     list.forEach(emp=>{
       /* Order Only（注文専用アカウント）はレイバー/チップから除外（getTipLabor が名前で外す）。
@@ -3979,11 +3982,17 @@ async function syncTipLaborFromDB(storeId, guid, days, opts) {
     });
     // business_date を YYYY-MM-DD に正規化（タイムスタンプ/YYYYMMDD等に対応）
     var bd = normalizeBusinessDate(row.business_date);
+    if (typeof _tipNtRecordDay === 'function') _tipNtRecordDay(storeId, bd, labor, _seq, _ntTk);   /* v1187：No Tip を数えるための DB の勤怠（このログインのあいだだけ） */
+    if (_skipL) { skipped++; return; }
     setTipLabor(storeId, bd, labor);
     _tipLaborMark(storeId, bd, 'L', _seq);
     savedDates.push(bd);
     updated++;
   });
+  /* v1187：この範囲を DB から読み終えた（No Tip の数えに使える）。行の数が上限に届いたら途中までかもしれないので記録しない。
+     返ってこなかった日はシフト 0（Codex #187 P2-2：DB から行が消えた日の前の数を残さない） */
+  if (typeof _tipNtRecordRange === 'function' && !(rows && rows._err) && rows.length < TIP_NT_MAX_ROWS && days && days.length)
+    _tipNtRecordRange(storeId, days[0].date, days[days.length-1].date, _seq, _ntTk, _ntSeen, _ntAsOf);
   return { updated, rowCount: rows.length, emptyData, rawDates, savedDates, skipped, fetchErr: !!(rows && rows._err),
     diag: `DB返却${rows.length}行 / 保存${updated}日 / data空${emptyData}行` + (skipped ? ` / 新しい読み込みが先に保存${skipped}日` : '') };
 }
@@ -9777,15 +9786,26 @@ function calcTipDistribution(storeId, date, reqsOverride) {   /* reqsOverride：
     _wt.push({ e: e, o: o });
     return o;
   }
+  /* v1187：TIP_NOTIP_DAYOF_START の日からは、No Tip をその日・その枠の前までのシフト数で決める（tipNoTipOn）。
+     まだ分からない（初回勤務日からの勤怠を読み込み中）ときは前の決め方（今日の時点＝o.noTip）で仮に出し、pending の印を付ける */
+  var _ntDay = (typeof tipNoTipDayOf==='function') && tipNoTipDayOf(date), _ntPend = {};
+  function noTipOf(e, slot) {
+    var w = weightOf(e);
+    if (!_ntDay) return { v: w.noTip, p: false };
+    var k = 'nt_' + slot;
+    if (!(k in w)) w[k] = tipNoTipOn(e, date, slot, tipReqs);
+    return w[k] === null ? { v: w.noTip, p: true } : { v: w[k], p: false };
+  }
 
   function distSlot(slot, tipTotal) { // slot='lunch'|'dinner'
     var rows = staff.map(e=>{
       var h = labor && labor[e.name] ? (labor[e.name][slot]||0) : 0;
       if (!(h>0)) return { hours:0 };
       var excluded = isTipExcluded(storeId, date, e.name, slot);
-      var w = weightOf(e);
+      var w = weightOf(e), nt = noTipOf(e, slot);
+      if (nt.p && !excluded && tipTotal>0) _ntPend[e.name] = 1;   /* 額に効くときだけ（除外した人・チップが 0 の枠は額が変わらない） */
       return { name:e.name, role:e.role, coef:w.coef, rate:w.rate, by:w.by, hours:h,
-        pt:h*w.coef, total:0, excluded:excluded, noTip:w.noTip };
+        pt:h*w.coef, total:0, excluded:excluded, noTip:nt.v, noTipPending:nt.p };
     }).filter(r=>r.hours>0);
     if (!rows.length || tipTotal<=0) return rows;
     // 対象外の人を除いて按分（外した分は残りに自動再配分）。除外者はtotal=0で行は残す（表示用）
@@ -9830,7 +9850,9 @@ function calcTipDistribution(storeId, date, reqsOverride) {   /* reqsOverride：
       });
     }
   }catch(e){}
-  return { tip, list, distSum, hasLabor: !!labor, leaderSplit, unmatched:_unmatched, weightBy: byRate ? 'rate' : 'coef' };
+  var _ntP = Object.keys(_ntPend);
+  return { tip, list, distSum, hasLabor: !!labor, leaderSplit, unmatched:_unmatched, weightBy: byRate ? 'rate' : 'coef',
+    pending: _ntP.length > 0, pendingNames: _ntP };   /* v1187：No Tip がまだ分からない人がいる（確定・出力しない） */
 }
 
 /* 半月精算: Store Leaderの日次取り分合計の50%をプール→SL以外の半月総労働時間で再分配
@@ -9842,11 +9864,12 @@ function calcHalfMonthSettlement(storeId, anyDateInPeriod) {
   var dates = halfMonthDates(anyDateInPeriod);
   // 各日の日次配分を集計（名前→日次取り分合計 / 名前→労働時間合計）
   var dailyTotal = {}, hoursTotal = {};
-  var anyLabor = false;
+  var anyLabor = false, pending = false;   /* v1187：No Tip がまだ分からない日がある */
   dates.forEach(date=>{
     var labor = getTipLabor(storeId, date);
     if (labor) anyLabor = true;
     var dist = calcTipDistribution(storeId, date);
+    if (dist.pending) pending = true;
     dist.list.forEach(r=>{
       dailyTotal[r.name] = (dailyTotal[r.name]||0) + r.total;
       hoursTotal[r.name] = (hoursTotal[r.name]||0) + (r.lunchHours||0) + (r.dinnerHours||0);
@@ -9878,7 +9901,7 @@ function calcHalfMonthSettlement(storeId, anyDateInPeriod) {
     var final = base - contribution + redistrib;
     return { name, isSL:sl, hours:h, base, contribution, redistrib, final };
   }).sort((a,b)=>b.final-a.final);
-  return { range, rows, slPool, nonSLHours, perHour, anyLabor, slSplitOn };
+  return { range, rows, slPool, nonSLHours, perHour, anyLabor, slSplitOn, pending };
 }
 
 /* マイページ用: 現在の半月の自分のチップ見込み（半月精算後の最終値） */
@@ -9886,7 +9909,7 @@ function estimateMyTip(storeId, name) {
   var today = todayISO();
   var s = calcHalfMonthSettlement(storeId, today);
   var row = s.rows.find(r=>r.name===name);
-  return { total: row ? row.final : 0, range: s.range.label, hasData: s.anyLabor };
+  return { total: row ? row.final : 0, range: s.range.label, hasData: s.anyLabor, pending: !!s.pending, slSplitOn: s.slSplitOn };
 }
 /* シフト毎のチップ内訳（その半月の日別配分） */
 function showMyTipDetail(storeId, name) {
@@ -9921,6 +9944,7 @@ function showMyTipDetail(storeId, name) {
       </tfoot></table>
       <p style="font-size:11px;color:var(--muted);margin-top:8px">${settle.slSplitOn ? '日次配分にStore Leaderの50%再分配を反映した最終額が精算後です。' : '日次配分がそのまま最終額です。'}</p>`;
   }
+  if (settle.pending) html += `<p style="font-size:11px;color:var(--yellow);margin-top:6px"><i class="ti ti-loader"></i> ${t('No Tip を決めるための勤怠を読み込んでいます。読み終えると額が変わることがあります。','Loading time records to decide No Tip. The amounts may change once loaded.')}</p>`;
   html += `<div class="btn-row"><button class="btn btn-primary" onclick="closeModalDirect()">閉じる</button></div>`;
   openModal(html);
 }
@@ -9930,6 +9954,7 @@ async function fetchTipLabor(storeId, guid, date) {
   /* v1090（独立レビュー 9752ac3 P3-2・d3a23ba P3）：この端末で、同じ店・同じ日の Toast からの取り込みのうち、DB に書き終えたものの中であとから始めたものだけが入れ直す
      （前に始めた取り込みは、あとから始めた取り込みがもう書き終えていれば入れ直さない。あとから始めた取り込みが失敗しても、前の取り込みは入れ直す） */
   var _fgk = storeId + '|' + date, _fg = (_tipLaborFetchGen[_fgk] || 0) + 1; _tipLaborFetchGen[_fgk] = _fg;
+  var _ntTk = (typeof _tipNtWho === 'function') ? _tipNtWho() : null, _ntAsOf = (typeof _tipNtToday === 'function') ? _tipNtToday() : null;   /* v1187 */
   var res = await fetch(TOAST_SYNC_FN, {
     method:'POST', headers:{'Content-Type':'application/json',Authorization:'Bearer '+SUPABASE_ANON},
     body: toastFnBody({ restaurantGuid:guid, mode:'tipLabor', businessDate:ymd }),
@@ -9956,7 +9981,12 @@ async function fetchTipLabor(storeId, guid, date) {
   var _dbSaved = false;
   try { _dbSaved = await supaUpsert('tip_labor', [{ restaurant_guid: guid, business_date: date, data: j.employees, fetched_at: new Date().toISOString() }]); } catch(e){ console.warn('fetchTipLabor tip_labor upsert', e); }
   /* v1090（独立レビュー 27793ab P3-1）：DB に書き終えるまでのあいだに始めた読み込みは、まだ古い DB の勤怠を読む。書き終えたら、もう一度入れて印を付ける */
-  if (_dbSaved && _fg > (_tipLaborFetchDone[_fgk] || 0)) { _tipLaborFetchDone[_fgk] = _fg; setTipLabor(storeId, date, labor); _tipLaborMark(storeId, date, 'L'); }
+  if (_dbSaved && _fg > (_tipLaborFetchDone[_fgk] || 0)) {
+    _tipLaborFetchDone[_fgk] = _fg; setTipLabor(storeId, date, labor); _tipLaborMark(storeId, date, 'L');
+    /* v1187：DB に書けた勤怠は No Tip の数えにも使う（ほかの端末も DB から同じ勤怠を読む）。書けなかったときは使わない。
+       Codex（#187 6959067758 P2-1）：あとから始めた取り込みがもう書き終えていたら使わない（端末の勤怠と同じ世代の確かめの中だけ） */
+    if (typeof _tipNtRecordDay === 'function') { var _nts = ++_tipLaborSeq; _tipNtRecordDay(storeId, date, labor, _nts, _ntTk); _tipNtRecordRange(storeId, date, date, _nts, _ntTk, [date], _ntAsOf); }
+  }
   return { count: Object.keys(labor).length, dbSaved: _dbSaved };
 }
 
@@ -22332,6 +22362,7 @@ if(typeof window.FUNERGY_WEB_OFFICE_NAVIGATE==='function')return window.FUNERGY_
   if(typeof grReset==='function') grReset();   /* v1157：前の人の Google の口コミの読み込みを残さない */
   if(typeof u9Reset==='function') u9Reset();   /* v1180：前の人の選んだ人・絞り込み・スキルのコメントの書きかけを残さない */
   if(typeof kpiDraftReset==='function') kpiDraftReset();   /* v1181：KPI設定の下書きも捨てる */
+  if(typeof tipNtReset==='function') tipNtReset();   /* v1187（Codex #187 P2-3）：No Tip を数えるために読んだ勤怠・範囲・待ちを次の人に残さない */
   document.getElementById('app-shell').style.display = 'none';
   document.getElementById('login-screen').style.display = 'flex';
   /* v1037: 成功したときのまま「確認中…」で押せなくなっていたボタンを戻す（次の人がそのまま入れるように） */
@@ -22360,6 +22391,7 @@ if(typeof window.FUNERGY_WEB_OFFICE_NAVIGATE==='function')return window.FUNERGY_
   if(typeof grReset==='function') grReset();   /* v1157：前の人の Google の口コミの読み込みを残さない */
   if(typeof u9Reset==='function') u9Reset();   /* v1180：前の人の選んだ人・絞り込み・スキルのコメントの書きかけを残さない */
   if(typeof kpiDraftReset==='function') kpiDraftReset();   /* v1181：KPI設定の下書きも捨てる */
+  if(typeof tipNtReset==='function') tipNtReset();   /* v1187（Codex #187 P2-3）：No Tip を数えるために読んだ勤怠・範囲・待ちを次の人に残さない */
   document.getElementById('app-shell').style.display = 'none';
   document.getElementById('login-screen').style.display = 'flex';
   /* v1037: 成功したときのまま「確認中…」で押せなくなっていたボタンを戻す（次の人がそのまま入れるように） */
@@ -45035,18 +45067,21 @@ function tipPeriodMatrix(storeId, info){
     if(!unmatched[u.name]) unmatched[u.name]={ name:u.name, days:0, reason:u.reason };
     unmatched[u.name].days++;
   }); });
-  return { dists:dists, names:names, unmatched:Object.values(unmatched), rates:tipPeriodRates(dists), rateFrom:tipPeriodRateFrom(dists) };
+  return { dists:dists, names:names, unmatched:Object.values(unmatched), rates:tipPeriodRates(dists), rateFrom:tipPeriodRateFrom(dists),
+    pending: dists.some(function(x){ return x.dist && x.dist.pending; }) };   /* v1187 */
 }
 /* v1092: この期間の配分に使った Tip Rate（日の順・続けて同じ率は 1 つ）。No Tip の日は入れない。
    v1095（UI案57 Q5：「80%,90%,100%で表示」）：評価係数で配分した日（TIP_RATE_WEIGHT_START より前）も、使った係数を % で入れる（0.8 → 80）。
    前は評価係数の期間には何も入れず、名前の横に「今の Tip Rate」を出していた（額は係数なのに、変えた Tip Rate が前期に出て、反映されたように見えた） */
+/* v1187：その日に率を使って配分した枠がある（時間があり、除外でも No Tip でもない）。No Tip を枠ごとに決めるようになったので
+   （12/1 から。No Tip を終えた日はランチが No Tip・ディナーは配分、がある）、枠ごとに見る。それより前は両方の枠が同じ印なので前と同じ */
+function _tipRateSlotUsed(r){ return ((r.lunchHours||0)>0 && !r.lunchExcl && !r.lunchNoTip) || ((r.dinnerHours||0)>0 && !r.dinnerExcl && !r.dinnerNoTip); }
 function _tipUsedRate(r){ if(r.by==='rate') return (r.rate==null?null:r.rate); if(r.by==='coef'){ var c=Number(r.coef); return isFinite(c)?Math.round(c*100):null; } return null; }
 function tipPeriodRates(dists){
   var rates={};
   (dists||[]).forEach(function(x){ ((x.dist||{}).list||[]).forEach(function(r){
     var rt=_tipUsedRate(r);
-    if(rt==null || r.lunchNoTip || r.dinnerNoTip) return;
-    if(!(((r.lunchHours||0)>0 && !r.lunchExcl) || ((r.dinnerHours||0)>0 && !r.dinnerExcl))) return;   /* 両方とも除外した日は入れない */
+    if(rt==null || !_tipRateSlotUsed(r)) return;   /* 両方とも除外か No Tip の日は入れない */
     var a=rates[r.name]||(rates[r.name]=[]); if(a[a.length-1]!==rt) a.push(rt);
   }); });
   return rates;
@@ -45056,8 +45091,7 @@ function tipPeriodRateFrom(dists){
   var last={}, from={}, n={};
   (dists||[]).forEach(function(x){ ((x.dist||{}).list||[]).forEach(function(r){
     var rt=_tipUsedRate(r);
-    if(rt==null || r.lunchNoTip || r.dinnerNoTip) return;
-    if(!(((r.lunchHours||0)>0 && !r.lunchExcl) || ((r.dinnerHours||0)>0 && !r.dinnerExcl))) return;
+    if(rt==null || !_tipRateSlotUsed(r)) return;
     if(last[r.name]!==rt){ last[r.name]=rt; from[r.name]=x.date; n[r.name]=(n[r.name]||0)+1; }
   }); });
   var out={}; Object.keys(n).forEach(function(k){ if(n[k]>1) out[k]=from[k]; });
@@ -45069,13 +45103,16 @@ function tipPeriodRateLabel(rates, nm){
   if(a && a.length) return a.join('→')+'%';
   try{ return (typeof tipRateLabel==='function')?tipRateLabel(nm):''; }catch(e){ return ''; }
 }
-function exportTipPeriodCsv(){
+async function exportTipPeriodCsv(){
   var storeId = (curStore==='ALL'||curStore==='OFFICE')?STORES[0].id:curStore;
   var store = STORES.find(function(s){return s.id===storeId;})||STORES[0];
   var info = tipPeriodInfo();
   var r2 = function(v){ return Math.round((v||0)*100)/100; };
   var md = function(d){ return d.slice(5).replace('-','/'); };
-  var M = tipPeriodMatrix(storeId, info), dists=M.dists, names=M.names;
+  var M = await tipNtSettle(function(){ return tipPeriodMatrix(storeId, info); });   /* v1187：No Tip を決める勤怠を読み終えてから */
+  if (!M) return;   /* 待つあいだにログアウト・ほかの人のログイン：前の人の出力を続けない */
+  var dists=M.dists, names=M.names;
+  if (M.pending) { showToast(tipNtPendingMsg(), 'danger'); return; }
   /* v625: Tip Rate 列（B列）を名前の隣に追加。日付の列はC列から始まる。
      表示は画面の配分表と同じ tipRateLabel()（No Tip / 80% / 90% / 100%）＝二重管理にしない。
      ①〜④・配分合計の行は従業員行ではないので空欄。 */
@@ -45207,7 +45244,9 @@ function _tipCreditCellClick(storeId, date){
 function renderTipPeriodMatrix(storeId, store, info){
   var M = tipPeriodMatrix(storeId, info);
   var md = function(d){ return d.slice(5).replace('-','/'); };
-  var html = `<div class="card"><div class="card-title"><i class="ti ti-table"></i>${t('配分表（日次 L/D）','Distribution (daily L/D)')}<span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">${info.rangeLabel}</span></div><div style="font-size:10.5px;color:var(--muted);margin:-2px 0 6px"><i class="ti ti-hand-finger"></i> ${t('各スタッフのセルをタップすると、そのシフトをTip対象外にできます（除外分は他スタッフへ自動再配分）。','Tap a staff cell to exclude that shift from tips (the excluded amount is auto-redistributed to others).')}${_tipCashCanEdit(storeId)?t('　<b>「③ キャッシュ」の欄は直接入力できます</b>（空欄は 0 として計算し、翌日に自動で 0 を保存）。','　<b>You can type cash tips directly in the “③ Cash” row</b> (a blank counts as 0 and is saved as 0 the next day).'):''}</div>`;
+  /* v1187：No Tip を決めるための勤怠を読み込み中（読み終えると描き直す。そのあいだは仮の額・確定と出力はしない） */
+  var _ntBan = M.pending ? `<div class="card" style="border-left:3px solid var(--yellow);padding:10px 12px;margin-bottom:10px;font-size:12px;line-height:1.6"><i class="ti ti-loader"></i> <b>${t('No Tip を決めるための勤怠を読み込んでいます','Loading time records to decide No Tip')}</b><br><span style="color:var(--muted)">${t('入ったばかりの人の、初回勤務日からの勤怠を読んでいます。読み終えるまでの額は仮です（読み終えると変わることがあります）。このあいだは確定・出力をしません。','Reading time records from the first work day for new staff. Amounts are provisional until loaded and may change. Finalizing and exports wait until then.')}${(()=>{ var ns={}; M.dists.forEach(function(x){ (x.dist.pendingNames||[]).forEach(function(n){ ns[n]=1; }); }); var a=Object.keys(ns); return a.length ? '<br>'+t('対象：','For: ')+a.map(function(n){ return escapeHtml(n); }).join(t('、',', ')) : ''; })()}</span></div>` : '';
+  var html = _ntBan + `<div class="card"><div class="card-title"><i class="ti ti-table"></i>${t('配分表（日次 L/D）','Distribution (daily L/D)')}<span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">${info.rangeLabel}</span></div><div style="font-size:10.5px;color:var(--muted);margin:-2px 0 6px"><i class="ti ti-hand-finger"></i> ${t('各スタッフのセルをタップすると、そのシフトをTip対象外にできます（除外分は他スタッフへ自動再配分）。','Tap a staff cell to exclude that shift from tips (the excluded amount is auto-redistributed to others).')}${_tipCashCanEdit(storeId)?t('　<b>「③ キャッシュ」の欄は直接入力できます</b>（空欄は 0 として計算し、翌日に自動で 0 を保存）。','　<b>You can type cash tips directly in the “③ Cash” row</b> (a blank counts as 0 and is saved as 0 the next day).'):''}</div>`;
   if (!M.names.length){
     html += `<div style="text-align:center;color:var(--muted);padding:18px">${t('この期間の配分データがありません。「日別」で各日のTip・勤怠を確認してください。','No distribution data for this period. Check each day\'s tips/labor in the Daily tab.')}</div></div>`;
     return html;
@@ -45630,7 +45669,7 @@ function renderTipPeriodStaff(storeId, store, info) {
 }
 
 /* 確定処理 */
-function confirmTip(storeId, force) {
+function confirmTip(storeId, force, _ntWaited) {
   var info = tipPeriodInfo();
   // 日次勤怠の承認チェック（force時は例外）
   if (!force) {
@@ -45641,6 +45680,25 @@ function confirmTip(storeId, force) {
     }
   }
   var settle = calcHalfMonthSettlement(storeId, info.anyDate);
+  /* v1187：No Tip がまだ分からない人がいる期間は確定しない（仮の額を残さない）。
+     出力と同じく、読み終えるまで待ってからもう一度（Claude のルーティン #187 P3-4）。待ったあとも分からなければ確定しない。
+     待つあいだにログアウト・ほかの人のログインがあったら何もしない（tipNtSettle が null） */
+  if (settle.pending) {
+    if (_ntWaited) { alert(tipNtPendingMsg()); return; }
+    /* Claude のルーティン（#187 6959819492 P3-1）：待つあいだにもう一度押しても、同じ店・同じ期間の確定は 1 つだけ（確定と知らせを 2 回にしない） */
+    var _cw = (typeof _tipNtConfirmWait !== 'undefined' && _tipNtConfirmWait) || (window._tipNtConfirmWait = {}), _cwk = storeId + '|' + info.from + '|' + info.to;
+    if (_cw[_cwk]) { showToast(t('No Tip を決めるための勤怠を読み込んでいます…', 'Loading time records to decide No Tip…'), 'info'); return; }
+    _cw[_cwk] = 1;
+    var _cwEnd = function(){ delete _cw[_cwk]; };
+    tipNtSettle(function(){ return calcHalfMonthSettlement(storeId, info.anyDate); }).then(function(r){
+      _cwEnd();
+      if (!r) return;
+      if (r.pending) { alert(tipNtPendingMsg()); return; }
+      var i2 = tipPeriodInfo(); if (!i2 || i2.from !== info.from || i2.to !== info.to) return;   /* 待つあいだに画面の期間が変わった：押した期間とは違うので確定しない */
+      confirmTip(storeId, force, true);
+    }, _cwEnd);
+    return;
+  }
   var _used = tipPeriodRates(tipPeriodMatrix(storeId, info).dists);   /* v1092: 配分に使った率を確定の記録に残す */
   var rows = settle.rows.map(r=>({name:r.name, hours:r.hours, rate:effectiveTipRate(r.name), rates:(_used[r.name]||[]), final:r.final, isSL:r.isSL}));
   var data = {
@@ -48622,7 +48680,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1186';
+const APP_VERSION = '1187';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -67761,12 +67819,13 @@ function acctPayrollSheets(d1, d2){
   var per = function(dt){ return (typeof _p4Period==='function') ? _p4Period(dt) : null; };
   var periods = _acctPeriods(d1, d2);   /* v1040: 同じ半月は1回だけ（Tip管理の経理まとめは同じ半月の初日と末日を渡す） */
   /* --- Tip --- */
-  var tip = [], tipHit = 0, tipMiss = [];   /* v1040: 入らなかった店は理由つきで先頭に（静かに抜けない） */
+  var tip = [], tipHit = 0, tipMiss = [], tipPending = false;   /* v1040: 入らなかった店は理由つきで先頭に（静かに抜けない） */
   stores.forEach(function(s){
     periods.forEach(function(dt){
       try{
         var settle = calcHalfMonthSettlement(s.id, dt);
         if(!settle || !settle.anyLabor){ tipMiss.push(_acctTipMiss(s, dt, null)); return; }
+        if(settle.pending) tipPending = true;   /* v1187：No Tip がまだ分からない（exportAcctPayrollBook が待つ・読めなければ出さない） */
         tip = tip.concat(tipCSVRows(s.id, dt)); tip.push([]); tipHit++;
       }catch(e){ tipMiss.push(_acctTipMiss(s, dt, e)); }
     });
@@ -67807,10 +67866,12 @@ function acctPayrollSheets(d1, d2){
     hq.push(['※ 本部経費からこの額を除いてください']);
   } else hq = [['この期間の本部シフトインがありません']];
   return { sheets: [ {name:'Tip', rows:tip}, {name:'Shift Leader', rows:sl}, {name:'本部シフトイン', rows:hq} ],
-           tipHit:tipHit, slHit:slHit, hqHit:hqHit, hqTotal:Math.round(hqTotal*100)/100 };
+           tipHit:tipHit, slHit:slHit, hqHit:hqHit, hqTotal:Math.round(hqTotal*100)/100, pending:tipPending };
 }
-function exportAcctPayrollBook(d1, d2){
-  var r = acctPayrollSheets(d1, d2);
+async function exportAcctPayrollBook(d1, d2){
+  var r = await tipNtSettle(function(){ return acctPayrollSheets(d1, d2); });   /* v1187 */
+  if(!r) return;   /* 待つあいだにログインが変わった */
+  if(r.pending){ showToast(tipNtPendingMsg(),'danger'); return; }
   if(!r.tipHit && !r.slHit && !r.hqHit){
     showToast('この期間に出力できる記録がありません','danger'); return;
   }
@@ -67818,16 +67879,23 @@ function exportAcctPayrollBook(d1, d2){
   downloadExcelSheets(r.sheets, '経理まとめ_' + lbl + '.xls');
   showToast('Tip / Shift Leader / 本部シフトイン を1ファイルで出力しました','success');
 }
-function exportTipCSV(storeId, anyDate) {
+async function exportTipCSV(storeId, anyDate) {
   var s = STORES.find(x=>x.id===storeId)||{name:storeId};
-  var settle = calcHalfMonthSettlement(storeId, anyDate);
+  var settle = await tipNtSettle(function(){ return calcHalfMonthSettlement(storeId, anyDate); });   /* v1187 */
+  if (!settle) return;   /* 待つあいだにログインが変わった */
   if (!settle.anyLabor) { showToast('この期間の勤怠データがありません','danger'); return; }
+  if (settle.pending) { showToast(tipNtPendingMsg(), 'danger'); return; }
   var r = settle.range;
   downloadCSV(tipCSVRows(storeId, anyDate), `Tip_${s.name}_${r.from}_${r.to}.csv`);
   showToast(`${s.name} のTip一覧を出力しました`,'success');
 }
-function exportAllTipCSV(d1, d2) {
+async function exportAllTipCSV(d1, d2) {
   var stores = getVisibleStores();
+  /* v1187：No Tip がまだ分からない店・期間は読み終えるまで待つ（読めなければ出力しない＝仮の額を出さない） */
+  var pend = function(){ var p=false; stores.forEach(s=>{ _acctPeriods(d1, d2).forEach(d=>{ if (calcHalfMonthSettlement(s.id, d).pending) p=true; }); }); return { pending:p }; };
+  var _nt = await tipNtSettle(pend);
+  if (!_nt) return;   /* 待つあいだにログインが変わった */
+  if (_nt.pending) { showToast(tipNtPendingMsg(), 'danger'); return; }
   var rows = [], miss = [];   /* v1040: 勤怠が無い店も理由つきで先頭に出す（静かに抜けない） */
   stores.forEach(s=>{
     _acctPeriods(d1, d2).forEach(d=>{
@@ -92192,7 +92260,7 @@ function renderMypage() {
       ${kpi(t('見込給与','Est. pay'), fmtUSD2(estPay), cycLabel, 'var(--green)')}
     </div>
     <div class="kpi-grid" style="margin-top:8px">
-      ${kpi(t('チップ見込','Est. tips'), '$'+tipEst.total.toFixed(0), tipEst.range, 'var(--accent2)')}
+      ${kpi(t('チップ見込','Est. tips'), '$'+tipEst.total.toFixed(0), tipEst.range + (tipEst.pending ? t('・確認中',' · checking') : ''), 'var(--accent2)')}
       ${kpi(t('給与+チップ','Pay + Tips'), fmtUSD2(estPay+tipEst.total), t('この給与サイクル','This pay cycle'), 'var(--green)')}
     </div>
     ${tipEst.total>0?`<button class="btn btn-secondary btn-sm" style="margin-top:8px;width:100%" onclick="showMyTipDetail('${storeId}','${myTipName.replace(/'/g,"")}')"><i class="ti ti-list-details"></i> ${t('チップ内訳（シフト毎）を見る','View tip breakdown by shift')}</button>`:''}
@@ -102856,6 +102924,215 @@ function effectiveTipRate(name, list) {   /* list：決める前に結果を確�
   var shifts = workedShiftCount(emp);
   if (shifts < noTipShifts(emp.store)) return 0; // No Tip期間中
   return 80;                                     // 期間終了 → 自動80%
+}
+/* ===== v1187：No Tip を「その日の時点のシフト数」で決める（Moto さん 10/18 の決定・11/17「12/1 から」） =====
+   前（v1186 まで）：配分の No Tip は「今日の時点」の実シフト数（workedShiftCount＝この端末にある勤怠の写しを数える）で決めていた。
+   ・No Tip の期間（noTipShifts）を過ぎると、No Tip だった過ぎた日の配分にも入る（日付で決めていない）。
+   ・端末にある勤怠の写しで数えるので、前の月の勤怠を読んでいない端末とでは額が違う（Codex 82e7954 の P2・PR #76 で一度外した理由）。
+   いま（TIP_NOTIP_DAYOF_START の日から）：その日・その枠（ランチ・ディナー）の前までに働いたシフト数で決める。
+   ・数えるのは、初回勤務日（無ければ入社日）からその日の前の日まで＋その日のランチ（ディナーのとき）。数え方は workedShiftCount と同じ
+     （その人の所属の店の勤怠・ランチとディナーで 1 つずつ・Tip の対象時間が 0 より大きい枠）。
+   ・数える勤怠は、このログインのあいだに DB（tip_labor）から読めた日だけ（_tipNtSt().day）。初回勤務日からその日までを読めていなければ
+     null（まだ分からない）を返して読み込みを頼む（tipNtNeed）。読めるまで配分は前の決め方（今日の時点）で仮に出し、pending の印を付ける。
+     印のある期間は確定・Tip の出力をしない（読めるまで待つ・読めなければ止める）。どの端末でも DB の同じ勤怠で数えるので同じ額になる。
+   ・Toast の GUID の無い所属の店（DB に勤怠が無い）は、今までどおりこの端末の写しで数える（その日の前まで）。
+   ・この日より前の日は今までどおり（支払った期間の額を変えない） */
+var TIP_NOTIP_DAYOF_START = '2026-12-01', TIP_NT_RETRY_MS = 30000, TIP_NT_RETRY_MAX_MS = 300000, TIP_NT_MAX_ROWS = 1000;
+var _tipNtS, _tipNtGen, _tipNtConfirmWait = {};   /* _tipNtS・_tipNtGen は初めの値を入れない（この宣言より前に動いた読み込みの記録を消さないため）。_tipNtConfirmWait：待っている確定（店|期間） */
+/* Codex（#187 6959067758 P2-3）：No Tip の数えは「このログインのあいだだけ」。ログアウト（tipNtReset・doLogout から）と、
+   ほかの人のログイン（_tipNtWho が変わる）で、読んだ日・読み終えた範囲・頼み・待ち・やり直しの間隔をすべて捨てる。
+   読み込みは始めたときのログイン（tk）を覚え、ログインが変わっていたら記録しない（遅れて届いた前の人の答えを次の人に使わない） */
+function _tipNtWho(){
+  var u = '', r = '', s = '';
+  try { u = String((typeof curUserName !== 'undefined' && curUserName) || ''); } catch (e) { }
+  try { r = String((typeof curRealRole !== 'undefined' && curRealRole) || (typeof curRole !== 'undefined' && curRole) || ''); } catch (e) { }
+  try { s = (typeof curStoreLogin !== 'undefined' && curStoreLogin) ? 's' : ''; } catch (e) { }
+  return (_tipNtGen || 0) + '|' + u + '|' + r + '|' + s;
+}
+function _tipNtSt(){
+  if (_tipNtS && _tipNtS.who !== _tipNtWho()) tipNtReset();
+  return _tipNtS || (_tipNtS = { who: _tipNtWho(), cov:{}, part:{}, day:{}, want:{}, busy:{}, failAt:{}, fails:{}, timer:null, waiters:[] });
+}
+function tipNtReset(){
+  var S = _tipNtS; _tipNtS = null; _tipNtGen = (_tipNtGen || 0) + 1;
+  if (!S) return;
+  S.dead = true;
+  try { if (S.timer) clearTimeout(S.timer); } catch (e) { }
+  var ws = S.waiters || []; S.waiters = [];
+  ws.forEach(function(f){ try { f(true); } catch (e) { } });   /* 待っている確定・出力は「前のログインのもの」として終わる（tipNtSettle が null） */
+}
+function _tipNtTokOk(tk){ return tk == null || tk === _tipNtWho(); }
+function _tipNtLive(S){ return !!S && S === _tipNtS && !S.dead && S.who === _tipNtWho(); }
+function tipNoTipDayOf(d){ return !!d && String(d) >= TIP_NOTIP_DAYOF_START; }
+function _tipNtDay(d){ return /^\d{4}-\d{2}-\d{2}$/.test(String(d||'')); }
+function _tipNtNext(d){ return new Date(Date.parse(d + 'T00:00:00Z') + 86400000).toISOString().slice(0, 10); }
+function _tipNtPrev(d){ return new Date(Date.parse(d + 'T00:00:00Z') - 86400000).toISOString().slice(0, 10); }
+function _tipNtToday(){ return _tipHstDay(Date.now()); }   /* 営業日（ハワイ） */
+/* DB から読めた 1 日（labor＝その日の勤怠の表）を覚える。seq：読み込みを始めた順（_tipLaborSeq）。あとから始めた読み込みの記録を古い答えで戻さない。
+   tk：読み込みを始めたときのログイン（違えば記録しない） */
+function _tipNtRecordDay(store, date, labor, seq, tk){
+  if (!store || !_tipNtDay(date) || !_tipNtTokOk(tk)) return;
+  var S = _tipNtSt(), m = S.day[store] || (S.day[store] = {}), cur = m[date];
+  if (cur && cur.seq > seq) return;
+  var c = {};
+  Object.keys(labor || {}).forEach(function(k){
+    var e = labor[k] || {}, l = (+e.lunch || 0) > 0 ? 1 : 0, dn = (+e.dinner || 0) > 0 ? 1 : 0, u = (e.lunch == null && e.dinner == null) ? 1 : 0;
+    if (l + dn + u) c[k] = { n: l + dn + u, l: l };
+  });
+  m[date] = { seq: seq, c: c };
+}
+/* from〜to（どちらも含む）を DB から読み終えた。行の数が上限に届いたときは呼ばない（途中までしか返っていないかもしれない）。
+   ・seen：この読み込みで返ってきた日。返ってこなかった日は DB に勤怠の無い日＝シフト 0（Codex P2-2：前に読んだ数を残さない）。
+     あとから始めた読み込み・あとで書いた取り込み（seq が大きい）の記録は消さない（古い答えで新しい記録を消さない）。
+   ・asOf：読み込みを始めたときのハワイの日付。その日はまだ終わっていないので「その日のうちだけ」使う（part）。
+     読み終えた範囲（cov）に入れるのはその前の日まで。先の日は入れない（Claude のルーティン P3-1：日をまたいで開いたままの端末が、
+     読んだときにまだ終わっていなかった日を読み終えたことにしない） */
+function _tipNtRecordRange(store, from, to, seq, tk, seen, asOf){
+  from = String(from || ''); to = String(to || '');
+  if (!store || !_tipNtDay(from) || !_tipNtDay(to) || from > to || !_tipNtTokOk(tk)) return;
+  var S = _tipNtSt(), m = S.day[store] || (S.day[store] = {});
+  if (seq != null && Array.isArray(seen)) {
+    var got = {}; seen.forEach(function(d){ got[String(d)] = 1; });
+    /* Codex（#187 6959851589）：まだ記録の無い日にも「この読み込みでは無かった」を seq つきで残す。
+       前は端末にもう記録がある日だけを 0 にしていたので、新しい読み込みが先に返り、あとから古い読み込みが返ると、
+       DB から消えた日が古い答えで戻っていた（端末によって額が違う）。範囲の日をすべて見て、より新しい記録の日は触らない */
+    for (var d = from; d <= to; d = _tipNtNext(d)) if (!got[d] && !(m[d] && m[d].seq > seq)) m[d] = { seq: seq, c: {} };
+  }
+  var d0 = _tipNtDay(asOf) ? String(asOf) : _tipNtToday();
+  if (from <= d0 && to >= d0 && !(S.part[store] > d0)) S.part[store] = d0;
+  var end = to < d0 ? to : _tipNtPrev(d0);
+  if (from > end) return;
+  var a = (S.cov[store] || []).concat([[from, end]]);
+  a.sort(function(x, y){ return x[0] < y[0] ? -1 : x[0] > y[0] ? 1 : 0; });
+  var out = [];
+  a.forEach(function(r){ var p = out[out.length - 1]; if (p && r[0] <= _tipNtNext(p[1])) { if (r[1] > p[1]) p[1] = r[1]; } else out.push([r[0], r[1]]); });
+  S.cov[store] = out;
+}
+/* from〜to を読み終えているか。先の日（今日より後）の勤怠はまだ無いので今日までで見る。今日は、今日読んだ（part＝今日）ときだけ */
+function _tipNtCovered(store, from, to){
+  var S = _tipNtSt(), T = _tipNtToday(), last = to;
+  if (last > T) last = T;
+  if (from > last) return true;
+  if (last === T) { if (S.part[store] !== T) return false; if (from === T) return true; last = _tipNtPrev(T); }
+  var a = S.cov[store]; if (!a) return false;
+  for (var i = 0; i < a.length; i++) if (a[i][0] <= from && a[i][1] >= last) return true;   /* 続いた範囲はつないである */
+  return false;
+}
+/* 初回勤務日 fwS からその日 day の前の日まで＋（ディナーなら）その日のランチのシフト数（DB から読めた日の記録で） */
+function _tipNtShifts(store, name, fwS, day, slot){
+  var m = _tipNtSt().day[store] || {}, n = 0;
+  Object.keys(m).forEach(function(d){
+    var x = m[d].c[name]; if (!x) return;
+    if (d >= fwS && d < day) n += x.n;
+    else if (d === day && slot === 'dinner') n += x.l;
+  });
+  return n;
+}
+/* Toast の GUID の無い店：この端末の写しで同じ数え方（前と同じ。DB に勤怠が無いので端末どうしの違いは前のまま） */
+function _tipNtLocalShifts(emp, fwS, day, slot){
+  var prefix = 'tip_labor_' + emp.store + '_', n = 0;
+  try {
+    lsKeys(prefix).forEach(function(k){
+      var d = k.slice(prefix.length); if (!_tipNtDay(d) || d < fwS || d > day) return;
+      var data = _lsRaw(k, null), e = data && data[emp.name]; if (!e) return;
+      var l = (e.lunch || 0) > 0 ? 1 : 0, dn = (e.dinner || 0) > 0 ? 1 : 0, u = (e.lunch == null && e.dinner == null) ? 1 : 0;
+      if (d < day) n += l + dn + u; else if (slot === 'dinner') n += l;
+    });
+  } catch (_) { }
+  return n;
+}
+/* その日（dateISO）のその枠（'lunch'|'dinner'）で No Tip か。true／false／null（まだ分からない＝初回勤務日からの勤怠を読み込み中）。
+   決め方の順は effectiveTipRate と同じ（Waikiki・役職 → 3 か月 → 承認 → 初回勤務日が無い → シフト数）。日付はすべてその日で見る。list：Tip Rate の記録 */
+function tipNoTipOn(emp, dateISO, slot, list){
+  if (typeof emp === 'string') { var _nm = emp; emp = getEmployees().find(function(e){ return e.name === _nm; }); }
+  if (!emp) return false;
+  if (emp.store === 'F03' || emp.store === 'F03-G') return false;
+  if (emp.role !== 'crew' && emp.role !== 'sl') return false;
+  var day = String(dateISO || ''), fw = firstWorkDate(emp), fwOk = !!(fw && !isNaN(fw.getTime()));
+  if (fwOk) { var tm = new Date(fw); tm.setMonth(tm.getMonth() + 3); if (day >= isoOf(tm)) return false; }   /* その日に初回勤務から 3 か月（tipRateOn と同じ） */
+  var src = Array.isArray(list) ? list : (ls('tip_requests', []) || []);
+  var ap = _tipLatestApproved(emp.name, src, function(r){ var d = _tipDecDay(r); return !d || d <= day; });   /* その日までに効く承認 */
+  if (ap) return Number(ap.rate) === 0;
+  if (!fwOk) return (emp.coef != null && Math.round(emp.coef * 100) === 0);
+  var need = Number(noTipShifts(emp.store));
+  if (!(need > 0)) return false;
+  var fwS = isoOf(fw);
+  if (day < fwS) return true;   /* 初回勤務日より前の勤務：前に働いたシフトは 0 */
+  var st = ((typeof STORES !== 'undefined' && STORES) || []).find(function(s){ return s.id === emp.store; });
+  if (!st || !st.toastGuid) return _tipNtLocalShifts(emp, fwS, day, slot) < need;
+  if (!_tipNtCovered(emp.store, fwS, day)) { tipNtNeed(emp.store, fwS, day); return null; }
+  return _tipNtShifts(emp.store, emp.name, fwS, day, slot) < need;
+}
+/* 読み込みを頼む（同じ描き直しの中の頼みは店ごとに 1 つにまとめる） */
+function tipNtNeed(store, from, to){
+  var S = _tipNtSt(), q = S.want[store];
+  if (!q) S.want[store] = { from: from, to: to }; else { if (from < q.from) q.from = from; if (to > q.to) q.to = to; }
+  if (!S.timer) S.timer = setTimeout(_tipNtRun, 0);
+}
+/* 読めなかったあとの間隔：30 秒・1 分・2 分・4 分・5 分（Claude のルーティン P3-3：通信の無い端末で 30 秒ごとに読み続けない） */
+function _tipNtRetryMs(S, sid){ var n = (S && S.fails && S.fails[sid]) || 1; return Math.min(TIP_NT_RETRY_MS * Math.pow(2, n - 1), TIP_NT_RETRY_MAX_MS); }
+function _tipNtRun(){
+  var S = _tipNtSt(); S.timer = null;
+  Object.keys(S.want).forEach(function(sid){
+    if (S.busy[sid]) return;   /* 読んでいる途中：終わったら続きを読む */
+    var w = S.want[sid];
+    if (_tipNtCovered(sid, w.from, w.to)) { delete S.want[sid]; return; }
+    var fa = S.failAt[sid]; if (fa && Date.now() - fa < _tipNtRetryMs(S, sid)) return;   /* 読めなかったばかり：間をあける */
+    delete S.want[sid];
+    var st = ((typeof STORES !== 'undefined' && STORES) || []).find(function(s){ return s.id === sid; });
+    if (!st || !st.toastGuid) return;
+    S.busy[sid] = true;
+    var done = function(ok){
+      if (!_tipNtLive(S)) return;   /* ログアウト・ほかの人のログインのあと：前の人の読み込みの結果は何にも使わない */
+      S.busy[sid] = false;
+      if (ok) { delete S.failAt[sid]; delete S.fails[sid]; _tipNtRedraw(); }
+      else { S.failAt[sid] = Date.now(); S.fails[sid] = (S.fails[sid] || 0) + 1; setTimeout(_tipNtRedraw, _tipNtRetryMs(S, sid) + 50); }   /* 間をあけて描き直す＝見ている画面がまた頼む */
+      if (Object.keys(S.want).length && !S.timer) S.timer = setTimeout(_tipNtRun, 0);
+      _tipNtWake();
+    };
+    Promise.resolve().then(function(){ return syncTipLaborFromDB(sid, st.toastGuid, [{ date: w.from }, { date: w.to }]); })
+      .then(function(r){ done(!!(r && !r.fetchErr && !r.stale && _tipNtCovered(sid, w.from, w.to))); }, function(){ done(false); });
+  });
+  _tipNtWake();
+}
+function _tipNtRedraw(){
+  try { var ux = (typeof window !== 'undefined') && window.FUNERGY_UX;
+    if (ux && typeof ux.noteDataChange === 'function') ux.noteDataChange();
+    if (ux && typeof ux.bgRefresh === 'function') ux.bgRefresh();
+    else if (typeof curPage !== 'undefined' && curPage === 'tip' && typeof renderPage === 'function') renderPage('tip');
+  } catch (e) { }
+}
+/* 読み込みが落ち着いたか（読んでいる途中・すぐ読む頼みが無い） */
+function tipNtIdle(){
+  var S = _tipNtSt(), now = Date.now();
+  if (S.timer) return false;
+  if (Object.keys(S.busy).some(function(k){ return S.busy[k]; })) return false;
+  return !Object.keys(S.want).some(function(k){ var fa = S.failAt[k]; return !(fa && now - fa < _tipNtRetryMs(S, k)); });
+}
+function _tipNtWake(){ var S = _tipNtSt(); S.waiters = S.waiters.filter(function(f){ return !f(); }); }
+/* 落ち着くまで待つ。true＝落ち着いた・false＝時間切れか、待つあいだにログインが変わった（tipNtReset が dead で呼ぶ） */
+function tipNtWait(ms){
+  return new Promise(function(res){
+    if (tipNtIdle()) return res(true);
+    var fin = false, to = setTimeout(function(){ if (!fin) { fin = true; res(false); } }, ms || 20000);
+    _tipNtSt().waiters.push(function(dead){ if (fin) return true; if (!dead && !tipNtIdle()) return false; fin = true; clearTimeout(to); res(!dead); return true; });
+  });
+}
+/* 出力・確定の前：No Tip を決める勤怠を読み終えるまで待ってから計算し直す（2 回まで）。fn() は { pending } を持つ結果を返す。
+   待つあいだにログアウト・ほかの人のログインがあったら null（呼ぶ側は何もしない＝前の人の確定・出力を次のログインで続けない） */
+async function tipNtSettle(fn){
+  var who = _tipNtWho(), r = fn();
+  for (var i = 0; i < 2 && r && r.pending; i++) {
+    if (i === 0 && typeof showToast === 'function') showToast(t('No Tip を決めるための勤怠を読み込んでいます…', 'Loading time records to decide No Tip…'), 'info');
+    await tipNtWait(20000);
+    if (_tipNtWho() !== who) return null;
+    r = fn();
+  }
+  return (_tipNtWho() !== who) ? null : r;
+}
+function tipNtPendingMsg(){
+  return t('No Tip を決めるための勤怠（初回勤務日から）を読み込めていません。通信を確かめて、少し待ってからもう一度押してください。',
+           'Could not load the time records (from the first work day) used to decide No Tip. Check the connection, wait a moment and try again.');
 }
 /* ===== v1095：適用開始日（UI案57） =====
    選べるのは、いまの期間（1〜15 日・16 日〜末日）の初日（ハワイの今日）から 366 日先まで（Q2 A：前の期間は選べない）。初めは今日（Q3 A） */
