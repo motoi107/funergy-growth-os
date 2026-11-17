@@ -5,7 +5,9 @@ with
  fn as (select p.oid, p.proname, p.prosecdef, p.proconfig, p.prosrc from pg_proc p join pg_namespace n on n.oid = p.pronamespace
         where n.nspname = 'public' and p.proname in ('dl_top_pin_off','dl_top_pin_info','dl_pin_blocked','dl_pin_stage','dl_emp','dl_email_notice')),
  sw as (select case when (select count(*) from tb) = 1 and to_regprocedure('public.dl_top_pin_off()') is not null
-   then (xpath('/row/c/text()', query_to_xml('select public.dl_top_pin_off()::text as c', false, true, '')))[1]::text end as on_now)
+   then (xpath('/row/c/text()', query_to_xml('select public.dl_top_pin_off()::text as c', false, true, '')))[1]::text end as on_now),
+ stg as (select case when to_regprocedure('public.dl_pin_stage()') is not null
+   then (xpath('/row/c/text()', query_to_xml('select public.dl_pin_stage()::text as c', false, true, '')))[1]::text::int end as st)
 select 1 as no, '表 dl_flags' as check_item, case when (select count(*) from tb) = 1 then 'OK' else 'NG' end as result, '' as detail
 union all select 2, '表は RLS ON', case when coalesce((select bool_and(relrowsecurity) from tb), false) then 'OK' else 'NG' end, ''
 union all select 3, '公開の鍵（anon・authenticated）で表を読めない・書けない',
@@ -24,6 +26,10 @@ union all select 8, 'スイッチが入っている（GM・CEO・経理は PIN �
   case when (select on_now from sw) = 'false' then '外れています（PIN_を戻す.sql を流したか、v1185 の止める.sql でメールのログインを外した）。止めるなら 2 をもう一度' else '' end
 union all select 9, '新しい端末の知らせを時刻の順に並べてから 500 件にする（dl_email_notice）',
   case when coalesce((select prosrc like '%collate "C"%' from fn where proname = 'dl_email_notice'), false) then 'OK' else 'NG' end, ''
+union all select 11, '同じ名前の人を止めない直し（20261207：社員の ID を先に見る・名前は在籍の人だけ）',
+  case when coalesce((select st from stg), 0) >= 2 and coalesce((select prosrc like '%id_first%' from fn where proname = 'dl_pin_blocked'), false) then 'OK' else 'NG' end,
+  case when coalesce((select st from stg), 0) >= 2 and coalesce((select prosrc like '%id_first%' from fn where proname = 'dl_pin_blocked'), false) then ''
+       else '入っていません（20261206 の SQL だけを流した・あとで流し直して前の形に戻った）。2_SQL.sql をもう一度流す' end
 union all select 10, '（参考）PIN を止めた・戻した記録', 'info',
   case when to_regclass('public.dl_events') is not null then (xpath('/row/c/text()', query_to_xml($q$ select (select count(*) from public.dl_events where kind = 'pin_off')::text || ' 回・戻した ' || (select count(*) from public.dl_events where kind = 'pin_on')::text || ' 回' as c $q$, false, true, '')))[1]::text else '—' end
 order by 1;

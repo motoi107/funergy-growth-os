@@ -14,6 +14,7 @@ const { PGlite } = await import(process.env.BOT_PGLITE_MODULE || './runtime/node
 const MIG83 = fs.readFileSync(new URL('supabase/migrations/20261203090000_device_login.sql', ROOT), 'utf8');
 const MIG = fs.readFileSync(new URL('supabase/migrations/20261205090000_email_login.sql', ROOT), 'utf8');
 const MIG86 = fs.readFileSync(new URL('supabase/migrations/20261206090000_top_pin_off.sql', ROOT), 'utf8');
+const MIG87 = fs.readFileSync(new URL('supabase/migrations/20261207090000_pin_blocked_id_first.sql', ROOT), 'utf8');
 const U = { ceo: '00000000-0000-4000-8000-0000000000c1', gm: '00000000-0000-4000-8000-0000000000c2', office: '00000000-0000-4000-8000-0000000000c3' };
 const ACC = { 'ceo@x.test': ['pw-ceo', 'ceo'], 'gm@x.test': ['pw-gm', 'gm'], 'office@x.test': ['pw-office', 'office'] };
 const IPHONE = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1';
@@ -50,7 +51,7 @@ async function world(opts = {}) {
   for (const [k, e] of [['ceo', 'E1'], ['gm', 'E2'], ['office', 'E3']]) await pg.query('insert into manager_auth values($1,$2,$3)', [U[k], k, e]);
   await pg.exec(MIG83);
   if (!opts.noSql) await pg.exec(MIG);
-  if (opts.v1186) await pg.exec(MIG86);   // v1186：GM・CEO・経理の PIN のログインを止める
+  if (opts.v1186) { await pg.exec(MIG86); await pg.exec(MIG87); }   // v1186：GM・CEO・経理の PIN のログインを止める（20261207：社員の ID を先に見る）
   await pg.exec('set role service_role');
   const db = { async rpc(name, p) {
     try { const r = await pg.query(`select public.${name}($1::jsonb) as v`, [JSON.stringify(p ?? {})]); return r.rows[0].v; }

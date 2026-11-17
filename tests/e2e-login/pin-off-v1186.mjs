@@ -47,6 +47,8 @@ await pg.exec(`create role anon; create role authenticated; create role service_
   grant select on public.manager_auth, public.employees to service_role; grant select, insert, update on public.app_state to service_role;`);
 for (const p of PEOPLE) await pg.query(`insert into public.employees values ($1,$2,'在籍',$3,$4,'{}')`, [p.id, p.name, p.role, p.store]);
 await pg.query(`insert into public.employees values ('E4','Mix Gm','在籍','gm','F01','{}')`);
+// #184 の P2：退職した GM と同じ名前の Crew（Aki Test）。サーバーの社員の表にだけある（アプリの名簿には出ない）。Crew は PIN で入れる
+await pg.query(`insert into public.employees values ('R9','Aki Test','退職','gm','F01','{}')`);
 await pg.query('insert into public.manager_auth values ($1,$2,$3),($4,$5,$6),($7,$8,$9),($10,$11,$12)', [UID.ceo, 'ceo', 'E1', UID.gm, 'gm', 'E2', UID.office, 'office', 'E3', UID.mix, 'gm', 'E4']);
 await pg.exec(fs.readFileSync(path.join(ROOT, 'supabase/migrations/20261203090000_device_login.sql'), 'utf8'));
 await pg.exec(fs.readFileSync(path.join(ROOT, 'supabase/migrations/20261205090000_email_login.sql'), 'utf8'));

@@ -1,5 +1,5 @@
 -- top-pin-off（v1186）。仕様：docs/PIN_OFF_V1186_JA.md。
--- Moto さん 11/16 23:24 HST「PINでのログインやめます」：GM・CEO・経理（社員の役割か manager_auth の役割が ceo・gm・office）は、
+-- Moto さん 11/16 23:24 HST「PINでのログインやめます」：GM・CEO・経理（社員の表の役割：列か中身のどちらかが ceo・gm・office）は、
 -- PIN でログインしない（名前を選んだあと、メールとパスワードだけ）。PIN が要るところ（割引・チャットの「続ける」など）は今までどおり。
 -- ・この SQL を流したときから止まる（スイッチ dl_flags の top_pin_off）。戻すときは deploy/pin-off-v1186/PIN_を戻す.sql。
 -- ・メールのログイン（v1185 の dl_email_login）が無ければ、スイッチが入っていても止めない（だれも入れなくなるのを防ぐ）。
@@ -9,6 +9,8 @@
 -- ・新しい端末の知らせ（v1185）：足したあと、アプリ・secure-state と同じく時刻の順に並べてから 500 件にする。
 -- 表も関数もサーバーの鍵（service_role）だけ。公開の鍵（anon・authenticated）では読めない・呼べない。security invoker・search_path 固定。
 -- 社員の表・manager_auth は読むだけ。2 回流しても同じ（表は if not exists・関数は create or replace・スイッチは入れ直すだけ）。
+-- ・dl_pin_blocked の同じ名前の人の扱い（退職した・在籍の GM などと同じ名前の Crew も止めていた）は、次の 20261207090000 で直した（社員の ID を先に見る）。
+--   この SQL だけをあとでもう一度流すと前の形に戻るので、流し直すときは deploy/pin-off-v1186/2_SQL.sql（両方が入っている）を流す。
 
 do $$
 declare n integer; names text;
@@ -53,6 +55,7 @@ $$;
 
 -- その人の PIN のログインを止めるか（auth-pin・emp-private が PIN を確かめたあとに聞く）。p：emp_id と name（どちらか一方でもよい）
 -- 止める：スイッチが入っていて、その人（同じ名前の人が何人かいれば、そのだれか）の社員の役割（列か中身）が ceo・gm・office
+-- （この形は 20261207090000 で置き換えた：社員の ID の行があればその人だけで決める・名前は在籍の人だけ）
 -- （アプリがメールとパスワードの段に回す人と同じ決め方。manager_auth の役割では決めない：アプリが回さない人を止めると、だれも入れなくなる）
 create or replace function public.dl_pin_blocked(p jsonb) returns jsonb
 language plpgsql stable security invoker set search_path = public, pg_temp as $$

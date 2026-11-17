@@ -8,6 +8,7 @@ import { createHandler } from '../supabase/functions/device-login/handler.mjs';
 const { PGlite } = await import(process.env.BOT_PGLITE_MODULE || './runtime/node_modules/@electric-sql/pglite/dist/index.js');
 const R = f => fs.readFileSync(new URL('../supabase/migrations/' + f, import.meta.url), 'utf8');
 const MIG83 = R('20261203090000_device_login.sql'), MIG85 = R('20261205090000_email_login.sql'), MIG86 = R('20261206090000_top_pin_off.sql');
+const MIG87 = R('20261207090000_pin_blocked_id_first.sql');
 const U = { ceo: '00000000-0000-4000-8000-0000000000c1', gm: '00000000-0000-4000-8000-0000000000c2', office: '00000000-0000-4000-8000-0000000000c3' };
 const DEV1 = '11111111-1111-4111-8111-111111111111';
 
@@ -24,7 +25,10 @@ async function setup(opts = {}) {
     insert into public.employees values
      ('E1','CEO Sample','在籍','ceo','OFFICE','{}'),('E2','GM Sample','在籍','gm','OFFICE','{}'),('E3','Office Sample','在籍','office','OFFICE','{}'),
      ('E5','Former GM','退職','gm','OFFICE','{}'),('E7','Area Sample','在籍','am','OFFICE','{}'),('E9','Crew Sample','在籍','crew','F01','{}'),
-     ('E10','Data GM','在籍','','F01','{"role":"gm"}'),('E11','Split Sample','在籍','crew','F01','{"role":"gm"}');`);
+     ('E10','Data GM','在籍','','F01','{"role":"gm"}'),('E11','Split Sample','在籍','crew','F01','{"role":"gm"}'),
+     ('E12','Former GM','在籍','crew','F01','{}'),('E13','GM Sample','在籍','crew','F02','{}'),
+     ('E14','Twin Off','在籍','gm','OFFICE','{"osDisabled":true}'),('E15','Twin Off','在籍','crew','F01','{}'),
+     ('E16','Twin Dst','在籍','gm','OFFICE','{"status":"退職"}'),('E17','Twin Dst','在籍','crew','F01','{}');`);
   const links = opts.links || [['ceo', 'ceo', 'E1'], ['gm', 'gm', 'E2'], ['office', 'office', 'E3'], ['dgm', 'gm', 'E10'], ['split', 'gm', 'E11']];
   for (const [k, r, e] of links) await pg.query('insert into manager_auth(user_id, role, emp_id) values($1,$2,$3)', [U[k] || '00000000-0000-4000-8000-0000000000d' + links.findIndex(x => x[0] === k), r, e]);
   if (opts.notifs !== undefined) await pg.query('insert into app_state(key, value, updated_at) values($1, $2, $3)', ['notifications', JSON.stringify(opts.notifs), '2026-11-16T00:00:00Z']);
@@ -32,6 +36,7 @@ async function setup(opts = {}) {
   if (!opts.no85) await pg.exec(MIG85);
   let stop = null;
   if (!opts.no86) { try { await pg.exec(MIG86); } catch (e) { stop = e; } }
+  if (!opts.no86 && !stop && !opts.no87) await pg.exec(MIG87);   // 20261207：社員の ID を先に見る（同じ名前の人を止めない）
   await pg.exec('set role service_role');
   const db = { async rpc(name, p) {
     try { const r = await pg.query(`select public.${name}($1::jsonb) as v`, [JSON.stringify(p ?? {})]); return r.rows[0].v; }
@@ -51,8 +56,9 @@ async function setup(opts = {}) {
     return { status: r.status, body: await r.json() };
   };
   const sql = async q => { await pg.exec('reset role'); try { return await pg.query(q); } finally { await pg.exec('set role service_role'); } };
+  const ex = async q => { await pg.exec('reset role'); try { return await pg.exec(q); } finally { await pg.exec('set role service_role'); } };
   const rpc = (n, p) => db.rpc(n, p);
-  return { pg, call, sql, rpc, stop };
+  return { pg, call, sql, ex, rpc, stop };
 }
 
 test('先に止まる：メールのアカウントと結ばれていない GM・CEO・経理がいれば、何も変えない（名前と数）', async () => {
@@ -76,8 +82,10 @@ test('スイッチ：入れたときから止める・止める人は社員の�
   assert.deepEqual(await w.rpc('dl_top_pin_info', {}), { top_pin_off: true });
   const b = p => w.rpc('dl_pin_blocked', p).then(r => r.blocked);
   for (const p of [{ emp_id: 'E1' }, { emp_id: 'E2' }, { emp_id: 'E3' }, { emp_id: 'E10' }, { name: 'GM Sample' }, { name: ' Office Sample ' }, { name: 'Data GM' },
-    { emp_id: 'E9', name: 'GM Sample' }, { emp_id: 'E2', name: 'Crew Sample' }, { emp_id: 'E11' }, { name: 'Split Sample' }]) assert.equal(await b(p), true, JSON.stringify(p));
-  for (const p of [{ emp_id: 'E9' }, { emp_id: 'E7' }, { name: 'Crew Sample' }, { name: 'Area Sample' }, { emp_id: 'NOPE' }, { name: 'Nobody' }]) assert.equal(await b(p), false, JSON.stringify(p));
+    { emp_id: 'E2', name: 'Crew Sample' }, { emp_id: 'E11' }, { name: 'Split Sample' }, { emp_id: 'NOPE', name: 'GM Sample' }]) assert.equal(await b(p), true, JSON.stringify(p));
+  // 社員の ID の行があれば、その人だけで決める（auth-pin・emp-private は名前の合う行の ID だけを送る）
+  for (const p of [{ emp_id: 'E9' }, { emp_id: 'E7' }, { name: 'Crew Sample' }, { name: 'Area Sample' }, { emp_id: 'NOPE' }, { name: 'Nobody' }, { emp_id: 'E9', name: 'GM Sample' },
+    { emp_id: 'NOPE', name: 'Crew Sample' }]) assert.equal(await b(p), false, JSON.stringify(p));
   await assert.rejects(() => b({}), /bad_value/);
   // 退職した GM（PIN でももう入れない＝auth-pin が断る）も「メールで」と答える側（害はない）
   assert.equal(await b({ emp_id: 'E5' }), true);
@@ -90,6 +98,38 @@ test('スイッチ：入れたときから止める・止める人は社員の�
   await w.sql(`drop function public.dl_email_login(jsonb)`);
   assert.deepEqual(await w.rpc('dl_top_pin_info', {}), { top_pin_off: false });
   assert.equal(await b({ emp_id: 'E2' }), false);
+});
+
+test('同じ名前の人（#184 の Claude 6945401027・Codex 6945462615／6955376116 の P2）：社員の ID を先に・名前で探すのは在籍の人だけ', async () => {
+  const w = await setup();
+  const b = p => w.rpc('dl_pin_blocked', p).then(r => r.blocked);
+  // 退職した GM と同じ名前の Crew（列の状態が退職）：本人の ID でも ID なしでも止めない
+  for (const p of [{ emp_id: 'E12' }, { emp_id: 'E12', name: 'Former GM' }, { name: 'Former GM' }, { name: ' Former GM ' }]) assert.equal(await b(p), false, JSON.stringify(p));
+  // 中身の状態が退職・OS の無効の GM と同じ名前の Crew も同じ
+  for (const p of [{ emp_id: 'E15', name: 'Twin Off' }, { name: 'Twin Off' }, { emp_id: 'E17', name: 'Twin Dst' }, { name: 'Twin Dst' }]) assert.equal(await b(p), false, JSON.stringify(p));
+  // 在籍の GM と同じ名前の Crew：本人の ID なら止めない。ID が無い・見つからないときは、どちらか分からないので止める（安全なほう）
+  assert.equal(await b({ emp_id: 'E13', name: 'GM Sample' }), false);
+  assert.equal(await b({ emp_id: 'E13' }), false);
+  assert.equal(await b({ name: 'GM Sample' }), true);
+  assert.equal(await b({ emp_id: 'NOPE', name: 'GM Sample' }), true);
+  // GM 本人の ID は止める（同じ名前の Crew がいても）。退職した GM の ID も止める側（PIN では auth-pin がもう断る）
+  assert.equal(await b({ emp_id: 'E2', name: 'GM Sample' }), true);
+  assert.equal(await b({ emp_id: 'E5', name: 'Former GM' }), true);
+  assert.equal(await b({ emp_id: 'E14' }), true, 'OS の無効の GM 本人の ID は止める側（名前で探すときだけ外す）');
+  assert.equal((await w.sql('select public.dl_pin_stage() v')).rows[0].v, 2);
+  // 前の SQL（20261206 だけ）では、同じ名前の Crew も止まっていた（P2 の再現）
+  const old = await setup({ no87: true });
+  const ob = p => old.rpc('dl_pin_blocked', p).then(r => r.blocked);
+  for (const p of [{ emp_id: 'E12', name: 'Former GM' }, { name: 'Former GM' }, { emp_id: 'E13', name: 'GM Sample' }, { emp_id: 'E15', name: 'Twin Off' }, { emp_id: 'E17', name: 'Twin Dst' }])
+    assert.equal(await ob(p), true, '前の SQL：' + JSON.stringify(p));
+  assert.equal((await old.sql('select public.dl_pin_stage() v')).rows[0].v, 1);
+  // 20261206 の上に 20261207 を流すと直る（本番は 20261206 がもう入っている）
+  await old.ex(MIG87);
+  for (const p of [{ emp_id: 'E12', name: 'Former GM' }, { emp_id: 'E13', name: 'GM Sample' }]) assert.equal(await ob(p), false, JSON.stringify(p));
+  // 20261206 が無ければ 20261207 は何も変えずに止まる
+  const none = await setup({ no86: true });
+  await assert.rejects(() => none.ex(MIG87), /STOP: 先に 20261206090000_top_pin_off\.sql/);
+  assert.equal((await none.sql(`select to_regprocedure('public.dl_pin_blocked(jsonb)') r`)).rows[0].r, null);
 });
 
 test('経理も「ログインの試し（端末＋PIN）」に入れない（止めているあいだだけ）', async () => {
@@ -145,8 +185,9 @@ test('表と関数はサーバーの鍵だけ・2 回流しても同じ（スイ
       await assert.rejects(() => w.pg.query(`select public.${f}`), /permission denied/, role + ' ' + f);
   }
   await w.pg.exec('reset role');
-  await w.pg.exec(MIG86);
-  await w.pg.exec(MIG86);
+  for (let i = 0; i < 2; i++) { await w.pg.exec(MIG86); await w.pg.exec(MIG87); }   // 入れる一式の 2（20261206＋20261207）を 2 回
+  assert.equal((await w.sql('select public.dl_pin_stage() v')).rows[0].v, 2);
+  assert.equal((await w.rpc('dl_pin_blocked', { emp_id: 'E12', name: 'Former GM' })).blocked, false);
   const f = await w.sql(`select value, note from dl_flags`);
   assert.deepEqual(f.rows, [{ value: true, note: 'v1186 の SQL' }]);
   const ev = await w.sql(`select kind, actor, result, reason from dl_events where kind = 'pin_off'`);
