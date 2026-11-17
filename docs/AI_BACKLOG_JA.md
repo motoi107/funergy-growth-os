@@ -12,7 +12,8 @@
 4a. 済（Claude・ブランチ `claude/kpi-p3-1181`）：v1181＝#173・#174 の Codex（6904392963・6904393429）の P3 3 つ（保存待ちのあいだのチェック・「全店共通に戻す」の世代・業務用アカウントの一覧の引き継ぎ）と Claude のルーティン（6904318744）の P3 2 つ（booting・deferred の文・ログアウトで下書きを捨てる）（`docs/KPI_HOURS_UPSELL_V1176_JA.md` の 7）・PR #179。次：Codex → #178 のあとにマージ → 端末を 1181 に。残り（記録だけ）：ルーティンの P3-3（ID の無い古い日を名前で外すことを一覧の画面に出すか・UI 案から）。
 4b. 済（Moto さん 11/16 08:13 HST「全部Aで」）：UI案89（と UI案88）の答えはすべて A。次（Claude）：v1182（ブランチ `claude/ui88-89-1181`）で作る。
 4c. 済（Claude・ブランチ `claude/ui88-89-1181`）：v1182＝UI案88・89（`docs/PC_SP_LAYOUT_JA.md` の 17）。#178・#179 のマージ（11/16 08:25 HST）のあとに送った直し `1ce135a`・`aee631a4` もこの PR で main に入る。次：Codex → マージ → 端末を 1182 に → 実機。Moto さんに確かめる：UI案88 を全部 A と読んだこと。
-4d. 次（Claude）：ログイン（UI案80）のサーバー側（端末・招待の URL・記録の表と関数）を別のブランチで。あとで：`tests/perf/hr-check.mjs` の SL の 4 つ（合成データ）。
+4d. 済（Claude・ブランチ `claude/login-trial-1183`）：ログインの試し・段階 1＝v1183（SQL `20261203090000`・関数 device-login・`docs/DEVICE_LOGIN_V1183_JA.md`・入れる一式 `deploy/device-login-v1183/`）。次：Codex → #180 → この PR → Moto さんが手順.md（④ は非公開の 1 ファイル）→ 1〜2 人で試す → 段階 2（GM・CEO のメールとパスワード・チャットのロックを GM・CEO で止める など）。
+4e. 次（Claude）：添付（11/16 15:01 HST）の 3 つ＝KPI設定を正にした会議タブの KPI・本部所属をスキルマトリクスから外す・事務Crew／G1 のガソリン代と立替経費の申請の権限（サーバーで確かめる）。あとで：`tests/perf/hr-check.mjs` の SL の 4 つ（合成データ）。
 5. まだ（Moto さん）：v1176 の手順（`deploy/upsell-v1176/手順.md`）・11 月の取り込み直し・本物の注文明細との照合。PL の手順は SQL が先。
 
 ## 2026-11-14 PC・スマホの最適化（ブランチ `claude/pcsp-inventory`）
