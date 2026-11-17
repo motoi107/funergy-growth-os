@@ -33,7 +33,7 @@ function fnSrc(name) {
   throw new Error('unterminated: ' + name);
 }
 
-const FNS = ['k2NormAcctName','k2SysAcctList','k2SysMatcher','k2DayIssues','k2HoursDays','k2HoursDaysM','k2HoursDaysAll','k2RecGuids','isOrderOnlyAccount','toastSystemAccount','ceIsSystemAccount','_laborHrs','getTipLabor','k2IsSysName','k2SysGuids','k2MonthGuids','k2YmAdd','daysOfYm'];
+const FNS = ['k2NormAcctName','k2SysAcctList','k2SysWhy','k2SysNameWhy','k2SysMatcher','k2DayIssues','k2HoursDays','k2HoursDaysM','k2HoursDaysAll','k2RecGuids','isOrderOnlyAccount','toastSystemAccount','ceIsSystemAccount','_laborHrs','getTipLabor','k2IsSysName','k2SysGuids','k2MonthGuids','k2YmAdd','daysOfYm'];
 
 function world({ today = '2026-11-12', stores = [{ id: 'F06', bizDays: { 1: 'closed' } }], labor = {}, kpi = {}, closures = {} } = {}) {
   const LS = {};

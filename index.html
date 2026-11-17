@@ -4614,10 +4614,13 @@ function k2MonthGuids(sid, ym){
   };
   return (typeof _mdMemo==='function') ? _mdMemo('k2mg', sid+'|'+ym, make) : make();
 }
-function k2IsSysName(sid, ym, n){
-  if(typeof toastSystemAccount==='function' && toastSystemAccount(n, sid)) return true;
+function k2IsSysName(sid, ym, n){ return !!k2SysNameWhy(sid, ym, n); }
+/* v1188（UI案91）：前の名前の決まりで外す理由。'rule'＝名前が仕組みのアカウント（Toast Generic Login・Order Only・Kiosk など）／
+   'guid'＝同じ月・同じ名前に、前に仕組みのアカウントの名前だった Toast ID の記録がある／''＝どちらでもない */
+function k2SysNameWhy(sid, ym, n){
+  if(typeof toastSystemAccount==='function' && toastSystemAccount(n, sid)) return 'rule';
   var sys=k2SysGuids(sid, ym), mg=k2MonthGuids(sid, ym)[n]||{};
-  return Object.keys(mg).some(function(g){ return Object.prototype.hasOwnProperty.call(sys, g); });
+  return Object.keys(mg).some(function(g){ return Object.prototype.hasOwnProperty.call(sys, g); }) ? 'guid' : '';
 }
 /* v1175（11/15 の依頼の A・UI案84）：業務用アカウント（総労働時間から外す）。店ごとの Toast のアカウント ID の一覧。
    kpi_config.byStore[店].sysAcct = { "<Toast ID>": { name, on, src:'auto'|'manual', at, by } }（on:false は外すのをやめた印）。
@@ -4632,26 +4635,43 @@ function k2SysAcctList(sid){
   var m=s && s.sysAcct;
   return (m && typeof m==='object' && !Array.isArray(m)) ? m : null;
 }
-function k2SysMatcher(sid, ym){
+/* v1188（UI案91）：1 件の勤怠を外すか数えるかと、その理由。k2SysMatcher はこれの ex だけを使う（画面の理由と数え方がずれない）。
+   返す値 { ex, by:'id'|'name', why, id }
+   一覧のある店：ID のある件は ID で（'id_on' 外す／'id_none' 数える）。
+   ID の無い前の記録は名前で：'list_name' 一覧の名前と同じ→外す／'off_name' 一覧で外すのをやめた名前→数える（id はその一覧の ID）／
+   'sys_rule'・'sys_guid' 前の名前の決まり→外す／'none' どれでもない→数える。一覧の無い店は名前の決まりだけ（by:'name'） */
+function k2SysWhy(sid, ym){
   var list=k2SysAcctList(sid);
+  var nmOf=function(n, e){ return [n].concat(e && e.toastName ? [e.toastName] : []).concat(e && Array.isArray(e.toastNames) ? e.toastNames : []); };
+  var oldRule=function(nm){
+    var w='';
+    for(var i=0;i<nm.length;i++){ try{ w=k2SysNameWhy(sid, ym, nm[i]); }catch(_e){ w=''; } if(w) return w; }
+    return '';
+  };
   if(list){
     var ids={}, names={};
     Object.keys(list).forEach(function(id){ var r=list[id]; if(!r || r.on===false) return; ids[id]=1; if(r.name) names[k2NormAcctName(r.name)]=1; });
     var offNames={};
-    Object.keys(list).forEach(function(id){ var r=list[id]; if(r && r.on===false && r.name){ var k=k2NormAcctName(r.name); if(names[k]!==1) offNames[k]=1; } });
+    Object.keys(list).forEach(function(id){ var r=list[id]; if(r && r.on===false && r.name){ var k=k2NormAcctName(r.name); if(names[k]!==1 && !offNames[k]) offNames[k]=id; } });
     return function(n, e){
       var gs=k2RecGuids(e);
-      if(gs.length) return gs.some(function(g){ return ids[g]===1; });
-      var nm=[n].concat(e && e.toastName ? [e.toastName] : []).concat(e && Array.isArray(e.toastNames) ? e.toastNames : []);
-      if(nm.some(function(x){ return names[k2NormAcctName(x)]===1; })) return true;
-      if(nm.some(function(x){ return offNames[k2NormAcctName(x)]===1; })) return false;
+      if(gs.length){ var hit=null; gs.some(function(g){ if(ids[g]===1){ hit=g; return true; } return false; }); return hit ? { ex:true, by:'id', why:'id_on', id:hit } : { ex:false, by:'id', why:'id_none', id:gs[0] }; }
+      var nm=nmOf(n, e);
+      if(nm.some(function(x){ return names[k2NormAcctName(x)]===1; })) return { ex:true, by:'name', why:'list_name' };
+      var off=null; nm.some(function(x){ var v=offNames[k2NormAcctName(x)]; if(v){ off=v; return true; } return false; });
+      if(off) return { ex:false, by:'name', why:'off_name', id:off };
       /* v1176（Claude #174 の P3-1）：ID の無い前の勤怠の写しは、一覧の名前に無ければ前の名前の決まり（k2IsSysName）も見る。
          一覧を作っても、直近 2 か月に出ていない名前・この端末に無い月の記録で、過去の月の総労働時間が増えないように。
          一覧で「外すのをやめた」名前は外さない */
-      return nm.some(function(x){ try{ return k2IsSysName(sid, ym, x); }catch(_e){ return false; } });
+      var w=oldRule(nm);
+      return w ? { ex:true, by:'name', why:'sys_'+w } : { ex:false, by:'name', why:'none' };
     };
   }
-  return function(n){ return k2IsSysName(sid, ym, n); };
+  return function(n){ var w=''; try{ w=k2SysNameWhy(sid, ym, n); }catch(_e){ w=''; } return w ? { ex:true, by:'name', why:'sys_'+w } : { ex:false, by:'name', why:'none' }; };
+}
+function k2SysMatcher(sid, ym){
+  var why=k2SysWhy(sid, ym);
+  return function(n, e){ return why(n, e).ex; };
 }
 /* 1 営業日あたりの総労働時間（h/営業日）の日ごとの元。
    対象営業日＝月初〜集計の日の前日（今日・これからの日は入れない）・定休日と臨時休業を除く・開店日（店舗マスター）より前を除く。
@@ -4680,12 +4700,16 @@ function k2DayIssues(data, isSys){
 function k2HoursDays(sid, ym, opts){
   opts=opts||{};
   var cur=(typeof curYm==='function') ? curYm() : null;
-  var out={ ym:ym, days:[], openDays:0, openHours:0, pendingDays:0, pendingDates:[], pendingWhy:{ nolabor:0, badtime:0, noout:0 }, closedHours:0, totalHours:0, excludedHours:0, excludedBy:{}, ubh:0, avg:null, future:false };
+  /* v1188（UI案91-6）：外した時間を「ID で」（exId・exIdBy）と「名前で」（exName・exNameBy・ID の無い件のある日 noIdDays）に分ける。
+     opts.trace が true なら、数えた日（営業日・休業日）の 1 件ずつを out.trace に（業務用アカウントの画面の表に使う） */
+  var out={ ym:ym, days:[], openDays:0, openHours:0, pendingDays:0, pendingDates:[], pendingWhy:{ nolabor:0, badtime:0, noout:0 }, closedHours:0, totalHours:0, excludedHours:0, excludedBy:{}, exId:0, exIdBy:{}, exName:0, exNameBy:{}, noIdDays:0, hasList:false, ubh:0, avg:null, future:false };
   if(cur && ym>cur){ out.future=true; return out; }
   var cutoff=(opts.cutoff!==undefined) ? opts.cutoff : (ym===cur ? bizToday() : null);
   var st=null; try{ st=(getStoresAll()||[]).find(function(x){ return x.id===sid; })||null; }catch(e){ st=null; }
   var openDate=(st && typeof st.openDate==='string' && /^\d{4}-\d{2}-\d{2}$/.test(st.openDate)) ? st.openDate : null;
-  var isSys=k2SysMatcher(sid, ym), hasList=!!k2SysAcctList(sid);
+  var whyOf=k2SysWhy(sid, ym), isSys=function(n, e){ return whyOf(n, e).ex; }, hasList=!!k2SysAcctList(sid);
+  out.hasList=hasList;
+  if(opts.trace) out.trace=[];
   var r1=function(v){ return Math.round(v*100)/100; };
   var exAdd=function(n, e, v){ var k=String((e && e.toastName) || n); out.excludedBy[k]=r1((out.excludedBy[k]||0)+v); };
   daysOfYm(ym).forEach(function(d){
@@ -4698,9 +4722,9 @@ function k2HoursDays(sid, ym, opts){
     var ovr=null; try{ ovr=(typeof getAttOverride==='function') ? getAttOverride(sid, dt) : null; }catch(e){ ovr=null; }
     var raw=null; if(ovr && ovr.data && typeof ovr.data==='object') raw=ovr.data; else { try{ raw=ls('tip_labor_'+sid+'_'+dt, null); }catch(e){ raw=null; } }
     var lab=null; try{ lab=getTipLabor(sid, dt); }catch(e){ lab=null; }
-    var h=0, ex=0;
+    var h=0, ex=0, recs=[];
     if(lab && typeof lab==='object'){
-      Object.keys(lab).forEach(function(n){ var e=lab[n]; var v=Number(_laborHrs(e))||0; if(!(v>0)) return; if(isSys(n, e)){ ex+=v; exAdd(n, e, v); } else h+=v; });
+      Object.keys(lab).forEach(function(n){ var e=lab[n]; var v=Number(_laborHrs(e))||0; if(!(v>0)) return; var w=whyOf(n, e); recs.push({ n:n, e:e, v:v, w:w }); if(w.ex){ ex+=v; exAdd(n, e, v); } else h+=v; });
     }
     /* getTipLabor が名前で先に外した Order Only（給与・Tip はこのまま外す）。
        一覧のある店は一覧で決める（一覧にあって外す印のものだけ外す・外すのをやめた／一覧に無いものは実働）。一覧の無い店は今までどおり外す（v1175・Codex #173・#174 の指摘） */
@@ -4709,23 +4733,37 @@ function k2HoursDays(sid, ym, opts){
         if(Object.prototype.hasOwnProperty.call(lab, n)) return;
         var e=raw[n]; if(!(isOrderOnlyAccount(n) || (e && isOrderOnlyAccount(e.toastName)))) return;
         var v=Number(_laborHrs(e))||0; if(!(v>0)) return;
-        if(!hasList || isSys(n, e)){ ex+=v; exAdd(n, e, v); } else h+=v;
+        var w=hasList ? whyOf(n, e) : { ex:true, by:'name', why:'sys_rule' };
+        recs.push({ n:n, e:e, v:v, w:w });
+        if(w.ex){ ex+=v; exAdd(n, e, v); } else h+=v;
       });
     }
     var has=!!(lab && typeof lab==='object');
     var iss=has ? k2DayIssues(lab, isSys) : { bad:0, open:0, ubh:0 };
     var row={ date:dt, kind:'', hours:r1(h), excluded:r1(ex), why:'', bad:iss.bad, open:iss.open };
     out.ubh+=iss.ubh;
-    if(closed){ row.kind='closed'; out.closedHours+=h; out.totalHours+=h; out.excludedHours+=ex; }
+    /* 数えた日だけ（営業日・休業日）、外した時間を ID で／名前でに分け、表のための 1 件ずつを残す */
+    var counted=function(){
+      var noId=false;
+      recs.forEach(function(x){
+        var k=String((x.e && x.e.toastName) || x.n), gid=k2RecGuids(x.e).length>0;
+        if(!gid) noId=true;
+        if(x.w.ex){ var byId=(hasList && x.w.by==='id'); if(byId){ out.exId+=x.v; out.exIdBy[k]=r1((out.exIdBy[k]||0)+x.v); } else { out.exName+=x.v; out.exNameBy[k]=r1((out.exNameBy[k]||0)+x.v); } }
+        if(out.trace) out.trace.push({ date:dt, n:x.n, name:k, gid:gid, ex:!!x.w.ex, by:x.w.by, why:x.w.why, id:x.w.id||'', h:r1(x.v) });
+      });
+      if(noId) out.noIdDays++;
+    };
+    if(closed){ row.kind='closed'; out.closedHours+=h; out.totalHours+=h; out.excludedHours+=ex; counted(); }
     else if(!has || iss.bad>0 || iss.open>0 || (opts.incomplete && opts.incomplete(sid, dt, lab))){
       row.kind='pending'; row.why=!has ? 'nolabor' : (iss.open>0 ? 'noout' : (iss.bad>0 ? 'badtime' : 'other'));
       if(out.pendingWhy[row.why]!=null) out.pendingWhy[row.why]++;
       out.pendingDays++; out.pendingDates.push(dt);
     }
-    else { row.kind='open'; out.openDays++; out.openHours+=h; out.totalHours+=h; out.excludedHours+=ex; }
+    else { row.kind='open'; out.openDays++; out.openHours+=h; out.totalHours+=h; out.excludedHours+=ex; counted(); }
     out.days.push(row);
   });
   out.openHours=r1(out.openHours); out.closedHours=r1(out.closedHours); out.totalHours=r1(out.totalHours); out.excludedHours=r1(out.excludedHours); out.ubh=r1(out.ubh);
+  out.exId=r1(out.exId); out.exName=r1(out.exName);
   out.avg=out.openDays>0 ? Math.round(out.openHours/out.openDays*10)/10 : null;
   return out;
 }
@@ -4736,12 +4774,13 @@ function k2HoursDaysM(sid, ym){
 }
 /* 全店（いくつかの店）：対象店舗の実働の合計 ÷ 延べ営業日数（1店舗・1営業日あたり） */
 function k2HoursDaysAll(sids, ym, opts){
-  var o={ openDays:0, openHours:0, pendingDays:0, pendingWhy:{ nolabor:0, badtime:0, noout:0 }, closedHours:0, totalHours:0, excludedHours:0, ubh:0, avg:null, stores:{} };
+  var o={ openDays:0, openHours:0, pendingDays:0, pendingWhy:{ nolabor:0, badtime:0, noout:0 }, closedHours:0, totalHours:0, excludedHours:0, exId:0, exName:0, noIdDays:0, ubh:0, avg:null, stores:{} };
   (sids||[]).forEach(function(sid){ var r=opts ? k2HoursDays(sid, ym, opts) : k2HoursDaysM(sid, ym); o.stores[sid]=r;
     o.openDays+=r.openDays; o.openHours+=r.openHours; o.pendingDays+=r.pendingDays; o.closedHours+=r.closedHours; o.totalHours+=r.totalHours; o.excludedHours+=r.excludedHours; o.ubh+=r.ubh||0;
+    o.exId+=r.exId||0; o.exName+=r.exName||0; o.noIdDays+=r.noIdDays||0;
     Object.keys(o.pendingWhy).forEach(function(k){ o.pendingWhy[k]+=(r.pendingWhy&&r.pendingWhy[k])||0; }); });
   var r2=function(v){ return Math.round(v*100)/100; };
-  o.openHours=r2(o.openHours); o.totalHours=r2(o.totalHours); o.closedHours=r2(o.closedHours); o.excludedHours=r2(o.excludedHours); o.ubh=r2(o.ubh);
+  o.openHours=r2(o.openHours); o.totalHours=r2(o.totalHours); o.closedHours=r2(o.closedHours); o.excludedHours=r2(o.excludedHours); o.ubh=r2(o.ubh); o.exId=r2(o.exId); o.exName=r2(o.exName);
   o.avg=o.openDays>0 ? Math.round(o.openHours/o.openDays*10)/10 : null;
   return o;
 }
@@ -4825,12 +4864,21 @@ function k2HoursDetailHtml(sids, ym){
   h+='<div class="k2h-tot"><div>'+t('期間の総実働','Total hours in the period')+' <b>'+(Math.round(all.totalHours*10)/10).toFixed(1)+'h</b> <span class="k2-note">（'+t('営業日 ','business days ')+(Math.round(all.openHours*10)/10).toFixed(1)+'h ＋ '+t('休業日 ','closed days ')+(Math.round(all.closedHours*10)/10).toFixed(1)+'h）</span></div>'
     +(all.totalHours>0 && sales>0?'<div>'+t('人時売上高','Sales per labor hour')+' $'+Math.round(sales).toLocaleString()+' ÷ '+(Math.round(all.totalHours*10)/10).toFixed(1)+'h ＝ <b>$'+Math.round(sales/all.totalHours).toLocaleString()+'/h</b></div>':'')+'</div>';
   if(all.excludedHours>0){
-    var by={}; sids.forEach(function(sid){ var e=all.stores[sid].excludedBy||{}; Object.keys(e).forEach(function(k){ by[k]=(by[k]||0)+e[k]; }); });
-    h+='<div class="k2-note" style="margin-top:6px">'+t('外した業務用アカウント ','Excluded system accounts ')+all.excludedHours+'h：'+Object.keys(by).sort(function(a,b){ return by[b]-by[a]; }).map(function(k){ return escapeHtml(k)+' '+(Math.round(by[k]*10)/10)+'h'; }).join(' · ')+t('（売上・客数には入る）',' (their sales and guests still count)')+'</div>';
+    /* v1188（UI案91-6）：ID で外した分と、ID の無い日（前の記録）に名前で外した分を分けて出す（合計は今までと同じ） */
+    var sumBy=function(f){ var by={}; sids.forEach(function(sid){ var e=all.stores[sid][f]||{}; Object.keys(e).forEach(function(k){ by[k]=(by[k]||0)+e[k]; }); }); return by; };
+    var lst=function(by){ return Object.keys(by).sort(function(a,b){ return by[b]-by[a]; }).map(function(k){ return escapeHtml(k)+' '+(Math.round(by[k]*10)/10)+'h'; }).join(' · '); };
+    var anyList=sids.some(function(sid){ return all.stores[sid].hasList; }), allList=sids.every(function(sid){ return all.stores[sid].hasList; });
+    var ind='padding-left:10px;border-left:3px solid var(--border);margin-top:4px';
+    h+='<div class="k2-note" style="margin-top:6px">'+t('外した業務用アカウント ','Excluded system accounts ')+(Math.round(all.excludedHours*10)/10)+'h'+t('（売上・客数には入る）',' (their sales and guests still count)')+'</div>';
+    if(all.exId>0) h+='<div class="k2-note" style="'+ind+'"><b>'+t('ID で ','By ID ')+(Math.round(all.exId*10)/10).toFixed(1)+'h：</b>'+lst(sumBy('exIdBy'))+'</div>';
+    if(all.exName>0) h+='<div class="k2-note" style="'+ind+'"><b>'+(allList
+        ? t('名前で（ID の無い日 '+all.noIdDays+' 日）','By name (days without an ID: '+all.noIdDays+') ')
+        : (anyList ? t('名前で（ID の無い日・一覧がまだ無い店）','By name (days without an ID, stores with no list yet) ') : t('名前で（一覧がまだ無い店）','By name (no list yet) ')))+(Math.round(all.exName*10)/10).toFixed(1)+'h：</b>'+lst(sumBy('exNameBy'))+'</div>';
   }
   if(all.ubh>0) h+='<div class="k2-note" style="margin-top:4px">'+t('Toast の休憩ボタンの記録 '+all.ubh+'h（引いていません。打刻を切った休憩はもともと入っていません）','Toast break-button records '+all.ubh+'h (not subtracted; clocked-out breaks are never counted)')+'</div>';
-  h+='<div class="k2-note" style="margin-top:6px">'+t('打刻を直したり、遅れて取り込んだりすると計算し直します。業務用アカウントは店ごとの Toast ID の一覧で外します（名前の一部・職種・従業員マスターに無いことでは外しません）。','Fixing punches or importing late recalculates this. System accounts are excluded by the per-store Toast ID list (never by part of a name, a job title or a missing master record).')+'</div>';
-  if(!multi && typeof canAccessKpiMaster==='function' && canAccessKpiMaster()) h+='<div style="margin-top:8px"><button class="btn btn-secondary btn-sm" onclick="closeModalDirect();window._kpiTab=\'sysacct\';window._kpiStore=\''+escapeHtml(sids[0])+'\';go(\'kpi_master\')"><i class="ti ti-user-off"></i> '+t('業務用アカウントの一覧','System accounts')+'</button></div>';
+  /* v1188（UI案91-6）：説明を本当の決まりに合わせる（ID の無い前の記録は名前で決めている） */
+  h+='<div class="k2-note" style="margin-top:6px">'+t('打刻を直したり、遅れて取り込んだりすると計算し直します。ID がある日は店ごとの Toast ID の一覧で外します（名前の一部・職種・従業員マスターに無いことでは外しません）。ID の無い前の記録（11/13 より前のアプリで取り込んだ日）は名前で決めます（一覧の名前と同じ・前の名前の決まり）。一覧がまだ無い店は前の名前の決まりで外します。','Fixing punches or importing late recalculates this. On days with a Toast ID, accounts are excluded by the per-store ID list (never by part of a name, a job title or a missing master record). Older records without an ID (days imported by the app before 11/13) are decided by name (same as a name on the list, or the earlier name rules). Stores without a list still use the earlier name rules.')+'</div>';
+  if(!multi && typeof canAccessKpiMaster==='function' && canAccessKpiMaster()) h+='<div style="margin-top:8px"><button class="btn btn-secondary btn-sm" onclick="closeModalDirect();window._kpiTab=\'sysacct\';window._kpiStore=\''+escapeHtml(sids[0])+'\';window._k2SysYm=\''+ym+'\';go(\'kpi_master\')"><i class="ti ti-user-off"></i> '+t('業務用アカウントの一覧','System accounts')+'</button></div>';
   return h+'</div>';
 }
 function k2HoursOpen(sidsCsv, ym){
@@ -4960,10 +5008,11 @@ async function k2SysCarry(sid){
   return ok2;
 }
 function k2SysCarryRetry(sid){ try{ if(window._k2SysCarried) delete window._k2SysCarried[sid]; if(window._k2SysCarryWhy) delete window._k2SysCarryWhy[sid]; }catch(e){} return k2SysCarry(sid); }
-function k2SysToggle(sid, id, on){
+function k2SysToggle(sid, id, on, ym){
   if(!k2SysCanEdit(sid)) return;
   var cur=Object.assign({}, k2SysAcctList(sid)||{});
-  var acc=k2SysMonthAccounts(sid, curYm()).byId[id] || k2SysMonthAccounts(sid, k2YmAdd(curYm(),-1)).byId[id];
+  /* v1188（UI案91-2）：選んだ月の打刻から名前を取る（無ければ今月・前の月） */
+  var acc=(ym && /^\d{4}-\d{2}$/.test(String(ym)) ? k2SysMonthAccounts(sid, ym).byId[id] : null) || k2SysMonthAccounts(sid, curYm()).byId[id] || k2SysMonthAccounts(sid, k2YmAdd(curYm(),-1)).byId[id];
   var prev=cur[id]||{};
   var name=(acc && acc.name) || prev.name || '';
   if(on && !confirm(t('「'+name+'」を業務用アカウントとして総労働時間から外します。人の打刻でないことを名前と時間で確かめましたか？','Exclude "'+name+'" from labor hours as a system account? Check by name and hours that it is not a person.'))) return;
@@ -4971,27 +5020,89 @@ function k2SysToggle(sid, id, on){
   return k2SysSave(sid, cur, on ? t('外しました（保存しました）','Excluded (saved)') : t('外すのをやめました（保存しました）','No longer excluded (saved)'));
 }
 function k2SysRetry(sid){ var cur=k2SysAcctList(sid); if(!cur) return; return k2SysSave(sid, Object.assign({}, cur), t('保存しました','Saved')); }
+/* v1188（UI案91-2）：見る月（今月〜13 か月前）。選んだ月は window._k2SysYm（この端末のメモリだけ） */
+function k2SysYmOptions(){ var c=curYm(), out=[]; for(var i=0;i<=13;i++) out.push(k2YmAdd(c,-i)); return out; }
+function k2SysYmSel(){ var o=k2SysYmOptions(), y=window._k2SysYm; if(!y || o.indexOf(y)<0) y=o[0]; window._k2SysYm=y; return y; }
+function k2SysYmSet(ym){
+  if(k2SysYmOptions().indexOf(ym)<0) return;
+  window._k2SysYm=ym; window._k2SysPeopleOpen=false;
+  renderPage('kpi_master');
+  try{ if(ym!==curYm()) loadMonthAndRerender(ym, 'kpi_master'); }catch(e){}
+}
+/* v1188（UI案91-5）：勤怠データでこの店・この月を開くだけ（取り込み直すのは人が勤怠データの画面で押す） */
+function k2OpenAtt(sid, ym){
+  if(!/^\d{4}-\d{2}$/.test(String(ym||''))) return;
+  var n=bizNow(), p=String(ym).split('-');
+  var off=(Number(p[0])-n.getFullYear())*12+(Number(p[1])-1-n.getMonth());
+  if(off>0) off=0;
+  try{ attMonthOffset=off; }catch(e){}
+  try{ _laborStore=sid; }catch(e){}
+  try{ laborTab='attendance'; }catch(e){}
+  go('labor');
+  try{ loadMonthAndRerender(ym, 'labor'); }catch(e){}
+}
+/* v1188（UI案91-1）：ID の無い前の記録の表（名前ごと）。k2HoursDays の 1 件ずつ（数えた日だけ）から作る＝日次進捗の内訳と同じ数 */
+function k2SysNoIdTable(sid, ym){
+  var r=k2HoursDays(sid, ym, { trace:true });
+  var tr=(r.trace||[]);
+  var byName={}, noIdDates={}, idDates={}, dayHasNoId={};
+  tr.forEach(function(x){ if(!x.gid) dayHasNoId[x.date]=1; });
+  tr.forEach(function(x){ if(dayHasNoId[x.date]) noIdDates[x.date]=1; else idDates[x.date]=1; });
+  tr.forEach(function(x){
+    if(x.gid && r.hasList) return;          /* ID のある件は上の一覧（ID）で決めている */
+    if(x.gid && !r.hasList) return;         /* 一覧の無い店は別の文で出す（ID の無い前の記録だけを表に） */
+    var key=(x.ex?'1':'0')+'|'+x.why+'|'+x.name;
+    var o=byName[key]||(byName[key]={ name:x.name, ex:x.ex, why:x.why, id:x.id, dates:{}, h:0 });
+    o.dates[x.date]=1; o.h+=x.h;
+  });
+  var rows=Object.keys(byName).map(function(k){ var o=byName[k]; o.d=Object.keys(o.dates).length; o.h=Math.round(o.h*100)/100; return o; });
+  var people=rows.filter(function(o){ return !o.ex && o.why==='none'; });
+  var main=rows.filter(function(o){ return !(!o.ex && o.why==='none'); });
+  main.sort(function(a,b){ if(a.ex!==b.ex) return a.ex?-1:1; return b.h-a.h; });
+  people.sort(function(a,b){ return b.h-a.h; });
+  var exH=0, cntH=0, exNames={}, offN=0;
+  rows.forEach(function(o){ if(o.ex){ exH+=o.h; exNames[o.name]=1; } else { cntH+=o.h; if(o.why==='off_name') offN++; } });
+  var rng=function(m){ var ks=Object.keys(m).sort(); return ks.length ? { n:ks.length, a:ks[0], b:ks[ks.length-1] } : { n:0 }; };
+  return { r:r, main:main, people:people, exH:Math.round(exH*100)/100, cntH:Math.round(cntH*100)/100, exNames:Object.keys(exNames).length, offN:offN, noId:rng(noIdDates), withId:rng(idDates) };
+}
+function k2SysWhyText(o){
+  var tail=function(id){ return id ? '…'+String(id).slice(-4) : ''; };
+  switch(o.why){
+    case 'list_name': return t('一覧の名前と同じ','Same as a name on the list');
+    case 'sys_rule':  return t('前の名前の決まり（Toast Generic Login・Order Only・Kiosk など）','Earlier name rules (Toast Generic Login, Order Only, Kiosk, …)');
+    case 'sys_guid':  return t('同じ月・同じ名前に、前に業務用の名前だった ID の記録がある','The same name this month has an ID that used to be a system-account name');
+    case 'off_name':  return t('一覧で「外すのをやめた」名前（'+tail(o.id)+'）→ 人として数える','A name “no longer excluded” on the list ('+tail(o.id)+') → counted as a person');
+    default:          return t('どれでもない（人の勤怠）','None of the above (a person’s hours)');
+  }
+}
+function k2SysPeopleToggle(){ window._k2SysPeopleOpen=!window._k2SysPeopleOpen; renderPage('kpi_master'); }
+function k2SysAddToggle(){ window._k2SysAddOpen=!window._k2SysAddOpen; renderPage('kpi_master'); }
 function renderKpiSysAcctTab(){
   var stores=kpiSettableStores();
   if(!stores.length) return '<div class="card" style="text-align:center;color:var(--muted);padding:20px">'+t('対象の店舗がありません','No stores')+'</div>';
   if(!window._kpiStore || !stores.find(function(s){ return s.id===window._kpiStore; })) window._kpiStore=(curStore && curStore!=='ALL' && stores.find(function(s){ return s.id===curStore; })) ? curStore : stores[0].id;
-  var sid=window._kpiStore, cym=curYm(), can=k2SysCanEdit(sid);
+  var sid=window._kpiStore, cym=curYm(), ym=k2SysYmSel(), can=k2SysCanEdit(sid);
+  var mLab=function(y){ return k2YmLabel(y); }, mShort=t(parseInt(ym.slice(5),10)+'月', k2YmLabel(ym));
+  var md=function(d){ return d ? parseInt(d.slice(5,7),10)+'/'+parseInt(d.slice(8,10),10) : ''; };
   var list=k2SysAcctList(sid);
   /* 一覧がまだ無い店：足せる人が開いたら、前の決まりで外していた ID を一度だけ引き継ぐ（4A） */
   var carrySt=(window._k2SysCarried||{})[sid];
   if(!list && can && !_k2SysBusy && !carrySt){ setTimeout(function(){ k2SysCarry(sid); }, 0); carrySt='busy'; }
-  var acc=k2SysMonthAccounts(sid, cym), on=[], off=[];
+  var acc=k2SysMonthAccounts(sid, ym), on=[], off=[];
   Object.keys(list||{}).forEach(function(id){ var r=list[id]; if(!r) return; (r.on===false?off:on).push({ id:id, r:r }); });
   var tail=function(id){ return '…'+String(id).slice(-4); };
   var hrsOf=function(id){ var a=acc.byId[id]; return a ? a.hours.toFixed(1)+'h' : '0.0h'; };
   var who=function(r){ return r.src==='auto' ? t('前の決まりから引き継ぎ','Carried over from earlier rules') : t('手で足した','Added by hand')+(r.by?'（'+r.by+'）':''); };
   var h='<div class="card" style="padding:10px;margin-bottom:10px"><div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
     +'<span style="font-size:12px;color:var(--muted)">'+t('店舗','Store')+'</span>'
-    +'<select class="form-select" style="width:auto;padding:6px" onchange="window._kpiStore=this.value;renderPage(\'kpi_master\')">'
+    +'<select class="form-select" style="width:auto;padding:6px" onchange="window._kpiStore=this.value;window._k2SysPeopleOpen=false;renderPage(\'kpi_master\')">'
     +stores.map(function(s){ return '<option value="'+escapeHtml(s.id)+'"'+(sid===s.id?' selected':'')+'>'+escapeHtml(s.name)+'</option>'; }).join('')+'</select>'
-    +'<span style="font-size:11px;color:var(--muted)">'+t('今月（前日まで）の時間','Hours this month (to yesterday)')+'</span></div></div>';
+    +'<span style="font-size:12px;color:var(--muted);margin-left:6px">'+t('月','Month')+'</span>'
+    +'<select class="form-select" style="width:auto;padding:6px" onchange="k2SysYmSet(this.value)">'
+    +k2SysYmOptions().map(function(y){ return '<option value="'+y+'"'+(y===ym?' selected':'')+'>'+escapeHtml(mLab(y))+(y===cym?t('（前日まで）',' (to yesterday)'):'')+'</option>'; }).join('')+'</select>'
+    +'<span style="font-size:11px;color:var(--muted)">'+t('今月〜13 か月前（'+mLab(k2YmAdd(cym,-13))+'）まで選べます','This month back to 13 months ago ('+mLab(k2YmAdd(cym,-13))+')')+'</span></div></div>';
   h+='<div class="card"><div class="card-title"><i class="ti ti-user-off" style="color:var(--accent)"></i>'+t('業務用アカウント（総労働時間から外す）','System accounts (left out of labor hours)')+'</div>'
-    +'<div class="k2-note" style="margin:-4px 0 8px">'+t('店ごとの Toast のアカウント ID で外します。名前の一部・職種（Server など）・従業員マスターに無いことだけでは外しません。','Excluded by the per-store Toast account ID — never by part of a name, a job (e.g. Server) or a missing master record.')+'</div>';
+    +'<div class="k2-note" style="margin:-4px 0 8px;line-height:1.6">'+t('Toast のアカウント ID がある日は、この一覧の ID で外します（名前の一部・職種・従業員マスターに無いことでは外しません）。<b>ID の無い前の記録</b>（v1153＝11/13 より前のアプリで取り込んだ日）は、下の表のとおり<b>名前で</b>決めます。','On days with a Toast account ID, accounts are excluded by the IDs on this list (never by part of a name, a job or a missing master record). <b>Older records without an ID</b> (days imported by the app before v1153, 11/13) are decided <b>by name</b>, as in the table below.')+'</div>';
   if(!list && can && carrySt==='fail') h+='<div class="k2h-warn"><i class="ti ti-alert-triangle"></i> '+((((window._k2SysCarryWhy||{})[sid])||'read')==='read'
       ? t('クラウドの設定を読めなかったので、一覧はまだ作っていません（ほかの端末が作った一覧を上書きしないため）','Could not read the cloud settings, so the list was not created yet (so as not to overwrite a list made on another device)')
       : t('一覧をまだ作れていません（ほかの店の保存と重なったか、この端末に保存できませんでした）','The list was not created yet (it overlapped with another store’s save, or could not be saved on this device)'))
@@ -4999,27 +5110,74 @@ function renderKpiSysAcctTab(){
   else if(!list) h+='<div class="k2-note" style="padding:8px 0">'+(can?t('一覧を作っています…','Creating the list…'):t('この店はまだ一覧がありません。今は前の決まり（名前など）で外しています。GM・CEO か担当の AM がこの画面を開くと、前の決まりで外していたアカウントを一覧に引き継ぎます。','No list yet for this store; earlier rules (names) still apply. When GM, CEO or the assigned AM opens this screen, those accounts are carried over.'))+'</div>';
   if(window._k2SysState && window._k2SysState.sid===sid && !window._k2SysState.ok) h+='<div class="k2h-warn"><i class="ti ti-alert-triangle"></i> '+t('未保存：クラウドに送れていません','Not saved: not sent to the cloud')
     +(can&&list?' <button class="btn btn-secondary btn-sm" style="padding:2px 8px;font-size:11px;margin-left:6px" onclick="k2SysRetry(\''+escapeHtml(sid)+'\')">'+t('もう一度送る','Send again')+'</button>':'')+'</div>';
-  h+='<div class="k2h-rows" style="max-height:none">';
-  if(list && !on.length) h+='<div class="k2-note" style="padding:8px 0">'+t('外しているアカウントはありません','No accounts are excluded')+'</div>';
-  on.forEach(function(x){
-    h+='<div class="k2h-row"><span><b>'+escapeHtml(x.r.name||'—')+'</b> <span class="k2-note">'+escapeHtml(tail(x.id))+' · '+escapeHtml(who(x.r))+(x.r.at?' · '+escapeHtml(String(x.r.at).slice(0,10)):'')+'</span></span>'
-      +'<span style="display:flex;align-items:center;gap:8px"><b>'+hrsOf(x.id)+'</b>'+(can?'<button class="btn btn-secondary btn-sm" style="padding:3px 8px;font-size:11px" onclick="k2SysToggle(\''+escapeHtml(sid)+'\',\''+escapeHtml(x.id)+'\',false)">'+t('外すのをやめる','Stop excluding')+'</button>':'')+'</span></div>';
-  });
-  h+='</div>';
-  h+='<div class="k2-note" style="margin-top:8px;line-height:1.6">'+t('打刻・給与・Tip の元のデータは変えません。このアカウントで入れた注文の売上・客数はいつもどおり数えます。足す・外すと、KPI設定・日次進捗・内訳・グラフ・会議のどれも同じ数字に変わります。変えた人と時刻を残します。Order Only は取り込むときに名前で外しています（給与・Tip と同じ）。','Punches, payroll and Tip are not changed. Sales and guests rung in under these accounts still count. Adding or removing changes KPI settings, daily progress, details, graph and meeting the same way. Who and when are kept. Order Only is dropped by name at import (as for payroll and Tip).')+'</div>';
-  /* 足す：この店で今月に打刻があった Toast アカウント（一覧で外していないもの） */
-  var cand=Object.keys(acc.byId).filter(function(id){ return !(list && list[id] && list[id].on!==false); }).map(function(id){ return acc.byId[id]; }).sort(function(a,b){ return b.hours-a.hours; });
-  h+='<div class="k2h-sec">'+t('足す（この店で今月に打刻があった Toast アカウント）','Add (Toast accounts that punched here this month)')+'</div><div class="k2-note">'+t('人かどうかは名前と時間で確かめてください','Check by name and hours whether it is a person')+'</div><div class="k2h-rows" style="max-height:none">';
-  if(!cand.length) h+='<div class="k2-note" style="padding:8px 0">'+t('今月の打刻（ID つき）はまだありません','No punches with an ID this month yet')+'</div>';
-  cand.forEach(function(a){
-    var was=list && list[a.id] && list[a.id].on===false;
-    h+='<div class="k2h-row"><span>'+escapeHtml(a.name)+' <span class="k2-note">'+escapeHtml(tail(a.id))+(was?' · '+t('前に外すのをやめた','previously stopped'):'')+'</span></span>'
-      +'<span style="display:flex;align-items:center;gap:8px"><b>'+a.hours.toFixed(1)+'h</b>'+(can&&list?'<button class="btn btn-secondary btn-sm" style="padding:3px 8px;font-size:11px" onclick="k2SysToggle(\''+escapeHtml(sid)+'\',\''+escapeHtml(a.id)+'\',true)">'+t('外す','Exclude')+'</button>':'')+'</span></div>';
-  });
-  h+='</div>';
-  var nid=Object.keys(acc.noId).filter(function(n){ return acc.noId[n]>0; });
-  if(nid.length) h+='<div class="k2-note" style="margin-top:6px">'+t('ID の無い前の勤怠の写し（取り込み直すと ID が付きます）：','Old attendance copies without an ID (re-import to get IDs): ')+nid.map(function(n){ return escapeHtml(n)+' '+(Math.round(acc.noId[n]*10)/10)+'h'; }).join(' · ')+'</div>';
-  h+='<div style="font-size:11px;color:'+(can?'var(--muted)':'var(--accent)')+';margin-top:10px">'+(can?t('足す・外すのは GM・CEO と担当の AM です','GM, CEO and the assigned AM can add or remove'):t('足す・外すのは GM・CEO と担当の AM です（見るだけ）','Only GM, CEO and the assigned AM can change this (view only)'))+'</div>';
+  if(list){
+    h+='<div class="k2h-sec">'+t('アカウント ID で外した（'+mShort+'）','Excluded by account ID ('+mShort+')')+'</div>';
+    h+='<div class="k2h-rows" style="max-height:none">';
+    if(!on.length) h+='<div class="k2-note" style="padding:8px 0">'+t('外しているアカウントはありません','No accounts are excluded')+'</div>';
+    on.forEach(function(x){
+      h+='<div class="k2h-row"><span><b>'+escapeHtml(x.r.name||'—')+'</b> <span class="k2-note">'+escapeHtml(tail(x.id))+' · '+escapeHtml(who(x.r))+(x.r.at?' · '+escapeHtml(String(x.r.at).slice(0,10)):'')+'</span></span>'
+        +'<span style="display:flex;align-items:center;gap:8px"><b>'+hrsOf(x.id)+'</b>'+(can?'<button class="btn btn-secondary btn-sm" style="padding:3px 8px;font-size:11px" onclick="k2SysToggle(\''+escapeHtml(sid)+'\',\''+escapeHtml(x.id)+'\',false,\''+ym+'\')">'+t('外すのをやめる','Stop excluding')+'</button>':'')+'</span></div>';
+    });
+    h+='</div>';
+    /* 足す：この店でこの月に打刻があった Toast アカウント（一覧で外していないもの）。たたんでおく（UI案91） */
+    var cand=Object.keys(acc.byId).filter(function(id){ return !(list[id] && list[id].on!==false); }).map(function(id){ return acc.byId[id]; }).sort(function(a,b){ return b.hours-a.hours; });
+    var addOpen=!!window._k2SysAddOpen;
+    h+='<div class="k2h-sec" style="display:flex;align-items:center;gap:8px;cursor:pointer" onclick="k2SysAddToggle()">'+t('足す（この店で '+mShort+'に打刻があった Toast アカウント）','Add (Toast accounts that punched here in '+mShort+')')+' <span class="k2-note">'+cand.length+'</span><span style="margin-left:auto;font-size:12px;color:var(--accent)">'+(addOpen?t('たたむ ▾','Hide ▾'):t('ひらく ▸','Show ▸'))+'</span></div>';
+    if(addOpen){
+      h+='<div class="k2-note">'+t('人かどうかは名前と時間で確かめてください','Check by name and hours whether it is a person')+'</div><div class="k2h-rows" style="max-height:none">';
+      if(!cand.length) h+='<div class="k2-note" style="padding:8px 0">'+t('この月の打刻（ID つき）はまだありません','No punches with an ID this month yet')+'</div>';
+      cand.forEach(function(a){
+        var was=list[a.id] && list[a.id].on===false;
+        h+='<div class="k2h-row"><span>'+escapeHtml(a.name)+' <span class="k2-note">'+escapeHtml(tail(a.id))+(was?' · '+t('前に外すのをやめた','previously stopped'):'')+'</span></span>'
+          +'<span style="display:flex;align-items:center;gap:8px"><b>'+a.hours.toFixed(1)+'h</b>'+(can?'<button class="btn btn-secondary btn-sm" style="padding:3px 8px;font-size:11px" onclick="k2SysToggle(\''+escapeHtml(sid)+'\',\''+escapeHtml(a.id)+'\',true,\''+ym+'\')">'+t('外す','Exclude')+'</button>':'')+'</span></div>';
+      });
+      h+='</div>';
+    }
+  }
+  /* v1188（UI案91-1・3）：ID の無い前の記録（名前で決めている）。名前ごとに 外す／数える・理由・日数・時間 */
+  var tb=null; try{ tb=k2SysNoIdTable(sid, ym); }catch(e){ tb=null; }
+  h+='<div class="k2h-sec" style="margin-top:14px">'+t('ID の無い前の記録（'+mShort+'）','Older records without an ID ('+mShort+')')+'</div>';
+  if(!tb){ h+='<div class="k2-note">'+t('この月の勤怠を読めませんでした','Could not read this month’s attendance')+'</div>'; }
+  else {
+    h+='<div class="k2-note" style="margin-bottom:6px;line-height:1.6">'+(list
+      ? t('この記録は名前で決めます。上から順：一覧の名前と同じ → 外す／一覧で外すのをやめた名前 → 数える／前の名前の決まり → 外す／どれでもない → 数える','These records are decided by name, in this order: same as a name on the list → excluded / a name no longer excluded on the list → counted / earlier name rules → excluded / none of these → counted')
+      : t('この店はまだ一覧が無いので、ID のある日も前の名前の決まりで外しています。下の表は ID の無い記録だけです（前の名前の決まり → 外す／どれでもない → 数える）。','This store has no list yet, so days with an ID are also decided by the earlier name rules. The table below shows only records without an ID (earlier name rules → excluded / otherwise → counted).'))+'</div>';
+    var tile=function(l, v, s2){ return '<div style="flex:1 1 140px;min-width:130px;border:1px solid var(--border);border-radius:10px;padding:8px 10px"><div class="k2-note">'+l+'</div><div style="font-size:17px;font-weight:800">'+v+'</div><div class="k2-note">'+s2+'</div></div>'; };
+    var rgTxt=function(g){ return g.n ? (g.a===g.b ? md(g.a) : md(g.a)+'〜'+md(g.b)) : '—'; };
+    h+='<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">'
+      +tile(t('ID の無い日','Days without an ID'), tb.noId.n+t(' 日',' d'), rgTxt(tb.noId))
+      +tile(t('ID のある日','Days with an ID'), tb.withId.n+t(' 日',' d'), rgTxt(tb.withId))
+      +tile(t('名前で外す','Excluded by name'), (Math.round(tb.exH*10)/10).toFixed(1)+'h', t(tb.exNames+' つの名前',tb.exNames+' names'))
+      +tile(t('名前で数える','Counted by name'), (Math.round(tb.cntH*10)/10).toFixed(1)+'h', (list?t('外すのをやめた '+tb.offN+'・','No longer excluded '+tb.offN+' · '):'')+t('人 '+tb.people.length,'people '+tb.people.length))
+      +'</div>';
+    var badge=function(ex){ return ex
+      ? '<span style="display:inline-block;min-width:44px;text-align:center;font-size:11.5px;font-weight:700;border-radius:999px;padding:2px 8px;background:var(--text);color:var(--surface)">'+t('外す','Excluded')+'</span>'
+      : '<span style="display:inline-block;min-width:44px;text-align:center;font-size:11.5px;font-weight:700;border-radius:999px;padding:1px 7px;background:var(--surface);color:var(--text);border:1px solid var(--text)">'+t('数える','Counted')+'</span>'; };
+    var grid='display:grid;grid-template-columns:minmax(0,1.2fr) 74px minmax(0,2fr) 52px 70px;gap:8px;align-items:center;padding:8px 4px;border-bottom:1px solid var(--border);font-size:12.5px';
+    h+='<div style="overflow-x:auto"><div style="min-width:560px">'
+      +'<div style="'+grid+';color:var(--muted);font-size:11px;font-weight:700"><span>'+t('Toast の名前','Toast name')+'</span><span>'+t('扱い','Result')+'</span><span>'+t('理由','Reason')+'</span><span style="text-align:right">'+t('日数','Days')+'</span><span style="text-align:right">'+t('時間','Hours')+'</span></div>';
+    if(!tb.main.length && !tb.people.length) h+='<div class="k2-note" style="padding:8px 4px">'+t('この月は ID の無い記録はありません（どの日も ID で決めています）','No records without an ID this month (every day is decided by ID)')+'</div>';
+    tb.main.forEach(function(o){
+      var flag=(o.why==='off_name');
+      h+='<div style="'+grid+(flag?';background:rgba(180,83,9,.10);border-left:3px solid var(--amber)':'')+'"><span style="font-weight:600;overflow-wrap:anywhere">'+escapeHtml(o.name)+'</span><span>'+badge(o.ex)+'</span><span>'+escapeHtml(k2SysWhyText(o))+'</span><span style="text-align:right">'+o.d+'</span><span style="text-align:right;font-weight:700">'+(Math.round(o.h*10)/10).toFixed(1)+'h</span></div>';
+    });
+    if(tb.people.length){
+      var pOpen=!!window._k2SysPeopleOpen, pH=0; tb.people.forEach(function(o){ pH+=o.h; });
+      h+='<div style="'+grid+';cursor:pointer" onclick="k2SysPeopleToggle()"><span style="font-weight:600">'+t('人の勤怠 '+tb.people.length+' 人','People: '+tb.people.length)+'</span><span>'+badge(false)+'</span><span>'+escapeHtml(t('どれでもない（人の勤怠）','None of the above (people’s hours)'))+'　<span style="color:var(--accent)">'+(pOpen?t('名前をたたむ ▾','Hide names ▾'):t('名前をひらく ▸','Show names ▸'))+'</span></span><span style="text-align:right">—</span><span style="text-align:right;font-weight:700">'+(Math.round(pH*10)/10).toFixed(1)+'h</span></div>';
+      if(pOpen) tb.people.forEach(function(o){
+        h+='<div style="'+grid+';color:var(--muted)"><span style="padding-left:12px;overflow-wrap:anywhere">'+escapeHtml(o.name)+'</span><span></span><span></span><span style="text-align:right">'+o.d+'</span><span style="text-align:right">'+(Math.round(o.h*10)/10).toFixed(1)+'h</span></div>';
+      });
+    }
+    var tot=Math.round((tb.exH+tb.cntH)*10)/10;
+    h+='</div></div><div class="k2-note" style="text-align:right;margin-top:6px">'+t('外す ','Excluded ')+'<b>'+(Math.round(tb.exH*10)/10).toFixed(1)+'h</b>　'+t('数える ','Counted ')+'<b>'+(Math.round(tb.cntH*10)/10).toFixed(1)+'h</b>　'+t('合計 ','Total ')+'<b>'+tot.toFixed(1)+'h</b></div>';
+    h+='<div class="k2-note" style="margin-top:4px">'+t('数えた日（営業日・休業日）だけの時間です。未集計の日（勤怠なし・時刻不正・退勤なし）は入れていません。日次進捗の内訳の「名前で」と同じ数です。','Hours on counted days only (business and closed days). Days not counted (no attendance, bad times, no clock-out) are left out. Same numbers as “by name” in the daily-progress breakdown.')+'</div>';
+    h+='<div style="margin-top:10px;padding:10px;border:1px solid var(--border);border-radius:10px;background:var(--surface2)"><div class="k2-note" style="line-height:1.7">'
+      +t('ID を付けるには：勤怠データでこの月を選び「この月を Toast から取り直す（売上＋勤怠）」を押します。取り込み直した日から、上の一覧の ID で決めます（打刻・給与・Tip の数は変わりません）。名前で外している名前を数えたいときも、先に ID を付けてから上の一覧で「外すのをやめる」を押します。',
+         'To attach IDs: open Attendance for this month and press “Re-import this month from Toast (sales + attendance)”. From the re-imported days, the IDs on the list above decide (punches, payroll and Tip do not change). To count a name that is excluded by name, attach IDs first, then press “Stop excluding” on the list above.')
+      +'</div><div style="margin-top:8px"><button class="btn btn-secondary btn-sm" onclick="k2OpenAtt(\''+escapeHtml(sid)+'\',\''+ym+'\')"><i class="ti ti-calendar-time"></i> '+t('勤怠データでこの月を開く','Open this month in Attendance')+'</button></div></div>';
+  }
+  h+='<div class="k2-note" style="margin-top:10px;line-height:1.6">'+t('打刻・給与・Tip の元のデータは変えません。このアカウントで入れた注文の売上・客数はいつもどおり数えます。足す・外すと、KPI設定・日次進捗・内訳・グラフ・会議のどれも同じ数字に変わります。変えた人と時刻を残します。Order Only は取り込むときに名前で外しています（給与・Tip と同じ）。','Punches, payroll and Tip are not changed. Sales and guests rung in under these accounts still count. Adding or removing changes KPI settings, daily progress, details, graph and meeting the same way. Who and when are kept. Order Only is dropped by name at import (as for payroll and Tip).')+'</div>';
+  h+='<div style="font-size:11px;color:'+(can?'var(--muted)':'var(--accent)')+';margin-top:10px">'+(can?t('足す・外すのは GM・CEO と担当の AM です。ID の無い前の記録の表は見るだけです（決まりは変えません）。','GM, CEO and the assigned AM can add or remove. The table of older records is view only (the rules do not change).'):t('足す・外すのは GM・CEO と担当の AM です（見るだけ）','Only GM, CEO and the assigned AM can change this (view only)'))+'</div>';
   return h+'</div>';
 }
 function k2Fmt(def, v, sid){
