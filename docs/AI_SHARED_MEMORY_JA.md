@@ -5,11 +5,11 @@
 - 決まったこと（Moto さん 11/16 23:24 HST）：「ロックしなくていいです」＝GM・CEO はチャットで操作が無くてもロックしない（PIN で入った日も・v1167 からのまま・コードの変更なし）。「PINでのログインやめます」＝GM・CEO・経理は名前を選んだあとメールとパスワードだけ（PIN が要るところ・事務Crew は今までどおり）。仕様・止め方・限界：`docs/PIN_OFF_V1186_JA.md`。入れる一式：`deploy/pin-off-v1186/`（① → 関数 3 つ → マージ → 端末を 1186 に → ② → ③）。
 - SQL：スイッチ `dl_flags`（流したときに入る・`PIN_を戻す.sql` で外す）・`dl_top_pin_off`（v1185 のメールのログインが無ければ止めない）・`dl_pin_blocked`（社員の ID と名前・列か中身の役割）・`dl_top_pin_info`・経理を試しから外す（`dl_emp`）・知らせを時刻の順に並べてから 500 件。結ばれていない GM・CEO・経理がいれば何も変えずに STOP。v1183 の ③ の関数の数から v1186 の 4 つを外した。
 - アプリ v1186：`login_info` で止めていると分かったときだけ「PIN でログイン」を出さない・auth-pin が `use_email` ならメールの段へ（PIN では入らない・アプリの名簿の役割がずれている人も）・給与はメールで入った人は印を先に。**#183 の Codex（6941809468・`b91e73b`・blocked）の P2 2 つを直した**：取り替えで社員の ID か役割が変わったらログアウト・メールの段の途中で「戻る」を押したあとログインしない。
-- 非公開：emp-private v1186（PIN の道は `dl_pin_blocked` で断る・印は今までどおり）・device-login v1186（今の handler）は Moto さんに直接。**auth-pin v1186 はまだ（今のソースを Moto さんに頼んでいる）**。入れないと止まるのは画面だけ。
+- 非公開：emp-private v1186（sha256 先頭 `38862ecf8fa5`＝v1185 ＋ PIN の道は `dl_pin_blocked` で断る・印は今までどおり）・device-login v1186（`cf1ddd633901`＝今の handler ＋ v1183 と同じ印の部品）は Moto さんに直接。**auth-pin v1186 はまだ（今のソースを Moto さんに頼んでいる）**。入れないと止まるのは画面だけ。
 - 試験（合成データ）：pin-off-v1186 6・pin-off-deploy-v1186 4・email-login-app 19（CI に足した）・e2e `tests/e2e-login/pin-off-v1186.mjs` 19/19（v1183 52/52・v1185 36/36 も流し直した）・わざと壊す 29/29＋11/11・関連の app／server／deploy・static release pass/1186。非公開の試験（emp-private・device-login・印を emp-private が受ける）は Claude の手元で通った。
 - **記録の訂正**：#182 の節の「`665bb54` への Codex の再レビューはマージの前に無い」は誤り。Codex の再レビュー 6939177382（`665bb54`・11/16 19:10:55 HST・blocked／manual・前回の P1・P2 の直しを確認）はマージ（19:28:16 HST）の前にあった。#183（head `b91e73b`）は Moto さんが 11/16 23:11 HST にマージ（main `a985ab20`）。マージの前の Codex 6941809468（21:35 HST）は blocked・P2 2 → この版で直した。
-- 独立レビュー・Codex のレビューはまだ。実機・本番は未確認。
-- 次：PR → Codex → Moto さんが auth-pin のソースを添付 → Claude が auth-pin v1186 → Moto さんが手順.md（端末を 1186 にしてから ②）。
+- PR #184（base main・コードは `fea06548`）。独立レビュー・Codex のレビューはまだ。実機・本番は未確認。
+- 次：Codex → Moto さんが auth-pin のソースを添付 → Claude が auth-pin v1186 → Moto さんが手順.md（端末を 1186 にしてから ②）。
 
 ## 2026-11-16 v1185：GM・CEO・経理はメールとパスワードでログイン（UI案90 の答え・Claude・ブランチ `claude/login-stage2-1185`・main `9f75b14f`（v1184）の上・SQL `20261205090000`・関数 device-login・emp-private（どちらも非公開の 1 ファイル）・アプリ・本番未反映）
 
