@@ -13,6 +13,7 @@ const SW = fs.readFileSync(new URL('sw.js', ROOT), 'utf8');
 const { PGlite } = await import(process.env.BOT_PGLITE_MODULE || './runtime/node_modules/@electric-sql/pglite/dist/index.js');
 const MIG83 = fs.readFileSync(new URL('supabase/migrations/20261203090000_device_login.sql', ROOT), 'utf8');
 const MIG = fs.readFileSync(new URL('supabase/migrations/20261205090000_email_login.sql', ROOT), 'utf8');
+const MIG86 = fs.readFileSync(new URL('supabase/migrations/20261206090000_top_pin_off.sql', ROOT), 'utf8');
 const U = { ceo: '00000000-0000-4000-8000-0000000000c1', gm: '00000000-0000-4000-8000-0000000000c2', office: '00000000-0000-4000-8000-0000000000c3' };
 const ACC = { 'ceo@x.test': ['pw-ceo', 'ceo'], 'gm@x.test': ['pw-gm', 'gm'], 'office@x.test': ['pw-office', 'office'] };
 const IPHONE = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1';
@@ -49,6 +50,7 @@ async function world(opts = {}) {
   for (const [k, e] of [['ceo', 'E1'], ['gm', 'E2'], ['office', 'E3']]) await pg.query('insert into manager_auth values($1,$2,$3)', [U[k], k, e]);
   await pg.exec(MIG83);
   if (!opts.noSql) await pg.exec(MIG);
+  if (opts.v1186) await pg.exec(MIG86);   // v1186：GM・CEO・経理の PIN のログインを止める
   await pg.exec('set role service_role');
   const db = { async rpc(name, p) {
     try { const r = await pg.query(`select public.${name}($1::jsonb) as v`, [JSON.stringify(p ?? {})]); return r.rows[0].v; }
@@ -85,6 +87,7 @@ async function world(opts = {}) {
       if (u.endsWith('global')) { const uid = tokens.get(tk); for (const [k, v] of [...tokens]) if (v === uid) tokens.delete(k); } else tokens.delete(tk);
       return new Response(null, { status: 204 });
     }
+    if (u === 'https://db.test/functions/v1/auth-pin') return Response.json(opts.authPin ? opts.authPin(body) : { ok: false });   // v1186：PIN の段（doStaffLogin）
     if (u === 'https://db.test/functions/v1/device-login') {
       if (opts.oldFunction) return Response.json({ error: 'bad_value' }, { status: 400 });
       if (opts.fakeDl) { const r = opts.fakeDl(body); if (r) return Response.json(r, { status: 200 }); }
@@ -96,7 +99,8 @@ async function world(opts = {}) {
   const store = new Map(), nodes = {}, calls = { finish: 0, logout: 0, render: [], toast: [], secure: 0 };
   const node = id => nodes[id] || (nodes[id] = makeNode(id));
   ['ml-email', 'ml-pass', 'ml-err', 'ml-btn', 'login-step-mail', 'login-step-name', 'login-step-pin', 'ml-name', 'ml-role', 'ml-forgot-text', 'ml-forgot', 'ml-pin', 'ml-title',
-    'ml-email-lab', 'ml-pass-lab', 'ml-note', 'mgr-login-entry-btn', 'login-pin-input', 'mgr-back-app', 'app-shell', 'manager-secure-screen', 'modal-overlay'].forEach(node);
+    'ml-email-lab', 'ml-pass-lab', 'ml-note', 'mgr-login-entry-btn', 'login-pin-input', 'mgr-back-app', 'app-shell', 'manager-secure-screen', 'modal-overlay',
+    'login-pin-err', 'login-pin-btn'].forEach(node);
   node('ml-forgot-text').style.display = 'none'; node('login-step-mail').style.display = 'none'; node('mgr-back-app').hidden = true; node('app-shell').style.display = 'block';
   node('login-step-sub').parentNode = { insertBefore(n) { if (n.id) nodes[n.id] = n; } };
   const doc = {
@@ -116,6 +120,9 @@ async function world(opts = {}) {
     showToast: (m, k) => calls.toast.push([m, k]), confirm: () => true, alert() {},
     renderPage: p => calls.render.push(p), kevFlushText() {}, mrUnsaved: () => false,
     invInRtFor: s => s.refresh_token, invInKeepRefresh() {},
+    // v1186：PIN の段（本物の doStaffLogin・authPinCheck を動かす）
+    supaHeaders: () => ({ 'Content-Type': 'application/json' }), _loginFetchT: (u, i) => fetchApp(u, i), _loginServerPing: () => Promise.resolve(true), LOGIN_PIN_TIMEOUT: 1000,
+    _loginServerDownMsg: () => 'server down', _loginLockedMsg: () => 'locked', escapeHtml: x => String(x), enterAppWithSync() {}, curStoreLogin: false,
   };
   win.window = win;
   win.finishStaffLogin = () => { calls.finish++; win._uxLoginBusy = false; win.curRole = win.loginPerson.role; win.curRealRole = win.loginPerson.role; win.curUserName = win.loginPerson.name; win.curStore = 'ALL'; };
@@ -124,6 +131,7 @@ async function world(opts = {}) {
   win.showManagerSecure = async () => { calls.secure++; win._secureMode = true; win._karteUnlocked = true; win.curRole = win._authSession.role; win.curRealRole = win._authSession.role; win.curStore = 'ALL'; win.curUserName = 'from-secure'; node('manager-secure-screen').style.display = 'block'; };
   vm.createContext(win);
   vm.runInContext(fnSrc('invInSessionRefresh'), win, { filename: 'invInSessionRefresh.js' });
+  vm.runInContext(fnSrc('authPinCheck') + fnSrc('doStaffLogin'), win, { filename: 'doStaffLogin.js' });
   vm.runInContext(mlBlock(), win, { filename: 'FUNERGY_ML.js' });
   const ML = win.FUNERGY_ML;
   const pick = (id, name, role) => { win.loginPerson = { id, name, role, status: '在籍' }; return ML.route(win.loginPerson); };
@@ -133,7 +141,10 @@ async function world(opts = {}) {
   return { win, ML, node, nodes, calls, sent, store, closed, tokens, pick, type, notifs, sql,
     set authDown(v) { authDown = v; }, set refreshStatus(v) { refreshStatus = v; } };
 }
-const dlCalls = w => w.sent.filter(x => x.url.endsWith('/functions/v1/device-login'));
+// v1186：名前を選ぶと、PIN のログインを止めているかを device-login に聞く（login_info・鍵なし）。ログインの呼び出しとは分けて数える
+const isInfo = x => !!(x.body && x.body.action === 'login_info');
+const dlCalls = w => w.sent.filter(x => x.url.endsWith('/functions/v1/device-login') && !isInfo(x));
+const loginSent = w => w.sent.filter(x => !isInfo(x));
 
 test('GM: 名前を選ぶとメールとパスワードの段 → 入ると PIN のログインと同じ印・メモリだけ・新しい端末の知らせ', async () => {
   const w = await world();
@@ -214,7 +225,7 @@ test('入れないとき：言葉を分ける・印を作らない・メール�
   const w = await world();
   w.pick('E2', 'GM Sample', 'gm');
   w.type('', ''); await w.ML.login();
-  assert.match(w.node('ml-err').textContent, /メールとパスワードを入れて/); assert.equal(w.sent.length, 0);
+  assert.match(w.node('ml-err').textContent, /メールとパスワードを入れて/); assert.equal(loginSent(w).length, 0);
   w.type('gm@x.test', 'wrong'); await w.ML.login();
   assert.match(w.node('ml-err').textContent, /メールまたはパスワードが違います/);
   assert.equal(dlCalls(w).length, 0); assert.equal(w.node('ml-pass').value, '');
@@ -340,8 +351,8 @@ test('入ったあと：鍵と印の取り替え／止めた・期限切れは�
   // 30 分たっていなければ、ふだんの取り替えは頼まない
   await w.sql(`update employees set status = '在籍' where id = 'E2'`);
   w.pick('E2', 'GM Sample', 'gm'); w.type('gm@x.test', 'pw-gm'); await w.ML.login();
-  const k = w.sent.length; await w.ML.refresh(false);
-  assert.equal(w.sent.length, k);
+  const k = loginSent(w).length; await w.ML.refresh(false);
+  assert.equal(loginSent(w).length, k);
   w.ML.onLogout();
 });
 
@@ -402,7 +413,8 @@ test('給与：PIN なしで入った人はログインの印で頼む／読め�
   const sent = [];
   const ctx = { window: null, SUPABASE_URL: 'https://db.test', curUserName: 'GM Sample', curStoreLogin: false, curRole: 'gm', console,
     supaHeaders: () => ({ apikey: 'anon-key', Authorization: 'Bearer anon-key' }), t: ja => ja, showToast: m => sent.push(['toast', m]), Promise, JSON, Number,
-    fetch: async (url, init) => { sent.push(['fetch', JSON.parse(init.body)]); return Response.json({ ok: true, private: { E2: { wage: 30 } } }); } };
+    fetch: async (url, init) => { const b = JSON.parse(init.body); sent.push(['fetch', b]); if (refuseToken && b.token) return Response.json({ ok: false, error: 'pin' }); return Response.json({ ok: true, private: { E2: { wage: 30 } } }); } };
+  let refuseToken = false;
   ctx.window = ctx;
   vm.createContext(ctx);
   vm.runInContext(fnSrc('fetchEmpPrivate') + fnSrc('_empPrivOk') + fnSrc('saveEmpPrivate'), ctx);
@@ -416,8 +428,23 @@ test('給与：PIN なしで入った人はログインの印で頼む／読め�
   assert.equal(await ctx.saveEmpPrivate('S1', 19, '', '', null), true);
   const s = sent.filter(x => x[0] === 'fetch').at(-1)[1];
   assert.equal(s.action, 'save'); assert.equal(s.token, 'mark:E2:1'); assert.equal(s.pin, undefined);
-  // PIN があれば今までどおり PIN
-  ctx._sessionPin = '1357'; await ctx.fetchEmpPrivate();
+  // v1186：メールで入った人は、PIN を入れたあと（割引など）も印を先に（emp-private v1186 は GM・CEO・経理の PIN を受けない）
+  ctx._sessionPin = '1357'; let k = sent.length; await ctx.fetchEmpPrivate();
+  assert.deepEqual(sent.slice(k).map(x => x[1]), [{ action: 'pull', name: 'GM Sample', token: 'mark:E2:1' }]);
+  k = sent.length; assert.equal(await ctx.saveEmpPrivate('S1', 20, '', '', null), true);
+  assert.deepEqual(sent.slice(k).map(x => [x[1].token, x[1].pin]), [['mark:E2:1', undefined]]);
+  // 印を断られた（印を受けない前の emp-private）：PIN でもう一度
+  refuseToken = true; ctx._empPrivate = null; k = sent.length; await ctx.fetchEmpPrivate();
+  assert.deepEqual(sent.slice(k).map(x => x[1]), [{ action: 'pull', name: 'GM Sample', token: 'mark:E2:1' }, { action: 'pull', name: 'GM Sample', pin: '1357' }]);
+  assert.equal(ctx._empPrivate.E2.wage, 30);
+  k = sent.length; assert.equal(await ctx.saveEmpPrivate('S1', 21, '', '', null), true);
+  assert.deepEqual(sent.slice(k).map(x => [x[1].token, x[1].pin, x[1].wage]), [['mark:E2:1', undefined, 21], [undefined, '1357', 21]]);
+  // PIN が無ければ PIN では頼まない（保存できなかった）
+  ctx._sessionPin = null; k = sent.length; assert.equal(await ctx.saveEmpPrivate('S1', 22, '', '', null), 'failed');
+  assert.equal(sent.length - k, 1);
+  refuseToken = false;
+  // PIN で入った人（メールのログインでない）：今までどおり PIN
+  ctx._mlSignedIn = false; ctx._hwSession = 'mark:E2:pin'; ctx._sessionPin = '1357'; await ctx.fetchEmpPrivate();
   assert.deepEqual(sent.filter(x => x[0] === 'fetch').at(-1)[1], { action: 'pull', name: 'GM Sample', pin: '1357' });
   // 端末のログイン（PIN なし）も印で
   ctx._sessionPin = null; ctx._mlSignedIn = false; ctx._dlSignedIn = true; ctx._hwSession = 'mark:S1:2'; await ctx.fetchEmpPrivate();
@@ -445,4 +472,159 @@ test('本体への組み込み（名前を選ぶ・戻る・ログアウト 2 �
   assert.deepEqual([...blk.matchAll(/localStorage\.setItem\(([^,]+),/g)].map(m => m[1].trim()), ['DEV']);
   assert.doesNotMatch(blk, /sessionStorage|indexedDB/);
   assert.doesNotMatch(blk, /localStorage\.setItem\([^)]*(_authSession|access_token|refresh_token|password|_hwSession)/);
+});
+
+// ---------- v1186（Moto さん 11/16 23:24 HST「PINでのログインやめます」・Codex #183 の P2） ----------
+const tick = () => new Promise(r => setTimeout(r, 0));
+async function untilIdle(w) { for (let i = 0; i < 100; i++) { await tick(); if (!w.win._uxLoginBusy) return; } throw new Error('doStaffLogin did not finish'); }
+const pinCalls = w => w.sent.filter(x => x.url.endsWith('/functions/v1/auth-pin'));
+
+test('v1186：PIN のログインを止めたら「PIN でログイン」を出さない・PIN の段に行けない・言葉に PIN を出さない', async () => {
+  const w = await world({ v1186: true });
+  w.pick('E2', 'GM Sample', 'gm');
+  assert.equal(await w.ML.info(false), true); await tick();
+  assert.equal(w.ML.pinOff(), true);
+  assert.equal(w.node('ml-pin').style.display, 'none', '「PIN でログイン（試しのあいだ）」を出さない');
+  const info = w.sent.filter(isInfo);
+  assert.equal(info.length, 1);
+  assert.equal(info[0].headers.Authorization, 'Bearer anon-key', 'ログインの前（公開の鍵）');
+  let picked = null; w.win.loginPickPerson = id => { picked = id; };
+  w.ML.usePin();
+  assert.equal(picked, null, 'PIN の段に行かない');
+  assert.match(w.node('ml-err').textContent, /PIN ではなくメールとパスワードでログインします/);
+  assert.equal(w.node('login-step-mail').style.display, 'block');
+  w.ML._t.S.pinFor = 'E2';
+  assert.equal(w.ML.route(w.win.loginPerson), true, '前に PIN を選んでいてもメールの段');
+  w.ML.forgot();
+  assert.doesNotMatch(w.node('ml-forgot-text').textContent, /PIN/);
+  // 人違いのメール・サーバーがまだ：「PIN でログイン」を勧めない
+  w.type('office@x.test', 'pw-office'); await w.ML.login();
+  assert.match(w.node('ml-err').textContent, /GM Sample さんとして入れません/);
+  assert.doesNotMatch(w.node('ml-err').textContent, /PIN/);
+  assert.doesNotMatch(w.ML._t.msg('not_installed'), /PIN/);
+  // 5 分は聞き直さない
+  w.pick('E1', 'CEO Sample', 'ceo'); await tick();
+  assert.equal(w.sent.filter(isInfo).length, 1);
+  // メールとパスワードではそのまま入れる（経理も）
+  w.pick('E3', 'Office Sample', 'office'); w.type('office@x.test', 'pw-office'); await w.ML.login();
+  assert.equal(w.calls.finish, 1); assert.equal(w.win._authSession.role, 'office');
+  w.ML.onLogout();
+});
+
+test('v1186：まだ止めていない（v1185 の SQL・前の関数・つながらない）ときは今までどおり「PIN でログイン」を出す', async () => {
+  for (const o of [{}, { oldFunction: true }]) {
+    const w = await world(o);
+    w.pick('E2', 'GM Sample', 'gm');
+    assert.equal(await w.ML.info(false), false, JSON.stringify(o)); await tick();
+    assert.equal(w.node('ml-pin').style.display, '');
+    assert.match(w.ML._t.msg('not_installed'), /PIN でログイン/);
+  }
+  const w = await world({ v1186: true });
+  w.authDown = true;
+  w.pick('E2', 'GM Sample', 'gm');
+  assert.equal(await w.ML.info(false), null, 'つながらない：分からない');
+  await tick();
+  assert.equal(w.node('ml-pin').style.display, '', '分からないときは出す（本当に止めるのは auth-pin）');
+  w.authDown = false;
+  assert.equal(await w.ML.info(false), true, '分からなければ次に聞き直す');
+});
+
+test('v1186：PIN の段から（本物の doStaffLogin）：止めたのを知っていれば auth-pin に聞かない・auth-pin が「メールで」と答えたらメールの段・スタッフは今までどおり', async () => {
+  // (a) 止めたのを知っている
+  const a = await world({ v1186: true, authPin: () => ({ ok: true, use_email: true }) });
+  a.pick('E2', 'GM Sample', 'gm'); await a.ML.info(false);
+  a.node('login-step-mail').style.display = 'none'; a.node('login-pin-input').value = '1357';
+  a.win.doStaffLogin(); await untilIdle(a);
+  assert.equal(pinCalls(a).length, 0, 'PIN を送らない');
+  assert.equal(a.node('login-step-mail').style.display, 'block');
+  assert.match(a.node('ml-err').textContent, /PIN ではなくメールとパスワード/);
+  assert.equal(a.node('login-pin-input').value, '');
+  assert.equal(a.calls.finish, 0); assert.equal(a.win._sessionPin, undefined);
+  // (b) まだ聞けていない（つながらなかった）→ auth-pin（v1186）が印を出さずに「メールで」→ メールの段・前の印も使わない
+  const b = await world({ v1186: true, authPin: () => ({ ok: true, use_email: true }) });
+  b.authDown = true; b.pick('E2', 'GM Sample', 'gm'); await b.ML.info(false); b.authDown = false;
+  assert.equal(b.ML.pinOff(), false);
+  b.win._hwSession = 'old-mark'; b.node('login-pin-input').value = '1357';
+  b.win.doStaffLogin(); await untilIdle(b);
+  assert.equal(pinCalls(b).length, 1);
+  assert.deepEqual([pinCalls(b)[0].body.key, pinCalls(b)[0].body.emp], ['GM Sample', 'E2']);
+  assert.equal(b.ML.pinOff(), true, 'auth-pin の答えで止めたのを知る');
+  assert.equal(b.node('login-step-mail').style.display, 'block');
+  assert.equal(b.win._hwSession, null); assert.equal(b.win._sessionPin, undefined); assert.equal(b.calls.finish, 0);
+  assert.equal(b.node('login-pin-input').value, '');
+  // (c) スタッフ・G4：今までどおり PIN（止めていても）
+  const c = await world({ v1186: true, authPin: x => ({ ok: true, token: 'mark:' + x.emp }) });
+  await c.ML.info(false);
+  c.win.loginPerson = { id: 'S1', name: 'Crew', role: 'crew', status: '在籍' }; c.node('login-pin-input').value = '2468';
+  c.win.doStaffLogin(); await untilIdle(c);
+  assert.equal(c.calls.finish, 1); assert.equal(c.win._hwSession, 'mark:S1'); assert.equal(c.win._sessionPin, '2468');
+  // 店舗のログインも今までどおり
+  c.win.doLogout(); c.win.loginStoreMode = true; c.win.loginLocation = 'F01'; c.node('login-pin-input').value = '1111';
+  c.win.doStaffLogin();
+  for (let i = 0; i < 100 && c.win.curUserName !== 'Store One'; i++) await tick();   // 店舗のログインはアプリを出したところで外れる
+  assert.equal(c.win.curUserName, 'Store One'); assert.equal(pinCalls(c).at(-1).body.scope, 'store');
+  // (d) auth-pin が「メールで」と答えたのに、アプリの名簿では GM・CEO・経理でない（名簿のずれ）：PIN では入らず、その人をメールの段に回す
+  const d = await world({ v1186: true, authPin: () => ({ ok: true, use_email: true }) });
+  d.win.loginPerson = { id: 'X1', name: 'Mixed', role: 'crew', status: '在籍' }; d.node('login-pin-input').value = '1357';
+  d.win.doStaffLogin(); await untilIdle(d);
+  assert.equal(d.calls.finish, 0); assert.equal(d.win._sessionPin, undefined); assert.equal(d.win._hwSession, null);
+  assert.equal(d.node('login-step-mail').style.display, 'block'); assert.equal(d.node('login-pin-input').value, '');
+  assert.match(d.node('ml-err').textContent, /メールとパスワードでログインします/);
+  assert.equal(d.ML.pinBlocked({ id: 'X2', name: 'Other', role: 'crew' }, false), false, 'ほかの Crew はメールの段に回さない');
+});
+
+test('v1186（Codex #183 の P2）：取り替えで役職が変わった（GM → 経理）→ 前の役職の画面のまま続けない', async () => {
+  const w = await world();
+  w.pick('E2', 'GM Sample', 'gm'); w.type('gm@x.test', 'pw-gm'); await w.ML.login();
+  assert.equal(w.win.curRole, 'gm');
+  await w.sql(`update manager_auth set role = 'office' where emp_id = 'E2'`);
+  await w.ML.refresh(true);
+  assert.equal(w.calls.logout, 1); assert.match(w.calls.toast.at(-1)[0], /権限が変わりました/);
+  assert.equal(w.win._mlSignedIn, false); assert.equal(w.win._authSession, null);
+});
+
+test('v1186（Codex #183 の P2）：確かめている途中に名前の一覧へ戻った → その答えでは入らない・メールのログインは閉じる・すぐに押し直せる', async () => {
+  const w = await world();
+  // (a) パスワードの確かめの途中
+  w.pick('E2', 'GM Sample', 'gm'); w.type('gm@x.test', 'pw-gm');
+  const p = w.ML.login();
+  w.ML.hideStep(true);
+  assert.equal(w.win._uxLoginBusy, false, '戻った画面で押せる'); assert.equal(w.node('ml-btn').disabled, false);
+  await p;
+  assert.equal(w.calls.finish, 0); assert.equal(w.win._mlSignedIn, undefined);
+  assert.equal(dlCalls(w).length, 0); assert.equal(w.closed.length, 1, 'パスワードのログインはサーバー側でも閉じる');
+  // (b) device-login の途中（同じ人をもう一度選んでも、前の答えでは入らない）
+  let reached = false, open; const gate = new Promise(r => { open = r; });
+  const orig = w.win.fetch;
+  w.win.fetch = async (u, i) => { if (String(u).endsWith('/functions/v1/device-login') && i && JSON.parse(i.body).action === 'email_login') { reached = true; await gate; } return orig(u, i); };
+  w.pick('E2', 'GM Sample', 'gm'); w.type('gm@x.test', 'pw-gm');
+  const p2 = w.ML.login();
+  for (let i = 0; i < 100 && !reached; i++) await tick();
+  assert.ok(reached);
+  w.ML.hideStep(true); w.pick('E2', 'GM Sample', 'gm');
+  open(); await p2;
+  assert.equal(w.calls.finish, 0); assert.notEqual(w.win._mlSignedIn, true);
+  assert.equal(w.win._hwSession, undefined, '前の答えの印を使わない');
+  assert.equal(w.closed.length, 2);
+  // (c) そのあと、ふつうに入れる
+  w.win.fetch = orig; w.type('gm@x.test', 'pw-gm'); await w.ML.login();
+  assert.equal(w.calls.finish, 1); assert.equal(w.win._mlSignedIn, true);
+  w.ML.onLogout();
+});
+
+test('v1186（Codex #183 の P3）：新しい端末の知らせは、本人には本人あての 1 つだけ・ほかの GM・CEO には 1 つ（本物の notifForMe）', async () => {
+  const w = await world({ v1186: true });
+  w.pick('E2', 'GM Sample', 'gm'); w.type('gm@x.test', 'pw-gm'); await w.ML.login();
+  const ns = await w.notifs();
+  assert.equal(ns.length, 2);
+  const ctx = { curUserName: null, curRole: null, curStore: 'ALL', _userSupportsStore: () => false, _amManagesStore: () => false };
+  vm.createContext(ctx);
+  vm.runInContext(fnSrc('notifRetired') + fnSrc('_roleMatch') + fnSrc('notifForMe'), ctx);
+  const see = (name, role) => { ctx.curUserName = name; ctx.curRole = role; return ns.filter(n => ctx.notifForMe(n)).map(n => n.id.slice(-2)); };
+  assert.deepEqual(see('GM Sample', 'gm'), ['-u'], '本人：本人あてだけ（自分が出した GM・CEO あては出さない）');
+  assert.deepEqual(see('CEO Sample', 'ceo'), ['-g']);
+  assert.deepEqual(see('Other GM', 'gm'), ['-g']);
+  assert.deepEqual(see('Office Sample', 'office'), []);
+  assert.deepEqual(see('Crew', 'crew'), []);
+  w.ML.onLogout();
 });

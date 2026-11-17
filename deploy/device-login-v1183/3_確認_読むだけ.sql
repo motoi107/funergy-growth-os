@@ -8,7 +8,7 @@ select 1 as no, '表が 5 つ' as check_item, case when (select count(*) from tb
 union all select 2, '表は RLS ON', case when (select bool_and(relrowsecurity) from tb) then 'OK' else 'NG' end, ''
 union all select 3, '公開の鍵（anon・authenticated）で表を読めない・書けない',
   case when exists (select 1 from tb, unnest(array['anon','authenticated']) r, unnest(array['SELECT','INSERT','UPDATE','DELETE']) pr where has_table_privilege(r, 'public.' || tb.relname, pr)) then 'NG' else 'OK' end, ''
-union all select 4, '関数が 25（v1185 の dl_email_ は数えない）', case when (select count(*) from fn where fn.sig::text not like 'dl\_email\_%') = 25 then 'OK' else 'NG' end, (select count(*) from fn where fn.sig::text not like 'dl\_email\_%')::text
+union all select 4, '関数が 25（v1185 の dl_email_・v1186 の dl_top_pin_・dl_pin_ は数えない）', case when (select count(*) from fn where fn.sig::text not like 'dl\_email\_%' and fn.sig::text not like 'dl\_top\_pin\_%' and fn.sig::text not like 'dl\_pin\_%') = 25 then 'OK' else 'NG' end, (select count(*) from fn where fn.sig::text not like 'dl\_email\_%' and fn.sig::text not like 'dl\_top\_pin\_%' and fn.sig::text not like 'dl\_pin\_%')::text
 union all select 5, '公開の鍵で関数を呼べない',
   case when exists (select 1 from fn, unnest(array['anon','authenticated']) r where has_function_privilege(r, fn.oid, 'EXECUTE')) then 'NG' else 'OK' end, ''
 union all select 6, 'サーバーの鍵（service_role）で関数を呼べる', case when (select bool_and(has_function_privilege('service_role', fn.oid, 'EXECUTE')) from fn) then 'OK' else 'NG' end, ''

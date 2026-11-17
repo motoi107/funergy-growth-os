@@ -46,7 +46,11 @@ for (const p of PEOPLE) await pg.query(`insert into public.employees values ($1,
 await pg.query('insert into public.manager_auth values ($1,$2,$3),($4,$5,$6)', [UID.gm, 'gm', 'E2', UID.ceo, 'ceo', 'E1']);
 await pg.exec(fs.readFileSync(path.join(ROOT, 'supabase/migrations/20261203090000_device_login.sql'), 'utf8'));
 await pg.exec('set role service_role');
-const db = { async rpc(name, p) { const r = await pg.query(`select public.${name}($1::jsonb) as v`, [JSON.stringify(p ?? {})]); return r.rows[0].v; } };
+// PostgREST と同じく、無い関数は 404（v1186 の login_info は SQL がまだなら「止めていない」）
+const db = { async rpc(name, p) {
+  try { const r = await pg.query(`select public.${name}($1::jsonb) as v`, [JSON.stringify(p ?? {})]); return r.rows[0].v; }
+  catch (e) { if (/does not exist/.test(e.message)) { const x = new Error('Could not find the function'); x.status = 404; throw x; } throw e; }
+} };
 const q = async (sql, args) => { await pg.exec('reset role'); try { return (await pg.query(sql, args)).rows; } finally { await pg.exec('set role service_role'); } };
 const TOK = { 'tok-gm': UID.gm, 'tok-ceo': UID.ceo };
 const W = { dlOff: false, epNew: false, pinCalls: [], dlCalls: [] };

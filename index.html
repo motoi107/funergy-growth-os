@@ -8932,11 +8932,15 @@ var answer=typeof window.FUNERGY_WEB_OFFICE_EMPLOYEE_SOURCE==='function'?window.
 async function fetchEmpPrivate(){
   try{
     /* v1185：PIN なしで入った人（メールとパスワード・端末のログイン）はログインの印で頼む。印を受ける emp-private（v1185・公開しない 1 ファイル）を入れるまでは、サーバーが断る（PIN を 1 回入れると読める） */
-    var _mlTok = (!window._sessionPin && (window._mlSignedIn || window._dlSignedIn) && typeof window._hwSession === 'string' && window._hwSession) ? window._hwSession : '';
+    /* v1186：メールとパスワードで入った人は、PIN を入れたあと（割引など）も印を先に使う（PIN のログインを止めたら、emp-private v1186 は GM・CEO・経理の PIN を受けない）。
+       印を断られたら（印を受けない前の emp-private）、PIN があれば PIN でもう一度 */
+    var _hw = (typeof window._hwSession === 'string' && window._hwSession) ? window._hwSession : '';
+    var _mlTok = (_hw && (window._mlSignedIn || (!window._sessionPin && window._dlSignedIn))) ? _hw : '';
     if((!window._sessionPin && !_mlTok) || !curUserName || curStoreLogin) return;
     /* CEO/GM/経理は全員分、その他の各スタッフは本人分のみサーバーが返す（マイページ給与予定用） */
-    var r = await fetch(SUPABASE_URL+'/functions/v1/emp-private', { method:'POST', headers:supaHeaders(), body:JSON.stringify(_mlTok ? {action:'pull', name:curUserName, token:_mlTok} : {action:'pull', name:curUserName, pin:window._sessionPin}) });
-    var j = await r.json();
+    var _ask = async function(body){ var r = await fetch(SUPABASE_URL+'/functions/v1/emp-private', { method:'POST', headers:supaHeaders(), body:JSON.stringify(body) }); try{ return await r.json(); }catch(e){ return null; } };
+    var j = await _ask(_mlTok ? {action:'pull', name:curUserName, token:_mlTok} : {action:'pull', name:curUserName, pin:window._sessionPin});
+    if(_mlTok && !(j && j.ok && j.private) && window._sessionPin) j = await _ask({action:'pull', name:curUserName, pin:window._sessionPin});
     if(j && j.ok && j.private){ window._empPrivate = j.private; }
   }catch(e){ console.warn('fetchEmpPrivate', e); }
 }
@@ -8950,7 +8954,8 @@ function saveEmpPrivate(empId, wage, email, phone, monthlySalary){
   try{
     /* v1185：メールとパスワードで入った人。給与・連絡先を読めていない（_empPrivate が無い）ときは送らない
        （編集の画面に今の給与が出ていないので、送ると空の値で上書きする）。読めているときはログインの印で頼む（受けない emp-private なら「保存できなかった」） */
-    var _mlTok = (!window._sessionPin && window._mlSignedIn && typeof window._hwSession === 'string' && window._hwSession) ? window._hwSession : '';
+    /* v1186：メールとパスワードで入った人は、PIN を入れたあとも印を先に（fetchEmpPrivate と同じ）。断られたら PIN があれば PIN でもう一度 */
+    var _mlTok = (window._mlSignedIn && typeof window._hwSession === 'string' && window._hwSession) ? window._hwSession : '';
     if(_mlTok && !window._empPrivate && curUserName && ['ceo','gm','office'].indexOf(curRole)>=0){
       try{ showToast(t('給与・連絡先は保存していません（PIN なしでログインしたため、今の給与を読めていません）。マイページの「PIN を入れる」のあと、もう一度開いて保存してください。','Pay and contact were not saved (you logged in without a PIN, so the current pay was not loaded). Enter your PIN on My page, then open and save again.'),'warning'); }catch(e){}
       return Promise.resolve('failed');
@@ -8958,8 +8963,10 @@ function saveEmpPrivate(empId, wage, email, phone, monthlySalary){
     if((!window._sessionPin && !_mlTok) || !curUserName) return Promise.resolve(null);
     if(['ceo','gm','office'].indexOf(curRole)<0) return Promise.resolve(null);
     var args=arguments;
-    var p=fetch(SUPABASE_URL+'/functions/v1/emp-private', { method:'POST', headers:supaHeaders(), body:JSON.stringify(_mlTok ? {action:'save', name:curUserName, token:_mlTok, empId:empId, wage:wage, email:email, phone:phone, monthlySalary:monthlySalary} : {action:'save', name:curUserName, pin:window._sessionPin, empId:empId, wage:wage, email:email, phone:phone, monthlySalary:monthlySalary}) })
-      .then(function(r){ return r.json().catch(function(){ return null; }).then(function(j){ return _empPrivOk(r, j); }); })
+    var _send=function(cred){ return fetch(SUPABASE_URL+'/functions/v1/emp-private', { method:'POST', headers:supaHeaders(), body:JSON.stringify(Object.assign({action:'save', name:curUserName}, cred, {empId:empId, wage:wage, email:email, phone:phone, monthlySalary:monthlySalary})) })
+      .then(function(r){ return r.json().catch(function(){ return null; }).then(function(j){ return _empPrivOk(r, j); }); }); };
+    var _pin=window._sessionPin;
+    var p=(_mlTok ? _send({token:_mlTok}).then(function(ok){ return (ok || !_pin) ? ok : _send({pin:_pin}); }) : _send({pin:_pin}))
       .then(function(ok){
         if(!ok) return 'failed';
         if(!window._empPrivate) window._empPrivate={};
@@ -21976,7 +21983,7 @@ async function authPinCheck(scope, key, pin, emp){
       r = await _loginFetchT(SUPABASE_URL+'/functions/v1/auth-pin', { method:'POST', headers:supaHeaders(), body:JSON.stringify(emp ? {action:'verify', scope:scope, key:key, pin:pin, emp:String(emp)} : {action:'verify', scope:scope, key:key, pin:pin}) }, LOGIN_PIN_TIMEOUT);   /* v1085: 社員の ID も（サーバーが退職・停止を ID で確かめる） */
       try{ j = await r.json(); }catch(e){ j = null; }
     }catch(e){ r = null; console.warn('authPinCheck', e); }
-    if (j && j.ok) { window._hwSession = (typeof j.token === 'string' && j.token) ? j.token : null; window._hwSessionWarned = false; return { ok:true, server:false }; }   /* v1061: ログインの印 */
+    if (j && j.ok) { window._hwSession = (typeof j.token === 'string' && j.token) ? j.token : null; window._hwSessionWarned = false; return j.use_email === true ? { ok:true, server:false, useEmail:true } : { ok:true, server:false }; }   /* v1061: ログインの印。v1186：GM・CEO・経理で PIN のログインを止めたら、auth-pin は印を出さずに use_email を返す（PIN そのものは合っている） */
     if (r && r.ok && j && j.error === 'locked') return { ok:false, server:false, locked:(Number(j.retry_after) > 0 ? Number(j.retry_after) : 900) };
     if (r && r.ok && j && j.error === 'inactive') return { ok:false, server:false, inactive:true };   /* v1085: 退職・停止中（サーバーが断った） */   /* v1067: 続けて間違えて止まっている（「PINが違います」と出さない） */
     if (r && r.ok && j && !(j.error && /db|database|unavailable|timeout|internal/i.test(String(j.error)))) { server = false; break; }   /* 「違う」という答え */
@@ -21997,7 +22004,8 @@ function doStaffLogin() {
   function fail(res){
     var locked = (res && typeof res === 'object') ? res.locked : 0, server = res === true || !!(res && typeof res === 'object' && res.server);
     var inactive = !!(res && typeof res === 'object' && res.inactive);   /* v1085 */
-    if(errEl){ errEl.textContent = inactive ? t('このアカウントは使えません（退職・停止中）。','This account is stopped (resigned).') : locked ? _loginLockedMsg(locked) : (server ? _loginServerDownMsg() : t('PINが違います','Incorrect PIN')); errEl.style.display='block'; }
+    var useEmail = !!(res && typeof res === 'object' && res.useEmail);   /* v1186 */
+    if(errEl){ errEl.textContent = useEmail ? t('GM・CEO・経理は、PIN ではなくメールとパスワードでログインします。','GMs, CEOs and accounting log in with email and password, not a PIN.') : inactive ? t('このアカウントは使えません（退職・停止中）。','This account is stopped (resigned).') : locked ? _loginLockedMsg(locked) : (server ? _loginServerDownMsg() : t('PINが違います','Incorrect PIN')); errEl.style.display='block'; }
     if(btn){ btn.disabled=false; if(btn.dataset._t) btn.textContent=btn.dataset._t; }
     window._uxLoginBusy = false;
     /* v1127：PIN が違うときは消して打ち直せるように（サーバーにつながらないときは残す） */
@@ -22017,7 +22025,11 @@ function doStaffLogin() {
     if (!loginPerson) { if(btn){ btn.disabled=false; if(btn.dataset._t) btn.textContent=btn.dataset._t; } window._uxLoginBusy = false; return; }
     var pin2 = (document.getElementById('login-pin-input').value||'').trim();
     if (typeof empBlocked === 'function' && empBlocked(loginPerson)) { fail({ inactive:true }); return; }   /* v1085: 名簿で退職・停止 */
+    /* v1186：GM・CEO・経理は PIN でログインしない（止めたとき）。メールとパスワードの段にする */
+    function toMail(server){ try{ if(window.FUNERGY_ML && FUNERGY_ML.pinBlocked(loginPerson, server)){ var pi = document.getElementById('login-pin-input'); if(pi) pi.value=''; if(btn){ btn.disabled=false; if(btn.dataset._t) btn.textContent=btn.dataset._t; } window._uxLoginBusy = false; return true; } }catch(e){} return false; }
+    if (toMail(false)) return;
     var rP = await authPinCheck('staff', loginPerson.name, pin2, loginPerson.id);
+    if (rP.ok && rP.useEmail) { window._hwSession = null; if (toMail(true)) return; fail({ useEmail:true }); return; }   /* auth-pin が止めた（印を出していない）：PIN では入らない */
     if (!rP.ok) { fail(rP); return; }
     window._sessionPin = pin2;
     try{ document.getElementById('login-pin-input').value=''; }catch(e){}   /* v1127：入れた PIN を画面に残さない */
@@ -48610,7 +48622,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1185';
+const APP_VERSION = '1186';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -118709,17 +118721,22 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
      PIN のログインと同じ「ログインの印」を返す（アプリが送る名前・役割は使わない）。
    ・メールのログインと印はメモリだけ（window._authSession・window._hwSession）。この端末に残すのは「新しい端末か」を見分ける番号だけ（localStorage「_ml_dev_v1」・ログインには使わない）。
    ・入ったあとは PIN のログインと同じ（finishStaffLogin）。30 分ごとと画面に戻ったときに、Supabase の鍵と印を取り替える。断られたらログアウト。
-   ・給与（emp-private）は、印を受ける版を入れるまで PIN が要る（入ったあと 1 回だけ聞く・あとでもよい）。 */
+   ・給与（emp-private）は、印を受ける版を入れるまで PIN が要る（入ったあと 1 回だけ聞く・あとでもよい）。
+   v1186（Moto さん 11/16 23:24 HST「PINでのログインやめます」）：サーバーが PIN のログインを止めたら（device-login の login_info）、
+   GM・CEO・経理には「PIN でログイン」を出さない・PIN の段からも入れない（auth-pin v1186 も印を出さない）。PIN が要るところ（割引・チャット）は今までどおり。
+   あわせて Codex（#183）の P2：取り替えで役職・人が変わったらログアウト・確かめている途中に戻ったら入らない。 */
 (function (W, D) {
   'use strict';
   var DEV = '_ml_dev_v1', REFRESH_MS = 30 * 60 * 1000, TOP = ['ceo', 'gm', 'office'];
-  var S = { timer: null, last: 0, gen: 0, busy: false, pinFor: null, sec: null, refreshing: false, mem: '', askedPin: false };
+  var S = { timer: null, last: 0, gen: 0, busy: false, pinFor: null, topFor: null, sec: null, refreshing: false, mem: '', askedPin: false,
+    pinOff: null, infoAt: 0, infoP: null };   /* v1186：pinOff＝PIN のログインを止めたか（null＝まだ聞いていない・聞けなかった） */
   var T = function (ja, en) { return (typeof t === 'function') ? t(ja, en) : ja; };
   var esc = function (s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;'); };
   var $ = function (id) { return D.getElementById(id); };
   var toast = function (m, k) { try { if (typeof showToast === 'function') showToast(m, k || 'warning'); } catch (e) {} };
 
-  function isTop(emp) { return !!(emp && TOP.indexOf(emp.role) >= 0); }
+  /* v1186：サーバーが「メールで」と答えた人（アプリの名簿の役割がずれていても）は、この開いているあいだメールの段に回す（入れるかはサーバーが決める） */
+  function isTop(emp) { return !!(emp && (TOP.indexOf(emp.role) >= 0 || (S.topFor != null && String(S.topFor) === String(emp.id)))); }
   function uuid() {
     try { if (W.crypto && typeof crypto.randomUUID === 'function') return crypto.randomUUID(); } catch (e) {}
     var b = new Uint8Array(16); crypto.getRandomValues(b); b[6] = (b[6] & 15) | 64; b[8] = (b[8] & 63) | 128;
@@ -118771,14 +118788,36 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     return j;
   }
   function closeAuth(token, scope) { if (!token) return Promise.resolve(false); return authFetch('/auth/v1/logout?scope=' + (scope || 'local'), { token: token }).then(function (r) { return !!(r && (r.ok || r.status === 401 || r.status === 403)); }, function () { return false; }); }
+  /* v1186：PIN のログインを止めたか（device-login の login_info・ログインの前・人によらない）。5 分は覚える。
+     関数・SQL がまだ（404・知らない頼み）なら止めていない。つながらない・サーバーの失敗は前の答えのまま（まだなら null＝出す：本当に止めるのは auth-pin） */
+  function info(force) {
+    if (!force && S.pinOff !== null && Date.now() - S.infoAt < 5 * 60 * 1000) return Promise.resolve(S.pinOff);
+    if (S.infoP) return S.infoP;
+    S.infoP = (async function () {
+      var r = null, j = null;
+      try { r = await authFetch('/functions/v1/device-login', { token: SUPABASE_ANON, body: { action: 'login_info' } }); } catch (e) { r = null; }
+      if (r) { try { j = await r.json(); } catch (e) { j = null; } }
+      if (r && r.ok && j && typeof j.top_pin_off === 'boolean') { S.pinOff = j.top_pin_off; S.infoAt = Date.now(); }
+      else if (r && (r.status === 404 || (r.status === 400 && j && j.error === 'bad_value'))) { S.pinOff = false; S.infoAt = Date.now(); }   /* 関数が無い・v1185 までの関数 */
+      return S.pinOff;
+    })();
+    S.infoP.then(function () { S.infoP = null; }, function () { S.infoP = null; });
+    return S.infoP;
+  }
+  function pinOff() { return S.pinOff === true; }
 
   /* ---------- 言葉 ---------- */
   function msg(e, name) {
     if (e === 'wrong') return T('メールまたはパスワードが違います。', 'Incorrect email or password.');
     if (e === 'too_many') return T('続けて試しすぎました。少し待ってから、もう一度お試しください。', 'Too many attempts. Wait a moment and try again.');
-    if (e === 'not_linked' || e === 'wrong_person' || e === 'forbidden') return T('このメールでは ' + (name || '') + ' さんとして入れません（メールのアカウントがこの人と結ばれていないか、ログインの権限がありません）。ご自分のメールか、「PIN でログイン」をお使いください。', 'This email cannot log in as ' + (name || '') + ' (the account is not linked to this person, or has no login permission). Use your own email, or log in with your PIN.');
+    if (e === 'not_linked' || e === 'wrong_person' || e === 'forbidden') return pinOff()
+      ? T('このメールでは ' + (name || '') + ' さんとして入れません（メールのアカウントがこの人と結ばれていないか、ログインの権限がありません）。ご自分のメールでお試しください。続くときは GM・CEO に知らせてください。', 'This email cannot log in as ' + (name || '') + ' (the account is not linked to this person, or has no login permission). Use your own email. If it keeps happening, tell a GM or CEO.')
+      : T('このメールでは ' + (name || '') + ' さんとして入れません（メールのアカウントがこの人と結ばれていないか、ログインの権限がありません）。ご自分のメールか、「PIN でログイン」をお使いください。', 'This email cannot log in as ' + (name || '') + ' (the account is not linked to this person, or has no login permission). Use your own email, or log in with your PIN.');
     if (e === 'inactive') return T('このアカウントは使えません（退職・停止中）。', 'This account is stopped (resigned).');
-    if (e === 'not_installed' || e === 'sign_missing') return T('このログインは、まだサーバーで使えるようになっていません。「PIN でログイン」をお使いください。', 'This login is not ready on the server yet. Please log in with your PIN.');
+    if (e === 'not_installed' || e === 'sign_missing') return pinOff()
+      ? T('サーバーでログインを確かめられませんでした。しばらくしてから、もう一度お試しください。続くときは GM・CEO に知らせてください。', 'The server could not check the login. Try again in a little while. If it keeps happening, tell a GM or CEO.')
+      : T('このログインは、まだサーバーで使えるようになっていません。「PIN でログイン」をお使いください。', 'This login is not ready on the server yet. Please log in with your PIN.');
+    if (e === 'use_email') return T('GM・CEO・経理は、PIN ではなくメールとパスワードでログインします。', 'GMs, CEOs and accounting log in with email and password, not a PIN.');
     if (e === 'network') return T('つながりません。電波を確かめて、もう一度お試しください。', 'Cannot connect. Check your connection and try again.');
     if (e === 'empty') return T('メールとパスワードを入れてください。', 'Enter your email and password.');
     if (e === 'expired') return T('メールのログインが終わりました（パスワードが変わった・「すべての端末からログアウト」など）。もう一度ログインしてください。', 'Your email login ended (password changed, “log out of every device”, etc.). Please log in again.');
@@ -118812,7 +118851,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     set('ml-pass-lab', 'パスワード', 'Password');
     set('ml-note', '管理者セキュアページと同じメールとパスワードです。この端末には覚えません（アプリを開くたびに入れます）。', 'The same email and password as the admin secure page. Not remembered on this device (enter them each time you open the app).');
     set('ml-forgot', 'パスワードを忘れたとき', 'Forgot your password?');
-    var pb = $('ml-pin'); if (pb) pb.innerHTML = '<i class="ti ti-key"></i> ' + esc(T('PIN でログイン（試しのあいだ）', 'Log in with PIN (during the trial)'));
+    var pb = $('ml-pin'); if (pb) { pb.innerHTML = '<i class="ti ti-key"></i> ' + esc(T('PIN でログイン（試しのあいだ）', 'Log in with PIN (during the trial)')); pb.style.display = pinOff() ? 'none' : ''; }   /* v1186：止めたら出さない */
     entryLabel();
     var b = $('ml-btn'); if (b && !b.disabled) b.textContent = T('ログイン', 'Log in');
     var ft = $('ml-forgot-text'); if (ft && ft.style.display !== 'none') ft.textContent = forgotText();
@@ -118824,13 +118863,23 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     var top = false; try { top = !!(loginPerson && isTop(loginPerson)); } catch (e) {}
     eb.innerHTML = '<i class="ti ti-shield-lock"></i> ' + esc(top ? T('メールとパスワードでログイン', 'Log in with email and password') : T('メールで管理者ログイン（より安全）', 'Admin login with email (more secure)'));
   }
-  function forgotText() { return T('GM・CEO に頼んで、パスワードを新しくしてもらってください（このアプリからは変えられません）。そのあいだは「PIN でログイン」で入れます（試しのあいだ）。', 'Ask a GM or CEO to set a new password for you (it cannot be changed in this app). Until then you can log in with your PIN (during the trial).'); }
-  function hideStep() { S.pinFor = null; var m = $('login-step-mail'); if (m) m.style.display = 'none'; var p = $('ml-pass'); if (p) p.value = ''; err(''); var ft = $('ml-forgot-text'); if (ft) ft.style.display = 'none'; }
+  function forgotText() {
+    if (pinOff()) return T('GM・CEO に頼んで、パスワードを新しくしてもらってください（このアプリからは変えられません）。', 'Ask a GM or CEO to set a new password for you (it cannot be changed in this app).');
+    return T('GM・CEO に頼んで、パスワードを新しくしてもらってください（このアプリからは変えられません）。そのあいだは「PIN でログイン」で入れます（試しのあいだ）。', 'Ask a GM or CEO to set a new password for you (it cannot be changed in this app). Until then you can log in with your PIN (during the trial).');
+  }
+  /* 段を隠す（名前に戻る・所属に戻る・PIN を選ぶ）。v1186（Codex #183 の P2）：確かめている途中なら、その答えでは入らない（世代を進める）。
+     前の答えが届いたら、そのメールのログインはサーバーでも閉じる（login の finally） */
+  function hideStep() {
+    S.pinFor = null; S.gen++;
+    if (S.busy) { S.busy = false; W._uxLoginBusy = false; busy(false); }
+    var m = $('login-step-mail'); if (m) m.style.display = 'none'; var p = $('ml-pass'); if (p) p.value = ''; err(''); var ft = $('ml-forgot-text'); if (ft) ft.style.display = 'none';
+  }
   /* loginPickPerson から：GM・CEO・経理はメールとパスワードの段（PIN を選んだ人を除く）。出したら true */
   function route(emp) {
     try { entryLabel(); } catch (e) {}
     if (!isTop(emp) || (typeof loginStoreMode !== 'undefined' && loginStoreMode)) return false;
-    if (S.pinFor != null && String(S.pinFor) === String(emp.id)) return false;
+    if (!pinOff() && S.pinFor != null && String(S.pinFor) === String(emp.id)) return false;
+    S.pinFor = null;
     show(emp);
     return true;
   }
@@ -118844,11 +118893,27 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     err(''); note(''); var ft = $('ml-forgot-text'); if (ft) ft.style.display = 'none';
     try { if (typeof refreshLoginLabels === 'function') refreshLoginLabels(); } catch (e) {}
     setTimeout(function () { var e = $('ml-email'), pw = $('ml-pass'); try { (e && !e.value ? e : (pw || e)).focus(); } catch (x) {} }, 60);
+    /* v1186：PIN のログインを止めたかを聞いて「PIN でログイン」を出す・隠す（同じ人の段を見ているあいだだけ描き直す） */
+    var g = S.gen;
+    info(false).then(function () { if (g === S.gen && loginPerson === emp) { try { relabel(); } catch (e) {} } }, function () {});
   }
   function usePin() {
     if (!loginPerson) return;
+    if (pinOff()) { err(msg('use_email')); return; }   /* v1186 */
     var id = loginPerson.id; hideStep(); S.pinFor = id;
     try { loginPickPerson(id); } catch (e) {}
+  }
+  /* v1186：PIN の段から（doStaffLogin）。GM・CEO・経理で PIN のログインを止めていたら、メールとパスワードの段にする。したら true。
+     server：auth-pin が「メールで」と答えた（止めたのをまだ聞いていなかった） */
+  function pinBlocked(emp, server) {
+    if (!emp || (typeof loginStoreMode !== 'undefined' && loginStoreMode)) return false;
+    if (server) { S.pinOff = true; S.infoAt = Date.now(); S.topFor = emp.id; }
+    if (!isTop(emp) || !pinOff()) return false;
+    S.pinFor = null;
+    var pi = $('login-pin-input'); if (pi) pi.value = '';
+    show(emp);
+    err(msg('use_email'));
+    return true;
   }
   function fromPin() {
     if (!loginPerson || !isTop(loginPerson)) { try { if (typeof showManagerLogin === 'function') showManagerLogin(); } catch (e) {} return; }
@@ -118891,7 +118956,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       finishStaffLogin();   /* _uxLoginBusy はアプリを出したところで外れる */
     } finally {
       if (!done) {
-        S.busy = false; busy(false); W._uxLoginBusy = false;
+        if (g === S.gen) { S.busy = false; busy(false); W._uxLoginBusy = false; }   /* 戻った・ほかの人を選んだあとは hideStep が外した（今の段の busy は触らない） */
         if (tok && tok.access_token) closeAuth(tok.access_token);   /* 入れなかったメールのログインはサーバー側でも閉じる */
       }
     }
@@ -118920,7 +118985,11 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       }
       var k = await fn(s.access_token, { action: 'email_login', emp_id: String(emp.id), device_id: devId(), mode: 'refresh' });
       if (g !== S.gen || !W._mlSignedIn || (typeof curUserName !== 'undefined' && curUserName !== who && !W._secureMode)) return;
-      if (k.ok && typeof k.token === 'string' && k.token) { W._hwSession = k.token; W._hwSessionWarned = false; return; }
+      if (k.ok && typeof k.token === 'string' && k.token) {
+        /* v1186（Codex #183 の P2）：入ったときと人・役職が違えば（GM → 経理なども）、前の役職の画面のまま続けない */
+        if (String(k.emp_id) !== String(s.emp_id) || String(k.role || '') !== String(s.role || '')) { forceOut(msg('changed')); return; }
+        W._hwSession = k.token; W._hwSessionWarned = false; return;
+      }
       if (k.error === 'email_required') { forceOut(msg('expired')); return; }
       if (k.error === 'inactive') { forceOut(msg('inactive')); return; }
       if (k.error === 'forbidden' || k.error === 'not_linked' || k.error === 'wrong_person') { forceOut(msg('changed')); return; }
@@ -119026,7 +119095,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   }
 
   W.FUNERGY_ML = {
-    route: route, hideStep: hideStep, relabel: relabel, usePin: usePin, fromPin: fromPin, forgot: forgot, login: login,
+    route: route, hideStep: hideStep, relabel: relabel, usePin: usePin, fromPin: fromPin, forgot: forgot, login: login, info: info, pinOff: pinOff, pinBlocked: pinBlocked,
     onLogout: onLogout, afterEnter: afterEnter, pinNow: pinNow, refresh: refresh, myCardHtml: myCardHtml, logoutAll: logoutAll,
     openSecure: openSecure, backToApp: backToApp, secureLogout: secureLogout,
     _t: { S: S, devId: devId, deviceName: deviceName, msg: msg }
