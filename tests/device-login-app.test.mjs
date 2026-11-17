@@ -138,8 +138,8 @@ test('本体への組み込み（ログアウト 2 か所・入口・起動・PI
   assert.match(HTML, /FUNERGY_DL\.myCardHtml\(\)/);
   assert.match(HTML, /FUNERGY_DL\.payPin\(\)/);
   assert.match(HTML, /canViewPins\(\)\?`<button class="btn btn-secondary btn-sm" onclick="FUNERGY_DL\.admin\(\)"/);
-  assert.match(HTML, /const APP_VERSION = '1183';/);
-  assert.match(SW, /const SW_BUILD = '1183';/);
+  const av = Number((HTML.match(/const APP_VERSION = '(\d+)';/) || [])[1]), sv = Number((SW.match(/const SW_BUILD = '(\d+)';/) || [])[1]);
+  assert.ok(av >= 1183 && av === sv, 'APP_VERSION と SW_BUILD は 1183 以上で同じ');
   // FUNERGY_DL が localStorage に書くのは端末の記録だけ
   const blk = dlBlock();
   assert.deepEqual([...blk.matchAll(/localStorage\.setItem\(([^,]+),/g)].map(m => m[1].trim()), ['REC']);

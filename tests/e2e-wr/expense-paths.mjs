@@ -179,7 +179,7 @@ await login(G1, 'F01', 'Cam Crew');
 await G1.page.evaluate(() => go('mypage')); await sleep(2500);
 const g1 = await G1.page.evaluate(() => { const c = document.getElementById('wr-myexp'); return { card: !!c && c.style.display !== 'none' && !!c.querySelector('[data-wr-exp]'), kinds: typeof wrExpKinds === 'function' ? wrExpKinds() : null }; });
 const g1srv = await G1.page.evaluate(async () => { try { await wrAPI({ action: 'submit', kind: 'reimburse', store_id: 'F01', client_key: 'k-g1-submit-01', payload: { date: '2026-11-14', payer: 'Cam Crew', vendor: 'X', purpose: 'その他', amount_cents: 500 } }); return 'ok'; } catch (e) { return e.code || String(e); } });
-ok('G1：入口が出ない・サーバーも断る', !g1.card && Array.isArray(g1.kinds) && g1.kinds.length === 0 && g1srv === 'forbidden', { ...g1, server: g1srv });
+ok('G1：入口が出ない・サーバーも断る', !g1.card && Array.isArray(g1.kinds) && g1.kinds.length === 0 && g1srv === (process.env.WR_V1184 === '1' ? 'no_exp_right' : 'forbidden'), { ...g1, server: g1srv });   /* v1184 の SQL は、出す権限が無いことを no_exp_right で返す（ほかは前と同じ） */
 for (const [store, name, g] of [['F01', 'Sam Three', 'G3'], ['F01', 'Mia Four', 'G4'], ['OFFICE', 'Ami Area', 'G5'], ['OFFICE', 'Gabe Gm', 'G6']]) {
   const D = await device(390); await login(D, store, name);
   const r = await viaCard(D, 'mypage', 'expense_pre', 60);

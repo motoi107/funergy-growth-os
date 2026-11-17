@@ -45,13 +45,14 @@ const K2 = between('/* ===== FUNERGY_KPI2 start =====', '/* ===== FUNERGY_KPI2 e
 const MEET_DEF = between('var MEET_KPI_DEF=[', '\n];');
 const FMT_DEF = between('const FORMAT_KPI_DEFAULTS = {', '\n};').replace('const ', 'var ');
 const GRADES = between('var GRADE_TITLES = {', '\n};');
+const MEET_ZERO = between('var MEET_ZERO_OK = {', '};');   /* v1184：率の KPI の 0 は本当の 0（_meetHasAct） */
 const plain = v => JSON.parse(JSON.stringify(v));
 const run = (c, code) => vm.runInContext(code, c);
 
 const MERGE = ['_cjson', '_lrObj', '_lrOwn', '_lrAt', '_fsHas', '_fsT', '_fsObj', '_fsFiOf', '_fsCont', '_fsSubs', '_fsSameEntry', '_fsStamp'];
 const REAL = ['kpiManualKey', '_kpiManualRaw', 'getKpiManual', 'setKpiManual', 'getFormatKpi', 'getStoreKpiTargets', 'getStoreKpiOverride',
   'periodForOffset', 'daysOfYm', 'isOrderOnlyAccount', '_laborHrs', 'toastSystemAccount', 'guestCountType', 'isDrinkRateStore',
-  '_meetKpiDef', 'getMeetThreshold', '_meetStatus', '_meetStatColor', '_meetStatLabel', '_meetDiffStr', 'fmtK'];
+  '_meetKpiDef', 'getMeetThreshold', '_meetHasAct', '_meetStatus', '_meetStatColor', '_meetStatLabel', '_meetDiffStr', 'fmtK'];
 
 const STORES = [
   { id: 'F01', name: 'ToriTon', format: 'izakaya', brand: 'ToriTon' },
@@ -67,7 +68,7 @@ function device(opts = {}) {
     CAN: opts.can !== false, DOM: {}, TOASTS: [], RENDERS: 0, GRADE: opts.grade || 2, ROLE: opts.role || 'gm',
     REALROLE: opts.realRole || null, USER: opts.user || 'Moto', EMPS: opts.emps || [], SLOGIN: !!opts.storeLogin };
   vm.createContext(c);
-  run(c, [MEET_DEF, FMT_DEF, GRADES, ...MERGE.map(fnSrc), ...REAL.map(fnSrc), ...['gradeOf', 'gradeNum', 'empGrade'].map(fnSrc)].join('\n') + `
+  run(c, [MEET_DEF, FMT_DEF, GRADES, MEET_ZERO, ...MERGE.map(fnSrc), ...REAL.map(fnSrc), ...['gradeOf', 'gradeNum', 'empGrade'].map(fnSrc)].join('\n') + `
     Date.now = function(){ return NOW; };
     var curLang = 'ja', curStore = 'ALL', curRole = ROLE, DRINK_RATE_STORES = ['F01','F02','F05'];
     var curStoreLogin = SLOGIN, curRealRole = REALROLE, curUserName = USER;   /* v1169：G1・G2 の見分け（isFloorG1G2） */
@@ -163,8 +164,8 @@ test('② the meeting (keyKpiStats) reads the month targets: the source passes t
   const ym = fnSrc('_meetYearMatrix');
   assert.match(ym, /kk==='google'\)\{ try\{ var _gm=\(typeof grMonthOf==='function'\)\?grMonthOf\(sid, ym\):null; if\(_gm\) return _gm\.avg; return _k2Num\(\(getKpiManual\(sid, k2Period\(ym\)\)\|\|\{\}\)\.gAvg\)/);
   assert.match(ym, /kk==='google'\)\{ try\{ return k2ExplicitTarget\(sid, ym, 'reviewScore'\)/);
-  assert.match(ym, /\['sales','guests','ppa','google'\]\.indexOf\(k\)>=0/);
-  assert.match(fnSrc('renderMeetingReview'), /_meetGoogleCard\(x\.s, ym\)/);
+  assert.match(ym, /var KEYS=ORDER\.filter\(function\(k\)\{ return onAt\(k, selYm\); \}\);/, 'v1184：年間の表の行は KPI設定の「使う」（Google も使うときだけ）');
+  assert.match(fnSrc('renderMeetingReview'), /if \(k2On\(x\.s\.id, ym, 'reviewScore'\)\) html \+= _meetGoogleCard\(x\.s, ym\)/);
 });
 
 test('③ the table shows the meeting values and judges with the meeting thresholds', () => {

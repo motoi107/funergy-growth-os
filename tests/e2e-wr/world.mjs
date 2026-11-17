@@ -20,7 +20,8 @@ export const WR_MIGS = ['20261104090000_work_requests', '20261105090000_work_req
   .concat(process.env.WR_FIX === '0' || process.env.WR_1165 === '0' ? [] : ['20261126090000_wr_approve_v1165'])   // v1165：事前経費と実費（WR_1165=0：その SQL の前）
   .concat(process.env.WR_UI79 === '1' ? ['20261127090000_chat_ui79'] : [])   // v1167：チャットの UI案79（WR_UI79=1 のときだけ。前の e2e は前のまま）
   .concat(process.env.WR_UI79 === '1' && process.env.WR_GUARD === '1' ? ['20261128090000_chat_guard'] : [])   // v1168：チャットの守り（WR_GUARD=1 のときだけ）
-  .concat(process.env.WR_UI79 === '1' && process.env.WR_GUARD === '1' && process.env.WR_V1169 !== '0' ? ['20261129090000_fixes_v1169'] : []);   // v1169：直し（守りのあと。WR_V1169=0 で前のまま）
+  .concat(process.env.WR_UI79 === '1' && process.env.WR_GUARD === '1' && process.env.WR_V1169 !== '0' ? ['20261129090000_fixes_v1169'] : [])   // v1169：直し（守りのあと。WR_V1169=0 で前のまま）
+  .concat(process.env.WR_V1184 === '1' ? ['20261204090000_wr_exp_grants'] : []);   // v1184：経費の申請の権限（WR_V1184=1 のときだけ）
 
 export const TODAY = new Date().toISOString().slice(0, 10);
 const STORES = [['F01', 'Store A', 'Brand A', 'Ami Area'], ['F02', 'Store B', 'Brand B', '']].map(([id, name, brand, am]) => ({ id, name, brand, color: '#335577', am, toastGuid: '', hours: '11:00-22:00', days: '毎日', active: true }));
@@ -35,6 +36,10 @@ export const PEOPLE = [
   { id: 'e13', name: 'Mia Four', role: 'g4', store: 'F01', title: 'Store Manager', g: 4 },
   { id: 'e14', name: 'Ami Area', role: 'am', store: 'F01', title: 'Area Manager', g: 5 },
 ];
+/* v1184：本部所属の事務Crew（PIN だけ・管理者のアカウントなし）と、所属のない事務Crew（WR_V1184=1 のときだけ） */
+if (process.env.WR_V1184 === '1') PEOPLE.push(
+  { id: 'e15', name: 'Oda Office', role: 'office_crew', store: 'OFFICE', title: 'Office Crew' },
+  { id: 'e16', name: 'Pia Prep', role: 'crew', store: 'F01', title: 'Prep', g: 1 });
 const EMP = p => ({ id: p.id, name: p.name, role: p.role, store: p.store, support: [], emp: '正社員', step: 2, status: '在籍', perms: 'staff', coef: 1, title: p.title, isSL: p.role === 'sl', firstWorkDate: '2025-01-10' });
 
 export async function startWorld({ appPort = 8090, vendor = process.env.VENDOR_DIR, cert = process.env.CERT_DIR, confirmPeople = true, wrLive = true, s2 = true, appDir = ROOT } = {}) {

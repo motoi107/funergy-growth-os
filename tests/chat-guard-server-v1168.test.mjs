@@ -80,7 +80,7 @@ test('the SQL needs the UI79 SQL first (STOP), runs twice, says chat 4 (5 with t
   await assert.rejects(pg.exec(GUARD_SQL), /STOP: 先にチャット/);
   const { ok, q } = await setup({ twice: true });
   const me = await ok('E7', { action: 'whoami' });
-  assert.equal(me.fn, 11); assert.equal(me.chat, 5); assert.equal(me.push, true);
+  assert.ok(me.fn >= 11, 'fn ' + me.fn);   /* v1184 から 12 */ assert.equal(me.chat, 5); assert.equal(me.push, true);
   const fns = ['chat_guard_get', 'chat_pin_begin', 'chat_pin_end', 'chat_pin_save', 'chat_relock', 'chat_key_begin', 'chat_key_end', 'chat_key_save',
     'chat_push_save', 'chat_push_drop', 'chat_push_check', 'chat_push_targets', 'chat_push_result', 'chat_sess_open', 'chat_gate_actor', 'chat_actor', 'chat_find_nokey', 'wr_receipt_from_chat'];
   for (const f of fns) {

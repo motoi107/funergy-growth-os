@@ -15,6 +15,8 @@ function ctx(extra) {
   if (!('uiChartPhone' in c)) c.uiChartPhone = () => false;
   if (!('uiChartPhoneW' in c)) c.uiChartPhoneW = () => 340;
   vm.runInContext(html.match(/^var CH_PC=.*$/m)[0] + '\nCH=CH_PC;', c);
+  // v1184：実績があるかは 1 つの決まり（_meetHasAct・率の 0 は本当の 0＝MEET_ZERO_OK）
+  vm.runInContext(html.match(/^var MEET_ZERO_OK = \{.*\};$/m)[0] + '\n' + fn('_meetHasAct'), c);
   for (const n of ['getMeetThreshold', '_meetStatus', '_meetJudge', '_meetDiffStr', '_meetStatColor', '_meetStatTint', '_meetStatLabel', '_meetKpiTile', 'mrJudgeOf', '_msPh', '_msFs', '_msW', '_msSvg', '_msLDLine', 'repeatStats'])
     vm.runInContext(fn(n), c);
   vm.runInContext('var MR_LOWER = { fc:true, labor:true };', c);
@@ -46,7 +48,9 @@ test('会議タブのリピート率のタイル：0% は 0%、データなし�
   const none = c._meetKpiTile('F06', '2026-10', 'repeat', null, 35, { unit: '%' });
   assert.match(none, />—<\/span>/);
   assert.ok(!/未達/.test(none));
-  assert.match(html, /_meetKpiTile\(store\.id, ym, it\.key, \(it\.key==='repeat' && it\.act==null\) \? null : \(it\.act\|\|0\)/, '呼ぶ所でデータなしを 0 にしない');
+  // v1184：会議の行は KPI設定の行（_meetCfgRows）。データなしは null のまま渡す（どの KPI も 0 にしない）
+  assert.match(html, /_meetKpiTile\(store\.id, ym, it\.key, it\.act, it\.tgt, /, '呼ぶ所でデータなしを 0 にしない');
+  assert.ok(!/_meetKpiTile\(store\.id, ym, it\.key, [^,]*\|\|0/.test(html), '呼ぶ所で || 0 にしない');
 });
 
 test('ランチ／ディナー別のグラフ：データの無い点は描かない（0% にしない）。全部 0% なら 0% の線を描く', () => {

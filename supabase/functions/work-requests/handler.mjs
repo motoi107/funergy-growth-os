@@ -387,9 +387,19 @@ export function createHandler(deps) {
     // v1167 から fn 9（チャットの UI案79：chat_case_create・chat_admin。チャットの SQL は chat 3 から）
     // v1168 から fn 10（チャットの守り：暗証番号・グループのキー・プッシュ通知。チャットの SQL は chat 4 から）。push＝プッシュ通知の鍵が入っている
     // v1169 から fn 11（キー付きのグループを 1 つの取引で＝chat_create_group_k・経理の「処理済み（今月）」＝acct_done。SQL は chat 5 から。申請の段 sql は変えない＝wr_acct_done が無ければ done_old）
+    // v1184 から fn 12（経費の申請の権限：exp_grant_list・exp_grant_save。SQL は 20261204090000 から＝whoami の exp_grants。無ければ grant_old）
     whoami: async w => {
       const [me, st, cs] = await Promise.all([db.rpc('wr_whoami', w), db.rpc('wr_stage', {}).catch(() => null), db.rpc('chat_stage', {}).catch(() => null)]);
-      return { ...me, fn: 11, push: pushReady, sql: (st && Number.isInteger(st.stage)) ? st.stage : 1, chat: (cs && Number.isInteger(cs.chat)) ? cs.chat : 0 };
+      return { ...me, fn: 12, push: pushReady, sql: (st && Number.isInteger(st.stage)) ? st.stage : 1, chat: (cs && Number.isInteger(cs.chat)) ? cs.chat : 0 };
+    },
+    // v1184：G2 より下の人の経費の申請の権限（ガソリン代・立替経費）。GM・CEO だけ（SQL が確かめる）。
+    // save：mileage・reimburse は true／false／null（＝初期値）。expect_rev は見ていた設定の番号（無ければ 0）。同じ設定なら何もしない（same）
+    exp_grant_list: w => db.rpc('wr_exp_grant_list', w),
+    exp_grant_save: (w, b) => {
+      const tgt = typeof b.target === 'string' && /^[A-Za-z0-9_.:-]{1,64}$/.test(b.target) ? b.target : null;
+      const tri = v => v === true || v === false || v === null;
+      if (!tgt || !tri(b.mileage) || !tri(b.reimburse)) throw bad();
+      return db.rpc('wr_exp_grant_save', { ...w, target: tgt, mileage: b.mileage, reimburse: b.reimburse, expect_rev: (Number.isInteger(b.expect_rev) && b.expect_rev >= 0 && b.expect_rev <= 1e9) ? b.expect_rev : (() => { throw bad(); })(), note: TS(b.note, 200) || null });
     },
     list: (w, b) => {
       const scope = ['todo', 'mine', 'team'].includes(b.scope) ? b.scope : 'todo';
@@ -654,7 +664,8 @@ export function createHandler(deps) {
     dup_unresolved: 409, legacy_paid: 409, pin_check_missing: 503, not_member: 409, too_late: 409, too_many: 409, chat_missing: 503,
     file_type: 400, file_big: 413, file_bad: 409, file_missing: 409, file_many: 409, files_missing: 503, storage: 502,
     pre_bad: 409, pre_taken: 409, pre_missing: 503, case_exists: 409, last_admin: 409, chat_old: 503,
-    chat_pin_required: 423, chat_key_required: 423, guard_old: 503, push_off: 503, last_member: 409, fix_old: 503, done_old: 503 };
+    chat_pin_required: 423, chat_key_required: 423, guard_old: 503, push_off: 503, last_member: 409, fix_old: 503, done_old: 503,
+    no_exp_right: 403, grant_old: 503 };
   // チャットの SQL がまだ無い（関数が見つからない）＝ 503 chat_missing（アプリは「サーバーの準備がまだ」と出す）
   const chatMissing = (action, e) => typeof action === 'string' && action.startsWith('chat_')
     && (e.status === 404 || /(function public\.chat_[a-z_]+\(.*\) does not exist|Could not find the function public\.chat_)/i.test(String(e.message || '')));
@@ -682,6 +693,8 @@ export function createHandler(deps) {
     const m = String(e.message || ''), miss = e.status === 404 || /does not exist|Could not find the function/i.test(m);
     if (action === 'chat_create_group' && /chat_create_group_k/.test(m) && miss) return 'fix_old';
     if (action === 'acct_done' && /wr_acct_done/.test(m) && miss) return 'done_old';
+    // v1184：経費の申請の権限の SQL（20261204090000）がまだ
+    if ((action === 'exp_grant_list' || action === 'exp_grant_save') && /wr_exp_grant_/.test(m) && miss) return 'grant_old';
     return '';
   };
 
