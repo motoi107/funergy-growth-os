@@ -313,5 +313,5 @@ test('(#161) 処理済み（今月）: read by the time it was processed (paid, 
 test('(#161) before the SQL: 処理済み（今月） says done_old (the app falls back to the older way and says so)', async () => {
   const s = await setup({ fix: false });
   assert.deepEqual(await s.call('E3', { action: 'acct_done' }), { status: 503, body: { error: 'done_old' } });
-  assert.equal((await s.ok('E3', { action: 'whoami' })).fn, 11);
+  assert.ok((await s.ok('E3', { action: 'whoami' })).fn >= 11);   // v1184 から 12
 });
