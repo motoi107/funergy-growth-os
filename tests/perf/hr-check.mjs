@@ -35,6 +35,11 @@ if (process.argv[2] === 'prep') {
     { id: 'gho1', title: 'Other person', body: 'b3', author: other.name, store: sto(other), date: '2026/10/3', status: '未対応', replies: [] },
   ] });
   d.tables.app_state = st;
+  // v1147 から、店長（SL）など店の範囲（応募者・不採用ログ）は GM・CEO が確かめた写し（wr_people・G2 以上）の店との重なりだけ（secure-state の protStores）。
+  // 合成データには写しが無く、SL の 4 つが落ちていた（v1182 の記録）→ SL を GM・CEO が確かめた形の写しを 1 行足す（店は SL の配属の店だけ）
+  const sl = d.tables.employees.find(e => String(e.id) === String(d.login.slId));
+  d.tables.wr_people = (d.tables.wr_people || []).filter(r => String(r.emp_id) !== String(d.login.slId));
+  d.tables.wr_people.push({ emp_id: String(d.login.slId), name: sl.name, role: 'staff', grade: 3, stores: [d.login.slStore], chef: false, confirmed_by: 'perf', confirmed_at: at });
   fs.writeFileSync(process.argv[4], JSON.stringify(d));
   console.log('prepared');
   process.exit(0);
