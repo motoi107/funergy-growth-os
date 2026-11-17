@@ -1,8 +1,9 @@
 // v1184（Moto さん 11/16 の依頼）：画面の決まりの試験（本物の関数を index.html から読み、VM で動かす。合成データだけ）。
 //   1. 会議タブの KPI は KPI設定（予実 › KPI設定）の「使う」が正（_meetCfgRows・_meetHasAct・_meetCfgStatus）
 //   2. 本部所属の人は店舗のスキルマトリクスの表示・集計に入れない（empHqState・skillMatrixStaffAt・skillMatrixHqNote）
-//   3. 経費の申請の権限の画面（GM・CEO だけ）と、申請の画面の文（wr の ERR・本部（---）の店の選び方）は e2e（tests/e2e-wr/exp-grants-v1184.mjs）と
-//      サーバーの試験（tests/wr-exp-grants-v1184.test.mjs）で見る
+//   3. 経費の申請の権限の画面（GM・CEO だけ・事務Crew の確かめ）と、申請の画面の文（wr の ERR・本部（---）の店の選び方・確かめ待ち）は
+//      e2e（tests/e2e-wr/exp-grants-v1184.mjs）とサーバーの試験（tests/wr-exp-grants-v1184.test.mjs）で見る
+//   4. （Codex #182 の P2）会議の年間の表の 7 月からの目標は KPI設定の目標（前の手入力を使わない）・KPI設定の読み直しの間隔
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -170,7 +171,9 @@ function hqWorld({ role = 'gm', emps = [] } = {}) {
 const E = (name, store, extra = {}) => Object.assign({ name, role: 'crew', store, support: [], status: '在籍' }, extra);
 test('2-1 本部所属の決め方は従業員マスターの所属（e.store）だけ', () => {
   const c = hqWorld();
-  for (const s of ['OFFICE', 'Office', 'office', '本部', 'HQ', 'hq', '---', ' OFFICE ']) assert.equal(c.empHqState(E('x', s)), 'hq', s);
+  /* 大文字・小文字・前後の空白によらない（Claude のルーティン #182 の P3：'Hq'・'oFFICE' も本部） */
+  for (const s of ['OFFICE', 'Office', 'office', 'oFFICE', '本部', ' 本部 ', 'HQ', 'hq', 'Hq', 'hQ', '---', ' OFFICE ']) assert.equal(c.empHqState(E('x', s)), 'hq', s);
+  for (const s of ['OFFICES', 'HQ1', 'F01-HQ', '本部2']) assert.notEqual(c.empHqState(E('x', s)), 'hq', '似た名前は本部にしない ' + s);
   assert.equal(c.empHqState(E('x', 'ALL')), 'all', '全店は分からない（確認対象）');
   assert.equal(c.empHqState(E('x', '')), 'unknown'); assert.equal(c.empHqState(E('x', null)), 'unknown');
   assert.equal(c.empHqState(E('x', 'ZZZ')), 'unknown', '店舗マスターに無い店');
@@ -208,4 +211,96 @@ test('2-4 表示の個別設定より先に外す（表示対象の候補・人�
 });
 test('2-5 データは消さない（表示の関数はスキル・評価の保存に触らない）', () => {
   for (const n of ['empHqState', 'skillMatrixStaffAt', 'skillMatrixHqNote']) assert.ok(!/lsSet\(|setSkill|saveSkill|_pushWithOutbox/.test(fnSrc(n)), n);
+});
+
+// ---------------------------------------------------------------- 4. 年間の表の目標（Codex #182 の P2）と KPI設定の読み直し（P3）
+function lineSrc(prefix, end = '\n') { const i = SRC.indexOf(prefix); assert.ok(i >= 0, prefix); return SRC.slice(i, SRC.indexOf(end, i) + end.length); }
+function matrixWorld({ edits = {}, seed = {}, tgt = 30, on = ['sales', 'foodCost', 'drinkRate'] } = {}) {
+  const modals = [];
+  const c = {
+    console, JSON, Math, Object, Array, String, Number, RegExp, Date,
+    t: (ja) => ja, escapeHtml: s => String(s).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch])),
+    fmtK: v => '$' + Math.round(v), ls: (k, d) => d, guestCountType: () => 'guest', qbCanEdit: () => true, getKgiEdits: () => plain(edits),
+    /* KPI設定の原価率の目標＝tgt（keyKpiStats の fcBudgetRate は KPI設定の目標から作る） */
+    keyKpiStats: (stores, days) => ({ sales: 100000, budget: 120000, guests: 4000, ppa: 25, opDays: 30, guestBudget: 4200, ppaBudget: 28,
+      repeatRate: null, repeatTgt: null, drinkRate: 18, drinkTgt: null, fcRate: 31.5, laborRate: 38.2, fcBudgetRate: tgt, laborBudgetRate: 35,
+      misoRate: null, misoTgt: null, ikuraRate: null, ikuraTgt: null }),
+    daysOfYm: ym => [{ date: ym + '-01' }], bizNow: () => new Date('2026-11-15T12:00:00'),
+    k2ExplicitTarget: () => null, grMonthOf: () => null, getKpiManual: () => ({}), k2Period: ym => ym, _k2Num: v => (v == null || v === '' ? null : Number(v)),
+    getStoreKpiTargets: () => ({ drinkRate: 22 }), _plPrevYear: () => null,
+    curYm: () => '2026-11', k2On: (sid, ym, key) => on.includes(key), k2GuestLabel: () => '客数', curLang: 'ja', k2Hpd: v => String(v),
+    storeDrinkSales: () => ({ hasCfg: false, total: 0, drink: 0 }), k2HoursDaysM: () => ({ openDays: 0, avg: null }),
+    canAccessKpiMaster: () => true, openModal: h => modals.push(h), modals,
+  };
+  vm.createContext(c);
+  vm.runInContext([lineSrc('var MEET_KPI_DEF', '\n];'), lineSrc('var MEETING_KGI_SEED_UNTIL'), varSrc('K2_DEFS'), varSrc('MEET_K2'), varSrc('MEET_K2R'), varSrc('MEET_ZERO_OK'),
+    'var MEETING_KGI_SEED = ' + JSON.stringify(seed) + ';',
+    ...['_meetHasAct', 'k2Def', 'k2Label', 'k2YmLabel', '_ymToOffset', '_meetKpiDef', 'getMeetThreshold', '_meetStatus', '_meetStatColor', '_meetStatTint', '_meetDiffStr',
+      '_meetIsConfirmed', '_meetPlProv', '_meetConfirmSrc', '_meetConfirmBadge', '_meetPlKpi', '_meetConfirmState', '_meetApplyPl', '_meetYearMatrix', 'meetTgtFromCfg'].map(fnSrc)].join('\n'), c);
+  return c;
+}
+const cellsOf = h => [...h.matchAll(/<tr>([\s\S]*?)<\/tr>/g)].map(m => [...m[1].matchAll(/<t[dh][^>]*>([\s\S]*?)<\/t[dh]>/g)].map(x => x[1]));
+const textOf = x => x.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+function tgtRow(h, re) { const rows = cellsOf(h); const i = rows.findIndex(r => re.test(textOf(r[0])) && /目標/.test(textOf(r[0]))); assert.ok(i >= 0, String(re)); return rows[i]; }
+test('4-1 （Codex #182 の P2）7 月からの目標は KPI設定の目標：KPI設定 30%・前の手入力 99% でも 30%（店舗カードと同じ）', () => {
+  const c = matrixWorld({ edits: { F01: { fc: { t11: 99, t9: 88, t3: 77, a11: 33 }, drink: { t11: 5 } } }, tgt: 30 });
+  const h = c._meetYearMatrix({ id: 'F01', name: 'ToriTon' }, 2026, '2026-11');
+  const fc = tgtRow(h, /原価率/);
+  for (const m of [7, 8, 9, 10, 11, 12]) {
+    assert.equal(textOf(fc[m]), '30%', m + ' 月の目標は KPI設定');
+    assert.match(fc[m], /data-meet-tgt-cfg="1"/, m + ' 月のマスは KPI設定の案内');
+    assert.doesNotMatch(fc[m], /openMeetKgiEdit/, m + ' 月は会議タブで目標を書かない');
+  }
+  assert.doesNotMatch(h, /99%|88%/, '前の手入力は使わない');
+  assert.equal(textOf(tgtRow(h, /ドリンク/)[11]), '22%', 'ドリンク比率も KPI設定の目標（手入力の 5 は使わない）');
+  /* 1〜6 月は今までどおり（手入力があれば手入力・押すと直せる） */
+  assert.equal(textOf(fc[3]), '77%'); assert.match(fc[3], /openMeetKgiEdit\('F01','fc','t',3\)/);
+  /* 実績の手入力は今までどおり使う */
+  const rows = cellsOf(h); const act = rows[rows.findIndex(r => /原価率/.test(textOf(r[0])) && /目標/.test(textOf(r[0]))) + 1];
+  assert.equal(textOf(act[0]), '実績');
+  assert.match(textOf(act[11]), /^33%/, '実績の手入力は使う');
+});
+test('4-2 KPI設定に目標が無ければ「—」（前の手入力で埋めない）・Excel の 7〜12 月の目標も使わない', () => {
+  const seed = { F01: { fc: { t: [1, 2, 3, 4, 5, 6, 70, 80, 90, 91, 92, 93], a: Array(12).fill(null) } } };
+  const c = matrixWorld({ edits: { F01: { fc: { t11: 99 } } }, seed, tgt: null });
+  const fc = tgtRow(c._meetYearMatrix({ id: 'F01', name: 'ToriTon' }, 2026, '2026-11'), /原価率/);
+  for (const m of [7, 8, 9, 10, 11, 12]) assert.equal(textOf(fc[m]), '—', m + ' 月');
+  assert.equal(textOf(fc[2]), '2%', '1〜6 月の Excel の目標は今までどおり');
+});
+test('4-3 目標のマスを押すと、KPI設定で直す案内と前の手入力の値（使っていない・消していない）。データは書かない', () => {
+  const edits = { F01: { fc: { t11: 99 } } };
+  const c = matrixWorld({ edits });
+  c.meetTgtFromCfg('F01', 'fc', '2026-11');
+  const m = c.modals.pop();
+  assert.match(m, /data-meet-tgt-info="1"/); assert.match(m, /KPI設定の目標/);
+  assert.match(m, /data-meet-tgt-old="1"/); assert.match(m, /99/); assert.match(m, /使っていません・消していません/);
+  assert.match(m, /_k2Ym='2026-11'/, 'KPI設定をその月で開く');
+  c.meetTgtFromCfg('F01', 'fc', '2026-10');
+  assert.doesNotMatch(c.modals.pop(), /data-meet-tgt-old/, '手入力の無い月は出さない');
+  c.meetTgtFromCfg('F01', 'sales', '2026-11');
+  const b = c.modals.pop(); assert.match(b, /予算/); assert.doesNotMatch(b, /KPI設定を開く/, '売上の目標は予算設定');
+  c.canAccessKpiMaster = () => false; c.meetTgtFromCfg('F01', 'fc', '2026-11');
+  assert.doesNotMatch(c.modals.pop(), /KPI設定を開く/, 'KPI設定を開けない人にはボタンを出さない');
+  assert.deepEqual(edits, { F01: { fc: { t11: 99 } } });
+  assert.ok(!/lsSet\(|saveKgiCell/.test(fnSrc('meetTgtFromCfg')), '押しても書かない');
+});
+test('4-4 （P3）KPI設定の読み直しは、読めなかったら間をあける（15 秒・30 秒・60 秒…5 分まで）・読めたら元に戻す', async () => {
+  const c = { console, JSON, Math, Object, Array, String, Number, RegExp, Date, Promise, setTimeout: () => 0, clearTimeout: () => {}, AbortController,
+    t: j => j, SUPABASE_URL: 'https://x', supaHeaders: () => ({}), _lsRaw: () => null, curPage: 'other', renderPage: () => {}, calls: 0, mode: 'fail', now: 1e9 };
+  c.Date = class extends Date { static now() { return c.now; } };
+  c.fetch = () => { c.calls++; return c.mode === 'fail' ? Promise.reject(new Error('net')) : Promise.resolve({ ok: true, json: () => Promise.resolve([]) }); };
+  c._applyKvRows = () => {};
+  vm.createContext(c);
+  vm.runInContext([lineSrc('var _meetCfg = '), ...['meetCfgWait', 'meetCfgKeys', 'meetCfgSync', 'kpiManualKey', 'k2Period', 'k2YmAdd'].map(fnSrc)].join('\n'), c);
+  assert.deepEqual([0, 1, 2, 3, 4, 5, 6, 9].map(n => c.meetCfgWait(n)), [15000, 15000, 30000, 60000, 120000, 240000, 300000, 300000]);
+  assert.equal(await c.meetCfgSync('2026-11'), false); assert.equal(c.calls, 1); assert.equal(c._meetCfg.fails, 1);
+  c.now += 14000; await c.meetCfgSync('2026-11'); assert.equal(c.calls, 1, '15 秒たつまで読まない');
+  c.now += 2000; await c.meetCfgSync('2026-11'); assert.equal(c.calls, 2); assert.equal(c._meetCfg.fails, 2);
+  c.now += 20000; await c.meetCfgSync('2026-11'); assert.equal(c.calls, 2, '2 回目のあとは 30 秒');
+  c.now += 11000; await c.meetCfgSync('2026-11'); assert.equal(c.calls, 3); assert.equal(c._meetCfg.fails, 3);
+  await c.meetCfgSync('2026-11', true); assert.equal(c.calls, 4, '「もう一度」はすぐ');
+  c.mode = 'ok'; c.now += 1000; assert.equal(await c.meetCfgSync('2026-11', true), true); assert.equal(c._meetCfg.fails, 0, '読めたら元に戻す');
+  c.now += 30000; await c.meetCfgSync('2026-11'); assert.equal(c.calls, 5, '読めたあとは 60 秒に 1 回');
+  c.mode = 'fail'; c.now += 31000; await c.meetCfgSync('2026-11'); assert.equal(c._meetCfg.fails, 1);
+  await c.meetCfgSync('2025-11'); assert.equal(c._meetCfg.fails, 1, '別の月（範囲）に移ると数え直す'); assert.equal(c.calls, 7);
 });

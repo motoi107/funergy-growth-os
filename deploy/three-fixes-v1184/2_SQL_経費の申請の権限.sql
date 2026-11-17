@@ -4,11 +4,13 @@
 -- 【前】G1 は経費の申請を出せない（v1164）。経理・事務Crew は、manager_auth（メールのアカウント）の役割で決まるときだけ建て替え経費。
 --   PIN だけでログインする事務Crew（従業員マスターの役割 office_crew・肩書き Office Crew／Office Staff）は wr_actor が staff・G1 になり、何も出せなかった。
 -- 【いま】G2 以上・AM・GM・CEO は今までどおり 3 種（この設定は効かない）。G2 より下の人は：
---   ・事務Crew（manager_auth の役割 office_crew、または従業員マスターの役割 office_crew・肩書き Office Crew／Office Staff）：初期値はガソリン代・立替経費とも ON
+--   ・事務Crew（manager_auth の役割 office_crew、または従業員マスターの役割 office_crew・肩書き Office Crew／Office Staff で GM・CEO が「事務Crew と確かめた」人）：初期値はガソリン代・立替経費とも ON
+--     従業員マスターは公開の鍵でも書けるので、従業員マスターだけで事務Crew に見える人は、GM・CEO が確かめるまで初期値 OFF（区分 crew_wait）。
+--     確かめたあとも、従業員マスターで事務Crew でなくなれば初期値 OFF（確かめと今の従業員マスターの狭いほう。Codex #182 の P1）
 --   ・経理（manager_auth の役割 office）で G2 より下：初期値は立替経費だけ ON（今までの権限を残す）
 --   ・そのほかの G1：初期値は両方 OFF
 --   GM・CEO が人ごとに「ON」「OFF」「初期値」を決められる（表 wr_exp_grants・社員 ID ごと）。明示の OFF は初期値で戻らない。事前経費は今までどおり G2 以上だけ。
---   名前・グレードだけで決めない（社員 ID・manager_auth・従業員マスターの役割と肩書き）。変えた人・対象・項目・日時は wr_exp_grant_log に残す（消さない）。
+--   名前・グレードだけで決めない（社員 ID・manager_auth・GM・CEO の確かめ・従業員マスターの役割と肩書き）。変えた人・対象・項目・日時は wr_exp_grant_log に残す（消さない）。
 --   新しい申請・承認待ちを直す（edit）・差し戻しを出し直す（resubmit）は、送ったときにサーバーがこの権限を確かめる（開いている画面・ほかの端末も、次に送るときに効く）。
 --   同じ鍵（client_key）の送り直しは今までどおり 1 件だけ（前の答えを返す）。出した申請・履歴は消さない。承認・経理の権限は足さない。
 --   本部所属（従業員マスターの所属が本部）の人は、本部（---）でも出せる（店に自動で割り当てない）。
@@ -27,6 +29,7 @@ create table if not exists public.wr_exp_grants (
   emp_id text primary key,
   mileage boolean,              -- null＝初期値
   reimburse boolean,            -- null＝初期値
+  crew boolean,                 -- true＝GM・CEO が事務Crew と確かめた・null＝確かめていない
   rev integer not null default 1,
   updated_by text, updated_emp text,
   updated_at timestamptz not null default now()
@@ -36,12 +39,16 @@ create table if not exists public.wr_exp_grant_log (
   at timestamptz not null default now(),
   emp_id text not null,
   emp_name text,
-  kind text not null check (kind in ('mileage','reimburse')),
+  kind text not null,           -- mileage・reimburse・crew（事務Crew の確かめ）
   before_set boolean, after_set boolean,   -- 設定（null＝初期値）
   before_eff boolean, after_eff boolean,   -- 実際に出せるか
   by_emp text, by_name text, by_role text,
   note text
 );
+-- 前に流した形（crew の列が無い・kind の決まりが 2 つだけ）にも足す（2 回流しても同じ）
+alter table public.wr_exp_grants add column if not exists crew boolean;
+alter table public.wr_exp_grant_log drop constraint if exists wr_exp_grant_log_kind_check;
+alter table public.wr_exp_grant_log add constraint wr_exp_grant_log_kind_check check (kind in ('mileage','reimburse','crew'));
 create index if not exists wr_exp_grant_log_emp on public.wr_exp_grant_log(emp_id, id desc);
 alter table public.wr_exp_grants enable row level security;
 alter table public.wr_exp_grant_log enable row level security;
@@ -63,17 +70,23 @@ language sql immutable security invoker set search_path = public, pg_temp as $$
  select lower(btrim(coalesce(p_store, ''))) in ('office','本部','hq','---');
 $$;
 
--- この人の区分：full（G2 以上・AM・GM・CEO＝3 種・この設定は効かない）・office_crew・office・g1
+-- この人の区分：full（G2 以上・AM・GM・CEO＝3 種・この設定は効かない）・office_crew・office・crew_wait・g1
+--   office_crew：manager_auth の役割（サーバーの鍵だけが書ける）か、GM・CEO が確かめた（wr_exp_grants.crew）うえで今も従業員マスターで事務Crew の人
+--   crew_wait：従業員マスターでは事務Crew だが GM・CEO の確かめがまだ（従業員マスターは公開の鍵でも書けるので、それだけでは出せない）。初期値は OFF
+--   （G2 以上は前からの決まりのまま＝確かめた写しと従業員マスターの狭いほうで、写しの無い人は G3 まで。Moto さん 11/16「今のまま」）
 create or replace function public.wr_exp_base(a jsonb) returns text
 language plpgsql stable security invoker set search_path = public, pg_temp as $$
-declare e public.employees;
+declare e public.employees; v_ok boolean;
 begin
  if a is null or jsonb_typeof(a) <> 'object' then return 'g1'; end if;
  if (a->>'role') in ('ceo','gm','am') or coalesce((a->>'grade')::int, 0) >= 2 then return 'full'; end if;
  if (a->>'role') = 'office_crew' then return 'office_crew'; end if;
  if (a->>'role') = 'office' then return 'office'; end if;
  select * into e from public.employees x where x.id::text = a->>'emp';
- if found and public.wr_exp_crew(e.role, e.title) then return 'office_crew'; end if;
+ if found and public.wr_exp_crew(e.role, e.title) then
+  select g.crew into v_ok from public.wr_exp_grants g where g.emp_id = a->>'emp';
+  return case when coalesce(v_ok, false) then 'office_crew' else 'crew_wait' end;
+ end if;
  return 'g1';
 end $$;
 
@@ -168,7 +181,7 @@ begin
  return jsonb_build_object('me', a, 'live', coalesce(s.live, false), 'settings_rev', coalesce(s.rev, 1), 'live_at', s.live_at, 'settings_at', s.updated_at,
   'rate', public.wr_mileage_rate(),
   's2', coalesce(s.live, false) and coalesce(s.s2_live, false), 's2_at', s.s2_at, 's2_by', s.s2_by,
-  'exp_kinds', to_jsonb(public.wr_exp_kinds(a)), 'exp_hq', public.wr_exp_hq(a), 'exp_grants', true,
+  'exp_kinds', to_jsonb(public.wr_exp_kinds(a)), 'exp_hq', public.wr_exp_hq(a), 'exp_grants', true, 'exp_base', public.wr_exp_base(a),
   'people', case when (a->>'role') in ('ceo','gm') then (select jsonb_build_object('up', count(*) filter (where x->'up' = 'true'::jsonb), 'changes', count(*),
      'confirmed', (select count(*) from public.wr_people)) from jsonb_array_elements(public.wr_people_items()) x) end);
 end $$;
@@ -187,6 +200,7 @@ begin
  select * into g from public.wr_exp_grants x where x.emp_id = p_emp;
  return jsonb_build_object('emp', p_emp, 'name', btrim(coalesce(e.name, '')), 'title', e.title, 'emp_role', e.role, 'store', e.store,
   'hq', public.wr_exp_hq_store(e.store), 'base', b, 'login_role', a->>'role', 'grade', (a->>'grade')::int,
+  'crew_master', public.wr_exp_crew(e.role, e.title), 'crew_ok', coalesce(g.crew, false),
   'rev', coalesce(g.rev, 0),
   'mileage', jsonb_build_object('set', g.mileage, 'def', public.wr_exp_default(b, 'mileage'), 'eff', coalesce(g.mileage, public.wr_exp_default(b, 'mileage'))),
   'reimburse', jsonb_build_object('set', g.reimburse, 'def', public.wr_exp_default(b, 'reimburse'), 'eff', coalesce(g.reimburse, public.wr_exp_default(b, 'reimburse'))),
@@ -211,42 +225,54 @@ begin
    from (select * from public.wr_exp_grant_log order by id desc limit 200) l), '[]'::jsonb));
 end $$;
 
--- 1 人の設定を変える（GM・CEO だけ）。p：{ emp_id, name, target, mileage, reimburse（true／false／null＝初期値）, expect_rev, note }
+-- 1 人の設定を変える（GM・CEO だけ）。p：{ emp_id, name, target, mileage, reimburse（true／false／null＝初期値）, crew（任意：true＝事務Crew と確かめる・null＝確かめを外す）, expect_rev, note }
+--   crew を送らなければ今のまま。true は従業員マスターで今も事務Crew の人だけ（違えば not_crew）。
 --   今の設定と同じなら何もしない（same: true・記録も足さない＝二度押し・送り直しで増えない）。違えば expect_rev が今の rev と同じときだけ書く（違えば conflict）。
+--   記録は項目ごと（設定が変わったか、実際に出せるかが変わったとき。事務Crew の確かめは kind＝crew）
 create or replace function public.wr_exp_grant_save(p jsonb) returns jsonb
 language plpgsql volatile security invoker set search_path = public, pg_temp as $$
-declare a jsonb := public.wr_actor(p); v_t text := nullif(btrim(coalesce(p->>'target', '')), ''); v_m boolean; v_r boolean;
- v_note text := nullif(btrim(coalesce(p->>'note', '')), ''); e public.employees; g public.wr_exp_grants; v_rev integer; b text; row0 jsonb; v_now timestamptz := now();
+declare a jsonb := public.wr_actor(p); v_t text := nullif(btrim(coalesce(p->>'target', '')), ''); v_m boolean; v_r boolean; v_c boolean;
+ v_note text := nullif(btrim(coalesce(p->>'note', '')), ''); e public.employees; g public.wr_exp_grants; v_rev integer; b0 text; b1 text; v_now timestamptz := now();
+ ta jsonb;
 begin
  if (a->>'role') not in ('ceo','gm') then raise exception 'forbidden'; end if;
  if v_t is null or length(v_t) > 64 then raise exception 'bad_value'; end if;
  if not (p ? 'mileage') or not (p ? 'reimburse') or jsonb_typeof(p->'mileage') not in ('boolean','null') or jsonb_typeof(p->'reimburse') not in ('boolean','null') then raise exception 'bad_value'; end if;
+ if p ? 'crew' and not (jsonb_typeof(p->'crew') = 'null' or p->'crew' = 'true'::jsonb) then raise exception 'bad_value'; end if;
  if v_note is not null and length(v_note) > 200 then raise exception 'bad_value'; end if;
  v_m := case when jsonb_typeof(p->'mileage') = 'boolean' then (p->>'mileage')::boolean end;
  v_r := case when jsonb_typeof(p->'reimburse') = 'boolean' then (p->>'reimburse')::boolean end;
  perform pg_advisory_xact_lock(hashtext('wr_exp_grant:' || v_t));
  select * into e from public.employees x where x.id::text = v_t;
  if not found or public.wr_emp_out(e) then raise exception 'not_found'; end if;
- b := public.wr_exp_base(public.wr_actor(jsonb_build_object('emp_id', v_t)));
- if b = 'full' then raise exception 'bad_value'; end if;   -- G2 以上・AM・GM・CEO はこの設定を使わない
+ ta := public.wr_actor(jsonb_build_object('emp_id', v_t));
+ b0 := public.wr_exp_base(ta);
+ if b0 = 'full' then raise exception 'bad_value'; end if;   -- G2 以上・AM・GM・CEO はこの設定を使わない
  select * into g from public.wr_exp_grants x where x.emp_id = v_t for update;
  v_rev := coalesce(g.rev, 0);
- if g.mileage is not distinct from v_m and g.reimburse is not distinct from v_r then
+ v_c := case when p ? 'crew' then (case when p->'crew' = 'true'::jsonb then true end) else g.crew end;
+ if g.mileage is not distinct from v_m and g.reimburse is not distinct from v_r and g.crew is not distinct from v_c then
   return public.wr_exp_grant_row(v_t) || jsonb_build_object('same', true);
  end if;
  if not (jsonb_typeof(p->'expect_rev') = 'number' and (p->>'expect_rev')::int = v_rev) then raise exception 'conflict'; end if;
- insert into public.wr_exp_grants as t (emp_id, mileage, reimburse, rev, updated_by, updated_emp, updated_at)
-  values (v_t, v_m, v_r, v_rev + 1, a->>'name', a->>'emp', v_now)
-  on conflict (emp_id) do update set mileage = excluded.mileage, reimburse = excluded.reimburse, rev = excluded.rev,
+ if v_c is true and g.crew is distinct from true and not public.wr_exp_crew(e.role, e.title) then raise exception 'not_crew'; end if;
+ insert into public.wr_exp_grants as t (emp_id, mileage, reimburse, crew, rev, updated_by, updated_emp, updated_at)
+  values (v_t, v_m, v_r, v_c, v_rev + 1, a->>'name', a->>'emp', v_now)
+  on conflict (emp_id) do update set mileage = excluded.mileage, reimburse = excluded.reimburse, crew = excluded.crew, rev = excluded.rev,
    updated_by = excluded.updated_by, updated_emp = excluded.updated_emp, updated_at = excluded.updated_at;
- if g.mileage is distinct from v_m then
+ b1 := public.wr_exp_base(ta);
+ if g.crew is distinct from v_c then
   insert into public.wr_exp_grant_log(at, emp_id, emp_name, kind, before_set, after_set, before_eff, after_eff, by_emp, by_name, by_role, note)
-   values (v_now, v_t, btrim(coalesce(e.name, '')), 'mileage', g.mileage, v_m, coalesce(g.mileage, public.wr_exp_default(b, 'mileage')), coalesce(v_m, public.wr_exp_default(b, 'mileage')),
+   values (v_now, v_t, btrim(coalesce(e.name, '')), 'crew', g.crew, v_c, b0 = 'office_crew', b1 = 'office_crew', a->>'emp', a->>'name', a->>'role', v_note);
+ end if;
+ if g.mileage is distinct from v_m or coalesce(g.mileage, public.wr_exp_default(b0, 'mileage')) is distinct from coalesce(v_m, public.wr_exp_default(b1, 'mileage')) then
+  insert into public.wr_exp_grant_log(at, emp_id, emp_name, kind, before_set, after_set, before_eff, after_eff, by_emp, by_name, by_role, note)
+   values (v_now, v_t, btrim(coalesce(e.name, '')), 'mileage', g.mileage, v_m, coalesce(g.mileage, public.wr_exp_default(b0, 'mileage')), coalesce(v_m, public.wr_exp_default(b1, 'mileage')),
     a->>'emp', a->>'name', a->>'role', v_note);
  end if;
- if g.reimburse is distinct from v_r then
+ if g.reimburse is distinct from v_r or coalesce(g.reimburse, public.wr_exp_default(b0, 'reimburse')) is distinct from coalesce(v_r, public.wr_exp_default(b1, 'reimburse')) then
   insert into public.wr_exp_grant_log(at, emp_id, emp_name, kind, before_set, after_set, before_eff, after_eff, by_emp, by_name, by_role, note)
-   values (v_now, v_t, btrim(coalesce(e.name, '')), 'reimburse', g.reimburse, v_r, coalesce(g.reimburse, public.wr_exp_default(b, 'reimburse')), coalesce(v_r, public.wr_exp_default(b, 'reimburse')),
+   values (v_now, v_t, btrim(coalesce(e.name, '')), 'reimburse', g.reimburse, v_r, coalesce(g.reimburse, public.wr_exp_default(b0, 'reimburse')), coalesce(v_r, public.wr_exp_default(b1, 'reimburse')),
     a->>'emp', a->>'name', a->>'role', v_note);
  end if;
  return public.wr_exp_grant_row(v_t);

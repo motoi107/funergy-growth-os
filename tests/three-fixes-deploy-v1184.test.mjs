@@ -43,6 +43,7 @@ test('1 の確認：入れる前と後（STOP なし・読むだけ・数だけ�
   assert.ok(!before.some(r => r.result === 'STOP'), JSON.stringify(before));
   assert.match(before.find(r => r.no === 4).result, /まだ/);
   assert.match(before.find(r => r.no === 5).detail, /^4 人/, '在籍の事務Crew：役割 office_crew 3 人＋肩書き Office Staff 1 人（退職は数えない）');
+  assert.match(before.find(r => r.no === 5).detail, /うち事務Crew のメールのアカウント 0 人/, 'この合成データでは E4 にメールのアカウントが無い');
   assert.match(before.find(r => r.no === 6).detail, /^2 人/, '所属が本部（OFFICE・本部）');
   assert.match(before.find(r => r.no === 7).detail, /^1 件/);
   assert.ok(!JSON.stringify(before).match(/Oli|Hana|Sora|Nao|Cam|Gabe/), '名前は出さない');
@@ -65,8 +66,8 @@ test('3 の確認：入れたあと NG なし・2 回流しても設定は残る
   await pg.exec(D('2_SQL_経費の申請の権限.sql'));
   const r = await rows(pg, D('3_確認_読むだけ.sql'));
   assert.ok(!r.some(x => x.result === 'NG'), JSON.stringify(r));
-  assert.equal(r.length, 10);
-  assert.equal(r.find(x => x.no === 10).detail, '1 人・1 件', '2 回流しても設定と記録は残る');
+  assert.equal(r.length, 11);
+  assert.equal(r.find(x => x.no === 11).detail, '1 人・1 件', '2 回流しても設定と記録は残る');
   await pg.exec('grant select on public.wr_exp_grants to anon');
   assert.equal((await rows(pg, D('3_確認_読むだけ.sql'))).find(x => x.no === 3).result, 'NG');
   await pg.exec('revoke select on public.wr_exp_grants from anon; grant execute on function public.wr_exp_kinds(jsonb) to authenticated');
@@ -80,6 +81,11 @@ test('3 の確認：入れたあと NG なし・2 回流しても設定は残る
     await pg.exec(undo);
   };
   await only('alter table public.wr_exp_grants disable row level security', 2, 'alter table public.wr_exp_grants enable row level security');
+  // Codex #182 の P1：事務Crew を従業員マスターだけで決める前の形（確かめを見ない wr_exp_base）→ 10 だけ NG
+  await only(`create or replace function public.wr_exp_base(a jsonb) returns text language plpgsql stable security invoker set search_path = public, pg_temp as $$
+    declare e public.employees; begin if (a->>'role') in ('ceo','gm','am') or coalesce((a->>'grade')::int, 0) >= 2 then return 'full'; end if;
+    select * into e from public.employees x where x.id::text = a->>'emp'; if found and public.wr_exp_crew(e.role, e.title) then return 'office_crew'; end if; return 'g1'; end $$`,
+    10, D('2_SQL_経費の申請の権限.sql'));
   await only('alter function public.wr_exp_grant_row(text) rename to wr_exp_grant_row_x', 4, 'alter function public.wr_exp_grant_row_x(text) rename to wr_exp_grant_row');
   await only(`create or replace function public.wr_act(p jsonb) returns jsonb language plpgsql volatile security invoker set search_path = public, pg_temp as $$ begin return public.wr_act_exp(p); end $$`,
     8, D('2_SQL_経費の申請の権限.sql'));
@@ -94,6 +100,27 @@ test('3 の確認：入れたあと NG なし・2 回流しても設定は残る
   // 段階 2 の SQL を流し直すと、送るときの確かめが外れる → 3 が見つける
   await pg.exec(M('20261120090000_work_requests_stage2'));
   assert.equal((await rows(pg, D('3_確認_読むだけ.sql'))).find(x => x.no === 8).result, 'NG');
+});
+
+test('前に渡した 2（crew の列が無い・記録の種類が 2 つだけの形）を入れていても、今の 2 で直る（設定と記録は残る・確かめを記録できる）', async () => {
+  const pg = await base();
+  // 前に渡した v1184 の 2 と同じ形の表（列 crew なし・kind の決まりが 2 つ）
+  await pg.exec(`create table public.wr_exp_grants (emp_id text primary key, mileage boolean, reimburse boolean, rev integer not null default 1,
+      updated_by text, updated_emp text, updated_at timestamptz not null default now());
+    create table public.wr_exp_grant_log (id bigserial primary key, at timestamptz not null default now(), emp_id text not null, emp_name text,
+      kind text not null check (kind in ('mileage','reimburse')), before_set boolean, after_set boolean, before_eff boolean, after_eff boolean,
+      by_emp text, by_name text, by_role text, note text);
+    insert into public.wr_exp_grants(emp_id, mileage, reimburse) values ('E9', true, null);
+    insert into public.wr_exp_grant_log(emp_id, kind, before_set, after_set, before_eff, after_eff, by_emp) values ('E9','mileage',null,true,false,true,'E2');`);
+  await assert.rejects(pg.exec(`insert into public.wr_exp_grant_log(emp_id, kind, by_emp) values ('E13','crew','E2')`), /check/i);
+  await pg.exec(D('2_SQL_経費の申請の権限.sql'));
+  await pg.exec(`insert into public.wr_exp_grant_log(emp_id, kind, by_emp) values ('E13','crew','E2')`);
+  await assert.rejects(pg.exec(`insert into public.wr_exp_grant_log(emp_id, kind, by_emp) values ('E13','other','E2')`), /check/i);
+  const g = await rows(pg, `select emp_id, mileage, reimburse, crew from public.wr_exp_grants`);
+  assert.deepEqual(g, [{ emp_id: 'E9', mileage: true, reimburse: null, crew: null }]);
+  const r = await rows(pg, D('3_確認_読むだけ.sql'));
+  assert.ok(!r.some(x => x.result === 'NG'), JSON.stringify(r));
+  assert.equal(r.find(x => x.no === 11).detail, '1 人・2 件');
 });
 
 test('手順.md：番号のファイルがそろっていて、非公開の 1 ファイル（関数）はリポジトリに無い', () => {

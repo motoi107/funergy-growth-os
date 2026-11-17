@@ -31381,9 +31381,10 @@ function _meetCfgStatus(it, salesAct, salesPace){
    ・見る月：会議の月の 24 か月前から、その年の 12 月まで（k2Resolved が前の月から引き継ぐため・年間の表の 12 か月）。1 回の問い合わせ。
    ・取り込みはまとめ取りと同じ _applyKvRows（OP_MERGE の kpi_man_＝欄ごとに新しいほう・まだ送れていない手元の変更は残す）。
      古い写しでクラウドの新しい設定を上書きしない。会議タブは読むだけで、設定を書かない。
-   ・60 秒に 1 回まで（読めなかったときは 15 秒あけて）。変わったら描き直す（入力中は待つ＝FUNERGY_UX.bgRefresh）。
+   ・60 秒に 1 回まで（読めなかったときは 15 秒・30 秒・60 秒…と間をあけて、5 分まで。「もう一度」はすぐ。Claude のルーティン #182 の P3）。変わったら描き直す（入力中は待つ＝FUNERGY_UX.bgRefresh）。
    ・読めなければ帯で知らせ、この端末に保存されている KPI設定で出していると書く */
-var _meetCfg = { sig:'', at:0, ok:null, err:'', busy:false };
+var _meetCfg = { sig:'', at:0, ok:null, err:'', busy:false, fails:0 };
+function meetCfgWait(n){ return Math.min(300000, 15000*Math.pow(2, Math.max(0, (n||1)-1))); }
 function meetCfgKeys(ym){
   var y=String(ym).slice(0,4), end=y+'-12', cur=k2YmAdd(ym, -24), keys=[];
   while(cur<=end && keys.length<40){ keys.push(kpiManualKey(k2Period(cur))); cur=k2YmAdd(cur, 1); }
@@ -31394,7 +31395,8 @@ function meetCfgSync(ym, force){
   var keys=meetCfgKeys(ym), sig=keys[0]+'~'+keys[keys.length-1];
   if(S.busy) return S.busy;
   if(!force && S.sig===sig && S.ok===true && (Date.now()-S.at)<60000) return Promise.resolve(true);
-  if(!force && S.sig===sig && S.ok===false && (Date.now()-S.at)<15000) return Promise.resolve(false);
+  if(!force && S.sig===sig && S.ok===false && (Date.now()-S.at)<meetCfgWait(S.fails)) return Promise.resolve(false);
+  if(S.sig!==sig) S.fails=0;
   S.sig=sig;
   var before={}; keys.forEach(function(k){ try{ before[k]=JSON.stringify(_lsRaw(k, null)); }catch(e){ before[k]=''; } });
   var redraw=function(){ try{ if(typeof curPage!=='undefined' && curPage==='meeting'){ if(window.FUNERGY_UX && FUNERGY_UX.bgRefresh) FUNERGY_UX.bgRefresh(); else renderPage('meeting'); } }catch(e){} };
@@ -31410,14 +31412,14 @@ function meetCfgSync(ym, force){
       var notSaved=rows.filter(function(r){ return okKeys.indexOf(r.key)<0; });
       var changed=keys.some(function(k){ var a=''; try{ a=JSON.stringify(_lsRaw(k, null)); }catch(e){} return a!==before[k]; });
       S.at=Date.now();
-      if(notSaved.length){ S.ok=false; S.err=t('この端末に保存できませんでした（容量）','could not be saved on this device (storage)'); }
-      else { S.ok=true; S.err=''; }
+      if(notSaved.length){ S.ok=false; S.fails=(S.fails||0)+1; S.err=t('この端末に保存できませんでした（容量）','could not be saved on this device (storage)'); }
+      else { S.ok=true; S.err=''; S.fails=0; }
       if(changed){ try{ if(typeof mdCacheClear==='function') mdCacheClear(); }catch(e){} }
       if(changed || !S.ok) redraw();
       return S.ok;
     })
     .catch(function(e){
-      S.ok=false; S.at=Date.now();
+      S.ok=false; S.at=Date.now(); S.fails=(S.fails||0)+1;
       S.err=(e && e.name==='AbortError') ? t('時間切れ','timed out') : String((e && e.message) || e || 'error').slice(0, 120);
       redraw(); return false;
     })
@@ -33359,6 +33361,22 @@ function saveKgiCell(sid,kk,ta,m,val){
   lsSet('meeting_kgi_edits', e); if(typeof closeModalDirect==='function') closeModalDirect();
   if(typeof showToast==='function') showToast(t('保存しました','Saved'),'success'); renderPage(budPage());
 }
+/* v1184（Codex #182 の P2）：会議タブの年間表で、7月からの目標のマスを押したとき。目標は KPI設定（売上・客数・客単価は予算設定）で直す。
+   前に会議タブで手入力した目標（meeting_kgi_edits）は消さずに残し、使っていないことを見せる */
+function meetTgtFromCfg(sid, kk, ym){
+  var def=_meetKpiDef(kk)||{}; var m=parseInt(String(ym).slice(5),10);
+  var e=getKgiEdits(); var old=e[sid]&&e[sid][kk]&&e[sid][kk]['t'+m];
+  var bud=(kk==='sales'||kk==='guests'||kk==='ppa');
+  var lb=(kk==='hours')?t('1営業日あたりの総労働時間','Labor hours per business day'):t(def.label||kk, def.labelEn||kk);
+  var canKpi=(typeof canAccessKpiMaster==='function' && canAccessKpiMaster());
+  openModal('<div class="modal-title">'+escapeHtml(lb)+' '+escapeHtml(k2YmLabel(ym))+' '+t('目標','Target')+' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<div data-meet-tgt-info="1" style="font-size:12px;line-height:1.7">'+(bud
+      ? t('この目標は予算から出しています（予算設定で直します）。会議タブの店舗カードと同じ数字です。','This target comes from the budget (change it in Budget settings). Same number as the store card.')
+      : t('7月からの目標は KPI設定の目標です（会議タブの店舗カードと同じ）。直すときは 予実 › KPI設定 で。','From July, targets are the KPI settings targets (same as the store card). Change them in Budget › KPI settings.'))+'</div>'
+    +(old!=null&&old!==''?('<div data-meet-tgt-old="1" style="font-size:11px;color:var(--muted);margin-top:6px">'+t('前に会議タブで手入力した目標：','Target typed in the meeting tab before: ')+escapeHtml(String(old))+t('（使っていません・消していません）',' (not used, not deleted)')+'</div>'):'')
+    +'<div class="btn-row" style="margin-top:10px"><button class="btn btn-secondary" onclick="closeModalDirect()">'+t('閉じる','Close')+'</button>'
+    +((!bud && canKpi)?('<button class="btn btn-primary" onclick="closeModalDirect();window._kpiTab=\'store\';window._kpiStore=\''+escapeHtml(sid)+'\';window._k2Ym=\''+escapeHtml(ym)+'\';go(\'kpi_master\')"><i class="ti ti-target"></i> '+t('KPI設定を開く','Open KPI settings')+'</button>'):'')+'</div>');
+}
 function openMeetKgiEdit(sid,kk,ta,m){
   var def=_meetKpiDef(kk); var cur='';
   var e=getKgiEdits(); var ev=e[sid]&&e[sid][kk]&&e[sid][kk][ta+m];
@@ -33460,7 +33478,13 @@ function _meetYearMatrix(store, y, selYm){
       case 'ppa': return k.ppaBudget; case 'repeat': return k.repeatTgt; case 'drink': return k.drinkTgt;
       case 'fc': return k.fcBudgetRate; case 'labor': return k.laborBudgetRate;
       case 'miso': return k.misoTgt; case 'ikura': return k.ikuraTgt; default: return null; } }
-  function cellV(kk,ta,m,off,ym){ var e=edits[sid]&&edits[sid][kk]&&edits[sid][kk][ta+m]; if(e!=null&&e!=='') return Number(e);
+  /* v1184（Codex #182 の P2）：7月からの目標は KPI設定の目標だけ（売上・客数・客単価は予算）＝店舗カードと同じ。
+     前の手入力（meeting_kgi_edits の t…）と Excel の 7〜12 月の目標は使わない（消さない）。直すのは KPI設定・予算設定。
+     実績は今までどおり（手入力があれば ✎）。1〜6 月は今までどおり（会議記録の数字は動かさない） */
+  function cfgTgtMonth(ym){ return ym > MEETING_KGI_SEED_UNTIL; }
+  function cellV(kk,ta,m,off,ym){
+    if(ta==='t' && cfgTgtMonth(ym)) return liveT(kk, ym);
+    var e=edits[sid]&&edits[sid][kk]&&edits[sid][kk][ta+m]; if(e!=null&&e!=='') return Number(e);
     if(ym > MEETING_KGI_SEED_UNTIL){ var lv=(ta==='t')?liveT(kk,ym):liveA(kk,ym,off); if(lv!=null || (ta==='t' && ['sales','guests','ppa'].indexOf(kk)>=0)) return lv; }
     var sd=seed[kk]; var base=sd?((ta==='t')?sd.t[m-1]:sd.a[m-1]):null; if(base!=null) return base;
     if(ta==='a') return liveA(kk,ym,off); return null; }
@@ -33480,8 +33504,11 @@ function _meetYearMatrix(store, y, selYm){
       +'<div style="font-size:9px;color:var(--muted);margin-left:28px">'+t('目標','Target')+'</div></td>';
     MOS.forEach(function(M){ var bg=M.cur?(';background:'+curBg):'';
       if(!onAt(kk, M.ym)){ body+='<td data-off="1" style="border-top:2px solid var(--tm);text-align:center;padding:7px 16px;font-size:10px;color:var(--muted);white-space:nowrap'+bg+'">'+t('対象外','Not used')+'</td>'; return; }   /* v1184 */
-      var tv=cellV(kk,'t',M.m,M.off,M.ym); var ed=isEdited(kk,'t',M.m);
-      var disp=(tv!=null)?meta.f(tv):'—'; var inner=(canEd&&kk!=='hours')?('<span onclick="openMeetKgiEdit(\''+sid+'\',\''+kk+'\',\'t\','+M.m+')" style="cursor:pointer;border-bottom:1px dashed var(--muted)">'+disp+'</span>'):disp;
+      var tv=cellV(kk,'t',M.m,M.off,M.ym); var cfgM=cfgTgtMonth(M.ym); var ed=!cfgM && isEdited(kk,'t',M.m);
+      var disp=(tv!=null)?meta.f(tv):'—';
+      /* v1184：7月からの目標のマスは KPI設定（売上・客数・客単価は予算設定）で直す。押すとその案内（前の手入力があれば値も） */
+      var inner=cfgM ? ('<span data-meet-tgt-cfg="1" onclick="meetTgtFromCfg(\''+sid+'\',\''+kk+'\',\''+M.ym+'\')" style="cursor:pointer">'+disp+'</span>')
+        : ((canEd&&kk!=='hours')?('<span onclick="openMeetKgiEdit(\''+sid+'\',\''+kk+'\',\'t\','+M.m+')" style="cursor:pointer;border-bottom:1px dashed var(--muted)">'+disp+'</span>'):disp);
       body+='<td style="border-top:2px solid var(--tm);text-align:center;padding:7px 16px;font-size:11px;color:'+(ed?'var(--accent2)':'var(--muted)')+';white-space:nowrap'+bg+'">'+inner+'</td>'; });
     body+='</tr>';
     // 実績 行
@@ -33539,7 +33566,7 @@ function _meetYearMatrix(store, y, selYm){
     +'<div style="font-size:10px;color:var(--muted);margin-bottom:6px;line-height:1.5"><i class="ti ti-target"></i> '+t('行は KPI設定で '+k2YmLabel(selYm)+' に「使う」の KPI（KPI設定の並び）。その月に使っていないマスは「対象外」。','Rows are the KPIs set to "Use" for '+k2YmLabel(selYm)+' in KPI settings (same order). Months where a KPI was not used say "Not used".')
       +(KEYS.length<=1?('<b style="color:var(--tm)"> '+t('表示するKPIが設定されていません（売上のほか）。','No KPIs set to show (other than sales).')+'</b>'):'')+'</div>'
     +'<div style="overflow-x:auto;-webkit-overflow-scrolling:touch"><table style="border-collapse:collapse;min-width:100%"><thead><tr>'+th+'</tr></thead><tbody>'+body+'</tbody></table></div>'
-    +'<div style="font-size:9px;color:var(--muted);margin-top:6px;line-height:1.6">'+t('各KPIに「目標」行と「実績」行。実績下段＝差異(実績−目標)。緑=達成/黄=注意/赤=未達。1〜6月=Excel取込／7月〜=月次進捗のライブ値。'+t('「PL」の印＝その数字が会計PLの確定値（1〜6月のExcel値と手入力には付かない）。「速報（アプリ）」行＝アプリの日次実績。下段はPL−速報（確定でどれだけ動いたか）。売上の「昨年」行＝2025年の確定PL（消費税を除いて当年と定義をそろえた額）。下段は昨対。Aiea・Marujuuは前年データがありません。','')+(canEd?'数値をタップで編集（✎＝手編集済）。':''),'Target & Actual rows per KPI; below actual = difference. Jan–Jun = Excel import; Jul+ = live Monthly.'+(canEd?' Tap a value to edit.':''))+'</div></div>';
+    +'<div style="font-size:9px;color:var(--muted);margin-top:6px;line-height:1.6">'+t('各KPIに「目標」行と「実績」行。実績下段＝差異(実績−目標)。緑=達成/黄=注意/赤=未達。1〜6月=Excel取込／7月〜=月次進捗のライブ値。7月からの目標は KPI設定の目標（売上・客数・客単価は予算）で、KPI設定で直します。'+t('「PL」の印＝その数字が会計PLの確定値（1〜6月のExcel値と手入力には付かない）。「速報（アプリ）」行＝アプリの日次実績。下段はPL−速報（確定でどれだけ動いたか）。売上の「昨年」行＝2025年の確定PL（消費税を除いて当年と定義をそろえた額）。下段は昨対。Aiea・Marujuuは前年データがありません。','')+(canEd?'数値をタップで編集（✎＝手編集済）。':''),'Target & Actual rows per KPI; below actual = difference. Jan–Jun = Excel import; Jul+ = live Monthly. From July, targets are the KPI settings targets (sales, guests and spend per guest come from the budget); change them in KPI settings.'+(canEd?' Tap a value to edit.':''))+'</div></div>';
 }
 function renderMeetingReview(){
   var ym0=budgetYM(); var ym=ym0.y+'-'+String(ym0.m).padStart(2,'0');
@@ -49376,11 +49403,12 @@ function empWorksAt(e, storeId) { return empStoresOf(e).indexOf(storeId) >= 0; }
    ・'unknown' … 所属が空・店舗マスターに無い店。外さない（確認対象）
    ・'store'   … 店舗所属 → 今までどおり
    データ（スキル・評価・履歴）は消さない。中間の画面だけで外す */
-var EMP_HQ_STORE = { 'OFFICE':1, 'office':1, 'Office':1, '本部':1, 'HQ':1, 'hq':1, '---':1 };
+/* 大文字・小文字は見ない（サーバーの wr_exp_hq_store と同じ：lower(btrim(所属)) が office・本部・hq・---。Claude のルーティン #182 の P3） */
+var EMP_HQ_STORE = { 'office':1, '本部':1, 'hq':1, '---':1 };
 function empHqState(e) {
   if (!e) return 'unknown';
   var v = (e.store == null) ? '' : String(e.store).trim();
-  if (EMP_HQ_STORE[v]) return 'hq';
+  if (EMP_HQ_STORE[v.toLowerCase()]) return 'hq';
   if (!v) return 'unknown';
   if (v === 'ALL') return 'all';
   var ok = false; try { ok = (getStoresAll() || []).some(function (s) { return s.id === v; }); } catch (err) { }
@@ -111932,7 +111960,8 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     done_old:['サーバーが前の版なので、前の読み方（申請した日で 2 か月前まで・1,000 件）で出しています。古い申請を今月処理したものは出ないことがあります（Moto さんに知らせてください）','The server is an earlier version, so this uses the earlier way (requests from the last 2 months, up to 1,000). Older requests processed this month may be missing (tell Moto)'],
     /* v1184：経費の申請の権限（G2 より下の人は GM・CEO が人ごとに決める） */
     no_exp_right:['この申請を出す権限がありません（GM・CEO が経費の申請の権限を変えたかもしれません。サーバーで確かめました）。出せるものを読み直しました','You may not send this request (the GM or CEO may have changed your expense rights; checked by the server). What you can send was reloaded'],
-    grant_old:['経費の申請の権限の SQL がまだ入っていません（deploy/three-fixes-v1184 の手順・Moto さんに知らせてください）','The SQL for expense rights is not in yet (deploy/three-fixes-v1184; tell Moto)']
+    grant_old:['経費の申請の権限の SQL がまだ入っていません（deploy/three-fixes-v1184 の手順・Moto さんに知らせてください）','The SQL for expense rights is not in yet (deploy/three-fixes-v1184; tell Moto)'],
+    not_crew:['従業員マスターでは事務Crew ではないので、事務Crew と確かめられません（役割・肩書きを確かめてください）。読み直しました','This person is not office crew in the employee master, so you cannot confirm them as office crew (check the role / title). Reloaded']
   };
   function errText(code, status){
     if (Object.prototype.hasOwnProperty.call(ERR, code)) return T(ERR[code][0], ERR[code][1]);
@@ -111997,6 +112026,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       S.s2 = !!me.s2; S.s2At = me.s2_at || ''; S.s2By = me.s2_by || ''; S.fn = Number(me.fn) || 0; S.sql = Number(me.sql) || 0;
       S.expKinds = Array.isArray(me.exp_kinds) ? me.exp_kinds.filter(function(k){ return KINDS.indexOf(k) >= 0; }) : null;   /* v1164：出せる経費の種類（サーバーが決める） */
       S.expHq = me.exp_hq === true; S.expGrants = me.exp_grants === true;   /* v1184：本部（---）で出せるか・人ごとの権限の SQL があるか */
+      S.expBase = typeof me.exp_base === 'string' ? me.exp_base : '';   /* v1184：crew_wait＝従業員マスターでは事務Crew・GM・CEO の確かめ待ち */
       EXPR.at = Date.now();
       setLiveSeen(S.live, me.settings_at, S.s2);
       if (S.live) legacyAuto();
@@ -112230,14 +112260,15 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   /* ---------------------------------------------------------------- v1184：経費の申請の権限（G2 より下の人・GM・CEO が人ごとに決める）
      仕様：docs/THREE_FIXES_V1184_JA.md の 3。決まりと確かめはサーバー（wr_exp_kinds・送るたびに確かめる）。この画面は見せて変えるだけ。
      事務Crew は初期値で ON（ガソリン代・立替経費）・経理（G2 より下）は立替経費だけ・ほかの G1 は OFF。明示の ON／OFF は初期値で戻らない。 */
-  var GR_BASE = { office_crew:['事務Crew','Office crew'], office:['経理','Accounting'], g1:['G1','G1'] };
+  var GR_BASE = { office_crew:['事務Crew','Office crew'], crew_wait:['事務Crew（確かめ待ち）','Office crew (to confirm)'], office:['経理','Accounting'], g1:['G1','G1'] };
   var GR_KIND = { mileage:['ガソリン代','Mileage'], reimburse:['立替経費（建て替え経費）','Reimbursement'] };
+  var GR_LOGK = { mileage:GR_KIND.mileage, reimburse:GR_KIND.reimburse, crew:['事務Crew の確かめ','Office crew confirmation'] };
   function grantsCard(me){
     if (!me || (me.role !== 'ceo' && me.role !== 'gm')) return '';
     var old = !(S.fn >= 12);
     return '<div class="card" id="wr-grants-card" style="margin-bottom:10px;display:flex;align-items:center;gap:10px;flex-wrap:wrap"><div style="flex:1;min-width:220px;font-size:12px;line-height:1.6"><b><i class="ti ti-gas-station"></i> ' + T('経費の申請の権限（G2 より下の人）','Expense rights (below G2)') + '</b><br><span style="color:var(--muted)">'
       + (old ? T('申請のサーバー（work-requests）が前の版です。v1184 の 1 ファイルを入れると、ここで人ごとに決められます（Moto さんに知らせてください）','The requests server (work-requests) is an earlier version. With the v1184 single file you can set this per person here (tell Moto)')
-        : T('事務Crew は初期値でガソリン代・立替経費とも出せます。ほかの G1 は初期値では出せません。人ごとに ON／OFF を決められます（G2 以上は 3 種とも出せるので対象外）。','Office crew can send mileage and reimbursement by default; other G1 cannot. You can turn each on or off per person (G2 and above can send all three and are not listed).'))
+        : T('事務Crew は初期値でガソリン代・立替経費とも出せます（従業員マスターだけで事務Crew の人は、ここで「事務Crew と確かめる」まで出せません）。ほかの G1 は初期値では出せません。人ごとに ON／OFF を決められます（G2 以上は 3 種とも出せるので対象外）。','Office crew can send mileage and reimbursement by default (people who are office crew only in the employee master need “Confirm as office crew” here first); other G1 cannot. You can turn each on or off per person (G2 and above can send all three and are not listed).'))
       + '</span></div>' + (old ? '' : '<button class="btn btn-secondary btn-sm" onclick="wrExpGrants()"><i class="ti ti-adjustments"></i> ' + T('人ごとに見る・変える','View / change per person') + '</button>') + '</div>';
   }
   W.wrExpGrants = function(){
@@ -112259,14 +112290,14 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   function drawGrants(keepFocus){
     var el = document.getElementById('wr-grants'), eg = S.eg; if (!el || !eg) return;
     var h = '<div style="font-size:15px;font-weight:700">' + T('経費の申請の権限（G2 より下の人）','Expense rights (below G2)') + '</div>'
-      + '<div style="font-size:11.5px;line-height:1.7;margin-top:4px;color:var(--muted)">' + T('事務Crew（従業員マスターの役割・肩書き）は初期値でガソリン代・立替経費とも ON、経理は立替経費だけ、ほかの G1 は OFF。「ON」「OFF」を選ぶとその人だけ変わり、初期値が変わっても戻りません。「初期値」に戻すこともできます。送るたびにサーバーが確かめるので、取り消すと開いている画面・ほかの端末でも次に送るときから出せません（出した申請・記録は残ります）。承認や経理の権限は変わりません。事前経費は G2 以上だけ。','Office crew (employee master role / title) can send mileage and reimbursement by default, accounting reimbursement only, other G1 nothing. “On” / “Off” applies to that person only and is kept even if the default changes; you can go back to “Default”. The server checks every send, so a removal applies from the next send on any screen or device (sent requests and records stay). Approval and accounting rights do not change. Pre-approval stays G2+.') + '</div>';
+      + '<div style="font-size:11.5px;line-height:1.7;margin-top:4px;color:var(--muted)">' + T('事務Crew は初期値でガソリン代・立替経費とも ON、経理は立替経費だけ、ほかの G1 は OFF。従業員マスター（役割・肩書き）は公開の鍵でも書けるので、従業員マスターだけで事務Crew の人は「事務Crew と確かめる」を押すまで OFF です（事務Crew のメールのアカウントの人はそのまま）。確かめたあと従業員マスターで事務Crew でなくなると OFF に戻ります。「ON」「OFF」を選ぶとその人だけ変わり、初期値が変わっても戻りません。「初期値」に戻すこともできます。送るたびにサーバーが確かめるので、取り消すと開いている画面・ほかの端末でも次に送るときから出せません（出した申請・記録は残ります）。承認や経理の権限は変わりません。事前経費は G2 以上だけ。','Office crew can send mileage and reimbursement by default, accounting reimbursement only, other G1 nothing. The employee master (role / title) can also be written with the public key, so people who are office crew only in the employee master stay off until you press “Confirm as office crew” (office crew email accounts are unchanged); if they stop being office crew in the master, they go back to off. “On” / “Off” applies to that person only and is kept even if the default changes; you can go back to “Default”. The server checks every send, so a removal applies from the next send on any screen or device (sent requests and records stay). Approval and accounting rights do not change. Pre-approval stays G2+.') + '</div>';
     if (eg.err) { el.innerHTML = h + '<div class="alert alert-danger" style="margin-top:8px">' + esc(eg.err) + '</div><button class="btn btn-secondary btn-sm" style="margin-top:6px" onclick="wrExpGrants()">' + T('もう一度','Retry') + '</button>'; return; }
     var d = eg.d; if (!d) { el.innerHTML = h + '<div style="margin-top:8px;color:var(--muted);font-size:12px">' + T('読み込み中…','Loading…') + '</div>'; return; }
     var q = eg.q.trim().toLowerCase();
     var rows = (d.rows || []).filter(function(r){ return (!eg.only || r.base === eg.only) && (!q || String(r.name || '').toLowerCase().indexOf(q) >= 0); });
     var cnt = {}; (d.rows || []).forEach(function(r){ cnt[r.base] = (cnt[r.base] || 0) + 1; });
     h += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;align-items:center"><input id="wr-eg-q" type="search" class="form-input" style="flex:1;min-width:140px;max-width:260px;font-size:13px" placeholder="' + esc(T('名前で探す','Search by name')) + '" value="' + esc(eg.q) + '" oninput="wrEgFilter(\'q\',this.value)">'
-      + '<select onchange="wrEgFilter(\'only\',this.value)"><option value="">' + T('全員','Everyone') + ' (' + (d.rows || []).length + ')</option>' + ['office_crew','office','g1'].map(function(b){ return '<option value="' + b + '"' + (eg.only === b ? ' selected' : '') + '>' + T(GR_BASE[b][0], GR_BASE[b][1]) + ' (' + (cnt[b] || 0) + ')</option>'; }).join('') + '</select></div>';
+      + '<select onchange="wrEgFilter(\'only\',this.value)"><option value="">' + T('全員','Everyone') + ' (' + (d.rows || []).length + ')</option>' + ['crew_wait','office_crew','office','g1'].map(function(b){ return '<option value="' + b + '"' + (eg.only === b ? ' selected' : '') + '>' + T(GR_BASE[b][0], GR_BASE[b][1]) + ' (' + (cnt[b] || 0) + ')</option>'; }).join('') + '</select></div>';
     if (!rows.length) h += '<div style="font-size:12px;color:var(--muted);margin-top:10px">' + T('当てはまる人はいません','Nobody matches') + '</div>';
     h += rows.map(function(r){
       var c = egCur(r), dirty = egDirty(r), busy = !!eg.busy[r.emp];
@@ -112279,6 +112310,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
         + '<span style="font-size:11px;color:var(--muted)">' + esc(r.title || '') + (r.title ? ' · ' : '') + (r.hq ? T('本部','HQ') : (r.store ? esc(storeName(r.store)) : T('所属なし','no store'))) + '</span></div>'
         + '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:6px;align-items:center">' + sel('mileage') + sel('reimburse')
         + '<button class="btn btn-primary btn-sm" data-a="' + esc(r.emp) + '" data-eg-save="1"' + (!dirty || busy ? ' disabled' : '') + ' onclick="wrEgSave(this.dataset.a)">' + (busy ? T('保存中…','Saving…') : T('保存','Save')) + '</button></div>'
+        + egCrewLine(r, busy)
         + (r.updated_at ? '<div style="font-size:10.5px;color:var(--muted);margin-top:4px">' + T('最後に変えた人：','Last changed by ') + esc(r.updated_by || '') + ' · ' + esc(hstTime(r.updated_at)) + '</div>' : '') + '</div>';
     }).join('');
     var log = d.log || [];
@@ -112286,13 +112318,41 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     if (!log.length) h += '<div style="font-size:11.5px;color:var(--muted);margin-top:6px">' + T('まだありません','None yet') + '</div>';
     else h += '<div style="overflow-x:auto;margin-top:6px"><table class="tbl" style="width:100%;font-size:11px"><thead><tr><th>' + T('日時（ハワイ）','When (HST)') + '</th><th>' + T('変えた人','By') + '</th><th>' + T('対象','Person') + '</th><th>' + T('項目','Item') + '</th><th>' + T('前 → 後','Before → after') + '</th></tr></thead><tbody>'
       + log.map(function(x){ var sv = function(s, e){ return (s === true ? 'ON' : s === false ? 'OFF' : T('初期値','Default')) + '（' + (e ? T('出せる','can') : T('出せない','cannot')) + '）'; };
-        return '<tr data-eg-log="' + esc(String(x.id)) + '"><td style="white-space:nowrap">' + esc(hstTime(x.at)) + '</td><td>' + esc(x.by_name || x.by_emp || '') + '</td><td>' + esc(x.emp_name || x.emp) + '</td><td>' + T(GR_KIND[x.kind] ? GR_KIND[x.kind][0] : x.kind, GR_KIND[x.kind] ? GR_KIND[x.kind][1] : x.kind) + '</td><td>' + sv(x.before_set, x.before_eff) + ' → ' + sv(x.after_set, x.after_eff) + (x.note ? '<div style="color:var(--muted)">' + esc(x.note) + '</div>' : '') + '</td></tr>'; }).join('')
+        var cw = function(s, e){ return (s === true ? T('確かめた','Confirmed') : T('確かめていない','Not confirmed')) + '（' + (e ? T('事務Crew','office crew') : T('事務Crew ではない','not office crew')) + '）'; };
+        return '<tr data-eg-log="' + esc(String(x.id)) + '"><td style="white-space:nowrap">' + esc(hstTime(x.at)) + '</td><td>' + esc(x.by_name || x.by_emp || '') + '</td><td>' + esc(x.emp_name || x.emp) + '</td><td>' + T(GR_LOGK[x.kind] ? GR_LOGK[x.kind][0] : x.kind, GR_LOGK[x.kind] ? GR_LOGK[x.kind][1] : x.kind) + '</td><td>' + (x.kind === 'crew' ? cw(x.before_set, x.before_eff) + ' → ' + cw(x.after_set, x.after_eff) : sv(x.before_set, x.before_eff) + ' → ' + sv(x.after_set, x.after_eff)) + (x.note ? '<div style="color:var(--muted)">' + esc(x.note) + '</div>' : '') + '</td></tr>'; }).join('')
       + '</tbody></table></div>';
     h += '</details><div style="display:flex;gap:6px;margin-top:12px"><button class="btn btn-secondary btn-sm" onclick="wrExpGrants()"><i class="ti ti-refresh"></i> ' + T('最新','Latest') + '</button><button class="btn btn-secondary btn-sm" onclick="closeModalDirect()">' + T('閉じる','Close') + '</button></div>';
     var pos = null, fe = document.activeElement; if (keepFocus && fe && fe.id === 'wr-eg-q') pos = fe.selectionStart;
     el.innerHTML = h;
     if (pos != null) { var ni = document.getElementById('wr-eg-q'); if (ni) { ni.focus(); try { ni.setSelectionRange(pos, pos); } catch(e) {} } }
   }
+  /* v1184（Codex #182 の P1）：事務Crew の確かめ。従業員マスターだけでは事務Crew にしない（GM・CEO が押す）。
+     確かめたあとも、従業員マスターで事務Crew でなくなれば初期値は OFF（サーバーが確かめと今の従業員マスターの狭いほうで決める） */
+  function egCrewLine(r, busy){
+    if (!r.crew_master && !r.crew_ok) return '';
+    if (r.login_role === 'office_crew') return '<div style="font-size:10.5px;color:var(--muted);margin-top:4px">' + T('事務Crew のメールのアカウント（確かめは要りません）','Office crew email account (no confirmation needed)') + '</div>';
+    var b = function(on, label){ return '<button class="btn btn-' + (on ? 'primary' : 'secondary') + ' btn-sm" data-a="' + esc(r.emp) + '" data-eg-crew="' + (on ? 'on' : 'off') + '"' + (busy ? ' disabled' : '') + ' onclick="wrEgCrew(this.dataset.a,' + (on ? 'true' : 'false') + ')">' + label + '</button>'; };
+    if (r.crew_ok && r.crew_master) return '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:11px;margin-top:6px"><span class="tag tag-green" style="font-size:9px">' + T('事務Crew と確かめ済み','Confirmed office crew') + '</span>' + b(false, T('確かめを外す','Remove confirmation')) + '</div>';
+    if (r.crew_ok) return '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:11px;margin-top:6px;color:var(--muted)">' + T('事務Crew と確かめましたが、今の従業員マスターでは事務Crew ではありません（初期値は OFF）','Confirmed as office crew, but not office crew in the employee master now (default off)') + b(false, T('確かめを外す','Remove confirmation')) + '</div>';
+    return '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:11px;margin-top:6px"><span class="tag tag-yellow" style="font-size:9px">' + T('確かめ待ち','To confirm') + '</span><span style="color:var(--muted);flex:1;min-width:180px">' + T('従業員マスターでは事務Crew です。本人に間違いなければ確かめてください（確かめるまで初期値は OFF）','Office crew in the employee master. Confirm if this is right (default off until then)') + '</span>' + b(true, T('事務Crew と確かめる','Confirm as office crew')) + '</div>';
+  }
+  W.wrEgCrew = function(emp, on){
+    var eg = S.eg; if (!eg || !eg.d || eg.busy[emp]) return;
+    var r = (eg.d.rows || []).find(function(x){ return x.emp === emp; }); if (!r) return;
+    if (!on && !confirm(T((r.name || emp) + ' さんの事務Crew の確かめを外しますか？（初期値は OFF になります。人ごとに ON にした項目はそのまま）','Remove the office crew confirmation for ' + (r.name || emp) + '? (Defaults become off; items set to On stay on)'))) return;
+    eg.busy[emp] = true; drawGrants();
+    /* 保存済みの ON／OFF はそのまま送る（選びかけの変更は残す） */
+    api({ action:'exp_grant_save', target:emp, mileage:r.mileage.set, reimburse:r.reimburse.set, crew:(on ? true : null), expect_rev:Number(r.rev) || 0 }).then(function(){
+      if (S.eg !== eg) return;
+      delete eg.busy[emp];
+      showToast((on ? T('事務Crew と確かめました：','Confirmed as office crew: ') : T('確かめを外しました：','Confirmation removed: ')) + (r.name || emp), 'success');
+      egLoad();
+    }, function(e){
+      if (S.eg !== eg) return;
+      delete eg.busy[emp]; showToast(String(e.message || e), 'error');
+      if (e.code === 'conflict' || e.code === 'not_found' || e.code === 'bad_value' || e.code === 'not_crew') egLoad(); else drawGrants();
+    });
+  };
   W.wrEgSave = function(emp){
     var eg = S.eg; if (!eg || !eg.d || eg.busy[emp]) return;
     var r = (eg.d.rows || []).find(function(x){ return x.emp === emp; }); if (!r || !egDirty(r)) return;
@@ -113272,8 +113332,9 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       EXPR.busy = false; EXPR.at = Date.now();
       if (!me || g !== S.gen || authKey() !== k) return;
       var ks = Array.isArray(me.exp_kinds) ? me.exp_kinds.filter(function(x){ return KINDS.indexOf(x) >= 0; }) : null;
-      var ch = JSON.stringify(ks) !== JSON.stringify(S.expKinds) || (me.exp_hq === true) !== S.expHq;
-      S.expKinds = ks; S.expHq = me.exp_hq === true; S.expGrants = me.exp_grants === true;
+      var eb = typeof me.exp_base === 'string' ? me.exp_base : '';
+      var ch = JSON.stringify(ks) !== JSON.stringify(S.expKinds) || (me.exp_hq === true) !== S.expHq || eb !== (S.expBase || '');
+      S.expKinds = ks; S.expHq = me.exp_hq === true; S.expGrants = me.exp_grants === true; S.expBase = eb;
       if (ch) paintMyExp();
     }, function(){ EXPR.busy = false; EXPR.at = Date.now(); });
   }
@@ -113291,7 +113352,9 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     if (!S.me) return S.load === 'err' ? '<div style="font-size:12px">' + esc(S.err) + '</div>' : '<div style="font-size:12px;color:var(--muted)">' + T('経費の申請を読み込み中…','Loading expense requests…') + '</div>';
     if (!S.live) return '';
     var ks = expKindsNow();
-    if (!ks.length) return '';
+    /* v1184（Codex #182 の P1）：従業員マスターだけで事務Crew の人は、GM・CEO が確かめるまで出せない。そう知らせる（出せるボタンは出さない） */
+    if (!ks.length) return S.expBase === 'crew_wait' ? '<div class="card-title"><i class="ti ti-files"></i>' + T('経費の申請','Expense requests') + '</div><div data-wr-crew-wait="1" style="font-size:12px;line-height:1.6;color:var(--muted)">'
+      + T('事務Crew のガソリン代・立替経費は、GM・CEO が「経費の申請の権限」で事務Crew と確かめると出せるようになります。','Office crew can send mileage and reimbursement once the GM or CEO confirms them as office crew in “Expense rights”.') + '</div>' : '';
     var k = authKey(); if (MY.key !== k) { MY = { rows:null, err:'', busy:false, key:k, at:0, req:0 }; }
     /* 開くたびに新しくする（ほかの端末の承認・経理の確認・精算を出す）。読み終わるまでは前の一覧のまま。
        失敗したあとは 30 秒待つ（「もう一度」を押せばすぐ） */

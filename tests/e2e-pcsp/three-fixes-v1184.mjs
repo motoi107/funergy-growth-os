@@ -1,6 +1,7 @@
 // v1184（Moto さん 11/16 の依頼 1・2）を本物のブラウザ（Chromium）と模擬サーバー（合成データ）で確かめる。本番にはつながない。
 //   1. 予実 › KPI設定 で「使う」を外す・足すと、会議タブ（タイル・一覧・年間の表）が同じになる。ON で実績の無い KPI は「—」。全部 OFF は「表示するKPIが設定されていません」。
 //      ほかの端末（ログインしたまま）でも会議タブを開くとクラウドの設定になる（古い写しで戻さない）。読めないときは帯で知らせる。
+//      年間の表の 7 月からの目標も KPI設定の目標（前に会議タブで手入力した目標は使わない・Codex #182 の P2）。
 //   2. 本部所属（従業員マスターの所属＝Office）の人は店舗のスキルマトリクス（店舗別・従業員別・ポジション別）に出ない。全店・未設定の人は残して一行で知らせる。
 // この台本が模擬サーバー（tests/perf/server.mjs）を立てる。合成データ（DATA_FILE・gen-data.mjs の出力）の写しを作り、何人かの所属だけを変える。
 // 使い方：VENDOR_DIR=/tmp/e2e/vendor CERT_DIR=/tmp/e2e/cert DATA_FILE=/tmp/pcsp/data.json node tests/e2e-pcsp/three-fixes-v1184.mjs [結果の JSON]
@@ -143,6 +144,27 @@ out.aAll = await A.page.evaluate(() => ({ f01: !!document.querySelector('[data-m
 ok('1-11 全店の一覧：F01 は「表示するKPIが設定されていません」・ほかの店は KPI 名の一覧', !out.aAll.f01 && out.aAll.nokpi >= 1 && out.aAll.lists >= 1, out.aAll);
 /* 戻す（ほかの試験のため・全部 ON に） */
 await setUse(A.page, 'F01', Object.fromEntries(ALLK.map(k => [k, true])));
+
+/* ===== Codex #182 の P2：年間の表の 7 月からの目標は KPI設定の目標（前に会議タブで手入力した目標は使わない・消さない） */
+const ymNow = await A.page.evaluate(() => curYm());
+await A.page.evaluate(ym => { const m = parseInt(ym.slice(5), 10), e = getKgiEdits(); e.F01 = e.F01 || {}; e.F01.fc = e.F01.fc || {}; e.F01.fc['t' + m] = 99; lsSet('meeting_kgi_edits', e); }, ymNow);
+await A.page.evaluate(s => { window._kpiTab = 'store'; window._kpiStore = s; window._k2Ym = null; go('kpi_master'); }, 'F01'); await sleep(1200);
+await A.page.fill('#k2t-foodCost', '30');
+await A.page.evaluate(() => { const b = [...document.querySelectorAll('button')].find(x => /k2SaveMonth/.test(x.getAttribute('onclick') || '')); b.click(); }); await sleep(2500);
+out.a3 = await meeting(A.page, 'F01');
+out.a3m = await A.page.evaluate(ym => {
+  const m = parseInt(ym.slice(5), 10), tb = document.querySelector('[data-meet-matrix] table'); if (!tb) return null;
+  const tr = [...tb.querySelectorAll('tr')].find(r => { const c = r.querySelector('td'); return c && /原価率/.test(c.innerText) && /目標/.test(c.innerText); }); if (!tr) return null;
+  const td = tr.querySelectorAll('td')[m];
+  return { text: td.innerText.trim(), cfg: !!td.querySelector('[data-meet-tgt-cfg]'), hand: /openMeetKgiEdit/.test(td.innerHTML) };
+}, ymNow);
+ok('1-13 KPI設定の原価率の目標 30%・前の手入力 99%：会議のタイルも年間の表も 30%（手入力を使わない）', /目標 30(\.0)?%/.test(out.a3.tileAct.fc || '') && out.a3m && out.a3m.text === '30%' && out.a3m.cfg && !out.a3m.hand, { tile: out.a3.tileAct.fc, cell: out.a3m });
+await A.page.evaluate(ym => { const m = parseInt(ym.slice(5), 10), tb = document.querySelector('[data-meet-matrix] table');
+  const tr = [...tb.querySelectorAll('tr')].find(r => { const c = r.querySelector('td'); return c && /原価率/.test(c.innerText) && /目標/.test(c.innerText); }); tr.querySelectorAll('td')[m].querySelector('[data-meet-tgt-cfg]').click(); }, ymNow);
+await sleep(500);
+out.a3modal = await A.page.evaluate(() => ({ info: !!document.querySelector('[data-meet-tgt-info]'), old: (document.querySelector('[data-meet-tgt-old]') || {}).innerText || '', kept: (getKgiEdits().F01 || {}).fc }));
+ok('1-14 目標のマスを押すと KPI設定で直す案内と前の手入力（99・使っていない・消していない）', out.a3modal.info && /99/.test(out.a3modal.old) && /使っていません/.test(out.a3modal.old) && Object.values(out.a3modal.kept || {}).includes(99), out.a3modal);
+await A.page.evaluate(() => { try { closeModalDirect(); } catch (e) { } });
 
 /* ===== スマホ 390（日本語・英語） */
 for (const lang of ['ja-JP', 'en-US']) {

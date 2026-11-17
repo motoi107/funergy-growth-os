@@ -1,5 +1,7 @@
 // v1184（Moto さん 11/16 の依頼 3）：経費の申請の権限を、本物のブラウザ（Chrome）と本物の work-requests（SQL・handler・PGlite）で確かめる。合成データだけ。
-//   ・本部所属の事務Crew（PIN だけ）がマイページからガソリン代・立替経費を出せる（店舗＝本部）。事前経費は出せない。承認はできない
+//   ・本部所属の事務Crew（従業員マスターだけ・PIN）は、GM・CEO が「事務Crew と確かめる」まで出せない（確かめ待ちの案内）。Codex #182 の P1
+//     確かめたら、マイページからガソリン代・立替経費を出せる（店舗＝本部）。事前経費は出せない。承認はできない
+//   ・G1 の従業員マスター（役割・肩書き）を事務Crew に書き換えても（公開の鍵で書ける）、確かめるまで出せない
 //   ・G1（クルー）は初期値で出せない。GM が「経費の申請の権限」で ON にすると出せる（変更の記録）。CEO も変えられる。経理・AM は画面が出ない
 //   ・GM が OFF にすると、開いたままの用紙からの送信もサーバーが断る（no_exp_right）。出せるものを読み直す
 //   ・二度押し（同じ鍵）でも 1 件だけ。種類を書き換えた直接の送信はサーバーが断る
@@ -69,9 +71,42 @@ async function send(D, twice) {
 }
 const rowsOf = async who => W.q(`select code, kind, status, store_id, requester_emp from public.wr_requests where requester_emp = $1 order by id`, [who]);
 
-// ---------------------------------------------------------------- 1. 本部所属の事務Crew（PIN だけ）
+const apiAs = (D, body) => D.page.evaluate(async b => {
+  const r = await fetch(SUPABASE_URL + '/functions/v1/work-requests', { method: 'POST', headers: { apikey: SUPABASE_ANON, Authorization: 'Bearer ' + SUPABASE_ANON, 'Content-Type': 'application/json' }, body: JSON.stringify(Object.assign({}, b, { pin_session: window._hwSession })) });
+  return { st: r.status, j: await r.json().catch(() => null) };
+}, body);
+const openGrants = async D => {
+  await D.page.evaluate(() => wrExpGrants());
+  await D.page.waitForFunction(() => document.querySelectorAll('#wr-grants [data-eg]').length > 0, null, { timeout: 15000 });
+  return D.page.evaluate(() => Object.fromEntries([...document.querySelectorAll('#wr-grants [data-eg]')].map(r => [r.getAttribute('data-eg'), r.innerText.replace(/\s+/g, ' ').slice(0, 260)])));
+};
+
+// ---------------------------------------------------------------- 0. 事務Crew（従業員マスターだけ・PIN）は GM・CEO の確かめ待ち（Codex #182 の P1）
 const OC = await device(390);
 await login(OC, 'OFFICE', 'Oda Office');
+const ocK0 = await cardKinds(OC);
+const ocWait = await OC.page.evaluate(() => { const c = document.getElementById('wr-myexp'); return !!c && c.style.display !== 'none' && !!c.querySelector('[data-wr-crew-wait]') && /確かめると出せる/.test(c.innerText); });
+ok('0-1 事務Crew（従業員マスターだけ・PIN）は確かめ待ち：ボタンは出ず「GM・CEO が確かめると出せる」の案内', ocK0.length === 0 && ocWait, { ocK0, ocWait });
+const oc0 = await apiAs(OC, { action: 'submit', kind: 'mileage', store_id: '---', client_key: 'k-oc0-' + Date.now(), payload: { date: '2026-11-16', purpose: '銀行・郵便', origin: 'Office', destination: 'Bank', one_way_miles: 3 } });
+ok('0-2 確かめ待ちのあいだは API を直接呼んでも断る（no_exp_right）', oc0.st === 403 && oc0.j && oc0.j.error === 'no_exp_right' && (await rowsOf('e15')).length === 0, oc0);
+const GM = await device(1440);
+await login(GM, 'OFFICE', 'Gabe Gm');
+await GM.page.evaluate(() => { try { window._wcTab = 'wr'; } catch (e) { } go('workcenter'); }); await sleep(1500);
+const L0 = await openGrants(GM);
+ok('0-3 GM の一覧：Oda Office は「事務Crew（確かめ待ち）」で出せない・「事務Crew と確かめる」のボタン', /確かめ待ち/.test(L0.e15 || '') && /出せない/.test(L0.e15 || '') && !/出せる/.test(L0.e15 || '')
+  && await GM.page.evaluate(() => !!document.querySelector('#wr-grants [data-eg="e15"] [data-eg-crew="on"]')), L0.e15);
+await GM.page.evaluate(() => document.querySelector('#wr-grants [data-eg="e15"] [data-eg-crew="on"]').click());
+await GM.page.waitForFunction(() => { const r = document.querySelector('#wr-grants [data-eg="e15"]'); return r && /確かめ済み/.test(r.innerText); }, null, { timeout: 15000 }).catch(() => {});
+const g15c = await W.q(`select crew, mileage, reimburse, updated_emp from public.wr_exp_grants where emp_id = 'e15'`);
+const log15c = await W.q(`select kind, before_eff, after_eff, by_emp from public.wr_exp_grant_log where emp_id = 'e15' order by id`);
+const L1 = await GM.page.evaluate(() => (document.querySelector('#wr-grants [data-eg="e15"]') || {}).innerText || '');
+ok('0-4 GM が「事務Crew と確かめる」：クラウドに確かめ（ON／OFF は初期値のまま）と変更の記録（ガソリン代・立替経費・確かめの 3 行）', g15c[0] && g15c[0].crew === true && g15c[0].mileage === null && g15c[0].reimburse === null && g15c[0].updated_emp === 'e2'
+  && JSON.stringify(log15c.map(x => x.kind).sort()) === JSON.stringify(['crew', 'mileage', 'reimburse']) && log15c.every(x => x.after_eff === true && x.before_eff === false && x.by_emp === 'e2'), { g15c, log15c });
+ok('0-5 GM の一覧も「確かめ済み」・出せる', /確かめ済み/.test(L1) && /出せる/.test(L1), L1.replace(/\s+/g, ' ').slice(0, 200));
+await GM.page.evaluate(() => { try { closeModalDirect(); } catch (e) { } });
+
+// ---------------------------------------------------------------- 1. 確かめた本部所属の事務Crew（PIN だけ）
+await login(OC, 'OFFICE', 'Oda Office');   /* ログインし直す（カードの読み直しは 60 秒ごと） */
 const ocKinds = await cardKinds(OC);
 ok('1-1 事務Crew（本部所属・PIN）のマイページ：ガソリン代・立替経費のボタン（事前経費は出ない）', JSON.stringify(ocKinds.slice().sort()) === JSON.stringify(['mileage', 'reimburse']), ocKinds);
 const f1 = await openForm(OC, 'reimburse');
@@ -111,10 +146,18 @@ const g1api = await G1.page.evaluate(async () => {
   return { st: r.status, j: await r.json().catch(() => null) };
 });
 ok('2-2 G1 が API を直接呼んでも断る（no_exp_right）', g1api.st === 403 && g1api.j && g1api.j.error === 'no_exp_right', g1api);
+/* Codex #182 の P1：従業員マスター（役割・肩書き）は公開の鍵で書ける。G1 が自分を事務Crew に書き換えても、GM・CEO が確かめるまで出せない */
+await W.q(`update public.employees set role = 'office_crew', title = 'Office Crew', data = data || '{"role":"office_crew","title":"Office Crew"}'::jsonb where id = 'e10'`);
+const spoofWho = await apiAs(G1, { action: 'whoami' });
+const spoofSub = await apiAs(G1, { action: 'submit', kind: 'mileage', store_id: 'F01', client_key: 'k-spoof-' + Date.now(), payload: { date: '2026-11-16', purpose: '銀行・郵便', origin: 'Store A', destination: 'Bank', one_way_miles: 3 } });
+ok('2-3 G1 が従業員マスターで自分を事務Crew に書き換えても出せない（確かめ待ち・サーバーが断る）', spoofWho.j && Array.isArray(spoofWho.j.exp_kinds) && spoofWho.j.exp_kinds.length === 0 && spoofWho.j.exp_base === 'crew_wait'
+  && spoofSub.st === 403 && spoofSub.j && spoofSub.j.error === 'no_exp_right' && (await rowsOf('e10')).length === 0, { who: spoofWho.j && { k: spoofWho.j.exp_kinds, b: spoofWho.j.exp_base }, sub: spoofSub });
+const Lsp = await openGrants(GM);
+ok('2-4 GM の一覧には「確かめ待ち」で出る（GM が気づける）', /確かめ待ち/.test(Lsp.e10 || '') && /出せない/.test(Lsp.e10 || ''), Lsp.e10);
+await GM.page.evaluate(() => { try { closeModalDirect(); } catch (e) { } });
+await W.q(`update public.employees set role = 'crew', title = 'Crew', data = data || '{"role":"crew","title":"Crew"}'::jsonb where id = 'e10'`);   /* 元に戻す */
 
 // ---------------------------------------------------------------- 3. GM が人ごとに決める（PC 1440）
-const GM = await device(1440);
-await login(GM, 'OFFICE', 'Gabe Gm');
 await GM.page.evaluate(() => { try { window._wcTab = 'wr'; } catch (e) { } go('workcenter'); }); await sleep(1500);
 const hasCard = async D => D.page.evaluate(async () => { try { if (typeof wrRefresh === 'function') await wrRefresh(); } catch (e) { } await new Promise(r => setTimeout(r, 1200)); try { document.getElementById('main-content').innerHTML = renderWrTab(); } catch (e) { return 'err:' + e.message; } return !!document.getElementById('wr-grants-card'); });
 ok('3-1 GM：申請の画面に「経費の申請の権限」のカード', await hasCard(GM) === true);
@@ -122,7 +165,7 @@ await GM.page.evaluate(() => wrExpGrants());
 await GM.page.waitForFunction(() => document.querySelectorAll('#wr-grants [data-eg]').length > 0, null, { timeout: 15000 });
 const list = await GM.page.evaluate(() => [...document.querySelectorAll('#wr-grants [data-eg]')].map(r => ({ emp: r.getAttribute('data-eg'), t: r.innerText.replace(/\s+/g, ' ').slice(0, 140) })));
 const L = Object.fromEntries(list.map(x => [x.emp, x.t]));
-ok('3-2 一覧：事務Crew は初期値で ON・G1 は OFF（G2 以上・退職の人は出ない）', L.e15 && /出せる/.test(L.e15) && L.e10 && /出せない/.test(L.e10) && !L.e11 && !L.e12 && !L.e2, list);
+ok('3-2 一覧：確かめた事務Crew は初期値で ON・G1 は OFF（G2 以上・退職の人は出ない）', L.e15 && /出せる/.test(L.e15) && /確かめ済み/.test(L.e15) && L.e10 && /出せない/.test(L.e10) && !/確かめ/.test(L.e10) && !L.e11 && !L.e12 && !L.e2, list);
 /* Cam Crew（e10）のガソリン代を ON にして保存 */
 await GM.page.evaluate(() => { const s = document.querySelector('#wr-grants [data-eg="e10"] [data-eg-sel="mileage"]'); s.value = 'on'; s.dispatchEvent(new Event('change')); });
 await sleep(300);
@@ -181,6 +224,15 @@ await GMs.page.evaluate(() => wrExpGrants()); await GMs.page.waitForFunction(() 
 const sx = await GMs.page.evaluate(() => { const vw = document.documentElement.clientWidth, m = document.getElementById('wr-grants'); const r = m ? m.getBoundingClientRect() : null;
   return { doc: document.documentElement.scrollWidth - vw, box: m ? m.scrollWidth - m.clientWidth : -1, right: r ? Math.round(r.right) : -1, vw }; });
 ok('6-1 スマホ 390：権限の画面が横にはみ出さない（開く前より広げない・画面の中に収まる）', sx.doc <= doc0 && sx.box <= 1 && sx.right <= sx.vw, Object.assign({ doc0 }, sx));
+
+/* 確かめを外すと（確かめの画面で OK）、事務Crew の初期値は OFF に戻る（人ごとに OFF にした立替経費はそのまま） */
+await GM.page.evaluate(() => wrExpGrants()); await GM.page.waitForFunction(() => !!document.querySelector('#wr-grants [data-eg="e15"] [data-eg-crew="off"]'), null, { timeout: 15000 });
+await GM.page.evaluate(() => document.querySelector('#wr-grants [data-eg="e15"] [data-eg-crew="off"]').click());
+await GM.page.waitForFunction(() => { const r = document.querySelector('#wr-grants [data-eg="e15"]'); return r && /確かめ待ち/.test(r.innerText); }, null, { timeout: 15000 }).catch(() => {});
+const g15off = await W.q(`select crew, mileage, reimburse from public.wr_exp_grants where emp_id = 'e15'`);
+const offWho = await apiAs(OC, { action: 'whoami' });
+ok('7-1 確かめを外す（確かめの画面）：初期値は OFF に戻る（人ごとの OFF はそのまま）・記録が残る', g15off[0] && g15off[0].crew === null && g15off[0].reimburse === false && offWho.j && offWho.j.exp_kinds.length === 0 && offWho.j.exp_base === 'crew_wait'
+  && GM.toasts.some(x => x[0] === 'dialog' && /確かめを外しますか/.test(x[1])) && (await W.q(`select count(*)::int n from public.wr_exp_grant_log where emp_id = 'e15' and kind = 'crew'`))[0].n === 2, { g15off, k: offWho.j && offWho.j.exp_kinds });
 
 const errs = [OC, G1, GM, CEO, AC, AM, GMs].flatMap(d => d.errors);
 ok('pageerror 0', !errs.length, errs);

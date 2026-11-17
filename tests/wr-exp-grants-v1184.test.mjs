@@ -65,15 +65,30 @@ export async function setup({ grants = true } = {}) {
     const r = await row(target);
     return call(by, { action: 'exp_grant_save', target, mileage, reimburse, expect_rev: r ? r.rev : 0, ...extra });
   };
-  return { pg, db, call, submit, kinds, list, row, save, pay, key };
+  // GM・CEO が「事務Crew と確かめる」（保存済みの ON／OFF はそのまま）。Codex #182 の P1：従業員マスターだけでは事務Crew にしない
+  const crew = async (target, on = true, by = 'E2') => {
+    const r = await row(target);
+    return call(by, { action: 'exp_grant_save', target, mileage: r.mileage.set, reimburse: r.reimburse.set, crew: on ? true : null, expect_rev: r.rev });
+  };
+  // 公開の鍵（anon）で社員の表を書き換える（本番でも公開の鍵で書ける＝前から）
+  const asAnon = async sql => { await pg.exec('reset role; set role anon'); try { await pg.exec(sql); } finally { await pg.exec('reset role; set role service_role'); } };
+  return { pg, db, call, submit, kinds, list, row, save, crew, asAnon, pay, key };
 }
 
-test('v1184 office crew (by employee master role or title, PIN or email) can send mileage and reimbursement by default; other G1 nothing; G2+ unchanged', async () => {
+test('v1184 office crew can send mileage and reimbursement by default (email account, or GM/CEO confirmed + still office crew in the master); other G1 nothing; G2+ unchanged', async () => {
   const s = await setup();
   const want = { E1: ALL, E2: ALL, E3: ALL, E5: ALL, E6: ALL, E8: ALL,
-    E4: ['mileage', 'reimburse'], E12: ['mileage', 'reimburse'], E13: ['mileage', 'reimburse'], E14: ['mileage', 'reimburse'],
+    E4: ['mileage', 'reimburse'], E12: [], E13: [], E14: [],   // 事務Crew のメールのアカウント（E4）はそのまま・従業員マスターだけの事務Crew は確かめ待ち
     E9: [], E10: [], E16: ['reimburse'] };
   for (const [who, k] of Object.entries(want)) assert.deepEqual(await s.kinds(who), k, who + ' ' + NAME[who]);
+  for (const who of ['E12', 'E13', 'E14']) {
+    assert.equal((await s.call(who, { action: 'whoami' })).body.exp_base, 'crew_wait', who);
+    assert.equal((await s.crew(who)).status, 200, who);
+    assert.deepEqual(await s.kinds(who), ['mileage', 'reimburse'], who + ' after the GM confirmed');
+    assert.equal((await s.call(who, { action: 'whoami' })).body.exp_base, 'office_crew', who);
+  }
+  assert.equal((await s.call('E4', { action: 'whoami' })).body.exp_base, 'office_crew');
+  assert.equal((await s.call('E9', { action: 'whoami' })).body.exp_base, 'g1');
   // 名前では決めない：G1 の Crew の名前を事務Crew と同じにしても出せない
   await s.pg.exec(`reset role; update employees set name = 'Hana Hq' where id = 'E9'; set role service_role`);
   assert.deepEqual(await s.kinds('E9'), []);
@@ -81,6 +96,7 @@ test('v1184 office crew (by employee master role or title, PIN or email) can sen
 
 test('v1184 HQ office crew (PIN only) sends each kind from HQ; it shows in their own list and in the GM approval queue; no store is assigned; pre-approval is still refused', async () => {
   const s = await setup();
+  for (const who of ['E12', 'E13', 'E14']) assert.equal((await s.crew(who)).status, 200);
   const w = (await s.call('E12', { action: 'whoami' })).body;
   assert.equal(w.exp_hq, true); assert.equal(w.exp_grants, true); assert.equal(w.fn, 12);
   const a = await s.submit('E12', 'mileage', '---');
@@ -124,6 +140,7 @@ test('v1184 other G1: both, mileage only, reimbursement only, none; changing the
 
 test('v1184 an explicit OFF for office crew stays OFF (not restored by the default); back to default only when the GM picks it', async () => {
   const s = await setup();
+  assert.equal((await s.crew('E12')).status, 200);
   assert.equal((await s.save('E2', 'E12', false, null)).status, 200);
   for (let i = 0; i < 2; i++) assert.deepEqual(await s.kinds('E12'), ['reimburse']);
   const r = await s.row('E12');
@@ -137,6 +154,7 @@ test('v1184 an explicit OFF for office crew stays OFF (not restored by the defau
 
 test('v1184 revoking blocks new requests and re-sending a returned one (open screens and other devices too); withdrawing still works; the records stay; a re-sent key is still one request', async () => {
   const s = await setup();
+  assert.equal((await s.crew('E12')).status, 200);
   const k1 = s.key();
   const p1 = s.pay('reimburse');
   const one = await s.call('E12', { action: 'submit', kind: 'reimburse', store_id: '---', client_key: k1, payload: p1 });
@@ -245,10 +263,76 @@ test('v1184 the function checks the values before SQL (bad target / not true-fal
   const send = async b => (await handler(new Request('https://fn.test/work-requests', { method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ pin_session: 'pin-E2', action: 'exp_grant_save', ...b }) }))).status;
   for (const b of [{ target: 'E9', mileage: 'yes', reimburse: null, expect_rev: 0 }, { target: 'E9', mileage: true, reimburse: 1, expect_rev: 0 },
-    { target: 'bad id!', mileage: true, reimburse: true, expect_rev: 0 }, { target: 'E9', mileage: true, reimburse: true }, { mileage: true, reimburse: true, expect_rev: 0 }]) {
+    { target: 'bad id!', mileage: true, reimburse: true, expect_rev: 0 }, { target: 'E9', mileage: true, reimburse: true }, { mileage: true, reimburse: true, expect_rev: 0 },
+    { target: 'E9', mileage: true, reimburse: true, expect_rev: 0, crew: false }, { target: 'E9', mileage: true, reimburse: true, expect_rev: 0, crew: 'yes' }, { target: 'E9', mileage: true, reimburse: true, expect_rev: 0, crew: 1 }]) {
     assert.equal(await send(b), 400, JSON.stringify(b));
   }
   assert.deepEqual(seen.filter(n => n === 'wr_exp_grant_save'), [], 'bad values never reach SQL');
   assert.equal(await send({ target: 'E9', mileage: false, reimburse: null, expect_rev: 0 }), 200);
   assert.deepEqual(seen.filter(n => n === 'wr_exp_grant_save'), ['wr_exp_grant_save']);
+  // crew は送ったときだけ SQL に渡す（true か null）
+  const sent = [];
+  const h2 = createHandler({ env: k => ({ SUPABASE_URL: 'https://db.test', SUPABASE_SERVICE_ROLE_KEY: 'service' })[k],
+    db: { async rpc(name, p) { if (name === 'wr_exp_grant_save') sent.push(p); return {}; } },
+    verifyPin: async tok => tok === 'pin-E2' ? { emp_id: 'E2', name: 'Gabe GM' } : null });
+  const send2 = async b => (await h2(new Request('https://fn.test/work-requests', { method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ pin_session: 'pin-E2', action: 'exp_grant_save', target: 'E9', mileage: null, reimburse: null, expect_rev: 0, ...b }) }))).status;
+  assert.equal(await send2({}), 200); assert.equal(await send2({ crew: true }), 200); assert.equal(await send2({ crew: null }), 200);
+  assert.deepEqual(sent.map(p => [Object.prototype.hasOwnProperty.call(p, 'crew'), p.crew]), [[false, undefined], [true, true], [true, null]]);
+});
+
+test('v1184 (Codex #182 P1) a G1 who writes their own role/title to office crew with the public key gets no rights; only a GM/CEO confirmation does, and it ends when the master stops saying office crew', async () => {
+  const s = await setup();
+  // Codex の再現：G1（E9）の肩書きだけを公開の鍵で Office Staff に（GM・CEO は何もしていない）
+  await s.asAnon(`update employees set title = 'Office Staff' where id = 'E9'`);
+  assert.deepEqual(await s.kinds('E9'), []);
+  const sub = await s.submit('E9', 'mileage');
+  assert.deepEqual([sub.status, sub.body.error], [403, 'no_exp_right']);
+  // 役割（role）を office_crew にしても同じ（manager_auth は公開の鍵で書けない）
+  await s.asAnon(`update employees set role = 'office_crew', title = 'Office Crew', store = '' where id = 'E10'`);
+  assert.deepEqual(await s.kinds('E10'), []);
+  assert.equal((await s.submit('E10', 'reimburse', '---')).status, 403);
+  assert.equal((await s.call('E10', { action: 'whoami' })).body.exp_hq, false);
+  // GM の一覧では「確かめ待ち」
+  const r9 = await s.row('E9');
+  assert.deepEqual([r9.base, r9.crew_master, r9.crew_ok, r9.mileage.def, r9.mileage.eff], ['crew_wait', true, false, false, false]);
+  // GM が確かめる → 初期値で 2 種
+  const c = await s.crew('E9');
+  assert.deepEqual([c.status, c.body.base, c.body.crew_ok, c.body.mileage.eff, c.body.reimburse.eff], [200, 'office_crew', true, true, true]);
+  assert.deepEqual(await s.kinds('E9'), ['mileage', 'reimburse']);
+  assert.equal((await s.submit('E9', 'mileage')).status, 200);
+  // 二度押し：同じ（記録も増えない）
+  const c2 = await s.crew('E9');
+  assert.deepEqual([c2.status, c2.body.same], [200, true]);
+  // 確かめたあと、従業員マスターで事務Crew でなくなる → 初期値 OFF（確かめと今の従業員マスターの狭いほう）
+  await s.pg.exec(`reset role; update employees set title = 'Crew' where id = 'E9'; set role service_role`);
+  assert.deepEqual(await s.kinds('E9'), []);
+  const r9b = await s.row('E9');
+  assert.deepEqual([r9b.base, r9b.crew_master, r9b.crew_ok], ['g1', false, true]);
+  // 事務Crew でない人は確かめられない（not_crew）・確かめを外すのはできる
+  const nc = await s.crew('E10', true);   // E10 は今は事務Crew（上で書き換えた）なので通る
+  assert.equal(nc.status, 200);
+  await s.pg.exec(`reset role; update employees set role = 'crew', title = 'Prep', store = 'S2' where id = 'E10'; set role service_role`);
+  const r10 = await s.row('E10');
+  const nc2 = await s.call('E2', { action: 'exp_grant_save', target: 'E9', mileage: null, reimburse: null, crew: true, expect_rev: r9b.rev });
+  assert.equal(nc2.status, 200, 'already confirmed: keeping the confirmation is allowed');
+  const nc3 = await s.call('E2', { action: 'exp_grant_save', target: 'E16', mileage: null, reimburse: null, crew: true, expect_rev: 0 });
+  assert.deepEqual([nc3.status, nc3.body.error], [409, 'not_crew']);
+  assert.equal((await s.crew('E10', false)).status, 200);
+  assert.deepEqual([(await s.row('E10')).crew_ok, r10.crew_ok], [false, true]);
+  // ほかの値は断る（false・文字）
+  for (const v of [false, 'yes', 1]) assert.equal((await s.call('E2', { action: 'exp_grant_save', target: 'E13', mileage: null, reimburse: null, crew: v, expect_rev: 0 })).status, 400, String(v));
+  // SQL も自分で断る（関数を通らない呼び出し・二重の守り）。false を「外す」と読まない
+  for (const v of [false, 'yes', 1, {}]) await assert.rejects(s.pg.query(`select public.wr_exp_grant_save($1::jsonb)`, [JSON.stringify({ emp_id: 'E2', name: 'Gina GM', target: 'E9', mileage: null, reimburse: null, crew: v, expect_rev: (await s.row('E9')).rev })]), /bad_value/, JSON.stringify(v));
+  assert.equal((await s.row('E9')).crew_ok, true, '断ったあとも確かめは残る');
+  // 確かめ・外すは記録に残る（だれが・だれを・前後・実際に事務Crew か）。確かめで変わった「出せるか」も項目ごとに残る
+  const log = (await s.list()).log.filter(x => x.emp === 'E9');
+  assert.deepEqual(log.map(x => [x.kind, x.before_set, x.after_set, x.before_eff, x.after_eff, x.by_emp]), [
+    ['reimburse', null, null, false, true, 'E2'], ['mileage', null, null, false, true, 'E2'], ['crew', null, true, false, true, 'E2']]);
+  // GM・CEO 以外は確かめられない
+  for (const who of ['E3', 'E4', 'E9', 'E12']) assert.equal((await s.call(who, { action: 'exp_grant_save', target: 'E13', mileage: null, reimburse: null, crew: true, expect_rev: 0 })).status, 403, who);
+  // CEO も確かめられる・明示の OFF は確かめても OFF のまま
+  assert.equal((await s.save('E2', 'E13', false, null)).status, 200);
+  assert.equal((await s.crew('E13', true, 'E1')).status, 200);
+  assert.deepEqual(await s.kinds('E13'), ['reimburse']);
 });

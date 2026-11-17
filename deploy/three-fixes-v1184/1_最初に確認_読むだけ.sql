@@ -16,7 +16,11 @@ union all select 3, '申請の SQL（段階 2 まで）', case when wr then 'OK'
 union all select 4, 'もう入っているか（wr_exp_grants）', case when staged then 'もう入っています（2 をもう一度流しても同じ・設定と記録は残る）' else 'まだ（初めて）' end, '' from t
 union all select 5, '（参考）在籍の事務Crew（役割 office_crew・肩書き Office Crew／Office Staff）', 'info',
   case when emp and emp_cols = 5 then (xpath('/row/c/text()', query_to_xml($q$select count(*) as c from public.employees e
-    where coalesce(e.status, '') <> '退職' and (coalesce(e.role, '') = 'office_crew' or btrim(coalesce(e.title, '')) in ('Office Crew','Office Staff'))$q$, false, true, '')))[1]::text || ' 人（初期値でガソリン代・立替経費とも出せるようになる）' else '—' end from t
+    where coalesce(e.status, '') <> '退職' and (coalesce(e.role, '') = 'office_crew' or btrim(coalesce(e.title, '')) in ('Office Crew','Office Staff'))$q$, false, true, '')))[1]::text
+    || ' 人（うち事務Crew のメールのアカウント ' || case when mgr then (xpath('/row/c/text()', query_to_xml($q$select count(*) as c from public.employees e
+      where coalesce(e.status, '') <> '退職' and (coalesce(e.role, '') = 'office_crew' or btrim(coalesce(e.title, '')) in ('Office Crew','Office Staff'))
+        and exists (select 1 from public.manager_auth a where a.emp_id::text = e.id::text and a.role = 'office_crew')$q$, false, true, '')))[1]::text else '0' end
+    || ' 人は初期値でガソリン代・立替経費とも出せる。ほかの人は GM・CEO が「事務Crew と確かめる」まで出せない）' else '—' end from t
 union all select 6, '（参考）そのうち所属が本部（Office・本部・HQ・---）', 'info',
   case when emp and emp_cols = 5 then (xpath('/row/c/text()', query_to_xml($q$select count(*) as c from public.employees e
     where coalesce(e.status, '') <> '退職' and (coalesce(e.role, '') = 'office_crew' or btrim(coalesce(e.title, '')) in ('Office Crew','Office Staff'))

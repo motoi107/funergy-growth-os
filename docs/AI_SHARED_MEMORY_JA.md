@@ -4,12 +4,13 @@
 
 - 依頼：Moto さん 11/16 15:01 HST の添付（3 つ・実装と動作確認まで）。仕様・判定に使う項目・確かめ・限界：`docs/THREE_FIXES_V1184_JA.md`。入れる手順：`deploy/three-fixes-v1184/手順.md`（① → ② SQL → ③ → ④ 関数（非公開の 1 ファイル）→ マージ → 端末を 1184 に → GM・CEO が権限）。
 - 1（アプリ）：会議タブの KPI は KPI設定で「使う」の行だけ・KPI設定の名前・単位・目標・並び（タイル・カード・まとめ・年間の表）・データなしは「—」（率の 0 は本当の 0＝`MEET_ZERO_OK`）・全部 OFF は「表示するKPIが設定されていません」・開いたときに KPI設定をクラウドと照らす（まとめ取りと同じ合流・会議タブは書かない・読めなければ帯）。売上は外せない（KPI設定のまま）。中間レビューの数字の行は変えていない。
-- 2（アプリ）：従業員マスターの所属（`e.store`）が本部（OFFICE・本部・HQ・---）の人はどの店のスキルマトリクスにも出さない・数えない。空・ALL・不明は残して「確認対象」（GM・CEO・経理に一行）。データは消さない。
-- 3（SQL・関数・アプリ）：事務Crew（manager_auth の役割か、従業員マスターの役割 office_crew・肩書き Office Crew／Office Staff）は初期値でガソリン代・立替経費・ほかの G1 は OFF・経理（G2 より下）は立替経費だけ。GM・CEO が人ごとに 初期値／ON／OFF（表 `wr_exp_grants`・記録 `wr_exp_grant_log`）。明示の OFF は戻らない。送る・直す・出し直すたびにサーバーが確かめる（`no_exp_right` 403）。本部所属の人は本部（---）で出せる。承認・経理の権限は足さない。G2 以上は変わらない。
-- 試験（合成データ・本番にはつながない）：three-fixes-v1184 14・wr-exp-grants-v1184 9・three-fixes-deploy-v1184 4（CI に足した）・e2e `tests/e2e-pcsp/three-fixes-v1184.mjs` 28/28（v1183 では 11/28）・`tests/e2e-wr/exp-grants-v1184.mjs` 26/26・expense-paths 37/37（前の SQL・新しい SQL）・わざと壊す アプリ 19/19・サーバー 20/20・入れる一式 9/9・static release pass/1184。全体の比べは `docs/THREE_FIXES_V1184_JA.md` の最後（前からの 34 件のほか、直した 14 件は試験の土台）。
-- 非公開の 1 ファイル `work-requests_v1184_index.ts`（sha256 先頭 `840de4a30a76`・PIN の確かめは v1169 と同じ・非公開の試験 5/5）を Moto さんに直接。リポジトリには置かない。
-- 独立レビュー・Codex のレビューはまだ。実機・本番は未確認。
-- 次：PR → Codex → Moto さんが手順.md（① の表は Claude との会話にだけ）→ マージ → GM・CEO が権限を確かめる。そのあとログインの段階 2（GM・CEO のメールとパスワード）。
+- 2（アプリ）：従業員マスターの所属（`e.store`）が本部（OFFICE・本部・HQ・---・大文字小文字は問わない）の人はどの店のスキルマトリクスにも出さない・数えない。空・ALL・不明は残して「確認対象」（GM・CEO・経理に一行）。データは消さない。
+- 3（SQL・関数・アプリ）：事務Crew（manager_auth の役割か、従業員マスターの役割 office_crew・肩書き Office Crew／Office Staff で GM・CEO が「事務Crew と確かめる」を押した人）は初期値でガソリン代・立替経費・従業員マスターだけの人は確かめ待ち（OFF）・ほかの G1 は OFF・経理（G2 より下）は立替経費だけ。GM・CEO が人ごとに 初期値／ON／OFF（表 `wr_exp_grants`・記録 `wr_exp_grant_log`）。明示の OFF は戻らない。送る・直す・出し直すたびにサーバーが確かめる（`no_exp_right` 403）。本部所属の人は本部（---）で出せる。承認・経理の権限は足さない。G2 以上は変わらない。
+- 試験（合成データ・本番にはつながない）：three-fixes-v1184 18・wr-exp-grants-v1184 10・three-fixes-deploy-v1184 5（CI に足した）・e2e `tests/e2e-pcsp/three-fixes-v1184.mjs` 30/30・`tests/e2e-wr/exp-grants-v1184.mjs` 34/34・expense-paths 37/37（前の SQL・新しい SQL）・わざと壊す（アプリ 19＋14・サーバー 20＋18・入れる一式 10/11＝残り 1 は二重の守り）・static release pass/1184。全体の比べは `docs/THREE_FIXES_V1184_JA.md` の「わざと壊す・全体」。
+- **Codex（#182・`b9b12ca`）：blocked**。P1＝従業員マスターの肩書きを Office Crew に書き換えるだけで G1 が経費を出せる（公開の鍵で書ける）／P2＝KPI設定 30% でも年間の表は前の手入力 99%。Claude のルーティンの「重大指摘なし」とは違う。→ 済（Claude 11/16）：P1＝従業員マスターだけの事務Crew は確かめ待ち（`wr_exp_grants.crew`・GM・CEO が確かめる・記録・従業員マスターと狭いほう）／P2＝7 月からの年間の表の目標は KPI設定（予算）だけ／ルーティンの P3 3 つ（本部の大文字小文字・読み直しの間・古い「次：」）（`docs/THREE_FIXES_V1184_JA.md` の最後）。G1 が自分の肩書きを G2 以上に書き換えると 3 種とも出せる穴は v1164 からのまま（Moto さん 11/16「今のまま」）。
+- 非公開の 1 ファイル `work-requests_v1184_index.ts`（作り直し・sha256 先頭 `e48bf230b1e1`・PIN の確かめは v1169 と同じ・非公開の試験 6/6）を Moto さんに直接。前に渡した `840de4a30a76` と ② は使わない。リポジトリには置かない。
+- 直したあとの独立レビューは無し。Codex の再レビューはまだ。実機・本番は未確認。
+- 次：Codex の再レビュー（#182 の最新の head）→ Moto さんが手順.md（① の表は Claude との会話にだけ）→ マージ → GM・CEO が PIN だけの事務Crew を「事務Crew と確かめる」・権限を確かめる。そのあとログインの段階 2（GM・CEO のメールとパスワード）。
 
 ## 2026-11-16 v1183：新しいログインの試し・段階 1（招待の URL ＋ PIN で端末を登録し、次から PIN なし）（Claude・ブランチ `claude/login-trial-1183`・#180（v1182）の上・SQL `20261203090000`・関数 device-login（新）・アプリ・本番未反映）
 

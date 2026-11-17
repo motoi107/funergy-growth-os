@@ -394,12 +394,16 @@ export function createHandler(deps) {
     },
     // v1184：G2 より下の人の経費の申請の権限（ガソリン代・立替経費）。GM・CEO だけ（SQL が確かめる）。
     // save：mileage・reimburse は true／false／null（＝初期値）。expect_rev は見ていた設定の番号（無ければ 0）。同じ設定なら何もしない（same）
+    //   crew（任意）：true＝事務Crew と確かめる・null＝確かめを外す（送らなければ今のまま）。従業員マスターだけでは事務Crew にしない（Codex #182 の P1）
     exp_grant_list: w => db.rpc('wr_exp_grant_list', w),
     exp_grant_save: (w, b) => {
       const tgt = typeof b.target === 'string' && /^[A-Za-z0-9_.:-]{1,64}$/.test(b.target) ? b.target : null;
       const tri = v => v === true || v === false || v === null;
       if (!tgt || !tri(b.mileage) || !tri(b.reimburse)) throw bad();
-      return db.rpc('wr_exp_grant_save', { ...w, target: tgt, mileage: b.mileage, reimburse: b.reimburse, expect_rev: (Number.isInteger(b.expect_rev) && b.expect_rev >= 0 && b.expect_rev <= 1e9) ? b.expect_rev : (() => { throw bad(); })(), note: TS(b.note, 200) || null });
+      const hasCrew = Object.prototype.hasOwnProperty.call(b, 'crew');
+      if (hasCrew && !(b.crew === true || b.crew === null)) throw bad();
+      return db.rpc('wr_exp_grant_save', { ...w, target: tgt, mileage: b.mileage, reimburse: b.reimburse, ...(hasCrew ? { crew: b.crew } : {}),
+        expect_rev: (Number.isInteger(b.expect_rev) && b.expect_rev >= 0 && b.expect_rev <= 1e9) ? b.expect_rev : (() => { throw bad(); })(), note: TS(b.note, 200) || null });
     },
     list: (w, b) => {
       const scope = ['todo', 'mine', 'team'].includes(b.scope) ? b.scope : 'todo';
@@ -665,7 +669,7 @@ export function createHandler(deps) {
     file_type: 400, file_big: 413, file_bad: 409, file_missing: 409, file_many: 409, files_missing: 503, storage: 502,
     pre_bad: 409, pre_taken: 409, pre_missing: 503, case_exists: 409, last_admin: 409, chat_old: 503,
     chat_pin_required: 423, chat_key_required: 423, guard_old: 503, push_off: 503, last_member: 409, fix_old: 503, done_old: 503,
-    no_exp_right: 403, grant_old: 503 };
+    no_exp_right: 403, grant_old: 503, not_crew: 409 };
   // チャットの SQL がまだ無い（関数が見つからない）＝ 503 chat_missing（アプリは「サーバーの準備がまだ」と出す）
   const chatMissing = (action, e) => typeof action === 'string' && action.startsWith('chat_')
     && (e.status === 404 || /(function public\.chat_[a-z_]+\(.*\) does not exist|Could not find the function public\.chat_)/i.test(String(e.message || '')));

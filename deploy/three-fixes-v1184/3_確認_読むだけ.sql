@@ -18,6 +18,9 @@ union all select 8, '送る・直す・出し直すときにサーバーが確�
   case when exists (select 1 from fn where proname = 'wr_submit' and prosrc like '%wr_exp_right%') and exists (select 1 from fn where proname = 'wr_act' and prosrc like '%wr_exp_right%') then 'OK' else 'NG' end, '段階 2・段階 3 の SQL を流し直したら 2 をもう一度'
 union all select 9, '本部（---）で出せる決まり（wr_can_submit・wr_whoami）',
   case when exists (select 1 from fn where proname = 'wr_can_submit' and prosrc like '%wr_exp_hq%') and exists (select 1 from fn where proname = 'wr_whoami' and prosrc like '%exp_hq%') then 'OK' else 'NG' end, ''
-union all select 10, '（参考）人ごとに決めた人・変更の記録', 'info',
+union all select 10, '事務Crew は GM・CEO の確かめで決める（従業員マスターの肩書きだけでは出せない）',
+  case when exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'wr_exp_grants' and column_name = 'crew')
+    and exists (select 1 from fn where proname = 'wr_exp_base' and prosrc like '%wr_exp_grants%' and prosrc like '%crew_wait%') then 'OK' else 'NG' end, 'NG なら 2 をもう一度（前に渡した v1184 の 2 を流した場合も）'
+union all select 11, '（参考）人ごとに決めた人・変更の記録', 'info',
   case when (select count(*) from tb) = 2 then (xpath('/row/c/text()', query_to_xml('select (select count(*) from public.wr_exp_grants)::text || '' 人・'' || (select count(*) from public.wr_exp_grant_log)::text || '' 件'' as c', false, true, '')))[1]::text else '—' end
 order by 1;
