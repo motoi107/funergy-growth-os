@@ -181,16 +181,17 @@ test('UI案91：一覧の無い店は ID のある日も名前で決めている
   assert.match(run(c, `k2HoursDetailHtml(['F06'],'2026-10')`), /名前で（一覧がまだ無い店）/);
 });
 
-/* 前の版（v1187＝このブランチの土台の main）の関数。浅い clone で git の履歴が無いときは理由を出して落ちる */
+/* 前の版（v1187＝main 52fa275）の関数。そのコミットが無いとき（浅い clone）は理由を出して落ちる（CI は取ってくる） */
 import { execSync } from 'node:child_process';
+const BASE_V1187 = '52fa275da00341d25a2d2a8f7514f01ee6fc6c69';
 function oldSrc() {
-  try { return execSync('git show HEAD:index.html', { cwd: new URL('..', import.meta.url), maxBuffer: 64 << 20 }).toString('utf8').replace(/\r\n/g, '\n'); }
-  catch (e) { throw new Error('needs the git history (git show HEAD:index.html): ' + e.message); }
+  try { return execSync('git show ' + BASE_V1187 + ':index.html', { cwd: new URL('..', import.meta.url), maxBuffer: 64 << 20 }).toString('utf8').replace(/\r\n/g, '\n'); }
+  catch (e) { throw new Error('needs the v1187 commit (git fetch origin ' + BASE_V1187 + '): ' + e.message); }
 }
 const OLD_FNS = ['k2NormAcctName', 'k2SysAcctList', 'k2SysMatcher', 'k2DayIssues', 'k2HoursDays', 'k2RecGuids', 'isOrderOnlyAccount', 'toastSystemAccount', '_laborHrs', 'k2IsSysName', 'k2SysGuids', 'k2MonthGuids', 'k2YmAdd', 'daysOfYm'];
 test('UI案91：数え方は前の版（v1187）と同じ（ランダムな月 300 通りで日ごとの実働・外した時間・未集計が変わらない）', () => {
   const OLD = oldSrc();
-  assert.ok(!/function k2SysWhy\(/.test(OLD), 'HEAD is the old version');
+  assert.ok(!/function k2SysWhy\(/.test(OLD), 'the base commit is the old version');
   let seed = 7; const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
   const names = ['Ann', 'Ben', 'Kiosk 1', 'Toast Generic Login', 'Server Default', 'Order Only', 'Front Tablet', 'kiosk 1'];
   for (let k = 0; k < 300; k++) {
