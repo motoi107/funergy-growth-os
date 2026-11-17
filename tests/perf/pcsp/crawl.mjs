@@ -27,7 +27,7 @@ await page.waitForFunction(() => document.querySelectorAll('#login-store-grid .s
 const who = WHO === 'gm' ? { loc: 'OFFICE', name: DATA.gm } : WHO === 'sl' ? { loc: DATA.slStore, name: DATA.sl } : { loc: DATA.crewStore, name: DATA.crew };
 await page.evaluate(l => loginPickLocation(l), who.loc);
 await page.locator('#login-name-grid .store-btn', { hasText: who.name }).first().click();
-await page.fill('#login-pin-input', '1234'); await page.click('#login-pin-btn');
+await pinStep(page); await page.fill('#login-pin-input', '1234'); await page.click('#login-pin-btn');
 await page.waitForFunction(() => { const a = document.getElementById('app-shell'); return a && getComputedStyle(a).display !== 'none' && document.getElementById('main-content').children.length > 0; }, null, { timeout: 120000, polling: 100 });
 await page.waitForFunction(() => window._heavyPending === false && !window._uxOpsBusy, null, { timeout: 120000, polling: 200 }).catch(() => {});
 await sleep(2500);
@@ -190,3 +190,9 @@ for (const p of list) {
 result.errors = errors.slice(0, 50);
 fs.writeFileSync(OUT, JSON.stringify(result, null, 1));
 await ctx.close();
+
+// v1185：GM・CEO・経理は名前を選ぶとメールとパスワードの段が出る。試しのあいだは「PIN でログイン」で今までどおり PIN の段へ（ほかの人は何もしない）
+async function pinStep(page) {
+  const mail = await page.evaluate(() => { const m = document.getElementById('login-step-mail'); return !!(m && m.style.display !== 'none'); }).catch(() => false);
+  if (mail) await page.click('#ml-pin');
+}

@@ -98,7 +98,7 @@ async function oneRun(i) {
   const who = ROLE === 'ceo' ? { loc: 'OFFICE', name: DATA.ceo } : ROLE === 'gm' ? { loc: 'OFFICE', name: DATA.gm } : ROLE === 'crew' ? { loc: DATA.crewStore, name: DATA.crew } : { loc: DATA.slStore, name: DATA.sl };
   await page.evaluate(loc => loginPickLocation(loc), who.loc);
   await page.locator('#login-name-grid .store-btn', { hasText: who.name }).first().click();
-  await page.fill('#login-pin-input', '1234');
+  await pinStep(page); await page.fill('#login-pin-input', '1234');
   // v1104：--count：ログインから最初の画面までの、売上・予算の読み取りの回数と時間（関数を包んで数える）
   if (arg('count', '')) await page.evaluate(() => {
     window.__cnt = {}; const fin = k => k === 'budgets_v2' || /^(daily_actuals_|spl_budgets_v2_)/.test(String(k));
@@ -178,3 +178,9 @@ const results = []; var WARMUP = false; const CRASHED = [];
 if (PROFILE === 'warm') { fs.rmSync(USERDIR, { recursive: true, force: true }); console.error('warm-up…'); WARMUP = true; await oneRun(-1); WARMUP = false; }
 for (let i = 0; i < RUNS; i++) { const r = await oneRun(i); results.push(r); console.error(`run ${i}: ①${r.t1_login_screen} ②${r.t2_auth} ③a${r.t3a_first_screen} ③b${r.t3b_heavy} ③c${r.t3c_net_idle} net3 ${r.net3.n}req ${(r.net3.bytes / 1e6).toFixed(2)}MB raw ${(r.net3.raw / 1e6).toFixed(1)}MB err ${r.errors.length}`); }
 fs.writeFileSync(OUT, JSON.stringify(results, null, 1));
+
+// v1185：GM・CEO・経理は名前を選ぶとメールとパスワードの段が出る。試しのあいだは「PIN でログイン」で今までどおり PIN の段へ（ほかの人は何もしない）
+async function pinStep(page) {
+  const mail = await page.evaluate(() => { const m = document.getElementById('login-step-mail'); return !!(m && m.style.display !== 'none'); }).catch(() => false);
+  if (mail) await page.click('#ml-pin');
+}

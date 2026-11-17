@@ -13,7 +13,7 @@ async function open(tag, w = 1280, mob = false) { const dir = '/tmp/bprobe1176-'
   const page = ctx.pages()[0] || await ctx.newPage(); const errors = []; page.on('pageerror', e => errors.push(String(e.message).slice(0, 160))); page.on('dialog', d => d.accept().catch(() => {}));
   await page.goto(APP); await page.waitForFunction(() => document.querySelectorAll('#login-store-grid .store-btn').length > 2, null, { timeout: 120000 }); return { ctx, page, errors }; }
 async function login(page, loc, name) { await page.evaluate(s => loginPickLocation(s), loc); await page.locator('#login-name-grid .store-btn', { hasText: name }).first().click();
-  await page.fill('#login-pin-input', '1234'); await page.click('#login-pin-btn');
+  await pinStep(page); await page.fill('#login-pin-input', '1234'); await page.click('#login-pin-btn');
   await page.waitForFunction(() => { const a = document.getElementById('app-shell'); return a && getComputedStyle(a).display !== 'none' && document.getElementById('main-content').children.length > 0; }, null, { timeout: 180000 });
   await page.waitForFunction(() => window._heavyPending === false && !window._uxOpsBusy, null, { timeout: 180000, polling: 100 }); await sleep(1500); }
 async function openCard(page) { await page.evaluate(() => { window._kpiTab = 'manual'; window._kpiStore = 'F04-K'; go('kpi_master'); });
@@ -79,3 +79,9 @@ ok('pageerror 0', !A.errors.length && !B.errors.length && !S.errors.length, [...
 await S.ctx.close();
 if (process.argv[2]) fs.writeFileSync(process.argv[2], JSON.stringify({ res, m, tk }, null, 1));
 process.exit(res.every(r => r.ok) ? 0 : 1);
+
+// v1185：GM・CEO・経理は名前を選ぶとメールとパスワードの段が出る。試しのあいだは「PIN でログイン」で今までどおり PIN の段へ（ほかの人は何もしない）
+async function pinStep(page) {
+  const mail = await page.evaluate(() => { const m = document.getElementById('login-step-mail'); return !!(m && m.style.display !== 'none'); }).catch(() => false);
+  if (mail) await page.click('#ml-pin');
+}

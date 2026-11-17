@@ -19,7 +19,7 @@ for (const WHO of ['gm', 'sl', 'crew']) for (const W of [390, 768, 1440]) {
   await page.evaluate(l => loginPickLocation(l), who.loc);
   await page.locator('#login-name-grid .store-btn', { hasText: who.name }).first().click();
   const pinScreen = await page.evaluate(() => { const b = document.getElementById('login-pin-btn'), i = document.getElementById('login-pin-input'); const rb = b.getBoundingClientRect(), ri = i.getBoundingClientRect(); return { btnH: Math.round(rb.height), inH: Math.round(ri.height), ov: document.documentElement.scrollWidth - innerWidth }; });
-  await page.fill('#login-pin-input', '1234'); await page.click('#login-pin-btn');
+  await pinStep(page); await page.fill('#login-pin-input', '1234'); await page.click('#login-pin-btn');
   await page.waitForFunction(() => window._heavyPending === false && !window._uxOpsBusy, null, { timeout: 120000, polling: 200 }).catch(() => {});
   await sleep(2000);
   if (WHO === 'gm') { await page.evaluate(() => switchStore('ALL')); await sleep(1000); }
@@ -43,3 +43,9 @@ for (const WHO of ['gm', 'sl', 'crew']) for (const W of [390, 768, 1440]) {
   await ctx.close();
 }
 fs.writeFileSync((process.env.PCSP_DIR || '/tmp/pcsp') + '/nav.json', JSON.stringify(out, null, 1));
+
+// v1185：GM・CEO・経理は名前を選ぶとメールとパスワードの段が出る。試しのあいだは「PIN でログイン」で今までどおり PIN の段へ（ほかの人は何もしない）
+async function pinStep(page) {
+  const mail = await page.evaluate(() => { const m = document.getElementById('login-step-mail'); return !!(m && m.style.display !== 'none'); }).catch(() => false);
+  if (mail) await page.click('#ml-pin');
+}

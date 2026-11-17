@@ -1,5 +1,15 @@
 # Claude / Codex 共通記録
 
+## 2026-11-16 v1185：GM・CEO・経理はメールとパスワードでログイン（UI案90 の答え・Claude・ブランチ `claude/login-stage2-1185`・main `9f75b14f`（v1184）の上・SQL `20261205090000`・関数 device-login・emp-private（どちらも非公開の 1 ファイル）・アプリ・本番未反映）
+
+- 答え（Moto さん 11/16 19:44 HST）：1 A（名前を選ぶと PIN の代わりにメールとパスワード）・2 A（試しのあいだは PIN でも）・3「90 日覚えるとかいらない・もう一度聴くもいらない」＝開くたびに入れる・4 C（大事な操作の前に聞き直さない）・5 A（新しい端末は本人とほかの GM・CEO に知らせ）・6 A（管理者セキュアページはアプリの中から同じログインで）・7 B（経理もメールとパスワード）。20:23 HST「続きお願いします」。20:47 HST：emp-private の本番のソース（v5）を添付（非公開・リポジトリに入れない）。仕様・守り・限界：`docs/EMAIL_LOGIN_V1185_JA.md`。入れる一式：`deploy/email-login-v1185/`（① → ② SQL → ③ → ④ device-login → ⑤ emp-private → マージ → 端末を 1185 に）。
+- サーバー：device-login の `email_login`（Supabase Auth の利用者 → SQL `dl_email_login` が manager_auth の行と選んだ名前の社員・役割 ceo／gm／office・在籍で決める → PIN のログインと同じ印）。SQL が無ければ 503 `not_installed`。新しい端末は app_state の notifications に 2 つ。表 `dl_email_devices`（端末の番号の sha-256 だけ）・関数 3 つ（サーバーの鍵だけ）。
+- アプリ v1185（`FUNERGY_ML`・別の `<script>`）：メールとパスワードの段・鍵と印はメモリだけ（端末には端末の番号 `_ml_dev_v1` だけ）・30 分ごとの取り替え（止めた・退職・権限が変わればログアウト）・マイページのカード（セキュアページ・PIN を入れる・すべての端末からログアウト）・セキュアページを開いて「アプリに戻る」・給与は印で頼む（emp-private が v5 なら PIN を 1 回）・GM・CEO はチャットの操作なしのロックをしない。
+- 非公開の 1 ファイル 2 つ（Moto さんに直接・リポジトリに置かない）：`device-login_v1185_index.ts`（sha256 先頭 `0a7dedfc9c0f`＝今の handler ＋ v1183 と同じ印の部品）・`emp-private_v1185_index.ts`（`6745ddff8ff8`＝v5 ＋ 印で頼める）。Claude の手元の試験と「device-login の印を emp-private が受ける」試験は通った。
+- 試験（合成データ）：email-login-server 10・app 13・deploy 4（CI に足した）・e2e `tests/e2e-login/email-login-v1185.mjs` 36/36・わざと壊す（アプリと handler 10/10＝1 回目 5/10 → 試験を足した・SQL 4/4・チャット 1/1）・関連 35 ファイル 437 件のうち 435（bot-center 2 は前から）・static release pass/1185。前の e2e で GM・CEO を PIN で入れていた台本 35 本に `pinStep` を足し、流し直したのは device-login-v1183 52/52・three-fixes-v1184 30/30・expense-paths 37/37。
+- 独立レビュー・Codex のレビューはまだ。実機・本番は未確認。
+- 次：PR → Codex → Moto さんが手順.md → マージ → 端末を 1185 に → 実機（iPhone で GM・PC で経理）。
+
 ## 2026-11-16 ログインの段階 2：GM・CEO はメールとパスワード（UI案90・Claude・ブランチ `claude/login-stage2-1185`・コードの変更なし）
 
 - 経緯：#182（v1184・head `665bb54`）は Moto さんが 11/16 19:1x HST にマージ（main `9f75b14f`）。**`665bb54` への Codex の再レビューはマージの前に無い**（P1・P2 の直しは Claude の試験だけ）。Moto さん 19:28 HST「次お願いします」→ バックログの次＝ログインの段階 2（11/16 16:33 HST「GMとCEOのログインはどうやったら入れますか？」・11/14 の答え「GM・CEO は管理者セキュアページと同じメールとパスワード／PIN が要るところは今までどおり」）。
