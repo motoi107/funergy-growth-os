@@ -1,5 +1,17 @@
 # Claude / Codex 共通記録
 
+## 2026-11-17 v1187：No Tip を「その日の時点のシフト数」で決める（12/1 から）・hr-check の SL・UI案76・UI案91（Claude・ブランチ `claude/notip-dayof-1187`・main `2965db1a`（v1186）の上・アプリだけ・本番未反映）
+
+- Moto さんの答え（11/17・選択肢）：v1185・v1184・v1183・v1176・v1174 の配備は「5つとも入れた」（Claude は本番を見ていない）・「全部一気に進めてください」（引き継ぎの a〜d）・No Tip の新しい決め方は「12/1 から」。
+- a（v1187）：No Tip は、その日・その枠（ランチ・ディナー）の前までに働いたシフト数で決める（`tipNoTipOn`・`TIP_NOTIP_DAYOF_START = '2026-12-01'`）。数える勤怠はこのログインのあいだに DB（tip_labor）から読めた日だけ（メモリだけ・端末の写しは使わない）＝どの端末でも同じ額。初回勤務日からその日までを読めていなければ仮の額（印 pending）で、**確定しない・CSV／経理まとめを出さない**（押したら読み終えるまで待ってから計算し直す・読めなければ止める）。12/1 より前の日は前の決め方（支払った期間の額は変えない）。期間の配分に使った率は枠ごと（`_tipRateSlotUsed`）。仕様・限界：`docs/NOTIP_DAYOF_V1187_JA.md`。#76 の Codex（`82e7954`）の P2（端末に前の月の勤怠が無いと $80 → $0）は、DB から読めた日だけで決めることで直した。
+- 試験（合成データ）：`tests/notip-dayof-v1187.test.mjs` 10（UTC・日本・ハワイで同じ・v1186 では落ちる）・tip-weight-rate 17・tip-start-date 22・わざと壊す 25/25・static release pass/1187。CI に足した。全体（重い 2 つ以外・4 並列）：3,188 件のうち 38 件が落ちる＝どれも main（`2965db1a`）でも落ちるもの（bot-center・bot-database・cooking-sake・meeting-budget・meeting-sales・next-v1090・perf-v1098・specialist-career・chat-deploy-v1156・cs-card-icons・cs-grade-view・cs-strengths・浅い clone で git の履歴が要る cs-grade-rollback と toast-alias・重いときだけの approvals と ingredient-transfers）。
+- c（PR #186・試験だけ）：`tests/perf/hr-check.mjs` の SL の 4 つ＝合成データに GM・CEO が確かめた写し（wr_people）が無く、v1147 からの `protStores` で SL の範囲が「なし」だった → 写しを 1 行足して 27/27（前は 23/27）。
+- b（UI案76・Design・Moto さんの非公開・https://claude.ai/artifact/VrQumBuUcuQnujCXeNXLUZ ）：PL の月別推移（上の 3 つの数・最終利益のグラフ・営業利益 → 最終利益の内訳・科目へのひらき）・取り込みの前の差分・要分類の科目を決める画面（PC・iPhone）。決めてほしいこと 9（推奨 A）。今のコードの「営業利益」は Net Income（v1020 から）＝名前をそろえるかが 2。
+- d（UI案91・Design・Moto さんの非公開・https://claude.ai/artifact/AvJyQaVfrMUDrE8jX7zACg ）：業務用アカウントの一覧で、ID の無い前の記録（v1153＝11/13 より前のアプリで取り込んだ日）を名前で外す／数えることを見せる（月を選ぶ・名前ごとに 外す／数える・理由・日数・時間・人の勤怠はたたむ・ID を付ける道・日次進捗の内訳を「ID で」「名前で」に分ける・説明の文を直す）。決めてほしいこと 6（推奨 A）。表示だけの案（決まりは変えない）。
+- 独立レビュー（Claude の別エージェント）は無し。Codex のレビューはまだ（v1187・#186）。
+- 次：Codex（v1187 の PR・#186）→ Moto さんがマージ（アプリだけ）→ チップ管理を開く端末（とくに CSV・経理まとめを書き出す端末）を 1187 に → 12/1 のあと、No Tip の人がいる店で配分表を確かめる。UI案76・UI案91 は Moto さんの答えのあと。
+- 前から（v1186・#185 の節）：Moto さんが ②（もう一度）→ ③（11 まで）→ 実機。① の 9・10 の表は Claude との会話にだけ。Codex の `d820ff11` の再レビュー。
+
 ## 2026-11-17 引き継ぎ：#184（v1186）はマージ済み（Claude）
 
 - Moto さんが 11/17 08:06 HST（18:06 UTC）に PR #184 を `d820ff11` でマージした（main `2965db1a`）。08:07 HST に「CEO と経理が 1186 にするのを待っています」と連絡があった。手順.md の 1（①）と 2（関数 3 つ）を入れたかは、はっきりした報告が無い（「マージまで終わりました」から済んだと読んだ。① の 9・10 の表は届いていない）。
