@@ -4,6 +4,8 @@
 // 入ったときに渡す「ログインの印」は PIN のログインと同じ形（ほかの関数がそのまま確かめる）。印を作る部品（signMark）は
 // 公開しない 1 ファイルにだけ入れる（リポジトリの index.ts は null → 印が要る操作は 503 sign_missing）。
 // GM・CEO の操作（試す人・招待・端末を外す）はメールのログイン（Supabase Auth）と manager_auth の役割（ceo・gm）。
+// v1185（段階 2）：email_login＝GM・CEO・経理が、名前を選んだあとメールとパスワード（Supabase Auth）で入り、PIN のログインと同じ印を受け取る。
+//   manager_auth の行が選んだ名前の社員と結ばれていて、役割が ceo・gm・office のときだけ（SQL 20261205090000 の dl_email_login が決める）。
 // アプリが送る名前・役割・社員の ID は使わない。記録に PIN・招待の値・印・鍵の中身は残さない。
 
 export function postgrestDb({ fetch, url, key }) {
@@ -23,10 +25,10 @@ const safeErr = e => String((e && (e.code || e.message)) || e || 'error').replac
 // SQL と関数が返す理由（ほかは error）
 export const CODES = ['unauthorized', 'forbidden', 'bad_value', 'not_found', 'not_trial', 'top_not_allowed', 'inactive', 'invite_gone',
   'device_gone', 'challenge_gone', 'too_many', 'bad_signature', 'pin_wrong', 'locked', 'pin_server', 'sign_missing', 'email_required',
-  'device_revoked', 'device_expired', 'reauth', 'pin_default'];
+  'device_revoked', 'device_expired', 'reauth', 'pin_default', 'not_linked', 'wrong_person', 'not_installed'];
 const STATUS = { unauthorized: 401, email_required: 401, forbidden: 403, not_found: 404, not_trial: 403, top_not_allowed: 409, inactive: 403,
   invite_gone: 410, device_gone: 410, device_revoked: 410, device_expired: 410, challenge_gone: 409, too_many: 429, bad_signature: 401,
-  pin_wrong: 401, pin_default: 409, locked: 423, pin_server: 503, sign_missing: 503, reauth: 401, bad_value: 400 };
+  pin_wrong: 401, pin_default: 409, locked: 423, pin_server: 503, sign_missing: 503, reauth: 401, bad_value: 400, not_linked: 403, wrong_person: 403, not_installed: 503 };
 const err = code => { const e = new Error(code); e.code = code; return e; };
 const obj = v => (v && typeof v === 'object' && !Array.isArray(v) ? v : null);
 const EMP = v => (typeof v === 'string' && /^[A-Za-z0-9_.:@-]{1,64}$/.test(v) ? v : (() => { throw err('bad_value'); })());
@@ -192,6 +194,21 @@ export function createHandler(deps) {
       return db.rpc('dl_device_setting', { device_id: p.device_id, ask_pin: b.ask_pin });
     },
   };
+  // v1185：メールのログイン（a＝Supabase Auth の利用者 ID。メールとパスワードは Supabase Auth が確かめた）
+  const EMAIL = {
+    email_login: async (a, b, w) => {
+      if (!signMark) throw err('sign_missing');   // 印を出せないなら、端末を覚える前・知らせを出す前に止める
+      const emp = EMP(b.emp_id), dev = UUID(b.device_id);
+      const mode = b.mode === 'refresh' ? 'refresh' : 'start';
+      const name = b.device_name == null ? null : DNAME(b.device_name);
+      let r;
+      try { r = await db.rpc('dl_email_login', { actor: a, emp_id: emp, dev_hash: await sha256hex('fdl-mail1|' + emp + '|' + dev), mode, device_name: name, ...w }); }
+      catch (e) { if (e && e.status === 404) throw err('not_installed'); throw e; }   // v1185 の SQL がまだ（PostgREST は関数が無いと 404）
+      if (!r || r.state !== 'ok') throw err(r && CODES.includes(r.state) ? r.state : 'error');
+      const m = await mark(r.emp_id, r.name);
+      return { ok: true, emp_id: r.emp_id, name: r.name, role: r.role, new_device: !!r.new_device, notice: !!r.notice, token: m.token, token_exp: m.exp };
+    },
+  };
   const ADMIN = {
     admin_list: (a, b, w) => db.rpc('dl_admin_list', { actor: a }),
     admin_trial: (a, b, w) => { if (typeof b.on !== 'boolean') throw err('bad_value'); return db.rpc('dl_admin_trial', { actor: a, emp_id: EMP(b.emp_id), on: b.on, ...w }); },
@@ -221,11 +238,12 @@ export function createHandler(deps) {
     const w = { ip: (req.headers.get('x-real-ip') || xff[xff.length - 1] || '').slice(0, 64) || null, ua: String(req.headers.get('user-agent') || '').slice(0, 200) || null };
     try {
       if (Object.prototype.hasOwnProperty.call(DEVICE, body.action)) return json(await DEVICE[body.action](body, w) ?? {});
-      if (Object.prototype.hasOwnProperty.call(ADMIN, body.action)) {
+      const own = Object.prototype.hasOwnProperty;
+      if (own.call(ADMIN, body.action) || own.call(EMAIL, body.action)) {
         let a;
         try { a = await adminOf(req); } catch { a = null; }
         if (!a) return json({ error: 'email_required' }, 401);
-        return json(await ADMIN[body.action](a, body, w) ?? {});
+        return json(await (own.call(EMAIL, body.action) ? EMAIL : ADMIN)[body.action](a, body, w) ?? {});
       }
       return json({ error: 'bad_value' }, 400);
     } catch (e) {

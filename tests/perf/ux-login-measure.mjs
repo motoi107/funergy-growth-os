@@ -18,7 +18,7 @@ async function ready(page) { await page.goto(APP); await page.waitForFunction(()
 async function pick(page) {
   await page.evaluate(() => loginPickLocation('OFFICE'));
   await page.locator('#login-name-grid .store-btn', { hasText: DATA.gm }).first().click();
-  await page.fill('#login-pin-input', '1234');
+  await pinStep(page); await page.fill('#login-pin-input', '1234');
 }
 const runs = [];
 for (let i = 0; i < N; i++) {
@@ -63,3 +63,9 @@ const med = k => { const a = runs.map(r => r[k]).filter(x => x != null).sort((x,
 const sum = { version: ver, n: N, rtt: RTT, bps: BPS, width: W, median: { feedback_ms: med('feedback_ms'), app_ms: med('app_ms'), renders_15s: med('renders_15s'), render_ms_15s: med('render_ms_15s'), longtask_ms_15s: med('longtask_ms_15s') }, runs };
 console.log('MEDIAN', JSON.stringify(sum.median));
 if (OUT) fs.writeFileSync(OUT, JSON.stringify(sum, null, 1));
+
+// v1185：GM・CEO・経理は名前を選ぶとメールとパスワードの段が出る。試しのあいだは「PIN でログイン」で今までどおり PIN の段へ（ほかの人は何もしない）
+async function pinStep(page) {
+  const mail = await page.evaluate(() => { const m = document.getElementById('login-step-mail'); return !!(m && m.style.display !== 'none'); }).catch(() => false);
+  if (mail) await page.click('#ml-pin');
+}

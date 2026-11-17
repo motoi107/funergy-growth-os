@@ -39,7 +39,7 @@ await sleep(1500);
 const who = ROLE === 'ceo' ? { loc: 'OFFICE', name: DATA.ceo } : { loc: 'OFFICE', name: DATA.gm };
 await page.evaluate(loc => loginPickLocation(loc), who.loc);
 await page.locator('#login-name-grid .store-btn', { hasText: who.name }).first().click();
-await page.fill('#login-pin-input', '1234');
+await pinStep(page); await page.fill('#login-pin-input', '1234');
 const t2 = Date.now();
 await page.click('#login-pin-btn');
 await page.waitForFunction(() => {
@@ -134,3 +134,9 @@ await sleep(1000);
 await ctx.close();
 fs.writeFileSync(OUT, JSON.stringify(R, null, 1));
 console.log(JSON.stringify({ first: R.t_first_screen, latestSales: R.got_latest_sales, latestBudget: R.got_latest_budget, rawLatestSales: R.raw_latest_sales, rawLatestBudget: R.raw_latest_budget, saveFail: R.after_login.saveFailKeys, state: R.after_login.state, open: R.open, memo_open: R.memo_open, memo_saved: R.memo_saved, memo_after_reload: R.memo_after_reload, memo_seen: R.memo_seen, drop: R.drop, conflict: R.conflict, toasts: R.toasts.map(x => x.m) }, null, 1));
+
+// v1185：GM・CEO・経理は名前を選ぶとメールとパスワードの段が出る。試しのあいだは「PIN でログイン」で今までどおり PIN の段へ（ほかの人は何もしない）
+async function pinStep(page) {
+  const mail = await page.evaluate(() => { const m = document.getElementById('login-step-mail'); return !!(m && m.style.display !== 'none'); }).catch(() => false);
+  if (mail) await page.click('#ml-pin');
+}

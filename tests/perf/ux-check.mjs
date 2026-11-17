@@ -30,7 +30,7 @@ async function pickGm(page) {
 }
 const appShown = page => page.waitForFunction(() => { const a = document.getElementById('app-shell'); return a && getComputedStyle(a).display !== 'none' && document.getElementById('main-content').children.length > 0; }, null, { timeout: 120000, polling: 50 });
 async function login(page) {
-  await pickGm(page); await page.fill('#login-pin-input', '1234');
+  await pickGm(page); await pinStep(page); await page.fill('#login-pin-input', '1234');
   await page.click('#login-pin-btn'); await appShown(page);
   await page.waitForFunction(() => window._heavyPending === false && !window._uxOpsBusy, null, { timeout: 120000, polling: 100 });
   await sleep(1500);
@@ -70,13 +70,13 @@ await ctl('/__reset'); await ctl('/__net?rtt=0&bps=0');
   await page.waitForFunction(() => document.querySelectorAll('#login-store-grid .store-btn').length > 2, null, { timeout: 60000 });
   // A1 違う PIN：エラーが出て、PIN は消える。ボタンは元に戻る
   await pickGm(page);
-  await page.fill('#login-pin-input', '9999'); await page.click('#login-pin-btn');
+  await pinStep(page); await page.fill('#login-pin-input', '9999'); await page.click('#login-pin-btn');
   await page.waitForFunction(() => { const e = document.getElementById('login-pin-err'); return e && getComputedStyle(e).display !== 'none'; }, null, { timeout: 60000 });
   const a1 = await page.evaluate(() => ({ pin: document.getElementById('login-pin-input').value, btn: document.getElementById('login-pin-btn').disabled, err: document.getElementById('login-pin-err').textContent.slice(0, 20) }));
   ok('A1 違う PIN：エラーを出し、PIN を消してすぐ打ち直せる', a1.pin === '' && a1.btn === false, a1);
   // A2 Enter とボタンを続けて押しても、照合は 1 回。前のエラーは押した時点で消える
   await page.evaluate(() => { window.__apc = 0; const o = window.authPinCheck; window.authPinCheck = function () { window.__apc++; return o.apply(this, arguments); }; });
-  await page.fill('#login-pin-input', '1234');
+  await pinStep(page); await page.fill('#login-pin-input', '1234');
   const tClick = Date.now();
   await page.press('#login-pin-input', 'Enter');
   const errHidden = await page.evaluate(() => getComputedStyle(document.getElementById('login-pin-err')).display === 'none');
@@ -368,3 +368,9 @@ await ctl('/__delay?path=/rest/v1/app_state&ms=0'); await ctl('/__wfail?path=/re
 const ver = await fetch(APP).then(r => r.text()).then(h => (h.match(/APP_VERSION = '(\d+)'/) || [])[1]);
 console.log(`\n${results.filter(r => r.ok).length}/${results.length} OK  (v${ver}, ${Math.round((Date.now() - t00) / 1000)}s)`);
 if (OUT) fs.writeFileSync(OUT, JSON.stringify({ version: ver, results }, null, 1));
+
+// v1185：GM・CEO・経理は名前を選ぶとメールとパスワードの段が出る。試しのあいだは「PIN でログイン」で今までどおり PIN の段へ（ほかの人は何もしない）
+async function pinStep(page) {
+  const mail = await page.evaluate(() => { const m = document.getElementById('login-step-mail'); return !!(m && m.style.display !== 'none'); }).catch(() => false);
+  if (mail) await page.click('#ml-pin');
+}

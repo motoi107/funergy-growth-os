@@ -134,7 +134,7 @@ test('本体への組み込み（ログアウト 2 か所・入口・起動・PI
   assert.match(HTML, /function bootLogin\(\) \{[\s\S]{0,2400}FUNERGY_DL\.paintEntry\(\)/);
   assert.match(HTML, /await _dlBootWhenReady\(\)/);
   assert.match(HTML, /function invInDefaultPin\(\)\{\n  if \(!invInLoginPerson\(\)\) return false;\n  if \(window\._dlSignedIn\) return false;/);
-  assert.match(HTML, /async function insertDiscountUse\(storeCode\)\{\n  if\(curUserName && !window\._sessionPin && window\.FUNERGY_DL && window\._dlSignedIn\)\{ await window\.FUNERGY_DL\.ensurePin\(\); \}/);
+  assert.match(HTML, /async function insertDiscountUse\(storeCode\)\{\n  if\(curUserName && !window\._sessionPin && window\.FUNERGY_DL && \(window\._dlSignedIn \|\| window\._mlSignedIn\)\)\{ await window\.FUNERGY_DL\.ensurePin\(\); \}/);   // v1185：メールとパスワードで入った人も
   assert.match(HTML, /FUNERGY_DL\.myCardHtml\(\)/);
   assert.match(HTML, /FUNERGY_DL\.payPin\(\)/);
   assert.match(HTML, /canViewPins\(\)\?`<button class="btn btn-secondary btn-sm" onclick="FUNERGY_DL\.admin\(\)"/);

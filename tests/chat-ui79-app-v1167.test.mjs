@@ -343,6 +343,16 @@ test('lock now hides the chat everywhere (no messages on the screen); a shared P
     assert.match(a.D.getElementById('chat-host-page').innerHTML, /しばらく操作がなかった/);
     assert.doesNotMatch(a.D.getElementById('chat-host-page').innerHTML, /chat-lock-pin/, 'own device: no PIN');
     a.ctx.chatUnlock(); await a.idle(); assert.match(pg(), /chat-msgs/);
+    // v1185：GM・CEO は放っておいてもロックしない（ほかの役割は今までどおり）
+    const role0 = a.ctx.curRole;
+    for (const r of ['gm', 'ceo']) {
+      a.ctx.curRole = r; off += 120 * 60000; a.ctx._chatIdleTick(); assert.match(pg(), /chat-msgs/, r + ': no idle lock');
+    }
+    a.ctx.chatLockNow(); assert.match(pg(), /GM・CEO は、操作がなくてもロックしません/, 'lock now still works and says so');
+    a.ctx.chatUnlock(); await a.idle(); assert.match(pg(), /chat-msgs/);
+    a.ctx.curRole = role0;
+    off += 120 * 60000; a.ctx._chatIdleTick(); assert.doesNotMatch(pg(), /chat-msgs/, 'other roles: idle lock as before');
+    a.ctx.chatUnlock(); await a.idle(); assert.match(pg(), /chat-msgs/);
     // ロック中は端末の種類を変えられない
     a.ctx.chatLockNow(); a.ctx.chatSetDev('personal'); a.ctx.chatGuard();
     assert.doesNotMatch(a.D.getElementById('chat-host-page').innerHTML, /chat-dev/);

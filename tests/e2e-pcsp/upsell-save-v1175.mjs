@@ -16,7 +16,7 @@ async function open(tag){ const dir='/tmp/bprobe-'+tag; fs.rmSync(dir,{recursive
   const page=ctx.pages()[0]||await ctx.newPage(); const errors=[]; page.on('pageerror',e=>errors.push(String(e.message).slice(0,160))); page.on('dialog',d=>d.accept().catch(()=>{}));
   await page.goto(APP); await page.waitForFunction(()=>document.querySelectorAll('#login-store-grid .store-btn').length>2,null,{timeout:120000}); return {ctx,page,errors}; }
 async function login(page,loc,name){ await page.evaluate(s=>loginPickLocation(s),loc); await page.locator('#login-name-grid .store-btn',{hasText:name}).first().click();
-  await page.fill('#login-pin-input','1234'); await page.click('#login-pin-btn');
+  await pinStep(page); await pinStep(page); await page.fill('#login-pin-input','1234'); await page.click('#login-pin-btn');
   await page.waitForFunction(()=>{const a=document.getElementById('app-shell');return a&&getComputedStyle(a).display!=='none'&&document.getElementById('main-content').children.length>0;},null,{timeout:180000});
   await page.waitForFunction(()=>window._heavyPending===false&&!window._uxOpsBusy,null,{timeout:180000,polling:100}); await sleep(2000); }
 async function openUpsell(page,sid){ await page.evaluate(s=>{ window._kpiTab='manual'; window._kpiStore=s; go('kpi_master'); },sid); await sleep(1500);
@@ -58,3 +58,9 @@ ok('その店で使う選択も同じ', out.upsellRateF01.forF01.length===3);
 ok('pageerror 0', !out.errors.length, out.errors);
 if(process.argv[2]) fs.writeFileSync(process.argv[2], JSON.stringify({out,res},null,1));
 process.exit(res.every(r=>r.ok)?0:1);
+
+// v1185：GM・CEO・経理は名前を選ぶとメールとパスワードの段が出る。試しのあいだは「PIN でログイン」で今までどおり PIN の段へ（ほかの人は何もしない）
+async function pinStep(page) {
+  const mail = await page.evaluate(() => { const m = document.getElementById('login-step-mail'); return !!(m && m.style.display !== 'none'); }).catch(() => false);
+  if (mail) await page.click('#ml-pin');
+}

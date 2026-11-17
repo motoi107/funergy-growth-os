@@ -49,7 +49,7 @@ await pg.exec('set role service_role');
 const db = { async rpc(name, p) { const r = await pg.query(`select public.${name}($1::jsonb) as v`, [JSON.stringify(p ?? {})]); return r.rows[0].v; } };
 const q = async (sql, args) => { await pg.exec('reset role'); try { return (await pg.query(sql, args)).rows; } finally { await pg.exec('set role service_role'); } };
 const TOK = { 'tok-gm': UID.gm, 'tok-ceo': UID.ceo };
-const W = { dlOff: false, pinCalls: [], dlCalls: [] };
+const W = { dlOff: false, epNew: false, pinCalls: [], dlCalls: [] };
 const dl = createHandler({
   env: k => ({ SUPABASE_URL: 'https://tgbhgxzehzeouopklhje.supabase.co', SUPABASE_SERVICE_ROLE_KEY: 'service', SUPABASE_ANON_KEY: ANON, DL_ALLOWED_ORIGINS: ORIGIN })[k],
   db,
@@ -88,6 +88,14 @@ async function handle(method, u, headers, body) {
       return J(PINS[p.name] === '0000' ? { ok: true } : { ok: true, token: 'perf-session:' + p.id });
     }
     return J({ ok: true });
+  }
+  if (u.pathname === '/functions/v1/emp-private') {
+    // v1185：給与の関数。ふだんは今の本番（v5＝PIN だけ・印は 401）。W.epNew なら v1185（公開しない 1 ファイル＝印でも）
+    let j = {}; try { j = JSON.parse(body || '{}'); } catch (e) {}
+    const m = /^perf-session:(.+)$/.exec(String(j.token || ''));
+    const p = (W.epNew && m) ? PEOPLE.find(x => x.id === m[1]) : PEOPLE.find(x => x.name === j.name && PINS[x.name] === String(j.pin || ''));
+    if (!p) return J({ ok: false, error: 'unauthorized' }, 401);
+    return J({ ok: true, private: { [p.id]: { wage: 20, email: '', phone: '', monthlySalary: null } } });
   }
   if (u.pathname === '/auth/v1/token') {
     let j = {}; try { j = JSON.parse(body || '{}'); } catch (e) {}
@@ -147,13 +155,16 @@ async function pinLogin(D, store, name) {
   await page.waitForFunction(() => document.querySelectorAll('#login-store-grid .store-btn').length >= 2, null, { timeout: 60000 });
   await page.evaluate(s => loginPickLocation(s), store); await sleep(400);
   await page.locator('#login-name-grid .store-btn', { hasText: name }).first().click();
+  await sleep(200);
+  // v1185：GM・CEO・経理はメールとパスワードの段が出る → 試しのあいだは「PIN でログイン」で PIN の段へ
+  if (await page.evaluate(() => { const m = document.getElementById('login-step-mail'); return !!(m && m.style.display !== 'none'); })) { await page.click('#ml-pin'); await sleep(200); }
   await page.fill('#login-pin-input', PINS[name]); await page.click('#login-pin-btn');
   return waitApp(page);
 }
 
 // ================================================================ 1. GM：試す人を足して招待のリンクを作る（メールで認証）
 const GM = await device(1280);
-ok('GM はいつもの PIN でログインできる', await pinLogin(GM, 'OFFICE', 'Gabe Gm'));
+ok('GM はいつもの PIN でログインできる（v1185：メールの段の「PIN でログイン」から）', await pinLogin(GM, 'OFFICE', 'Gabe Gm'));
 await GM.page.evaluate(() => go('staff_master')); await sleep(1200);
 ok('従業員マスターに「ログインの試し」（GM・CEO）', await GM.page.evaluate(() => /ログインの試し/.test(document.body.innerText)));
 await GM.page.evaluate(() => FUNERGY_DL.admin());
@@ -213,7 +224,11 @@ ok('PIN を確かめていない（auth-pin を呼ばない）', W.pinCalls.leng
 await A.page.evaluate(() => go('mypage')); await sleep(1500);
 ok('マイページに「この端末のログイン（試し）」', /この端末のログイン（試し）/.test(await A.page.evaluate(() => document.body.innerText)));
 const payBtn = await A.page.evaluate(() => /時給を読むには PIN を 1 回/.test(document.body.innerText));
-ok('給与の見込みに「PIN を 1 回」の案内（PIN なしで入ったため）', payBtn);
+ok('給与の見込みに「PIN を 1 回」の案内（PIN なしで入ったため・給与の関数が v5 のまま）', payBtn);
+W.epNew = true;
+await A.page.evaluate(async () => { await fetchEmpPrivate(); go('mypage'); }); await sleep(1200);
+ok('v1185：給与の関数が印を受けると PIN なしで時給を読む（案内は出ない）', await A.page.evaluate(() => !!(window._empPrivate && window._empPrivate.S1) && !/時給を読むには PIN を 1 回/.test(document.body.innerText)));
+W.epNew = false;
 ok('Invoice取込の「初期 PIN」扱いにしない', await A.page.evaluate(() => typeof invInDefaultPin === 'function' && invInDefaultPin() === false));
 await shot(A.page, 'mypage-390');
 
