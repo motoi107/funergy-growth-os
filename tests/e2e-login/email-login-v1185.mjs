@@ -47,7 +47,11 @@ await pg.query('insert into public.manager_auth values ($1,$2,$3),($4,$5,$6),($7
 await pg.exec(fs.readFileSync(path.join(ROOT, 'supabase/migrations/20261203090000_device_login.sql'), 'utf8'));
 await pg.exec(fs.readFileSync(path.join(ROOT, 'supabase/migrations/20261205090000_email_login.sql'), 'utf8'));
 await pg.exec('set role service_role');
-const db = { async rpc(name, p) { const r = await pg.query(`select public.${name}($1::jsonb) as v`, [JSON.stringify(p ?? {})]); return r.rows[0].v; } };
+// PostgREST と同じく、無い関数は 404（v1186 の login_info は SQL がまだなら「止めていない」）
+const db = { async rpc(name, p) {
+  try { const r = await pg.query(`select public.${name}($1::jsonb) as v`, [JSON.stringify(p ?? {})]); return r.rows[0].v; }
+  catch (e) { if (/does not exist/.test(e.message)) { const x = new Error('Could not find the function'); x.status = 404; throw x; } throw e; }
+} };
 const q = async (sql, args) => { await pg.exec('reset role'); try { return (await pg.query(sql, args)).rows; } finally { await pg.exec('set role service_role'); } };
 const TOK = new Map(), RT = new Map();
 let n = 0;
@@ -184,7 +188,7 @@ ok('390px で横にはみ出さない', (await overflowX(G.page)) <= 0);
 await shot(G.page, 'mail-390');
 await mailLogin(G, 'gm@test.example', 'nope');
 ok('パスワードが違うと「メールまたはパスワードが違います」', /メールまたはパスワードが違います/.test(await errText(G.page)));
-ok('違ったときは device-login を呼ばない・パスワード欄を空に', W.dlCalls.length === 0 && await G.page.evaluate(() => document.getElementById('ml-pass').value === ''));
+ok('違ったときは device-login を呼ばない・パスワード欄を空に', W.dlCalls.filter(c => c.a !== 'login_info').length === 0 && await G.page.evaluate(() => document.getElementById('ml-pass').value === ''));
 await mailLogin(G, 'office@test.example', 'pw-office');
 ok('ほかの人のメールでは入れない（その人として入れません）', /Gabe Gm さんとして入れません/.test(await errText(G.page)) && W.closed.length === 1);
 await mailLogin(G, 'gm@test.example', 'pw-gm');

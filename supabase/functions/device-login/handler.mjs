@@ -6,6 +6,8 @@
 // GM・CEO の操作（試す人・招待・端末を外す）はメールのログイン（Supabase Auth）と manager_auth の役割（ceo・gm）。
 // v1185（段階 2）：email_login＝GM・CEO・経理が、名前を選んだあとメールとパスワード（Supabase Auth）で入り、PIN のログインと同じ印を受け取る。
 //   manager_auth の行が選んだ名前の社員と結ばれていて、役割が ceo・gm・office のときだけ（SQL 20261205090000 の dl_email_login が決める）。
+// v1186：login_info＝ログインの画面が GM・CEO・経理に「PIN でログイン」を出すか（PIN のログインを止めたか・SQL 20261206090000 の dl_top_pin_info）。
+//   ログインの前に聞く（だれのことでもない・ログイン不要）。SQL がまだなら止めていない（false）。
 // アプリが送る名前・役割・社員の ID は使わない。記録に PIN・招待の値・印・鍵の中身は残さない。
 
 export function postgrestDb({ fetch, url, key }) {
@@ -125,6 +127,13 @@ export function createHandler(deps) {
   }
 
   const DEVICE = {
+    // v1186：PIN のログインを止めたか（GM・CEO・経理）。人によらない答えだけ返す。SQL がまだ（関数が無い 404）なら止めていない
+    login_info: async () => {
+      let r;
+      try { r = await db.rpc('dl_top_pin_info', {}); }
+      catch (e) { if (e && e.status === 404) return { top_pin_off: false }; throw e; }
+      return { top_pin_off: !!(r && r.top_pin_off === true) };
+    },
     // 招待を開いた（使わない）。名前は ok のときだけ
     invite_peek: async (b, w) => {
       const h = await sha256hex(TOKEN(b.token));
