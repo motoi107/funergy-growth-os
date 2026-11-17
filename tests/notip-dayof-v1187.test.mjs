@@ -52,7 +52,7 @@ const FNS = ['calcTipDistribution', 'tipWeightByRate', '_tipDecDay', '_tipDecDay
 
 // One device. DB = the shared database rows by store (business_date → data). LOCAL = this device's own tip_labor copies.
 function device(DB, opts = {}) {
-  const c = { console, STORE: {}, EMPS: [], TIPS: {}, TOASTS: [], RENDERS: [], CONFIRMS: {}, ALERTS: [], CSV: [], FETCHES: [], LATER: [], UX: { notes: 0, refresh: 0 }, DB, OPTS: opts, Promise, URL };
+  const c = { console, STORE: {}, EMPS: [], TIPS: {}, TOASTS: [], RENDERS: [], CONFIRMS: {}, ALERTS: [], CSV: [], FETCHES: [], LATER: [], UPS: [], DBQ: [], UX: { notes: 0, refresh: 0 }, DB, OPTS: opts, Promise, URL };
   c.setTimeout = (fn, ms) => { if ((ms || 0) >= 1000) { c.LATER.push({ fn, ms }); return 0; } return setTimeout(fn, ms); };
   c.clearTimeout = (h) => clearTimeout(h);
   c.window = { FUNERGY_UX: { noteDataChange() { c.UX.notes++; }, bgRefresh() { c.UX.refresh++; } } };
@@ -93,19 +93,27 @@ function device(DB, opts = {}) {
     function acctMonthLabel(){ return '2026-12'; }
     function tipCSVRows(s, d){ return [[s, d, calcHalfMonthSettlement(s, d).rows.map(function(r){ return r.name + ':' + r.final.toFixed(4); }).join(' ')]]; }
     function downloadCSV(rows, name){ CSV.push({ rows: JSON.parse(JSON.stringify(rows)), name: name }); }
-    function supaUpsert(){ return Promise.resolve(!!OPTS.upsertOk); }
+    // OPTS.upsertDefer: each save waits until the test answers it (UPS[i].res(true|false)); rows = what was saved
+    function supaUpsert(t, rows){ if (OPTS.upsertDefer) return new Promise(function(res){ UPS.push({ rows: rows, res: res }); }); return Promise.resolve(!!OPTS.upsertOk); }
     function toastFnBody(o){ return JSON.stringify(o); }
     function fetch(url){
       FETCHES.push(String(url));
       if (OPTS.down) return Promise.reject(new Error('offline'));
-      if (String(url).indexOf(TOAST_SYNC_FN) === 0) return Promise.resolve({ json: function(){ return Promise.resolve({ employees: OPTS.toast || [] }); } });
+      // OPTS.toastQ: one list of employees per Toast pull, in the order the pulls start
+      if (String(url).indexOf(TOAST_SYNC_FN) === 0) { var emps = (OPTS.toastQ && OPTS.toastQ.length) ? OPTS.toastQ.shift() : (OPTS.toast || []);
+        return Promise.resolve({ json: function(){ return Promise.resolve({ employees: emps }); } }); }
       var u = new URL(String(url)), guid = (u.searchParams.get('restaurant_guid') || '').replace(/^eq\\./, ''), g = u.searchParams.getAll('business_date'),
           from = (g.find(function(x){ return x.indexOf('gte.') === 0; }) || '').slice(4), to = (g.find(function(x){ return x.indexOf('lte.') === 0; }) || '').slice(4);
       var sid = (STORES.find(function(s){ return s.toastGuid === guid; }) || {}).id, rows = [];
       Object.keys((DB[sid] || {})).sort().forEach(function(d){ if (d >= from && d <= to) rows.push({ restaurant_guid: guid, business_date: d, data: DB[sid][d] }); });
       if (OPTS.manyRows) for (var i = rows.length; i < 1000; i++) rows.push({ restaurant_guid: guid, business_date: '1999-01-01', data: [] });
-      return Promise.resolve({ ok: true, json: function(){ return Promise.resolve(rows); } });
+      var ans = { ok: true, json: function(){ return Promise.resolve(rows); } };
+      // OPTS.dbDefer: the database answers when the test says so (DBQ[i]()) — the rows are the ones at the time the read was asked
+      if (OPTS.dbDefer) return new Promise(function(res){ DBQ.push(function(){ res(ans); }); });
+      return Promise.resolve(ans);
     }
+    // the business day (Hawaii) of the device: later than every test day unless a test sets OPTS.today. Older builds have no such function.
+    var TODAY = OPTS.today || '2026-12-20'; if (typeof _tipNtToday === 'function') _tipNtToday = function(){ return TODAY; };
   `);
   return c;
 }
@@ -192,7 +200,7 @@ test('when the records cannot be read: provisional amounts, finalizing and expor
   assert.equal(row(x, 'N').lunchNoTip, true, 'provisional = the old rule on this device');
   await settle(B);
   assert.equal(dist(B, 'F01', '2026-12-05').pending, true, 'still unknown after the failed read');
-  run(B, "confirmTip('F01')");
+  run(B, "confirmTip('F01')"); await tick(20);   // finalizing also waits for the records first (Claude routine #187 P3-4), then stops
   assert.equal(Object.keys(B.CONFIRMS).length, 0, 'not finalized');
   assert.match(B.ALERTS[0] || '', /No Tip/);
   await run(B, "exportTipCSV('F01', '2026-12-05')");
@@ -266,4 +274,163 @@ test('my tip shows that it is still being checked; version markers are 1187 or l
   assert.match(SRC, /tipEst\.pending \? t\('・確認中'/);
   const v = (/const APP_VERSION = '(\d+)'/.exec(SRC) || [])[1], SW = fs.readFileSync(process.env.FUNERGY_SW || new URL('../sw.js', import.meta.url), 'utf8');
   assert.ok(Number(v) >= 1187); assert.equal((/const SW_BUILD = '(\d+)'/.exec(SW) || [])[1], v);
+});
+
+// ===== Codex（#187 6959067758・6959181675）P2 1〜3 と Claude のルーティン（6959088692）P3 の直し =====
+
+test('Codex P2-1: an older Toast pull whose save answers later does not replace the newer pull’s shift count (the same order rule as the device copy)', async () => {
+  // A (older) = lunch only, B (newer) = lunch and dinner. Both saves succeed; B's answer arrives first, A's later.
+  const c = device({ F01: {} }, { toastQ: [[W('N', 4, 0)], [W('N', 4, 5)]], upsertDefer: true }); staff(c);
+  const pA = run(c, "fetchTipLabor('F01', 'g-F01', '2026-11-21')");
+  const pB = run(c, "fetchTipLabor('F01', 'g-F01', '2026-11-21')");
+  for (let i = 0; i < 10 && c.UPS.length < 2; i++) await tick();
+  assert.equal(c.UPS.length, 2, 'both pulls are saving');
+  const which = u => u.rows[0].data[0].dinnerHours;   // 0 = A, 5 = B
+  const ua = c.UPS.find(u => which(u) === 0), ub = c.UPS.find(u => which(u) === 5);
+  ub.res(true); await pB;
+  ua.res(true); await pA;
+  const N = plain(c.STORE['tip_labor_F01_2026-11-21']).N;
+  assert.deepEqual([N.lunch, N.dinner], [4, 5], 'the device copy keeps B (as before)');
+  assert.deepEqual(plain(run(c, "_tipNtSt().day.F01['2026-11-21'].c")).N, { n: 2, l: 1 }, 'the No Tip count keeps B too (2 shifts), not A (1)');
+});
+
+test('Codex P2-2: a day that is gone from the database counts as 0 after a full read of the range (two devices agree); a newer record is not cleared by an older read', async () => {
+  const DB = DB0(), A = device(DB); staff(A);
+  local(A, 'F01', '2026-12-05', { N: [4, 5], V: [4, 5] });
+  dist(A, 'F01', '2026-12-05'); await settle(A);
+  near(row(dist(A, 'F01', '2026-12-05'), 'N').dinner, 44.4444444444, 'with 11/21 in the database: dinner is the 4th shift (paid)');
+  delete DB.F01['2026-11-21'];   // the row is gone from the database
+  await run(A, "syncTipLaborFromDB('F01', 'g-F01', [{ date: '2026-11-20' }, { date: '2026-12-05' }])");
+  const B = device(DB); staff(B); local(B, 'F01', '2026-12-05', { N: [4, 5], V: [4, 5] });
+  dist(B, 'F01', '2026-12-05'); await settle(B);
+  const a = dist(A, 'F01', '2026-12-05'), b = dist(B, 'F01', '2026-12-05');
+  assert.equal(a.pending, false); assert.equal(b.pending, false);
+  near(row(a, 'N').dinner, 0, 'A after reading again: dinner is the 3rd shift (No Tip)');
+  assert.deepEqual(a.list.map(r => [r.name, r.total]), b.list.map(r => [r.name, r.total]), 'the same amounts as a device that reads now');
+  // order: a record from a read started later (seq 9) stays when an earlier read (seq 7) did not see that day; a later read (seq 10) clears it
+  const d = device({});
+  run(d, "_tipNtRecordDay('F01', '2026-11-21', { N: { lunch: 0, dinner: 5 } }, 9)");
+  run(d, "_tipNtRecordRange('F01', '2026-11-20', '2026-11-25', 7, null, ['2026-11-20'])");
+  assert.deepEqual(plain(run(d, "_tipNtSt().day.F01['2026-11-21']")), { seq: 9, c: { N: { n: 1, l: 0 } } }, 'the newer record stays');
+  run(d, "_tipNtRecordRange('F01', '2026-11-20', '2026-11-25', 10, null, ['2026-11-20'])");
+  assert.deepEqual(plain(run(d, "_tipNtSt().day.F01['2026-11-21']")), { seq: 10, c: {} }, 'a later full read that did not see it: 0');
+  // a read that may be cut off (1000 rows) clears nothing
+  const e = device({ F01: { '2026-11-20': [W('N', 4, 0)] } }, { manyRows: true });
+  run(e, "_tipNtRecordDay('F01', '2026-11-21', { N: { lunch: 0, dinner: 5 } }, 1)");
+  await run(e, "syncTipLaborFromDB('F01', 'g-F01', [{ date: '2026-11-20' }, { date: '2026-11-25' }])");
+  assert.deepEqual(plain(run(e, "_tipNtSt().day.F01['2026-11-21'].c")), { N: { n: 1, l: 0 } }, 'not trusted → not cleared');
+});
+
+test('Codex P2-3: logging out (or another person logging in) drops what was read, the waiting exports and the late answers of the previous login', async () => {
+  // doLogout calls the reset (both copies of the function)
+  assert.equal((SRC.match(/if\(typeof tipNtReset==='function'\) tipNtReset\(\);/g) || []).length, 2, 'both doLogout copies reset No Tip');
+  const c = device(DB0()); staff(c);
+  local(c, 'F01', '2026-12-05', { N: [4, 5], V: [4, 5] });
+  dist(c, 'F01', '2026-12-05'); await settle(c);
+  assert.equal(dist(c, 'F01', '2026-12-05').pending, false);
+  run(c, 'tipNtReset()');   // what doLogout does
+  c.OPTS.down = true; const n0 = c.FETCHES.length;
+  const x = dist(c, 'F01', '2026-12-05');
+  assert.equal(x.pending, true, 'the next login does not use what the previous one read');
+  assert.equal(run(c, "_tipNtCovered('F01', '2026-11-20', '2026-12-05')"), false);
+  await settle(c);
+  assert.ok(c.FETCHES.length > n0, 'it reads again');
+  // a read of the previous login that answers after the logout is not used; an export waiting for it stops without a message
+  const d = device(DB0(), { dbDefer: true }); staff(d);
+  local(d, 'F01', '2026-12-05', { N: [4, 5], V: [4, 5] });
+  const pe = run(d, "exportTipCSV('F01', '2026-12-05')");
+  for (let i = 0; i < 10 && !d.DBQ.length; i++) await tick();
+  assert.equal(d.DBQ.length, 1, 'the read is waiting for the database');
+  run(d, 'tipNtReset()');
+  const notes0 = d.UX.notes, later0 = d.LATER.length;
+  d.DBQ.shift()(); await pe; await tick();
+  assert.equal(d.UX.notes, notes0, 'the previous login’s read does not redraw the next person’s screen');
+  assert.equal(d.LATER.length, later0, 'nor schedule anything');
+  assert.equal(d.CSV.length, 0, 'the previous login’s export is not made');
+  assert.ok(!d.TOASTS.some(([m, k]) => k === 'danger'), 'and no error is shown to the next person');
+  assert.equal(run(d, "(_tipNtSt().day.F01 ? 1 : 0)"), 0, 'the late answer is not recorded for the next login');
+  assert.equal(run(d, "_tipNtCovered('F01', '2026-11-20', '2026-12-05')"), false);
+  // another person logs in without a logout on this page: the same
+  const e = device(DB0()); staff(e);
+  run(e, "var curUserName = 'Aki'");
+  local(e, 'F01', '2026-12-05', { N: [4, 5], V: [4, 5] });
+  dist(e, 'F01', '2026-12-05'); await settle(e);
+  assert.equal(run(e, "_tipNtCovered('F01', '2026-11-20', '2026-12-05')"), true);
+  run(e, "curUserName = 'Ben'");
+  assert.equal(run(e, "_tipNtCovered('F01', '2026-11-20', '2026-12-05')"), false, 'another person: read again');
+  // finalizing that waits across a logout does nothing
+  const f = device(DB0(), { dbDefer: true }); staff(f);
+  local(f, 'F01', '2026-12-05', { N: [4, 5], V: [4, 5] });
+  f.PERIOD = { from: '2026-12-01', to: '2026-12-15', anyDate: '2026-12-05', label: '12/1-15', rangeLabel: '12/1-15', dates: [] };
+  run(f, "confirmTip('F01')");
+  for (let i = 0; i < 10 && !f.DBQ.length; i++) await tick();
+  run(f, 'tipNtReset()'); f.DBQ.shift()(); await tick(20);
+  assert.equal(Object.keys(f.CONFIRMS).length, 0, 'not finalized'); assert.equal(f.ALERTS.length, 0, 'no message');
+});
+
+test('Claude routine P3-1: a day that had not ended when it was read is used only that day; future days are not marked as read', async () => {
+  const c = device(DB0(), { today: '2026-12-05' }); staff(c);
+  await run(c, "syncTipLaborFromDB('F01', 'g-F01', [{ date: '2026-11-20' }, { date: '2026-12-31' }])");
+  assert.deepEqual(plain(run(c, "_tipNtSt().cov.F01")), [['2026-11-20', '2026-12-04']], 'whole days up to the day before');
+  assert.equal(run(c, "_tipNtSt().part.F01"), '2026-12-05', 'today (not ended) separately');
+  assert.equal(run(c, "_tipNtCovered('F01', '2026-11-20', '2026-12-05')"), true, 'today it is used');
+  assert.equal(run(c, "_tipNtCovered('F01', '2026-11-20', '2026-12-31')"), true, 'a later day counts what exists up to today');
+  run(c, "TODAY = '2026-12-06'");   // the page stays open past midnight
+  assert.equal(run(c, "_tipNtCovered('F01', '2026-11-20', '2026-12-05')"), false, '12/5 was read before it ended → read again');
+  assert.equal(run(c, "_tipNtCovered('F01', '2026-11-20', '2026-12-04')"), true);
+  // a read asked before midnight that answers after it: the day it was asked is not whole
+  const d = device({}, { today: '2026-12-06' });
+  run(d, "_tipNtRecordRange('F01', '2026-11-20', '2026-12-05', 1, null, [], '2026-12-05')");
+  assert.equal(run(d, "_tipNtCovered('F01', '2026-11-20', '2026-12-05')"), false);
+  assert.equal(run(d, "_tipNtCovered('F01', '2026-11-20', '2026-12-04')"), true);
+  // the same through the real read: asked on 12/5, the database answers after midnight
+  const g = device(DB0(), { today: '2026-12-05', dbDefer: true });
+  const pg = run(g, "syncTipLaborFromDB('F01', 'g-F01', [{ date: '2026-11-20' }, { date: '2026-12-05' }])");
+  for (let i = 0; i < 10 && !g.DBQ.length; i++) await tick();
+  run(g, "TODAY = '2026-12-06'"); g.DBQ.shift()(); await pg;
+  assert.equal(run(g, "_tipNtCovered('F01', '2026-11-20', '2026-12-05')"), false, 'the day it was asked was not over: not whole');
+  assert.equal(run(g, "_tipNtCovered('F01', '2026-11-20', '2026-12-04')"), true);
+  // today that was not read is not covered (only the days before it were read)
+  const h = device(DB0(), { today: '2026-12-05' });
+  await run(h, "syncTipLaborFromDB('F01', 'g-F01', [{ date: '2026-11-20' }, { date: '2026-12-04' }])");
+  assert.equal(run(h, "_tipNtCovered('F01', '2026-11-20', '2026-12-04')"), true);
+  assert.equal(run(h, "_tipNtCovered('F01', '2026-11-20', '2026-12-05')"), false, 'today was not read');
+  // the distribution of a day read the same day is decided; the next day it is read again
+  const e = device(DB0(), { today: '2026-12-05' }); staff(e);
+  local(e, 'F01', '2026-12-05', { N: [4, 5], V: [4, 5] });
+  dist(e, 'F01', '2026-12-05'); await settle(e);
+  assert.equal(dist(e, 'F01', '2026-12-05').pending, false);
+  run(e, "TODAY = '2026-12-06'"); const n0 = e.FETCHES.length;
+  assert.equal(dist(e, 'F01', '2026-12-05').pending, true); await settle(e);
+  assert.ok(e.FETCHES.length > n0); assert.equal(dist(e, 'F01', '2026-12-05').pending, false);
+});
+
+test('Claude routine P3-3 and P3-4: when the records cannot be read, the wait grows (30 s → 5 min); finalizing waits for the records like the exports', async () => {
+  const c = device(DB0(), { down: true }); staff(c);
+  local(c, 'F01', '2026-12-05', { N: [4, 5], V: [4, 5] });
+  const ms = [];
+  for (let i = 0; i < 6; i++) {
+    run(c, "var _S = _tipNtSt(); if (_S.failAt.F01) _S.failAt.F01 = Date.now() - 400000");   // the wait has passed
+    dist(c, 'F01', '2026-12-05'); await settle(c);
+    ms.push(run(c, "_tipNtRetryMs(_tipNtSt(), 'F01')"));
+  }
+  assert.deepEqual(ms, [30000, 60000, 120000, 240000, 300000, 300000]);
+  // online but not read yet: finalizing reads first and then finalizes (no message)
+  const d = device(DB0()); staff(d);
+  local(d, 'F01', '2026-12-05', { N: [4, 5], V: [4, 5] });
+  d.PERIOD = { from: '2026-12-01', to: '2026-12-15', anyDate: '2026-12-05', label: '12/1-15', rangeLabel: '12/1-15', dates: [] };
+  run(d, "confirmTip('F01')"); await settle(d); await tick(20);
+  assert.equal(d.ALERTS.length, 0);
+  const conf = d.CONFIRMS['F01|2026-12-01'];
+  assert.ok(conf, 'finalized after reading');
+  near(conf.rows.find(r => r.name === 'N').final, 44.4444444444, 'with the decided No Tip (dinner paid)');
+  // the period on the screen changed while waiting: the period that was pressed is not finalized as another one
+  const e = device(DB0(), { dbDefer: true }); staff(e);
+  local(e, 'F01', '2026-12-05', { N: [4, 5], V: [4, 5] });
+  e.PERIOD = { from: '2026-12-01', to: '2026-12-15', anyDate: '2026-12-05', label: '12/1-15', rangeLabel: '12/1-15', dates: [] };
+  run(e, "confirmTip('F01')");
+  for (let i = 0; i < 10 && !e.DBQ.length; i++) await tick();
+  e.PERIOD = { from: '2026-12-16', to: '2026-12-31', anyDate: '2026-12-20', label: '12/16-31', rangeLabel: '12/16-31', dates: [] };
+  e.DBQ.shift()(); await settle(e); await tick(20);
+  assert.equal(Object.keys(e.CONFIRMS).length, 0);
 });
