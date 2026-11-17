@@ -8,7 +8,8 @@
 - 非公開の 1 ファイル 2 つ（Moto さんに直接・リポジトリに置かない）：`device-login_v1185_index.ts`（sha256 先頭 `0a7dedfc9c0f`＝今の handler ＋ v1183 と同じ印の部品）・`emp-private_v1185_index.ts`（`6745ddff8ff8`＝v5 ＋ 印で頼める）。Claude の手元の試験と「device-login の印を emp-private が受ける」試験は通った。
 - 試験（合成データ）：email-login-server 10・app 13・deploy 4（CI に足した）・e2e `tests/e2e-login/email-login-v1185.mjs` 36/36・わざと壊す（アプリと handler 10/10＝1 回目 5/10 → 試験を足した・SQL 4/4・チャット 1/1）・関連 35 ファイル 437 件のうち 435（bot-center 2 は前から）・static release pass/1185。前の e2e で GM・CEO を PIN で入れていた台本 35 本に `pinStep` を足し、流し直したのは device-login-v1183 52/52・three-fixes-v1184 30/30・expense-paths 37/37。
 - 独立レビュー・Codex のレビューはまだ。実機・本番は未確認。
-- 次：PR → Codex → Moto さんが手順.md → マージ → 端末を 1185 に → 実機（iPhone で GM・PC で経理）。
+- PR #183（base main・コードは `e1900c7f`）。
+- 次：Codex → Moto さんが手順.md → マージ → 端末を 1185 に → 実機（iPhone で GM・PC で経理）。
 
 ## 2026-11-16 ログインの段階 2：GM・CEO はメールとパスワード（UI案90・Claude・ブランチ `claude/login-stage2-1185`・コードの変更なし）
 
