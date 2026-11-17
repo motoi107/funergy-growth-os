@@ -23,7 +23,10 @@
    - **先に止まる**：在籍の GM・CEO・経理で、メールのアカウント（manager_auth の ceo・gm・office）と結ばれていない人が 1 人でもいれば、何も変えずに STOP（名前と数）。
    - 新しい端末の知らせ（`dl_email_notice`）：足したあと時刻の順に並べてから 500 件にする（アプリ・secure-state と同じ）。
    - 表・関数はサーバーの鍵だけ。security invoker・search_path 固定。社員の表・manager_auth は読むだけ。
-2. **auth-pin v1186（非公開の 1 ファイル・まだ作っていない＝今のソース待ち）**：PIN が合っても、止めている人には**ログインの印を出さず** `{ok:true, use_email:true}`。割引・チャットの「続ける」などは `ok:true` のままなので今までどおり。`dl_pin_blocked` が無い（404）＝SQL がまだ：止めない。
+2. **auth-pin v1186（非公開の 1 ファイル・sha256 先頭 `af5ad5cd042f`・11/17 に Moto さんが添付した v1085 のソースから作った）**：照合（個人）で PIN が合って在籍の人でも、`dl_pin_blocked` が止めると答えた人には**ログインの印を出さず** `{ok:true, use_email:true}`。割引・チャットの「続ける」・暗証番号を忘れたときの確かめ・device-login は `ok:true` を見るので今までどおり（emp-private v1186 は `use_email` を見て断る）。
+   - 聞く順：PIN の確かめ → 退職・停止（`inactive`）→ `dl_pin_blocked`（名前と、社員の表で確かめた社員 ID）→ 印。PIN の間違い・退職の人には `use_email` を返さない（役割が漏れない）。
+   - `dl_pin_blocked` が無い（404）＝SQL がまだ・戻した：v1085 と同じ（止めない）。そのほかの失敗：社員の表で、その ID かその名前の人の役割（列か中身）が ceo・gm・office なら `use_email`（emp-private と同じ・安全なほう）。社員の表も読めなければ 503。
+   - 本人の PIN の変更・一覧・リセット・在籍に戻す・店舗の PIN は変えない。
 3. **emp-private v1186（非公開の 1 ファイル）**：止めている人には PIN では給与を渡さない（印なら渡す）。auth-pin が `use_email` と答えたときも断る。`dl_pin_blocked` が 404：止めない／そのほかの失敗：社員の表の役割が ceo・gm・office なら止める（安全なほう）。
 
 ## アプリ v1186
@@ -41,6 +44,7 @@
 - **auth-pin v1186 を入れないまま SQL を流すと、止まるのは画面だけ**（1186 のアプリはボタンを出さないが、前のアプリや直接の呼び出しでは PIN でまだ印が出る。給与だけは emp-private v1186 が PIN では渡さない）。
 - 列と中身の役割が違う人（例：列は crew・中身は gm）は止める。アプリが PIN の段に回しても、auth-pin v1186 が `use_email` と答えてメールの段に回す（auth-pin v1186 が入るまでは、その人は PIN で入れる）。
 - 経理のログインの試しの端末は、SQL のあと使えなくなる（メールとパスワードで入る）。
+- SQL（②）を関数・アプリより先に流しても、関数が前の版のあいだ PIN のログインは止まらない（止まるのは経理の試しの端末だけ）。11/17 に Moto さんが先に流し、`PIN_を戻す.sql` で外した（`pin_off_now` false）。
 - 戻すのは `PIN_を戻す.sql`（スイッチだけ・2 回流しても同じ）。もう一度止めるときは SQL をもう一度。
 
 ## 試験（合成データ・架空の名前。本番にはつながない）
@@ -51,5 +55,6 @@
 - e2e（本物の Chrome・合成データ）`tests/e2e-login/pin-off-v1186.mjs` 19/19：SQL の前は v1185 と同じ → SQL のあと GM（390px）・経理（英語・PC）は PIN のボタンなし・画面の外から PIN の段に切り替えても出ない・GM はメールで入り給与は印で・Crew は PIN・名簿のずれた人は PIN が合ってもメールの段へ → メールで入る → `PIN_を戻す.sql` で GM がまた PIN で入る・pageerror 0・device-login の 500 なし。auth-pin・emp-private は v1186 と同じ決まりの代わり（本物の SQL の `dl_pin_blocked`）。v1183・v1185 の e2e（52/52・36/36）も流し直した（模擬の関数が無い関数に 404 を返すように直し、`login_info` を device-login の呼び出しの数から外した）。
 - わざと壊す：アプリ・SQL 29/29・入れる一式 11/11。
 - 非公開の試験（Claude の手元）：emp-private v1186（SQL の前は PIN で読める → SQL のあと PIN では断る・印では読める → 戻すと PIN でも）・device-login v1186（`login_info`）・device-login の印を emp-private が受ける。
+- 非公開の試験（auth-pin v1186・Claude の手元・本物の SQL を PGlite で）：18（SQL の前と `PIN_を戻す.sql` のあとは全員の答えが v1085 と同じ・SQL のあと GM／中身だけ CEO／経理／列か中身だけ GM は `use_email`・名前だけ・初期の PIN・同じ名前の GM と Crew・Crew と事務Crew は印・送られた社員 ID で昇格しない・PIN の間違いと退職は前と同じ・店舗・本人の変更・`dl_pin_blocked` の失敗と形の違う答え・503）。わざと壊す 12/12。本物の auth-pin → 本物の emp-private 11。本物のアプリ（Chrome・合成データ）で e2e を本物の auth-pin に替えて 20/20（名簿のずれた人に本物の auth-pin が `use_email` を返してメールの段へ・Crew と戻したあとの GM は本物の印）。
 - 関連：device-login-server・app・deploy、email-login-server・deploy、chat-ui79-app-v1167、ux-core、pin-admin-email、toast-session、invoice-signin-keep。static release pass/1186。
-- 実機・本番・auth-pin v1186 は未確認。
+- 実機・本番は未確認。

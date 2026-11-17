@@ -4,8 +4,9 @@
 
 1. 済（Moto さん 11/16 23:24 HST）：GM・CEO はチャットのロックなし（PIN で入った日も・今のまま）・GM・CEO・経理の PIN のログインをやめる。
 2. 済（Claude）：v1186（SQL `20261206090000`・アプリ・device-login の `login_info`・`docs/PIN_OFF_V1186_JA.md`・入れる一式 `deploy/pin-off-v1186/`）と #183 の Codex（6941809468）の P2 2 つ。非公開の emp-private・device-login v1186 は Moto さんに直接。
-3. 次（Moto さん）：auth-pin の今のソースを添付 → 次（Claude）：auth-pin v1186（止めている人に印を出さず `use_email`）。
-4. 次：Codex → マージ → Moto さんが手順.md（①の 5 の人は先に一度メールで入る・端末を 1186 にしてから ②）→ 実機（GM の iPhone でボタンが出ない・割引の PIN は通る）。
+3. 済（Moto さん 11/17）：auth-pin の今のソース（v1085）を添付。済（Claude）：auth-pin v1186（sha256 先頭 `af5ad5cd042f`・非公開の試験 18・わざと壊す 12/12・emp-private との試験 11・本物の auth-pin の e2e 20/20）を直接渡した。
+3b. 済（Moto さん 11/17 07:07 HST）：先に流した ② を `PIN_を戻す.sql` で外した（`pin_off_now` false）。
+4. 次：Codex → Moto さんが手順.md の 2（関数 3 つ）→ マージ → 端末を 1186 に → ②（もう一度）→ ③ → 実機（GM の iPhone でボタンが出ない・割引の PIN は通る）。
 5. 記録の訂正：#182 の Codex の再レビュー 6939177382 はマージの前にあった（上の 5 の「無い」は誤り）。
 6. まだ確かめていない Moto さんの配備：v1185・v1184・v1183・v1176・v1174。
 
