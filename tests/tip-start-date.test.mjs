@@ -55,7 +55,7 @@ const FNS = ['calcTipDistribution', 'tipWeightByRate', '_tipDecDay', '_tipDecDay
 function app(now) {
   const c = { console, STORE: {}, EMPS: [], LABOR: {}, TIPS: {}, TOASTS: [], RENDERS: [], CONFIRMS: [], NOTIFS: [], answer: true, EL: {}, CLOUD: {}, CLOUD_READS: [], cloudDown: false, MOVED: true };
   vm.createContext(c);
-  vm.runInContext(FNS.map(fnSrc).join('\n') + `
+  vm.runInContext(FNS.map(fnSrc).join('\n') + '\n' + ['_tipRateSlotUsed'].map(n => { try { return fnSrc(n); } catch (e) { return ''; } }).join('\n') + `
     Date.now = function(){ return ${now}; };
     var TIP_RATE_WEIGHT_START = ${JSON.stringify(START || '2026-10-16')};
     var TIP_SL_SPLIT_END = '2026-08-01';

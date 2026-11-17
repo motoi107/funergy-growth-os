@@ -45,7 +45,7 @@ function app() {
   vm.runInContext(['calcTipDistribution', 'tipWeightByRate', '_tipDecDay', 'tipRateOn', '_tipLatestApproved', '_tipDecT', 'firstWorkDate', 'isThreeMonths',
     'effectiveTipRate', 'isTipEligibleRole', 'tipBaseRole', 'isTipExcludedTitle', 'getTipLeaderSplit', 'tipPeriodRates', 'tipPeriodRateLabel', 'tipRateLabel',
     'tipPeriodMatrix', 'calcHalfMonthSettlement', 'halfMonthRange', 'halfMonthDates', 'confirmTip', 'renderTipDaily', 'isoOf', '_tipHstDay'].map(fnSrc).join('\n')
-    + '\n' + ['_tipDayOk', '_tipDecDayExact', '_tipFromOk', '_tipDecDayRaw', '_tipUsedRate', 'tipPeriodRateFrom'].map(n => { try { return fnSrc(n); } catch (e) { return ''; } }).join('\n') + `
+    + '\n' + ['_tipDayOk', '_tipDecDayExact', '_tipFromOk', '_tipDecDayRaw', '_tipUsedRate', 'tipPeriodRateFrom', '_tipRateSlotUsed'].map(n => { try { return fnSrc(n); } catch (e) { return ''; } }).join('\n') + `
     var TIP_RATE_WEIGHT_START = ${JSON.stringify(START || '2026-10-16')};
     var TIP_SL_SPLIT_END = '2026-08-01';
     var TIP_EXCLUDED_TITLES = ['Prep','Prep Specialist','Store Manager','Area Manager','General Manager','CEO','Office Crew','Accountant'];
