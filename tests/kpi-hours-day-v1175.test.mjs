@@ -169,7 +169,7 @@ test('B: HQ sees and saves the store setting (not the all-store list); "saved" o
     _lsPushP: {}, showToast: (m, k) => toasts.push(k), renderPage: () => { rendered++; },
     t: (j) => j, window: { _kpiStore: 'F02', _kpiTab: 'manual' }, curPage: 'kpi_master', Promise, Array, Date };
   ctx.setKpiConfigStore = (sid, p) => { stored = { sid, p }; ctx._lsPushP.kpi_config = Promise.resolve(pushed); };
-  vm.createContext(ctx); vm.runInContext(fnSrc('kpiCfgPush'), ctx); vm.runInContext(fnSrc('kpiCfgUnsavedMsg'), ctx); vm.runInContext(fnSrc('upsellDraftFor'), ctx); vm.runInContext(fnSrc('upsellKeepDom'), ctx); vm.runInContext(fnSrc('kpiSameView'), ctx); vm.runInContext(save, ctx);
+  vm.createContext(ctx); vm.runInContext(fnSrc('kpiCfgPush'), ctx); vm.runInContext(fnSrc('kpiCfgUnsavedMsg'), ctx); vm.runInContext(fnSrc('upsellDraftMap'), ctx); vm.runInContext(fnSrc('upsellDraftFor'), ctx); vm.runInContext(fnSrc('upsellDraftDrop'), ctx); vm.runInContext(fnSrc('upsellKeepDom'), ctx); vm.runInContext(fnSrc('kpiSameView'), ctx); vm.runInContext(save, ctx);
   return ctx.saveUpsellGuids('F02').then(() => {
     assert.deepEqual(JSON.parse(JSON.stringify(stored)), { sid: 'F02', p: { upsellGuids: ['g1', 'g2'] } });
     assert.equal(ctx.window._upsellSaveState.ok, true); assert.deepEqual(toasts, ['success']);
@@ -258,7 +258,7 @@ test('Codex #173: saves wait for their own push (a stale earlier success does no
     c.canSetKpiStore = () => true;
     c.document = { querySelectorAll: () => [{ value: 'g1' }] };
     vm.createContext(c);
-    ['kpiCfgPush', 'kpiCfgUnsavedMsg', 'upsellDraftFor', 'upsellKeepDom', 'kpiSameView', 'saveUpsellGuids', 'clearKpiCfgStore'].forEach(n => vm.runInContext(fnSrc(n), c));
+    ['kpiCfgPush', 'kpiCfgUnsavedMsg', 'upsellDraftMap', 'upsellDraftFor', 'upsellDraftDrop', 'upsellKeepDom', 'kpiSameView', 'saveUpsellGuids', 'clearKpiCfgStore'].forEach(n => vm.runInContext(fnSrc(n), c));
     return c;
   };
   // 同期が OFF などでこの保存が送られなかった → 前の成功を使わず「未保存」
@@ -295,7 +295,7 @@ test('Codex #173: 全店共通に戻す says done only after the cloud write; a 
   c.setKpiConfig = (v) => { cfg = v; sets++; c._lsPushP.kpi_config = Promise.resolve(pushed); };
   c._lsPushP = { kpi_config: Promise.resolve(true) };
   vm.createContext(c);
-  ['kpiCfgPush', 'kpiCfgUnsavedMsg', 'upsellDraftFor', 'kpiSameView', 'clearKpiCfgStore'].forEach(n => vm.runInContext(fnSrc(n), c));
+  ['kpiCfgPush', 'kpiCfgUnsavedMsg', 'upsellDraftFor', 'upsellDraftDrop', 'kpiSameView', 'clearKpiCfgStore'].forEach(n => vm.runInContext(fnSrc(n), c));
   assert.equal(await c.clearKpiCfgStore('F02', 'upsellGuids'), false);
   assert.deepEqual(cfg, { byStore: { F02: { drinkCats: ['D'] } } });
   assert.equal(c.window._upsellSaveState.ok, false); assert.equal(c.window._upsellSaveState.kind, 'clear'); assert.deepEqual(c.toasts, ['warning']);

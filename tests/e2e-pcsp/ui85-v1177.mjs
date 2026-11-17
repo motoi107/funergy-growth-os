@@ -271,7 +271,7 @@ for (const [W, lang] of [[1440, 'ja'], [1024, 'en'], [390, 'ja'], [390, 'en']]) 
     }
   }
   /* #175 の Codex・Claude の P2-2：.kpi-wrap の外の .kpi-grid（採用の 4 枚など）は前の並び（600px から 4 列・それより狭いと 2 列） */
-  await run(page, () => go('hiring')); await sleep(1500);
+  await run(page, () => { window._u11HrTab = 'apps'; go('hiring'); }); await sleep(1500);   /* v1182（UI案88）：4 枚は「応募者」のタブ */
   const hg = await page.evaluate(() => {
     const g = [...document.querySelectorAll('#main-content .kpi-grid')].find(x => !x.closest('.kpi-wrap') && x.children.length >= 4); if (!g) return null;
     const ts = [...g.children]; return { n: ts.length, cols: new Set(ts.map(t => Math.round(t.getBoundingClientRect().left))).size, gtc: getComputedStyle(g).gridTemplateColumns.split(' ').length };

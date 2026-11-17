@@ -56,7 +56,7 @@ function upWorld({ user = 'Moto' } = {}) {
   c.getKpiConfig = () => ({ byStore: { F02: Object.assign({}, c.cfg) } });
   c.setKpiConfig = (v) => { c.cfg = Object.assign({}, (v.byStore || {}).F02 || {}); c._lsPushP.kpi_config = new Promise(r => c.pushes.push(r)); };
   vm.createContext(c);
-  ['kpiCfgPush', 'kpiCfgUnsavedMsg', 'upsellDraftFor', 'upsellKeepDom', 'kpiSameView', 'saveUpsellGuids', 'clearKpiCfgStore', 'kpiDraftReset'].forEach(n => vm.runInContext(fnSrc(n), c));
+  ['kpiCfgPush', 'kpiCfgUnsavedMsg', 'upsellDraftMap', 'upsellDraftFor', 'upsellDraftDrop', 'upsellKeepDom', 'kpiSameView', 'saveUpsellGuids', 'clearKpiCfgStore', 'kpiDraftReset'].forEach(n => vm.runInContext(fnSrc(n), c));
   return c;
 }
 const check = (c, ...vs) => c.boxes.forEach(b => { b.checked = vs.includes(b.value); });
@@ -164,7 +164,7 @@ function kWorld() {
       _lsPushP['kpi_config'] = PUSH.wait ? new Promise(function(r){ PUSH.res.push(r); }) : Promise.resolve(PUSH.ok); }
     function k2SysCarryOver(sid){ return { 'g-sys': { name:'Toast Generic Login', on:true, src:'auto' } }; }
   `, c);
-  ['k2SysAcctList', 'k2SysCanEdit', 'k2SysSave', 'k2SysCarry', 'k2SysCarryRetry', 'kpiCfgPush', 'kpiCfgUnsavedMsg', 'kpiSameView'].forEach(n => vm.runInContext(fnSrc(n), c));
+  ['k2SysAcctList', 'k2SysCanEdit', 'k2SysSave', 'k2SysCloudList', 'k2SysCarry', 'k2SysCarryRetry', 'kpiCfgPush', 'kpiCfgUnsavedMsg', 'kpiSameView'].forEach(n => vm.runInContext(fnSrc(n), c));
   c.window._kpiStore = 'F01';
   return c;
 }
@@ -223,4 +223,57 @@ test('③ 待っても終わらない・この端末に作れなかった → �
   const tab = fnSrc('renderKpiSysAcctTab');
   assert.match(tab, /\(\(window\._k2SysCarryWhy\|\|\{\}\)\[sid\]\)\|\|'read'\)==='read'/);
   assert.match(tab, /一覧をまだ作れていません/);
+});
+
+/* #179 の Codex（6913975960）の P2：下書きは店ごと（ほかの店の保存で前の店の下書きを消さない） */
+test('#179 の Codex の P2：F02 の保存していないチェックは、F06 を保存しても（変えずに・変えて）残る。F02 に戻ると出る', async () => {
+  const c = upWorld(); check(c, 'gA');
+  const p = c.saveUpsellGuids('F02'); check(c, 'gA', 'gB'); c.pushes[0](true); await p;
+  assert.deepEqual(plain(c.upsellDraftFor('F02')).vals, ['gA', 'gB']);
+  /* F06 へ移る（画面のチェックは F06 の保存した中身＝gC だけ）→ 変えずに保存 */
+  c.window._kpiStore = 'F06'; check(c, 'gC');
+  const q = c.saveUpsellGuids('F06'); c.pushes[1](true); await q;
+  assert.deepEqual(plain(c.upsellDraftFor('F02')).vals, ['gA', 'gB'], 'F06 の保存で F02 の下書きを消さない（Codex の手順では null になっていた）');
+  assert.equal(c.upsellDraftFor('F06'), null);
+  /* F06 で保存の途中に変えた → F06 の下書き。F02 の下書きはそのまま */
+  const r = c.saveUpsellGuids('F06'); check(c, 'gB', 'gC'); c.pushes[2](true); await r;
+  assert.deepEqual(plain(c.upsellDraftFor('F06')).vals, ['gB', 'gC']); assert.deepEqual(plain(c.upsellDraftFor('F02')).vals, ['gA', 'gB']);
+  /* F06 の「全店共通に戻す」は F06 の分だけ捨てる */
+  const z = c.clearKpiCfgStore('F06', 'upsellGuids'); if (c.pushes[3]) c.pushes[3](true); await z;
+  assert.equal(c.upsellDraftFor('F06'), null); assert.deepEqual(plain(c.upsellDraftFor('F02')).vals, ['gA', 'gB']);
+  /* F02 を保存すると F02 の分だけ使い終わる */
+  c.window._kpiStore = 'F02'; check(c, 'gA', 'gB'); const w = c.saveUpsellGuids('F02'); assert.equal(c.upsellDraftFor('F02'), null); c.pushes.at(-1)(true); await w;
+  /* ログインした人が変わったら前の人の分は出さない・ログアウトで全部捨てる */
+  const d = upWorld(); check(d, 'gA'); const x = d.saveUpsellGuids('F02'); check(d, 'gB'); d.pushes[0](true); await x;
+  d.curUserName = 'Other'; assert.equal(d.upsellDraftFor('F02'), null);
+  /* ほかの人が同じ端末で保存の途中に変えた → その人の下書き（前の人の分には混ぜない） */
+  check(d, 'gA'); const y = d.saveUpsellGuids('F02'); check(d, 'gA', 'gC'); d.pushes.at(-1)(true); await y;
+  assert.deepEqual(plain(d.upsellDraftFor('F02')).vals, ['gA', 'gC']);
+  d.curUserName = 'Moto'; assert.equal(d.upsellDraftFor('F02'), null, '前の人の下書きは捨てている・ほかの人の分は出さない');
+  d.kpiDraftReset(); assert.equal(d.upsellDraftFor('F02'), null);
+});
+
+/* #179 の Codex（6913975960）の要修正：待ったあとにクラウドを読み直す */
+test('#179 の Codex の要修正：F06 の保存を待つあいだにほかの端末が F01 の一覧を作った（この端末には届いていない）→ 待ったあとクラウドを読み直し、前の決まりで作らない', async () => {
+  const c = kWorld();
+  vm.runInContext('pullSettingKey = async function(k){ LS.kpi_config = JSON.parse(JSON.stringify(CLOUD.value)); return true; };', c);
+  c.PUSH.wait = true;
+  const f06 = c.k2SysSave('F06', { x: { name: 'X', on: true } }, 'ok', 'sys');
+  const f01 = c.k2SysCarry('F01');
+  for (let i = 0; i < 5; i++) await flush();
+  vm.runInContext("CLOUD.value = { byStore: { F01: { sysAcct: { 'g-sys': { name: 'Toast Generic Login', on: false, src: 'manual' } } } } };", c);
+  c.PUSH.res[0](true); await f06; c.PUSH.wait = false;
+  await f01;
+  assert.equal(c._k2SysCarried.F01, 'done');
+  assert.deepEqual(plain(c.k2SysAcctList('F01')['g-sys']), { name: 'Toast Generic Login', on: false, src: 'manual' }, 'ほかの端末の手の設定（外さない）を、前の決まり（外す・auto）で作り直さない');
+  assert.equal(c.PUSH.res.length, 1, 'F01 は保存しない');
+  /* 待ったあとにクラウドを読めない → 作らない（「読めなかった」） */
+  const d = kWorld(); d.PUSH.wait = true;
+  const g06 = d.k2SysSave('F06', { x: { name: 'X', on: true } }, 'ok', 'sys');
+  const g01 = d.k2SysCarry('F01');
+  for (let i = 0; i < 5; i++) await flush();
+  vm.runInContext('CLOUD.fail = true;', d);
+  d.PUSH.res[0](true); await g06; d.PUSH.wait = false;
+  await g01;
+  assert.equal(d._k2SysCarried.F01, 'fail'); assert.equal(d._k2SysCarryWhy.F01, 'read'); assert.equal(d.k2SysAcctList('F01'), null);
 });

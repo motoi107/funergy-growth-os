@@ -69,3 +69,10 @@
 - **ログアウトで KPI設定の下書きを捨てる**（Claude のルーティンの P3-2）：`kpiDraftReset`（アップグレード率の下書き `_upsEdits`・`_upsEdit` とこのカードの下書き）を `doLogout` の 2 つの写しで呼ぶ。
 - 試験（合成データ・本番にはつながない）：`tests/kpi-p3-v1181.test.mjs` 7（Codex の手順そのもの：A を保存 → 待つあいだに B → 成功／新しい保存の成功のあとに古い戻しの失敗／F06 の保存の途中に F01 を開く）。v1180（`de67696`）の index.html では 7 とも落ちる（足りない関数を代わりにしても ①②③ の手順で落ちる）。わざと壊す 30 通りすべてで落ちる（1 回目 28 → 落ちなかった「待っているあいだに一覧が届いた」に試験を足した）。関連（kpi-hours-day-v1175・kpi-hours-upsell-v1176・kpi-settings-v1153・skill-comment-v1180・ui87-v1179・ui85・ui86・ux-core・change-signal-client・upsell-v1176-sql・handbook-progress・karte-eval-sync・save-status-v1137・tip-rate-live・vendor-master-v1121）363/363・static release pass/1181。本物のブラウザ（模擬サーバー・合成データ・設定の書き込みだけ 4 秒遅らせる）`tests/e2e-pcsp/kpi-p3-v1181.mjs` 7/7（v1180 では待つあいだに足したチェックが消えて 4 つ落ちる）・`upsell-save-v1175.mjs` 7/7。
 - 未確認：実機（iPhone）。業務用アカウントの「待つ」は本物のブラウザでは確かめていない（VM の試験だけ）。
+
+### 7b. v1181 の直し：#179 の Codex（6913975960・`eaeead4`）の P2 1・要修正 1
+
+- P2：アップセル対象の下書き（`window._upsellDraft`）が 1 つだけだったので、F02 の保存していないチェックが、F06 を（変えずに）保存したときに消えた。→ 店ごとの地図にした（`upsellDraftMap`：ログインした人ごと・`by[店]`）。保存（`saveUpsellGuids`）・「全店共通に戻す」・描き直し（`upsellKeepDom`）は、その店の分だけを触る（`upsellDraftDrop`）。ログアウトは今までどおり全部捨てる。
+- 要修正：業務用アカウントの一覧の引き継ぎ（`k2SysCarry`）は、ほかの店の保存を待ったあとに端末の一覧しか見ていなかった。待っているあいだにほかの端末が作った一覧（まだ届いていない）を、前の決まりで作り直すことがあった。→ 待ったあとにもう一度クラウドを読む（`k2SysCloudList`）。あれば取り込んで作らない、読めなければ作らない（「読めなかった」と「もう一度」）。
+- 試験（合成データ）：`tests/kpi-p3-v1181.test.mjs` 9（足した 2 は前の head のコードでは落ちる）・わざと壊す 6/6・関連（kpi-hours-upsell-v1176・kpi-hours-day-v1175・kpi-settings-v1153・skill-comment-v1180・ui87-v1179 と合わせて）97/97・e2e `tests/e2e-pcsp/kpi-p3-v1181.mjs` 7/7・static release pass/1181。店をまたぐ下書きは VM だけで確かめた（ブラウザでは 1 店だけ）。
+- 残り（記録だけ）：クラウドを読んでから一覧を書くまでのあいだ（待ちは無い・1 回の送信）にほかの端末が作ると重なりうる。送るときは設定の合流（v1149）で、ほかの店の欄は消さない。
