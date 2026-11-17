@@ -38,7 +38,7 @@ function fnSrc(name) {
 const BLOCK = (() => { const a = SRC.indexOf('/* ===== v1187：No Tip'), b = SRC.indexOf('/* ===== v1095：適用開始日（UI案57）'); if (a < 0 || b < a) throw new Error('v1187 block not found'); return SRC.slice(a, b); })();
 const START = (/var TIP_NOTIP_DAYOF_START = '(\d{4}-\d{2}-\d{2})'/.exec(SRC) || [])[1];
 const SEQ_LINE = (/^var _tipLaborSeq = 0[^\n]*$/m.exec(SRC) || [])[0];
-const plain = v => JSON.parse(JSON.stringify(v));
+const plain = v => (v === undefined ? undefined : JSON.parse(JSON.stringify(v)));
 const run = (c, code) => vm.runInContext(code, c);
 const tick = (ms = 0) => new Promise(r => setTimeout(r, ms));
 async function settle(c) { for (let i = 0; i < 20; i++) { await tick(); if (run(c, 'tipNtIdle()')) { await tick(); return; } } }
@@ -321,6 +321,54 @@ test('Codex P2-2: a day that is gone from the database counts as 0 after a full 
   assert.deepEqual(plain(run(e, "_tipNtSt().day.F01['2026-11-21'].c")), { N: { n: 1, l: 0 } }, 'not trusted → not cleared');
 });
 
+test('Codex re-review (#187 6959851589): a day the newer read found missing stays 0 when an older read answers later, even if the device had no record of it (two devices agree)', async () => {
+  const range = "syncTipLaborFromDB('F01', 'g-F01', [{ date: '2026-11-20' }, { date: '2026-12-05' }])";
+  const wait = async (c, n) => { for (let i = 0; i < 20 && c.DBQ.length < n; i++) await tick(); assert.equal(c.DBQ.length, n, n + ' read(s) waiting for the database'); };
+  // the device has read nothing yet (no record of 11/21). R1 is asked while 11/21 is still there, R2 after it is gone; R2 answers first
+  const DB = DB0(), A = device(DB, { dbDefer: true }); staff(A);
+  local(A, 'F01', '2026-12-05', { N: [4, 5], V: [4, 5] });
+  assert.equal(run(A, "(_tipNtSt().day.F01 ? 1 : 0)"), 0, 'nothing recorded before the reads');
+  const p1 = run(A, range); await wait(A, 1);
+  delete DB.F01['2026-11-21'];
+  const p2 = run(A, range); await wait(A, 2);
+  A.DBQ[1](); await p2;
+  near(row(dist(A, 'F01', '2026-12-05'), 'N').dinner, 0, 'after the newer read: 11/21 is gone, dinner is the 3rd shift (No Tip)');
+  const r2 = plain(run(A, "_tipNtSt().day.F01['2026-11-21']"));
+  assert.deepEqual(r2 && r2.c, {}, 'the newer read leaves a 0 record with its order even for a day the device never had');
+  A.DBQ[0](); await p1;
+  assert.deepEqual(plain(run(A, "_tipNtSt().day.F01['2026-11-21']")), r2, 'the older read answering later does not bring 11/21 back');
+  const a = dist(A, 'F01', '2026-12-05');
+  assert.equal(a.pending, false);
+  near(row(a, 'N').dinner, 0, 'still No Tip after the older answer');
+  // a device that reads the database now (11/21 gone) gives the same amounts
+  const B = device(DB); staff(B); local(B, 'F01', '2026-12-05', { N: [4, 5], V: [4, 5] });
+  dist(B, 'F01', '2026-12-05'); await settle(B);
+  const b = dist(B, 'F01', '2026-12-05');
+  assert.equal(b.pending, false);
+  assert.deepEqual(a.list.map(r => [r.name, r.total]), b.list.map(r => [r.name, r.total]), 'the same amounts on both devices');
+  // the other way round: a day that appears between the reads stays when the older read (which did not see it) answers later
+  const DB2 = DB0(); delete DB2.F01['2026-11-21'];
+  const C = device(DB2, { dbDefer: true }); staff(C);
+  local(C, 'F01', '2026-12-05', { N: [4, 5], V: [4, 5] });
+  const q1 = run(C, range); await wait(C, 1);
+  DB2.F01['2026-11-21'] = [W('N', 0, 5), W('V', 4, 5)];
+  const q2 = run(C, range); await wait(C, 2);
+  C.DBQ[1](); await q2; C.DBQ[0](); await q1;
+  assert.deepEqual(plain(run(C, "_tipNtSt().day.F01['2026-11-21'].c")).N, { n: 1, l: 0 }, 'the newer read’s 11/21 stays');
+  const c2 = dist(C, 'F01', '2026-12-05'), D = device(DB2); staff(D); local(D, 'F01', '2026-12-05', { N: [4, 5], V: [4, 5] });
+  dist(D, 'F01', '2026-12-05'); await settle(D);
+  near(row(c2, 'N').dinner, 44.4444444444, 'dinner is the 4th shift (paid)');
+  assert.deepEqual(c2.list.map(r => [r.name, r.total]), dist(D, 'F01', '2026-12-05').list.map(r => [r.name, r.total]), 'the same amounts on both devices');
+  // every day of the range gets the read's order, the first and the last included; an older answer for any of them is not used
+  const E = device({});
+  run(E, "_tipNtRecordRange('F01', '2026-11-20', '2026-11-25', 5, null, ['2026-11-22'])");
+  assert.deepEqual(Object.keys(plain(run(E, '_tipNtSt().day.F01'))).sort(), ['2026-11-20', '2026-11-21', '2026-11-23', '2026-11-24', '2026-11-25'], 'all days not returned, ends included');
+  ['2026-11-20', '2026-11-25'].forEach(d => {
+    run(E, `_tipNtRecordDay('F01', '${d}', { N: { lunch: 4, dinner: 5 } }, 4)`);
+    assert.deepEqual(plain(run(E, `_tipNtSt().day.F01['${d}']`)), { seq: 5, c: {} }, d + ': an older answer does not bring it back');
+  });
+});
+
 test('Codex P2-3: logging out (or another person logging in) drops what was read, the waiting exports and the late answers of the previous login', async () => {
   // doLogout calls the reset (both copies of the function)
   assert.equal((SRC.match(/if\(typeof tipNtReset==='function'\) tipNtReset\(\);/g) || []).length, 2, 'both doLogout copies reset No Tip');
@@ -433,4 +481,49 @@ test('Claude routine P3-3 and P3-4: when the records cannot be read, the wait gr
   e.PERIOD = { from: '2026-12-16', to: '2026-12-31', anyDate: '2026-12-20', label: '12/16-31', rangeLabel: '12/16-31', dates: [] };
   e.DBQ.shift()(); await settle(e); await tick(20);
   assert.equal(Object.keys(e.CONFIRMS).length, 0);
+  // Claude routine (6959819492 P3-1): pressed again while waiting → still one finalizing and one message; the mark is released afterwards
+  const done = c => c.TOASTS.filter(([m]) => m === 'Tipを確定しました').length;
+  const f = device(DB0(), { dbDefer: true }); staff(f);
+  local(f, 'F01', '2026-12-05', { N: [4, 5], V: [4, 5] });
+  f.PERIOD = { from: '2026-12-01', to: '2026-12-15', anyDate: '2026-12-05', label: '12/1-15', rangeLabel: '12/1-15', dates: [] };
+  run(f, "confirmTip('F01')");
+  for (let i = 0; i < 10 && !f.DBQ.length; i++) await tick();
+  const toasts0 = f.TOASTS.length;
+  run(f, "confirmTip('F01')"); run(f, "confirmTip('F01')");
+  assert.equal(f.TOASTS.length, toasts0 + 2, 'each extra press only says it is still loading');
+  assert.ok(f.TOASTS.slice(toasts0).every(([m, k]) => k === 'info' && /読み込んでいます/.test(m)));
+  while (f.DBQ.length) f.DBQ.shift()();
+  await settle(f); await tick(20);
+  assert.equal(done(f), 1, 'finalized once');
+  assert.ok(f.CONFIRMS['F01|2026-12-01']);
+  run(f, "confirmTip('F01')"); await tick(20);
+  assert.equal(done(f), 2, 'pressing again later works (the waiting mark was released)');
+  // the mark is per period: while 12/1-15 waits, the next period of the same store can still be finalized
+  const DBh = DB0(); DBh.F01['2026-12-20'] = [W('N', 4, 5), W('V', 4, 5)];
+  const h = device(DBh, { dbDefer: true }); staff(h);
+  local(h, 'F01', '2026-12-05', { N: [4, 5], V: [4, 5] }); local(h, 'F01', '2026-12-20', { N: [4, 5], V: [4, 5] });
+  h.TIPS['F01|2026-12-20'] = { l: 80, d: 100 };
+  h.PERIOD = f.PERIOD;
+  run(h, "confirmTip('F01')");
+  for (let i = 0; i < 10 && !h.DBQ.length; i++) await tick();
+  h.PERIOD = { from: '2026-12-16', to: '2026-12-31', anyDate: '2026-12-20', label: '12/16-31', rangeLabel: '12/16-31', dates: [] };
+  run(h, "confirmTip('F01')");
+  for (let k = 0; k < 20; k++) { while (h.DBQ.length) h.DBQ.shift()(); await tick(); }
+  await settle(h); await tick(20);
+  assert.ok(h.CONFIRMS['F01|2026-12-16'], 'the later period is finalized');
+  assert.ok(!h.CONFIRMS['F01|2026-12-01'], 'the earlier one is not (the screen moved to another period while it waited)');
+  // a wait ended by a logout also releases the mark: the next login can finalize
+  const g = device(DB0(), { dbDefer: true }); staff(g);
+  local(g, 'F01', '2026-12-05', { N: [4, 5], V: [4, 5] });
+  g.PERIOD = f.PERIOD;
+  run(g, "confirmTip('F01')");
+  for (let i = 0; i < 10 && !g.DBQ.length; i++) await tick();
+  run(g, 'tipNtReset()'); g.DBQ.shift()(); await tick(20);
+  const reads0 = g.FETCHES.length;
+  run(g, "confirmTip('F01')");
+  for (let i = 0; i < 10 && !g.DBQ.length; i++) await tick();
+  assert.ok(g.FETCHES.length > reads0, 'the next login starts its own wait (not blocked by the previous one)');
+  while (g.DBQ.length) g.DBQ.shift()();
+  await settle(g); await tick(20);
+  assert.equal(done(g), 1);
 });

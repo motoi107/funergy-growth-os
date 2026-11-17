@@ -45685,12 +45685,18 @@ function confirmTip(storeId, force, _ntWaited) {
      待つあいだにログアウト・ほかの人のログインがあったら何もしない（tipNtSettle が null） */
   if (settle.pending) {
     if (_ntWaited) { alert(tipNtPendingMsg()); return; }
+    /* Claude のルーティン（#187 6959819492 P3-1）：待つあいだにもう一度押しても、同じ店・同じ期間の確定は 1 つだけ（確定と知らせを 2 回にしない） */
+    var _cw = (typeof _tipNtConfirmWait !== 'undefined' && _tipNtConfirmWait) || (window._tipNtConfirmWait = {}), _cwk = storeId + '|' + info.from + '|' + info.to;
+    if (_cw[_cwk]) { showToast(t('No Tip を決めるための勤怠を読み込んでいます…', 'Loading time records to decide No Tip…'), 'info'); return; }
+    _cw[_cwk] = 1;
+    var _cwEnd = function(){ delete _cw[_cwk]; };
     tipNtSettle(function(){ return calcHalfMonthSettlement(storeId, info.anyDate); }).then(function(r){
+      _cwEnd();
       if (!r) return;
       if (r.pending) { alert(tipNtPendingMsg()); return; }
       var i2 = tipPeriodInfo(); if (!i2 || i2.from !== info.from || i2.to !== info.to) return;   /* 待つあいだに画面の期間が変わった：押した期間とは違うので確定しない */
       confirmTip(storeId, force, true);
-    });
+    }, _cwEnd);
     return;
   }
   var _used = tipPeriodRates(tipPeriodMatrix(storeId, info).dists);   /* v1092: 配分に使った率を確定の記録に残す */
@@ -102932,7 +102938,7 @@ function effectiveTipRate(name, list) {   /* list：決める前に結果を確�
    ・Toast の GUID の無い所属の店（DB に勤怠が無い）は、今までどおりこの端末の写しで数える（その日の前まで）。
    ・この日より前の日は今までどおり（支払った期間の額を変えない） */
 var TIP_NOTIP_DAYOF_START = '2026-12-01', TIP_NT_RETRY_MS = 30000, TIP_NT_RETRY_MAX_MS = 300000, TIP_NT_MAX_ROWS = 1000;
-var _tipNtS, _tipNtGen;   /* 初めの値を入れない（この宣言より前に動いた読み込みの記録を消さないため） */
+var _tipNtS, _tipNtGen, _tipNtConfirmWait = {};   /* _tipNtS・_tipNtGen は初めの値を入れない（この宣言より前に動いた読み込みの記録を消さないため）。_tipNtConfirmWait：待っている確定（店|期間） */
 /* Codex（#187 6959067758 P2-3）：No Tip の数えは「このログインのあいだだけ」。ログアウト（tipNtReset・doLogout から）と、
    ほかの人のログイン（_tipNtWho が変わる）で、読んだ日・読み終えた範囲・頼み・待ち・やり直しの間隔をすべて捨てる。
    読み込みは始めたときのログイン（tk）を覚え、ログインが変わっていたら記録しない（遅れて届いた前の人の答えを次の人に使わない） */
@@ -102987,7 +102993,10 @@ function _tipNtRecordRange(store, from, to, seq, tk, seen, asOf){
   var S = _tipNtSt(), m = S.day[store] || (S.day[store] = {});
   if (seq != null && Array.isArray(seen)) {
     var got = {}; seen.forEach(function(d){ got[String(d)] = 1; });
-    Object.keys(m).forEach(function(d){ if (d >= from && d <= to && !got[d] && !(m[d].seq > seq)) m[d] = { seq: seq, c: {} }; });
+    /* Codex（#187 6959851589）：まだ記録の無い日にも「この読み込みでは無かった」を seq つきで残す。
+       前は端末にもう記録がある日だけを 0 にしていたので、新しい読み込みが先に返り、あとから古い読み込みが返ると、
+       DB から消えた日が古い答えで戻っていた（端末によって額が違う）。範囲の日をすべて見て、より新しい記録の日は触らない */
+    for (var d = from; d <= to; d = _tipNtNext(d)) if (!got[d] && !(m[d] && m[d].seq > seq)) m[d] = { seq: seq, c: {} };
   }
   var d0 = _tipNtDay(asOf) ? String(asOf) : _tipNtToday();
   if (from <= d0 && to >= d0 && !(S.part[store] > d0)) S.part[store] = d0;
