@@ -384,3 +384,104 @@ test('accounting center menu: the payroll CSV entries are CEO/GM only; accountin
     assert.ok(h.includes('経理区分エクスポート') && h.includes('棚卸Excel'), `${r}: category export and inventory stay`);
   }
 });
+
+// ---- tip CSV exports (PR #194 Codex 4e7ae43 / 6989080060) ----
+// The three tip CSVs stay open to accounting and Office Crew with every tip column and row (Moto 11/18 09:09 HST),
+// but the shift leader allowance that used to ride in the same files (per-person shifts, rate, allowance, "received + allowance",
+// people who only led shifts, and the payout block) is payroll and is left out for them. The CEO, GM and store roles keep it.
+// The exports run to the end here and the rows handed to downloadCSV are checked.
+const D = 'Dee Leader';                                   // led shifts, no tip this period (shows only in the allowance part)
+const SL_AMT = ['12.50', '37.50', '87.50', '125.00'];     // rate, Aki's and Dee's allowance, total (no tip amount collides)
+const CSV_NOTE = 'シフトリーダー手当（回数・単価・手当・受取＋手当）は給与のため、この出力には入れていません';
+function csvApp(role) {
+  const c = app(role);
+  run(c, `
+    var CSV = [];
+    function downloadCSV(rows, name){ CSV.push({ rows: rows, name: name }); }
+    ${src.includes('\nfunction payDetailCsvNote(') ? fnFrom('payDetailCsvNote') : ''}
+    function tipNtSettle(fn){ return Promise.resolve(fn()); }
+    function tipNtPendingMsg(){ return 'pending'; }
+    function tipPeriodInfo(){ return { from: '2026-11-01', to: '2026-11-15' }; }
+    function tipPeriodRateLabel(){ return '100%'; }
+    function tipPeriodMatrix(){ return { names: ['${A}', '${B}'], dists: ${JSON.stringify([DAY, DAY2])}, rates: {}, pending: false }; }
+    function slStoreEnabled(){ return true; }
+    function slPeriodSummary(){ CALLS.push('slPeriodSummary'); return { amount: 12.5, total: 125, days: 3, excluded: [], rows: [
+      { name: '${A}', amount: 37.5, count: 3, L: 1, D: 2, recs: [{ date: '2026-11-03', period: 'L' }] },
+      { name: '${D}', amount: 87.5, count: 7, L: 3, D: 4, recs: [{ date: '2026-11-04', period: 'D' }] } ] }; }
+    function slDayRecords(storeId, date){ return { ok: date === '2026-11-03' ? [{ name: '${A}', period: 'L' }, { name: '${D}', period: 'D' }] : [{ name: '${D}', period: 'D' }] }; }
+    function _owStoreName(id){ return id === 'F01' ? 'Store One' : 'Store Two'; }
+    function halfMonthRange(d){ return Number(String(d).slice(8)) <= 15 ? { from: d.slice(0, 8) + '01', to: d.slice(0, 8) + '15' } : { from: d.slice(0, 8) + '16', to: d.slice(0, 8) + '30' }; }
+    function calcHalfMonthSettlement(storeId, d){ var r = halfMonthRange(d); return { anyLabor: true, pending: false, range: r, rows: [
+      { name: '${A}', isSL: false, hours: 13, base: 208.5, contribution: 0, redistrib: 0, final: 208.5 },
+      { name: '${B}', isSL: true, hours: 9, base: 159.25, contribution: 15.93, redistrib: 0, final: 143.32 } ] }; }
+    function halfMonthDates(){ return ['2026-11-03', '2026-11-04']; }
+    function calcTipDistribution(storeId, date){
+      var d = JSON.parse(JSON.stringify(date === '2026-11-03' ? ${JSON.stringify(DAY.dist)} : ${JSON.stringify(DAY2.dist)}));
+      d.hasLabor = true; d.tip.total = d.tip.lunchTotal + d.tip.dinnerTotal; return d; }
+    function getVisibleStores(){ return STORES; }
+    function acctMonthLabel(){ return '2026/11'; }
+    ${['slPayrollData', '_slRecLabel', 'slPayrollRows', 'tipCSVRows', '_acctTipMiss', '_acctTipMissRows', '_acctPeriods',
+       'exportTipPeriodCsv', 'exportTipCSV', 'exportAllTipCSV'].map(fnFrom).join('\n')}
+  `);
+  return c;
+}
+const cells = rows => rows.flat().map(v => String(v));
+async function csvOf(role, call) {
+  const c = csvApp(role);
+  await run(c, call);
+  assert.equal(c.CSV.length, 1, `${role} ${call}: one file`);
+  // rows from different VMs have different Array prototypes: compare plain copies
+  return { rows: JSON.parse(JSON.stringify(c.CSV[0].rows)), calls: [...c.CALLS], toasts: [...c.TOASTS] };
+}
+const TIP_CSV_CALLS = ['exportTipPeriodCsv()', "exportTipCSV('F01','2026-11-05')", "exportAllTipCSV('2026-11-05','2026-11-20')"];
+test('tip CSVs: accounting and Office Crew keep every tip column and row, without the shift leader allowance; CEO, GM and store roles keep it', async () => {
+  for (const call of TIP_CSV_CALLS) {
+    for (const r of ROLES) {
+      const { rows, calls, toasts } = await csvOf(r, call), all = cells(rows), hidden = ACCT.includes(r);
+      // the tip part is there for everyone
+      for (const nm of [A, B]) assert.ok(all.includes(nm), `${call} ${r}: ${nm}`);
+      if (call === 'exportTipPeriodCsv()') {
+        assert.ok(all.includes('④ 実チップ額') && all.includes('60.25') && all.includes('208.5'), `${call} ${r}: ①〜④ and per-person amounts`);
+      } else {
+        assert.ok(all.includes('208.50') && all.includes('143.32') && all.includes('351.82'), `${call} ${r}: final tips and the total`);
+        assert.ok(all.includes('【日別 ランチ/ディナー内訳】'), `${call} ${r}: the day breakdown`);
+      }
+      // the shift leader allowance: left out for accounting and Office Crew only
+      assert.equal(all.some(v => v.includes(D)), !hidden, `${call} ${r}: the person who only led shifts`);
+      for (const v of SL_AMT) assert.equal(all.includes(v), !hidden, `${call} ${r}: allowance amount ${v}`);
+      assert.equal(all.some(v => !v.startsWith(CSV_NOTE) && (v.includes('受取＋手当') || v.includes('支給額') || v.includes('【シフトリーダー'))), !hidden, `${call} ${r}: allowance headings`);
+      assert.equal(all.includes('SL'), !hidden && call === 'exportTipPeriodCsv()', `${call} ${r}: the SL day marks`);
+      assert.equal(calls.includes('slPeriodSummary'), !hidden, `${call} ${r}: the allowance data is ${hidden ? 'not even read' : 'read'}`);
+      // what accounting gets instead: one line saying the allowance is not in this file
+      assert.equal(all.some(v => v.startsWith(CSV_NOTE)), hidden, `${call} ${r}: the note row`);
+      if (hidden) assert.ok(!all.some(v => v.includes('シフトリーダー') && !v.startsWith(CSV_NOTE)), `${call} ${r}: no other shift leader cell`);
+      if (call === 'exportTipPeriodCsv()') assert.equal(toasts.some(m => m.includes('シフトリーダー支給額つき')), !hidden, `${call} ${r}: the notice`);
+    }
+  }
+});
+test('tip CSVs: for accounting and Office Crew the tip rows are the CEO\'s rows minus the allowance columns (nothing else changes)', async () => {
+  for (const call of TIP_CSV_CALLS) {
+    const ceo = (await csvOf('ceo', call)).rows;
+    for (const r of ACCT) {
+      const acc = (await csvOf(r, call)).rows;
+      if (call === 'exportTipPeriodCsv()') {
+        // ①〜④, every person and 配分合計 are identical
+        const end = ceo.findIndex(x => x[0] === '配分合計') + 1;
+        assert.ok(end > 0);
+        assert.deepEqual(acc.slice(0, end), ceo.slice(0, end), `${call} ${r}: tip rows`);
+        continue;
+      }
+      // the day breakdown and the headings before the per-person table are identical
+      const head = ceo.findIndex(x => x[0] === '氏名');
+      assert.deepEqual(acc.slice(0, head), ceo.slice(0, head), `${call} ${r}: day breakdown`);
+      // per person (and the total): the first 7 columns of the CEO's row, nothing more
+      for (const nm of [A, B, '合計']) {
+        const cr = ceo.find(x => x[0] === nm && x.length === 13), ar = acc.filter(x => x[0] === nm);
+        assert.ok(cr, `${call}: CEO row ${nm}`);
+        assert.ok(ar.length >= 1, `${call} ${r}: row ${nm}`);
+        for (const x of ar) if (x.length > 3) assert.deepEqual(x, cr.slice(0, 7), `${call} ${r}: ${nm} = the CEO's tip columns`);
+      }
+      assert.deepEqual(acc.find(x => x[0] === '氏名'), ceo.find(x => x[0] === '氏名').slice(0, 7), `${call} ${r}: header`);
+    }
+  }
+});
