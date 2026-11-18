@@ -1,6 +1,9 @@
-// v1191 (Moto 11/18 "はい"): individual tip amounts, the shift leader allowance per person, HQ shift-in amounts per person
-// and the onboarding Payroll step are payroll. Accounting (office) and Office Crew no longer see or export them; the CEO
-// and GM do. Store-side views (store manager, AM, G2 and up looking at their own store's tip distribution) stay as before.
+// v1191 (Moto 11/18 "はい"): the shift leader allowance per person, HQ shift-in amounts per person and the onboarding
+// Payroll step are payroll. Accounting (office) and Office Crew no longer see or export them; the CEO and GM do.
+// The tip distribution table is NOT in that rule (Moto 11/18 09:09 HST: "TIPの配分表は今まで通り経理にも事務Crewにも全て見える、
+// 出力できる状態を維持"): per-person amounts, ①〜④, No Tip hours, the exclude toggles, the CSV exports and the tip list on
+// the accounting export screen stay for accounting and Office Crew exactly as before.
+// Store-side views (store manager, AM, G2 and up looking at their own store's tip distribution) stay as before.
 // HQ shift-in per person and the accounting book (3 tabs) follow canViewIndividualWage (CEO and GM only).
 // Totals (day, period, store, all stores) stay visible to everyone who saw them before.
 // Runs the real functions from index.html in VMs with synthetic data. No network, no storage, no production data.
@@ -27,6 +30,7 @@ const NOTE_JA = '経理・事務Crew には出さず、出力もしません';
 const NOTE_EN = 'not shown to or exported by accounting and office crew';
 const NOTE_HQ_JA = '本部シフトインの個人の額と給与のまとめは、CEO・GM だけが見て出力します';
 const NOTE_OUT_JA = 'ここからは出力しません（CEO・GM が出力します';
+const NOTE_OUT_TIP_JA = 'Tip の一覧は今までどおり出力できます';
 
 // Synthetic people (no real staff names) and amounts.
 const A = 'Aki Sample', B = 'Ben Sample', C = 'Cai Trainee';
@@ -67,10 +71,13 @@ test('role rule: per-person pay is hidden from accounting and Office Crew only; 
     assert.equal(run(c, 'payDetailHidden()'), ACCT.includes(r), r + ' hidden');
     assert.equal(run(c, 'canViewIndividualWage()'), r === 'ceo' || r === 'gm', r + ' individual wage');
     assert.equal(run(c, 'canEditWages()'), r === 'ceo' || r === 'gm', r + ' edit wages');
-    // loose check (tip / shift leader exports): blocks accounting only, with a notice
+    // loose check (shift leader exports): blocks accounting only, with a notice
     assert.equal(run(c, 'payDetailBlocked()'), ACCT.includes(r), r + ' blocked (loose)');
     assert.equal(c.TOASTS.length, ACCT.includes(r) ? 1 : 0, r + ' notice (loose)');
-    if (ACCT.includes(r)) assert.ok(c.TOASTS[0].includes(NOTE_JA), r + ': the tip wording');
+    if (ACCT.includes(r)) {
+      assert.ok(c.TOASTS[0].includes(NOTE_JA), r + ': the shift leader wording');
+      assert.ok(!c.TOASTS[0].includes('Tip'), r + ': the notice no longer says tip amounts are hidden');
+    }
     // strict check (HQ shift-in, the accounting book): only the CEO and GM pass
     c.TOASTS.length = 0;
     const strict = !(r === 'ceo' || r === 'gm');
@@ -83,9 +90,11 @@ test('role rule: per-person pay is hidden from accounting and Office Crew only; 
   assert.equal(run(app('gm', { salaryOn: false }), 'canViewIndividualWage()'), true);
   // the notice says why, in both languages
   assert.ok(run(app('office'), 'payDetailNoteHtml()').includes(NOTE_JA));
-  assert.ok(!run(app('office'), 'payDetailNoteHtml()').includes('CEO・GM だけ'), 'the tip note does not say "CEO/GM only" (store screens still show tip and allowance)');
+  assert.ok(!run(app('office'), 'payDetailNoteHtml()').includes('CEO・GM だけ'), 'the allowance note does not say "CEO/GM only" (store screens still show the allowance)');
+  assert.ok(!run(app('office'), 'payDetailNoteHtml()').includes('Tip'), 'the allowance note does not mention tips');
   assert.ok(run(app('office'), "payDetailNoteHtml('hq')").includes(NOTE_HQ_JA));
   assert.ok(run(app('office'), "payDetailNoteHtml('out')").includes(NOTE_OUT_JA));
+  assert.ok(run(app('office'), "payDetailNoteHtml('out')").includes(NOTE_OUT_TIP_JA), 'the export note says the tip lists still export');
   assert.ok(run(app('office', { lang: 'en' }), 'payDetailNoteHtml()').includes(NOTE_EN));
 });
 
@@ -93,15 +102,16 @@ test('role rule: per-person pay is hidden from accounting and Office Crew only; 
 const EXPORTS = [
   { fn: 'exportSlPayrollCSV', args: "'F01','2026-11-05'", strict: false, probe: '_p4Period' },
   { fn: 'exportAllSlPayrollCSV', args: "'2026-11-05','2026-11-20'", strict: false, probe: 'getVisibleStores' },
-  { fn: 'exportTipPeriodCsv', args: '', strict: false, probe: 'tipPeriodInfo' },
-  { fn: 'exportTipCSV', args: "'F01','2026-11-05'", strict: false, probe: 'tipNtSettle' },
-  { fn: 'exportAllTipCSV', args: "'2026-11-05','2026-11-20'", strict: false, probe: 'getVisibleStores' },
+  // tip exports: open to everyone who could run them before, accounting and Office Crew included (Moto 11/18 09:09 HST)
+  { fn: 'exportTipPeriodCsv', args: '', open: true, probe: 'tipPeriodInfo' },
+  { fn: 'exportTipCSV', args: "'F01','2026-11-05'", open: true, probe: 'tipNtSettle' },
+  { fn: 'exportAllTipCSV', args: "'2026-11-05','2026-11-20'", open: true, probe: 'getVisibleStores' },
   { fn: 'exportHqSitePayrollCSV', args: "'F01','2026-11-01','2026-11-15'", strict: true, probe: 'hqSiteLaborData' },
   { fn: 'exportAllHqSitePayrollCSV', args: "'2026-11-01','2026-11-15'", strict: true, probe: 'hqSiteLaborAll' },
   { fn: 'exportAcctPayrollBook', args: "'2026-11-05','2026-11-20'", strict: true, probe: 'tipNtSettle' },
 ];
 for (const ex of EXPORTS) {
-  test(`${ex.fn}: ${ex.strict ? 'CEO/GM only' : 'not for accounting / Office Crew'} (no data read, a notice)`, async () => {
+  test(`${ex.fn}: ${ex.open ? 'runs for accounting and Office Crew as before' : (ex.strict ? 'CEO/GM only' : 'not for accounting / Office Crew') + ' (no data read, a notice)'}`, async () => {
     for (const r of ROLES) {
       const c = app(r);
       // the first thing the export would read after the guard records a call and stops the run
@@ -110,10 +120,11 @@ for (const ex of EXPORTS) {
               ${fnFrom(ex.fn)}`);
       let proceeded = false;
       try { await run(c, `${ex.fn}(${ex.args})`); } catch (e) { if (String(e.message) === 'PROCEEDED') proceeded = true; else throw e; }
-      const blocked = ex.strict ? !(r === 'ceo' || r === 'gm') : ACCT.includes(r);
+      const blocked = ex.open ? false : ex.strict ? !(r === 'ceo' || r === 'gm') : ACCT.includes(r);
       assert.equal(proceeded, !blocked, `${ex.fn} ${r}: ${blocked ? 'stopped before reading data' : 'runs as before'}`);
       assert.deepEqual([...c.CALLS], blocked ? [] : [ex.probe], `${ex.fn} ${r} calls`);
       if (blocked) assert.ok(c.TOASTS.some(m => m.includes('CEO・GM')), `${ex.fn} ${r}: says who can`);
+      if (ex.open) assert.equal(c.TOASTS.length, 0, `${ex.fn} ${r}: no "hidden" notice`);
     }
   });
 }
@@ -141,39 +152,39 @@ function tipMatrixApp(role, mode, opts) {
 }
 const INFO = "{ from: '2026-11-01', to: '2026-11-15', rangeLabel: '11/1〜11/15' }";
 for (const mode of ['pc', 'sp']) {
-  test(`tip distribution table (${mode}): accounting and Office Crew see the ①〜④ rows and the distribution total, not the people`, () => {
+  test(`tip distribution table (${mode}): everyone who opens it sees the people, ①〜④ and the totals — accounting and Office Crew included`, () => {
     for (const r of ROLES) {
       for (const lang of ['ja', 'en']) {
         const c = tipMatrixApp(r, mode, { lang });
         c.window._u11TipDay = '2026-11-03';   // phone: show 11/3
         const h = run(c, `renderTipPeriodMatrix('F01', STORES[0], ${INFO})`);
-        const hidden = ACCT.includes(r);
-        for (const nm of [A, B, C]) assert.equal(h.includes(nm), !hidden, `${mode} ${r} ${lang}: ${nm}`);
-        // per-person period total for Aki (60.25+100+48.25 = 208.50) is a pay amount
-        assert.equal(h.includes('$208.50'), !hidden, `${mode} ${r} ${lang}: per-person period total`);
-        assert.equal(h.includes('data-cell='), !hidden, `${mode} ${r} ${lang}: per-person cells (and their exclude toggles)`);
-        // the distribution total stays for everyone: phone = the day (11/3: 60.25+100+46.25+113 = 319.50),
-        // PC = the period over both days (319.50 + 48.25 = 367.75)
-        assert.ok(h.includes(mode === 'sp' ? '$319.50' : '$367.75'), `${mode} ${r} ${lang}: distribution total`);
+        // the people (with the No Tip person's hours on PC) and their amounts stay for every role (Moto 11/18 09:09 HST)
+        for (const nm of mode === 'pc' ? [A, B, C] : [A, B]) assert.ok(h.includes(nm), `${mode} ${r} ${lang}: ${nm}`);
+        if (mode === 'pc') assert.ok(h.includes('$208.50'), `${mode} ${r} ${lang}: per-person period total`);   // Aki: 60.25+100+48.25
+        assert.ok(h.includes(mode === 'pc' ? 'data-cell=' : 'u11-tdt'), `${mode} ${r} ${lang}: per-person cells (and their exclude toggles)`);
         // ④ actual tips stay
         assert.ok(h.includes('106.50') && h.includes('213.00'), `${mode} ${r} ${lang}: actual tips`);
-        assert.equal(h.includes(lang === 'en' ? NOTE_EN : NOTE_JA), hidden, `${mode} ${r} ${lang}: the note`);
-        // the "tap a staff cell to exclude it" hint is only for people who can tap the cells
-        assert.equal(h.includes(lang === 'en' ? 'Tap a staff cell' : '各スタッフのセルをタップ'), !hidden, `${mode} ${r} ${lang}: the tap hint`);
-        // PC: the note is above the table, not a table row (a colspan + sticky row squeezed the name column and overlapped ④ — 11/18 screen check)
-        if (hidden && mode === 'pc') {
-          const ni = h.indexOf(lang === 'en' ? NOTE_EN : NOTE_JA);
-          assert.ok(ni >= 0 && ni < h.indexOf('<table'), `${mode} ${r} ${lang}: the note is above the table`);
-          assert.ok(!/<tr><td colspan="[^"]*" style="position:sticky[^"]*"><div class="u-paynote"/.test(h), `${mode} ${r} ${lang}: no note row inside the table`);
-          assert.match(h, /<th style="position:sticky;left:0;[^"]*min-width:128px;white-space:nowrap">/, `${mode} ${r} ${lang}: the label column keeps its width (no name rows)`);
-        }
+        // no "hidden" note and no narrowed label column any more
+        assert.ok(!h.includes(lang === 'en' ? NOTE_EN : NOTE_JA) && !h.includes('u-paynote'), `${mode} ${r} ${lang}: no note`);
+        assert.ok(!h.includes('min-width:128px'), `${mode} ${r} ${lang}: the label column is as before`);
+        // the "tap a staff cell to exclude it" hint is back for everyone
+        assert.ok(h.includes(lang === 'en' ? 'Tap a staff cell' : '各スタッフのセルをタップ'), `${mode} ${r} ${lang}: the tap hint`);
       }
     }
   });
 }
+test('tip distribution table: the rows for accounting and Office Crew are the same as for the CEO (nothing taken out)', () => {
+  for (const mode of ['pc', 'sp']) {
+    const base = (() => { const c = tipMatrixApp('ceo', mode); c.window._u11TipDay = '2026-11-03'; return run(c, `renderTipPeriodMatrix('F01', STORES[0], ${INFO})`); })();
+    for (const r of ACCT) {
+      const c = tipMatrixApp(r, mode); c.window._u11TipDay = '2026-11-03';
+      assert.equal(run(c, `renderTipPeriodMatrix('F01', STORES[0], ${INFO})`), base, `${mode} ${r}: identical to the CEO's table`);
+    }
+  }
+});
 
 // ---- the day detail (modal) ----
-test('tip day detail: accounting sees the L/D summary and the difference check, not the staff list', () => {
+test('tip day detail: everyone who opens it sees the staff list, the L/D summary and the difference check', () => {
   for (const r of ROLES) {
     const c = app(r);
     run(c, `
@@ -188,12 +199,12 @@ test('tip day detail: accounting sees the L/D summary and the difference check, 
       ${fnFrom('openTipDayDetail')}
     `);
     run(c, "openTipDayDetail('F01','2026-11-03')");
-    const h = c.MODAL, hidden = ACCT.includes(r);
-    for (const nm of [A, B]) assert.equal(h.includes(nm), !hidden, `${r}: ${nm}`);
-    assert.equal(h.includes('toggleTipExclude'), !hidden, `${r}: per-person exclude buttons`);
-    assert.equal(h.includes('$160.25'), !hidden, `${r}: Aki's day amount`);
+    const h = c.MODAL;
+    for (const nm of [A, B]) assert.ok(h.includes(nm), `${r}: ${nm}`);
+    assert.ok(h.includes('toggleTipExclude'), `${r}: per-person exclude buttons (accounting can exclude a shift again)`);
+    assert.ok(h.includes('$160.25'), `${r}: Aki's day amount`);
     assert.ok(h.includes('配分合計') && h.includes('差額'), `${r}: summary and difference check stay`);
-    assert.equal(h.includes(NOTE_JA), hidden, `${r}: note`);
+    assert.ok(!h.includes(NOTE_JA), `${r}: no note`);
   }
 });
 
@@ -257,7 +268,7 @@ test('HQ shift-in: per person (field wage and amount) and the CSV are CEO/GM onl
 });
 
 // ---- tip page buttons ----
-test('tip page buttons: accounting keeps "re-fetch from Toast" but not the per-person CSV or the accounting book', () => {
+test('tip page buttons: everyone keeps "re-fetch from Toast" and the L/D CSV; the accounting book (3 tabs) is CEO/GM only', () => {
   const block = between('// ペイロール期間（半月）の日次ランチ/ディナー配分内訳をCSV出力', "if (tipPeriodView==='hqsite')");
   for (const r of ROLES) {
     const c = app(r);
@@ -265,7 +276,7 @@ test('tip page buttons: accounting keeps "re-fetch from Toast" but not the per-p
     run(c, block);
     const h = c.html;
     assert.ok(h.includes('tipRefreshPeriodFromToast'), `${r}: re-fetch stays`);
-    assert.equal(h.includes('exportTipPeriodCsv'), !ACCT.includes(r), `${r}: per-person L/D CSV`);
+    assert.ok(h.includes('exportTipPeriodCsv'), `${r}: per-person L/D CSV (as before)`);
     assert.equal(h.includes('exportAcctPayrollBook'), r === 'ceo' || r === 'gm', `${r}: accounting book`);
   }
 });
@@ -338,10 +349,12 @@ function acctApp(role, pc) {
   return c;
 }
 for (const pc of [false, true]) {
-  test(`accounting export (${pc ? 'PC' : 'phone/tablet'}): tip list, shift leader allowance, office payroll and the book are CEO/GM only; inventory and invoices stay`, () => {
+  test(`accounting export (${pc ? 'PC' : 'phone/tablet'}): the tip list stays for accounting; shift leader allowance, office payroll and the book are CEO/GM only; inventory and invoices stay`, () => {
     for (const r of ['ceo', 'gm', 'office']) {
       const h = run(acctApp(r, pc), 'renderAcctExport()'), full = r !== 'office';
-      for (const fn of ['exportAcctPayrollBook', 'exportTipCSV', 'exportAllTipCSV', 'exportSlPayrollCSV', 'exportAllSlPayrollCSV', 'exportOfficePayrollCSV'])
+      for (const fn of ['exportTipCSV', 'exportAllTipCSV']) assert.ok(h.includes(fn), `${r}: ${fn} (as before)`);
+      assert.ok(h.includes('Tip'), `${r}: the tip list heading`);
+      for (const fn of ['exportAcctPayrollBook', 'exportSlPayrollCSV', 'exportAllSlPayrollCSV', 'exportOfficePayrollCSV'])
         assert.equal(h.includes(fn), full, `${r}: ${fn}`);
       assert.equal(h.includes(C), full, `${r}: an office person's pay row`);
       assert.ok(h.includes('exportAllInventoryCSV'), `${r}: inventory export stays`);
@@ -350,12 +363,22 @@ for (const pc of [false, true]) {
     }
   });
 }
-test('accounting center menu: the payroll CSV entries are CEO/GM only; accounting keeps the category export', () => {
+const GUARD_BLOCK = between('\nvar PAGE_GUARD = {', '\n};') + '\n};';
+test('accounting center menu: the payroll CSV entries are CEO/GM only; accounting keeps the tip CSV and the category export', () => {
   for (const r of ['ceo', 'gm', 'office', 'office_crew']) {
     const c = app(r);
-    run(c, fnFrom('renderOfficeExport'));
+    run(c, `${GUARD_BLOCK}
+            var CREW_EXTRA_PAGES = [];
+            ${fnFrom('pageRoleAllowed')}
+            ${fnFrom('navGuardAllows')}
+            ${fnFrom('renderOfficeExport')}`);
     const h = run(c, 'renderOfficeExport()'), full = r === 'ceo' || r === 'gm';
     assert.equal(h.includes('給与・経理CSV'), full, `${r}: group title`);
+    assert.equal(h.includes('Tip・経理CSV'), !full, `${r}: group title (accounting)`);
+    // the tip CSV entry: accounting goes to the accounting export screen, Office Crew to the tip screen (it cannot open acct_export — as before)
+    assert.equal(h.includes('Tip CSV（店舗）'), !full, `${r}: tip CSV entry`);
+    if (r === 'office') assert.match(h, /go\('acct_export'\)[^>]*>[\s\S]{0,400}Tip CSV（店舗）/, 'office: tip CSV → acct_export');
+    if (r === 'office_crew') assert.match(h, /go\('tip'\)[^>]*>[\s\S]{0,400}Tip CSV（店舗）/, 'office_crew: tip CSV → tip screen');
     assert.equal(h.includes('給与CSV（店舗）'), full, `${r}: store payroll CSV`);
     assert.equal(h.includes('給与CSV（Office）'), full, `${r}: office payroll CSV`);
     assert.ok(h.includes('経理区分エクスポート') && h.includes('棚卸Excel'), `${r}: category export and inventory stay`);
