@@ -7,7 +7,8 @@ export function postgrestDb({ fetch, url, key }) {
   const h = { apikey: key, authorization: 'Bearer ' + key, 'content-type': 'application/json' };
   return {
     async rpc(name, p) {
-      if (!/^(wr|chat)_[a-z0-9_]+$/.test(name)) throw new Error('bad_rpc');
+      // v1190：承認・閲覧の共通ルールの関数（ar_）も（前は wr_・chat_ だけで、本番の道では ar_ を断っていた）
+      if (!/^(wr|chat|ar)_[a-z0-9_]+$/.test(name)) throw new Error('bad_rpc');
       const r = await fetch(`${url}/rest/v1/rpc/${name}`, { method: 'POST', headers: h, body: JSON.stringify({ p: p ?? {} }) });
       const t = await r.text();
       if (!r.ok) { let m = t; try { m = JSON.parse(t).message || t; } catch { /* keep text */ } const e = new Error(String(m).slice(0, 400)); e.status = r.status; throw e; }
