@@ -159,6 +159,20 @@ export const S2_KINDS = ['budget', 'leave', 'shift', 'hire', 'resign', 'promo', 
 export const ALL_KINDS = [...KINDS, ...EVAL_KINDS, ...S2_KINDS];
 export const TIP_RATES = [80, 90, 100];
 const EMP = v => { if (typeof v !== 'string' || !/^[A-Za-z0-9_.:-]{1,64}$/.test(v)) throw bad(); return v; };
+// v1190：承認・閲覧の共通ルール
+const AR_EX_OPS = ['set_stage', 'add_stage', 'remove_stage', 'add_viewer', 'remove_viewer'];
+const REV0 = v => { if (!Number.isInteger(v) || v < 0 || v > 1e9) throw bad(); return v; };
+const INT = (v, lo, hi) => { if (!Number.isInteger(v) || v < lo || v > hi) throw bad(); return v; };
+const AR_CENTS = v => { if (!Number.isInteger(v) || v < 0 || v > 1e12) throw bad(); return v; };
+const STORES = v => { const a = v == null ? [] : v; if (!Array.isArray(a) || a.length > 50) throw bad(); return a.map(STORE); };
+// 中身の形は SQL が確かめる（ar_def_errors）。ここは大きさと JSON の形だけ
+const JSONV = (v, n) => { if (v === null || typeof v !== 'object' || JSON.stringify(v).length > n) throw bad(); return v; };
+const RULE_DEF = v => { if (v === null || typeof v !== 'object' || Array.isArray(v)) throw bad(); return JSONV(v, 20000); };
+const REV_ITEMS = v => {
+  if (!Array.isArray(v) || v.length < 1 || v.length > 200) throw bad();
+  const seen = new Set();
+  return v.map(x => { const id = x && ID(x.id); if (!id || seen.has(id)) throw bad(); seen.add(id); return { id, rev: REV(x.rev) }; });
+};
 // v1156：チャット
 export const CHAT = { body: 2000, title: 60, reason: 200, members: 49, mentions: 50 };
 const TID = v => { const x = ID(v); if (!x) throw bad(); return x; };
@@ -388,9 +402,10 @@ export function createHandler(deps) {
     // v1168 から fn 10（チャットの守り：暗証番号・グループのキー・プッシュ通知。チャットの SQL は chat 4 から）。push＝プッシュ通知の鍵が入っている
     // v1169 から fn 11（キー付きのグループを 1 つの取引で＝chat_create_group_k・経理の「処理済み（今月）」＝acct_done。SQL は chat 5 から。申請の段 sql は変えない＝wr_acct_done が無ければ done_old）
     // v1184 から fn 12（経費の申請の権限：exp_grant_list・exp_grant_save。SQL は 20261204090000 から＝whoami の exp_grants。無ければ grant_old）
+    // v1190 から fn 13（承認・閲覧の共通ルール：ar_*・bulk_approve。SQL は 20261209090000 から＝whoami の ar・sql 8。無ければ ar_old）
     whoami: async w => {
       const [me, st, cs] = await Promise.all([db.rpc('wr_whoami', w), db.rpc('wr_stage', {}).catch(() => null), db.rpc('chat_stage', {}).catch(() => null)]);
-      return { ...me, fn: 12, push: pushReady, sql: (st && Number.isInteger(st.stage)) ? st.stage : 1, chat: (cs && Number.isInteger(cs.chat)) ? cs.chat : 0 };
+      return { ...me, fn: 13, push: pushReady, sql: (st && Number.isInteger(st.stage)) ? st.stage : 1, chat: (cs && Number.isInteger(cs.chat)) ? cs.chat : 0 };
     },
     // v1184：G2 より下の人の経費の申請の権限（ガソリン代・立替経費）。GM・CEO だけ（SQL が確かめる）。
     // save：mileage・reimburse は true／false／null（＝初期値）。expect_rev は見ていた設定の番号（無ければ 0）。同じ設定なら何もしない（same）
@@ -663,13 +678,69 @@ export function createHandler(deps) {
     chat_push_sub: (w, b) => { if (!pushReady) { const e = new Error('push_off'); e.code = 'push_off'; throw e; } return db.rpc('chat_push_save', { ...w, endpoint: ENDPOINT(b.endpoint) }); },
     chat_push_unsub: (w, b) => { if (typeof b.endpoint !== 'string' || !b.endpoint || b.endpoint.length > 1000) throw bad(); return db.rpc('chat_push_drop', { ...w, endpoint: b.endpoint }); },
     chat_push_check: (w, b) => { if (typeof b.endpoint !== 'string' || !b.endpoint || b.endpoint.length > 1000) throw bad(); return db.rpc('chat_push_check', { ...w, endpoint: b.endpoint }); },
+
+    // v1190：承認・閲覧の共通ルール（UI案93・docs/APPROVAL_RULES_JA.md）。設定・役割・代理・例外・適用・使い始めは CEO・GM だけ（SQL が確かめる）。
+    // 一括承認（bulk_approve）は GM・CEO。1 件ずつ id と見たときの版（rev）・client_key＝この操作の番号（送り直しは前の結果）。
+    // SQL（20261209090000）がまだ（ar_ の関数が無い）＝ 503 ar_old（アプリは今までの画面のまま）
+    ar_state: w => db.rpc('ar_state', w),
+    ar_rule_preview: (w, b) => {
+      if (!ALL_KINDS.includes(b.kind)) throw bad();
+      const q = { ...w, kind: b.kind, store_id: b.store_id == null || b.store_id === '' ? null : STORE(b.store_id) };
+      if (b.def != null) q.def = RULE_DEF(b.def);
+      if (b.amount_cents != null) q.amount_cents = AR_CENTS(b.amount_cents);
+      if (b.requester != null && b.requester !== '') q.requester = EMP(b.requester);
+      return db.rpc('ar_rule_preview', q);
+    },
+    ar_rule_save: (w, b) => {
+      if (!ALL_KINDS.includes(b.kind)) throw bad();
+      return db.rpc('ar_rule_save', { ...w, kind: b.kind, def: RULE_DEF(b.def), expect_rev: REV0(b.expect_rev), note: TS(b.note, LIMITS.note) || null });
+    },
+    ar_rule_activate: (w, b) => {
+      if (!ALL_KINDS.includes(b.kind)) throw bad();
+      return db.rpc('ar_rule_activate', { ...w, kind: b.kind, expect_rev: REV(b.expect_rev), note: TS(b.note, LIMITS.note) || null });
+    },
+    ar_rule_discard: (w, b) => {
+      if (!ALL_KINDS.includes(b.kind)) throw bad();
+      return db.rpc('ar_rule_discard', { ...w, kind: b.kind, expect_rev: REV(b.expect_rev) });
+    },
+    ar_role_list: w => db.rpc('ar_role_list', w),   // 見るだけ（役割は従業員マスターとアカウントから決まる・1B）
+    ar_delegate_list: w => db.rpc('ar_delegate_list', w),
+    ar_delegate_save: (w, b) => {
+      const kinds = b.kinds == null ? [] : b.kinds;
+      if (!Array.isArray(kinds) || kinds.length > ALL_KINDS.length || kinds.some(k => !ALL_KINDS.includes(k))) throw bad();
+      return db.rpc('ar_delegate_save', { ...w, from: EMP(b.from), to: EMP(b.to), kinds, stores: STORES(b.stores), starts: DT(b.starts), ends: DT(b.ends),
+        note: TS(b.note, LIMITS.note) || null });
+    },
+    ar_delegate_end: (w, b) => {
+      const id = ID(b.id); if (!id) throw bad();
+      return db.rpc('ar_delegate_end', { ...w, id, note: TS(b.note, LIMITS.note) || null });
+    },
+    ar_stuck: w => db.rpc('ar_stuck_list', w),
+    ar_exception: (w, b) => {
+      if (!AR_EX_OPS.includes(b.op)) throw bad();
+      const q = { ...w, ...ref(b), op: b.op, expect_rev: REV(b.expect_rev), note: TS(b.note, LIMITS.note) || null };
+      if (b.op === 'set_stage' || b.op === 'add_stage' || b.op === 'remove_stage') q.stage = INT(b.stage, 1, 6);
+      if (b.op === 'set_stage' || b.op === 'add_stage') q.def = JSONV(b.def, 4000);
+      if (b.op === 'add_viewer') { q.who = JSONV(b.who, 2000); q.from = b.from == null ? 'submit' : TS(b.from, 10); }
+      if (b.op === 'remove_viewer') q.viewer = INT(b.viewer, 1, 20);
+      return db.rpc('ar_exception', q);
+    },
+    ar_apply_preview: (w, b) => { if (!ALL_KINDS.includes(b.kind)) throw bad(); return db.rpc('ar_apply_preview', { ...w, kind: b.kind }); },
+    ar_apply: (w, b) => {
+      if (!ALL_KINDS.includes(b.kind)) throw bad();
+      return db.rpc('ar_apply', { ...w, kind: b.kind, items: REV_ITEMS(b.items), note: TS(b.note, LIMITS.note) || null });
+    },
+    ar_go_live: (w, b) => db.rpc('ar_go_live', { ...w, expect_rev: REV(b.expect_rev), note: TS(b.note, LIMITS.note) || null }),
+    ar_go_off: (w, b) => db.rpc('ar_go_off', { ...w, expect_rev: REV(b.expect_rev), note: TS(b.note, LIMITS.note) || null }),
+    bulk_approve: (w, b) => db.rpc('ar_bulk', { ...w, items: REV_ITEMS(b.items), client_key: KEY(b.client_key) }),
   };
   const ERR = { forbidden: 403, not_live: 409, conflict: 409, not_found: 404, bad_value: 400, no_rate: 409, reason_required: 400,
     dup_unresolved: 409, legacy_paid: 409, pin_check_missing: 503, not_member: 409, too_late: 409, too_many: 409, chat_missing: 503,
     file_type: 400, file_big: 413, file_bad: 409, file_missing: 409, file_many: 409, files_missing: 503, storage: 502,
     pre_bad: 409, pre_taken: 409, pre_missing: 503, case_exists: 409, last_admin: 409, chat_old: 503,
     chat_pin_required: 423, chat_key_required: 423, guard_old: 503, push_off: 503, last_member: 409, fix_old: 503, done_old: 503,
-    no_exp_right: 403, grant_old: 503, not_crew: 409 };
+    no_exp_right: 403, grant_old: 503, not_crew: 409,
+    no_route: 409, rule_invalid: 400, delegate_cycle: 409, rules_missing: 409, no_approver: 409, ar_old: 503 };
   // チャットの SQL がまだ無い（関数が見つからない）＝ 503 chat_missing（アプリは「サーバーの準備がまだ」と出す）
   const chatMissing = (action, e) => typeof action === 'string' && action.startsWith('chat_')
     && (e.status === 404 || /(function public\.chat_[a-z_]+\(.*\) does not exist|Could not find the function public\.chat_)/i.test(String(e.message || '')));
@@ -699,6 +770,8 @@ export function createHandler(deps) {
     if (action === 'acct_done' && /wr_acct_done/.test(m) && miss) return 'done_old';
     // v1184：経費の申請の権限の SQL（20261204090000）がまだ
     if ((action === 'exp_grant_list' || action === 'exp_grant_save') && /wr_exp_grant_/.test(m) && miss) return 'grant_old';
+    // v1190：承認・閲覧の共通ルールの SQL（20261209090000）がまだ
+    if ((action.startsWith('ar_') || action === 'bulk_approve') && /\bar_[a-z_]+/.test(m) && miss) return 'ar_old';
     return '';
   };
 
