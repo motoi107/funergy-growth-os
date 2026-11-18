@@ -26,6 +26,9 @@ do $$ begin
     or to_regprocedure('public.wr_s2_store_has_am(text,text)') is null or to_regclass('public.wr_people') is null then
   raise exception 'STOP: 先に申請の SQL（20261204090000_wr_exp_grants.sql まで）を流してください（何も変えていません）';
  end if;
+ if not exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'wr_exp_grants' and column_name = 'crew') then
+  raise exception 'STOP: 経費の申請の権限の SQL（20261204090000_wr_exp_grants.sql）が前の版のままです。今の版をもう一度流してから（何も変えていません）';
+ end if;
 end $$;
 
 -- ---------------------------------------------------------------- 表

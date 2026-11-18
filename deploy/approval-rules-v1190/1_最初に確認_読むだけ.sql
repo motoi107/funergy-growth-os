@@ -5,6 +5,10 @@ select '1. 申請の SQL が v1184（経費の申請の権限）まで入って�
     and to_regprocedure('public.wr_s2_store_has_am(text,text)') is not null and to_regclass('public.wr_people') is not null
     and to_regprocedure('public.wr_person_live(text)') is not null
    then 'OK' else 'STOP（先に deploy/three-fixes-v1184 の ②）' end as result
+union all select '1b. v1184 が今の版（事務Crew の確かめの列がある）',
+  case when to_regclass('public.wr_exp_grants') is null then 'STOP（先に deploy/three-fixes-v1184 の ②）'
+   when exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'wr_exp_grants' and column_name = 'crew')
+   then 'OK' else 'STOP（v1184 が前の版のまま。deploy/three-fixes-v1184 の ② をもう一度 → その ③ の 10 が OK になってから ② へ）' end
 union all select '2. もう入っているか（1＝入っている。② をもう一度流してもルール・記録は残る）',
   case when to_regclass('public.ar_rules') is not null then '1' else '0（初めて）' end
 union all select '3. 申請の SQL の段（7 なら初めて・8 ならもう入っている）',
@@ -17,7 +21,8 @@ union all select '（参考）経理のアカウント（社員と結ばれて�
   (select count(*)::text from public.manager_auth where role = 'office' and emp_id is not null)
 union all select '（参考）事務Crew（アカウント / 経費の画面で確かめた）',
   (select count(*)::text from public.manager_auth where role = 'office_crew' and emp_id is not null) || ' / ' ||
-  case when to_regclass('public.wr_exp_grants') is null then '—' else
+  case when to_regclass('public.wr_exp_grants') is null then '—'
+   when not exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'wr_exp_grants' and column_name = 'crew') then '—（v1184 が前の版）' else
     (xpath('/row/n/text()', query_to_xml('select count(*) as n from public.wr_exp_grants where crew is true', false, true, '')))[1]::text end
 union all select '（参考）GM・CEO が確かめた AM / Head Chef（承認・閲覧の権限の確かめ）',
   (select count(*) filter (where role = 'am')::text || ' / ' || count(*) filter (where chef)::text from public.wr_people)

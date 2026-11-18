@@ -3,6 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { setup, PGlite, M, MIGS, AR, ROLLBACK, PEOPLE } from './approval-rules-world.mjs';
+import { execSync } from 'node:child_process';
 
 const D = f => fs.readFileSync(new URL('../deploy/approval-rules-v1190/' + f, import.meta.url), 'utf8');
 const rows = async (pg, sql) => { await pg.exec('reset role'); try { const r = await pg.exec(sql); return r[r.length - 1].rows; } finally { await pg.exec('set role service_role'); } };
@@ -37,6 +38,44 @@ test('① の確認：入れる前と後・名前は出さない・前の SQL �
   assert.match(res(r0, '1.'), /^STOP/);
   await assert.rejects(pg.exec(D('2_SQL_承認ルール.sql')), /STOP/);
   assert.equal((await pg.exec(`select to_regclass('public.ar_rules') is null as none`)).pop().rows[0].none, true, '止まったら何も変えない');
+});
+
+/* 本番（11/17 20:04 HST）：v1184 の SQL が前の版（d21250e・Codex #182 の P1 の直しの前＝wr_exp_grants に crew の列が無い）のままだった。
+   ① はエラー（column "crew" does not exist）で止まっていた → ① は 1b で STOP と案内・② も STOP で何も変えない・今の v1184 を流し直すと進める。
+   d21250e が無いとき（浅い clone）は理由を出して落ちる（CI は取ってくる） */
+const OLD_V1184 = 'd21250ee4868c51a89c8e2c1f443e6ab437f75a4';
+test('v1184 が前の版（crew の列なし）のとき：① はエラーにならず 1b が STOP・② は STOP で何も変えない・今の v1184 を流し直すと ① が OK・② が通る', async () => {
+  let oldSql;
+  try { oldSql = execSync('git show ' + OLD_V1184 + ':supabase/migrations/20261204090000_wr_exp_grants.sql', { cwd: new URL('..', import.meta.url), maxBuffer: 16 << 20 }).toString('utf8'); }
+  catch (e) { throw new Error('needs the old v1184 commit (git fetch origin ' + OLD_V1184 + '): ' + e.message); }
+  assert.ok(!/crew boolean/.test(oldSql), 'the base commit is the v1184 SQL before the crew fix');
+  const pg = new PGlite();
+  await pg.exec(`create role anon; create role authenticated; create role service_role bypassrls;
+    create table public.manager_auth(user_id uuid primary key default gen_random_uuid(), role text, emp_id text);
+    create table public.employees(id text primary key, name text, role text, title text, store text, support jsonb, status text, data jsonb);
+    create table public.stores(id text primary key, name text, am text, active boolean);
+    create table public.app_state(key text primary key, value jsonb, updated_at timestamptz default now());`);
+  for (const [id, name, role, title, store, ma] of PEOPLE) {
+    await pg.query(`insert into employees values($1,$2,$3,$4,$5,'[]','在籍',$6)`, [id, name, role, title, store, JSON.stringify({ name, status: '在籍' })]);
+    if (ma) await pg.query('insert into manager_auth(role, emp_id) values($1,$2)', [ma, id]);
+  }
+  for (const f of MIGS) await pg.exec(f === '20261204090000_wr_exp_grants' ? oldSql : M(f));
+  await pg.exec(`insert into public.wr_exp_grants(emp_id, mileage) values ('E12', false)`);
+  const r0 = (await pg.exec(D('1_最初に確認_読むだけ.sql'))).pop().rows;
+  assert.equal(res(r0, '1.'), 'OK');
+  assert.match(res(r0, '1b.'), /^STOP（v1184 が前の版のまま/);
+  assert.equal(res(r0, '（参考）事務Crew').split(' / ')[1], '—（v1184 が前の版）');
+  assert.ok(!NAMES.test(JSON.stringify(r0)), '名前は出さない');
+  await assert.rejects(pg.exec(D('2_SQL_承認ルール.sql')), /STOP: 経費の申請の権限の SQL/);
+  assert.equal((await pg.exec(`select to_regclass('public.ar_rules') is null as none`)).pop().rows[0].none, true, '止まったら何も変えない');
+  // 今の v1184 をもう一度（前に決めた設定は残る）
+  await pg.exec(M('20261204090000_wr_exp_grants'));
+  assert.equal((await pg.exec(`select mileage from public.wr_exp_grants where emp_id = 'E12'`)).pop().rows[0].mileage, false);
+  const r1 = (await pg.exec(D('1_最初に確認_読むだけ.sql'))).pop().rows;
+  assert.ok(!r1.some(r => /STOP/.test(r.result)), JSON.stringify(r1));
+  assert.equal(res(r1, '1b.'), 'OK');
+  await pg.exec(D('2_SQL_承認ルール.sql'));
+  assert.equal(res((await pg.exec(D('1_最初に確認_読むだけ.sql'))).pop().rows, '3.'), '8');
 });
 
 test('③ の確認：入れたあと NG なし・2 回流しても同じ・前の申請の SQL の流し直し・公開の鍵の付け直しで NG・戻すと NG', async () => {
@@ -78,7 +117,6 @@ test('③ の参考：使い始めたあと、ルートの付いた承認待ち�
 
 /* 今 Supabase に入っている関数（main d14d444 の handler.mjs）のままで ② を入れても今までどおり動く（④ を待つあいだ）。
    そのコミットが無いとき（浅い clone）は理由を出して落ちる（CI は取ってくる） */
-import { execSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 const BASE_V1189 = 'd14d4447e3299323bbee7b70a9b1282a52dfa2c9';
