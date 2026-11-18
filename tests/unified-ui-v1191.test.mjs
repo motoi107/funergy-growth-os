@@ -66,6 +66,16 @@ test('G1 (personal sign-in): accounting, store master, approval rules, settings,
   for (const g of run(c, 'groupsForRole()')) for (const p of g.children) assert.equal(run(c, `navGuardAllows(${JSON.stringify(p)})`), true, p);
 });
 
+test('G1: a consultation reply notice (page growthhub) opens My Page (Past consultations) without the "not available" notice (PR #194 Claude P3)', () => {
+  for (const lang of ['ja', 'en']) {
+    const c = navApp('crew', { store: 'F01' }); c.curLang = lang;
+    assert.equal(run(c, "navResolvePage('growthhub')"), 'mypage');
+    assert.equal(c.TOASTS.length, 0, lang + ': no notice');
+  }
+  // people who can open the consultation room still go there
+  for (const r of ['sl', 'am', 'gm']) assert.equal(run(navApp(r), "navResolvePage('growthhub')"), 'growthhub', r);
+});
+
 test('store tablet (shared store sign-in) is unchanged for its own pages and cannot open the guarded ones', () => {
   const c = navApp('sl', { storeLogin: true, store: 'F01' });
   for (const p of ['store_cmd', 'shift_admin', 'inventory', 'vacation']) assert.equal(run(c, `navResolvePage(${JSON.stringify(p)})`), p, p);
@@ -185,18 +195,24 @@ test('individual pay: only CEO and GM see others’ wages and the title pay tabl
 
 // ---------- FUNERGY TIMES ----------
 const TIMES_BLOCK = between("var TIMES_DEFAULT_URL = ", "\n/* 店舗別メッセージ");
-function timesApp(role, stored) {
+function timesApp(role, stored, opts) {
+  opts = opts || {};
   const store = { funergy_times: stored === undefined ? null : JSON.parse(JSON.stringify(stored)) };
-  const c = { curRole: role, curUserName: 'Moto', curLang: 'ja', curPage: 'mypage', TOASTS: [], OPENED: [], STORE: store, FIELDS: {}, ROLE_CONFIG: { gm: { name: 'GM' } }, URL };
+  const c = { curRole: role, curUserName: 'Moto', curLang: opts.lang || 'ja', curPage: 'mypage', TOASTS: [], OPENED: [], CLOSED: 0, STORE: store, FIELDS: {}, MSG: { style: {} },
+    ROLE_CONFIG: { gm: { name: 'GM' } }, URL, _lsPushP: {}, LOCAL_OK: true, PUSH: true, SUPA_SYNC_ENABLED: true };
   vm.createContext(c);
   vm.runInContext(`
     function t(ja, en){ return curLang === 'en' ? en : ja; }
     function escapeHtml(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
     function ls(k, d){ return Object.prototype.hasOwnProperty.call(STORE, k) && STORE[k] != null ? JSON.parse(JSON.stringify(STORE[k])) : d; }
-    function lsSet(k, v){ STORE[k] = JSON.parse(JSON.stringify(v)); }
-    function showToast(m, ty){ TOASTS.push([m, ty]); } function openModal(h){ OPENED.push(h); } function closeModalDirect(){} function renderPage(){}
+    /* 本物の lsSet と同じく、端末に書けたかを返し、送った結果を _lsPushP に置く（LOCAL_OK・PUSH で失敗を入れる） */
+    function lsSet(k, v){ if (LOCAL_OK) STORE[k] = JSON.parse(JSON.stringify(v)); _lsPushP[k] = Promise.resolve(PUSH); return LOCAL_OK; }
+    function showToast(m, ty){ TOASTS.push([m, ty]); } function openModal(h){ OPENED.push(h); } function closeModalDirect(){ CLOSED++; } function renderPage(){}
     function langDateLocale(){ return 'ja'; }
-    var document = { getElementById: function(id){ return Object.prototype.hasOwnProperty.call(FIELDS, id) ? { value: FIELDS[id] } : null; } };
+    var document = { getElementById: function(id){
+      if (id === 'tm-msg') return MSG;
+      if (id === 'tm-save') return {};
+      return Object.prototype.hasOwnProperty.call(FIELDS, id) ? { value: FIELDS[id] } : null; } };
     ${TIMES_BLOCK}
   `, c);
   return c;
@@ -231,35 +247,105 @@ test('FUNERGY TIMES card: everyone gets it; a written-in bad address or HTML in 
   assert.match(h2, /<img src="https:\/\/times\.funergygroup\.com\/c\.jpg"[^>]*referrerpolicy="no-referrer"/);
 });
 
-test('FUNERGY TIMES settings: CEO/GM only; bad addresses are refused; the previous setting is kept in the history', () => {
+test('FUNERGY TIMES settings: CEO/GM only; bad addresses are refused; every save is its own record so the earlier setting stays in the history', async () => {
   for (const r of ['office', 'office_crew', 'am', 'sl', 'crew', 'chef']) {
     const c = timesApp(r);
     assert.equal(run(c, 'timesSettingsCardHtml()'), '', r);
     run(c, 'openTimesSettings()'); assert.equal(c.OPENED.length, 0, r);
     c.FIELDS['tm-url'] = 'https://times.funergygroup.com/x';
-    run(c, 'saveTimesSettings()'); assert.equal(c.STORE.funergy_times, null, r + ' cannot save');
+    assert.equal(await run(c, 'saveTimesSettings()'), false); assert.equal(c.STORE.funergy_times, null, r + ' cannot save');
   }
+  // the shape before this fix (top-level fields) is still read
   const g = timesApp('gm', { url: 'https://times.funergygroup.com/', title: '10月号', month: '2026-10', by: 'CEO', at: 1000 });
+  assert.equal(run(g, 'timesCfg().title'), '10月号');
   assert.match(run(g, 'timesSettingsCardHtml()'), /data-times-set="1"/);
   run(g, 'openTimesSettings()'); assert.equal(g.OPENED.length, 1);
   g.FIELDS = { 'tm-url': 'http://times.funergygroup.com/', 'tm-title': 'x', 'tm-month': '', 'tm-cover': '' };
-  run(g, 'saveTimesSettings()');
-  assert.equal(g.STORE.funergy_times.title, '10月号', 'http is refused, nothing saved');
+  assert.equal(await run(g, 'saveTimesSettings()'), false);
+  assert.equal(run(g, 'timesCfg().title'), '10月号', 'http is refused, nothing saved');
   g.FIELDS = { 'tm-url': 'https://times.funergygroup.com/', 'tm-title': 'x', 'tm-month': '', 'tm-cover': 'https://evil.example/c.png' };
-  run(g, 'saveTimesSettings()');
-  assert.equal(g.STORE.funergy_times.title, '10月号', 'a cover outside funergygroup.com is refused');
+  assert.equal(await run(g, 'saveTimesSettings()'), false);
+  assert.equal(run(g, 'timesCfg().title'), '10月号', 'a cover outside funergygroup.com is refused');
+  assert.equal(g.CLOSED, 0);
   g.FIELDS = { 'tm-url': ' https://times.funergygroup.com/2026-11 ', 'tm-title': '11月号', 'tm-month': '2026-11', 'tm-cover': '' };
-  run(g, 'saveTimesSettings()');
-  const v = g.STORE.funergy_times;
+  assert.equal(await run(g, 'saveTimesSettings()'), true);
+  assert.equal(g.CLOSED, 1);
+  assert.ok(g.TOASTS.some(x => x[1] === 'success'));
+  const v = run(g, 'timesCfg()');
   assert.equal(v.url, 'https://times.funergygroup.com/2026-11');
   assert.equal(v.title, '11月号'); assert.equal(v.month, '2026-11'); assert.equal(v.by, 'Moto'); assert.ok(v.at > 1000);
   assert.equal(v.hist.length, 1); assert.equal(v.hist[0].title, '10月号'); assert.equal(v.hist[0].by, 'CEO');
-  for (let i = 0; i < 14; i++) { g.FIELDS['tm-title'] = 'n' + i; run(g, 'saveTimesSettings()'); }
-  assert.equal(g.STORE.funergy_times.hist.length, 10, 'history keeps the last 10');
+  const recs = () => Object.entries(g.STORE.funergy_times || {}).filter(([, e]) => e && !e._deleted);
+  assert.ok(!Array.isArray(g.STORE.funergy_times) && recs().every(([k, e]) => k && typeof e.at === 'number' && typeof e._at === 'number'), 'stored as one record per save (id → record, with the time used by the merge)');
+  for (let i = 0; i < 24; i++) { run(g, 'openTimesSettings()'); g.FIELDS['tm-title'] = 'n' + i; assert.equal(await run(g, 'saveTimesSettings()'), true); }
+  assert.equal(recs().length, 26, 'every save is kept as its own record (the merge keeps them all)');
+  assert.equal(run(g, 'timesCfg().hist.length'), 10, 'shows the last 10 earlier settings');
+  assert.equal(run(g, 'timesCfg().title'), 'n23');
 });
 
-test('FUNERGY TIMES: one setting key synced like other company settings; the card sits right under the Staff ID on My Page; CEO/GM card in Settings', () => {
-  assert.match(src, /'md_all_viewers','funergy_times'\];/);
+test('FUNERGY TIMES save (PR #194 Codex P2-1): "saved" only when it reached the cloud; otherwise the window and the input stay (ja and en)', async () => {
+  for (const lang of ['ja', 'en']) {
+    const before = { a1: { url: 'https://times.funergygroup.com/', title: 'Old', month: '', cover: '', by: 'CEO', at: 1000, _at: 1000 } };
+    const n = c => Object.values(c.STORE.funergy_times || {}).filter(e => e && !e._deleted).length;
+    // 1) nothing could be stored (this device failed and the send failed)
+    const g = timesApp('gm', before, { lang });
+    run(g, 'openTimesSettings()');
+    g.FIELDS = { 'tm-url': 'https://times.funergygroup.com/new', 'tm-title': 'New', 'tm-month': '', 'tm-cover': '' };
+    g.LOCAL_OK = false; g.PUSH = false;
+    assert.equal(await run(g, 'saveTimesSettings()'), false);
+    assert.equal(g.CLOSED, 0, lang + ': the window stays open');
+    assert.equal(g.TOASTS.some(x => x[1] === 'success'), false, lang + ': no success message');
+    assert.equal(run(g, 'timesCfg().title'), 'Old', 'nothing changed'); assert.equal(n(g), 1);
+    assert.equal(g.FIELDS['tm-title'], 'New', 'the input is kept');
+    assert.match(g.MSG.textContent, lang === 'ja' ? /保存できませんでした/ : /Could not save/);
+    // 2) stored on this device but not sent: warning, window stays; pressing again resends the SAME record (no duplicate)
+    g.LOCAL_OK = true; g.PUSH = false; g.TOASTS = [];
+    assert.equal(await run(g, 'saveTimesSettings()'), false);
+    assert.equal(g.CLOSED, 0);
+    assert.equal(g.TOASTS.some(x => x[1] === 'success'), false);
+    assert.match(g.MSG.textContent, lang === 'ja' ? /クラウドに届いていません/ : /has not reached the cloud/);
+    assert.equal(n(g), 2);
+    g.PUSH = true;
+    assert.equal(await run(g, 'saveTimesSettings()'), true);
+    assert.equal(g.CLOSED, 1);
+    assert.equal(n(g), 2, 'the retry replaced its own record');
+    assert.equal(run(g, 'timesCfg().title'), 'New');
+    // 3) still starting / not sent
+    const b = timesApp('ceo', before, { lang });
+    run(b, 'openTimesSettings()'); b.FIELDS = { 'tm-url': 'https://times.funergygroup.com/', 'tm-title': 'B', 'tm-month': '', 'tm-cover': '' };
+    b.PUSH = 'booting';
+    assert.equal(await run(b, 'saveTimesSettings()'), false);
+    assert.equal(b.CLOSED, 0);
+    assert.match(b.MSG.textContent, lang === 'ja' ? /起動の途中/ : /still starting/);
+    // 3b) pressing twice while the first send is still going: the second press does nothing
+    const d = timesApp('gm', before, { lang });
+    run(d, 'openTimesSettings()'); d.FIELDS = { 'tm-url': 'https://times.funergygroup.com/', 'tm-title': 'D', 'tm-month': '', 'tm-cover': '' };
+    let done; d.PUSH = new Promise(r => { done = r; });
+    const first = run(d, 'saveTimesSettings()');
+    assert.equal(await run(d, 'saveTimesSettings()'), false, lang + ': the second press is ignored while sending');
+    done(true);
+    assert.equal(await first, true);
+    assert.equal(n(d), 2, 'one new record, not two');
+    assert.equal(d.CLOSED, 1);
+    // 3c) this device's clock is behind the newest setting (saved on a device whose clock was ahead): the new save is still the current one
+    const late = timesApp('ceo', { z9: { url: 'https://times.funergygroup.com/', title: 'Ahead', month: '', cover: '', by: 'GM', at: Date.now() + 864e5, _at: Date.now() + 864e5 } }, { lang });
+    run(late, 'openTimesSettings()'); late.FIELDS = { 'tm-url': 'https://times.funergygroup.com/n', 'tm-title': 'Now', 'tm-month': '', 'tm-cover': '' };
+    assert.equal(await run(late, 'saveTimesSettings()'), true);
+    assert.equal(run(late, 'timesCfg().title'), 'Now', lang + ': the setting just saved is the current one');
+    assert.equal(run(late, 'timesCfg().hist[0].title'), 'Ahead');
+    // 4) offline: not saved at all
+    const o = timesApp('ceo', before, { lang });
+    run(o, 'openTimesSettings()'); o.FIELDS = { 'tm-url': 'https://times.funergygroup.com/', 'tm-title': 'O', 'tm-month': '', 'tm-cover': '' };
+    o.SUPA_SYNC_ENABLED = false;
+    assert.equal(await run(o, 'saveTimesSettings()'), false);
+    assert.equal(n(o), 1);
+  }
+});
+
+test('FUNERGY TIMES: one shared key with a merge rule and a conditional write (PR #194 Codex P2-2); the card sits right under the Staff ID on My Page; CEO/GM card in Settings', () => {
+  assert.match(src, /^var OP_SYNC_KEYS = \[[\s\S]*?'funergy_times'\];/m);
+  assert.match(src, /^\s*funergy_times:\s*\{ merge: mergeMapByTime, covers: _coversMapByTime, cas: true \}/m);
+  assert.doesNotMatch(src, /'md_all_viewers','funergy_times'\]/, 'not an app_settings key any more');
   const my = fnFrom('renderMypage');
   const i = my.indexOf("openStaffPass()\"><i class=\"ti ti-eye\"></i>"), j = my.indexOf('timesCardHtml()'), k = my.indexOf("_mp('t',20)");
   assert.ok(i > 0 && j > i && k > j, 'after the Staff ID card, before the next block');

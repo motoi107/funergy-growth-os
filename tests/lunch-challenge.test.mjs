@@ -332,7 +332,7 @@ test('saved records merge one by one (two managers on different things keep both
   assert.equal(c.mem.lunch_challenge['mark:2026-10-02'].k, 'none'); assert.equal(c.mem.lunch_challenge['mark:2026-10-02']._deleted, undefined);
   assert.equal(Object.keys(c.mem.lunch_challenge).filter(k => k.startsWith('h:')).length, 5);
   // The key is synced, merged and never freed (checked in the source).
-  assert.match(html, /'q_budgets','fv_config','lunch_challenge'\];/);
+  assert.match(html, /^var OP_SYNC_KEYS = \[[\s\S]*?'q_budgets','fv_config','lunch_challenge'[,\]]/m);   /* v1191：後ろに funergy_times が足された */
   assert.match(html, /  lunch_challenge:    \{ merge: mergeMapByTime, covers: _coversMapByTime \},/);
   assert.match(html, /\n  'lunch_challenge',   \/\* v1080/);
 });
