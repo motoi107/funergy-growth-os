@@ -49,14 +49,45 @@ const plain = v => JSON.parse(JSON.stringify(v));
 const VARS = ['PL_EXPENSE_CLASS_DEFAULT', 'PL_EXPENSE_CLASS_ALIAS', 'PL_CLASS_LABEL'];
 const FNS = ['plNormText', 'plNormKey', 'plSplitCode', 'plNormAccount', 'getPlExpenseClass', '_plClsMaps', 'plClassOf', 'plClassTotals',
   'mergeMapByTime', '_recAt', 'plMoney', 'plNum', 'plYmSeq', 'plYmLabel', 'plTrendMonths', 'plTrendSel', 'plTrendRow', 'plDiff', 'plRate', 'plProvTag',
-  'plScopeName', 'plTilesHtml', 'plWaterfallHtml', 'plTrendTableHtml', 'plClsCanEdit', 'plClsWho', 'plClsKey', 'plClsCurAt', 'plClsSaveRec', 'plClsSave',
-  'plUnknownAccounts', '_plDiffPair', '_plImportDiff', '_plImportDiffHtml'];
+  'plScopeName', 'plTilesHtml', 'plWaterfallHtml', 'plTrendTableHtml', 'plClsCanEdit', 'plClsWho', 'plClsKey', 'plClsCurAt', '_plClsMapsOf', 'plClsBuild', 'plClsCasSave', 'plClsSave',
+  'plUnknownAccounts', '_plDiffPair', '_plImportDiff', '_plImportDiffHtml', '_tsMicro', '_casTs', '_fetchOpRow', '_opCasWrite'];
 
-function world({ act = null, cls = undefined, role = 'gm', session = undefined, emps = [], online = true, sync = true, pull = () => true, src = SRC, lsSetFails = false } = {}) {
+/* #189 の Codex（6964022211）：クラウドの app_state の 1 行を PostgREST の決まりで（GET・読んだ updated_at が同じときだけ PATCH・無ければ POST、あれば 409）。
+   2 台の端末が同じ CLOUD を使う。hook：書く直前に 1 回だけ（ほかの端末の保存をはさむ）。fail：その頼みを 500 に。 */
+function newCloud(value) {
+  return { row: value === undefined ? null : { value: JSON.parse(JSON.stringify(value)), updated_at: '2026-11-17T10:00:00.000001+00:00' }, gets: 0, writes: 0, fail: {}, hook: null };
+}
+function cloudFetch(CL) {
+  return async (url, opt = {}) => {
+    const u = new URL(url), method = opt.method || 'GET';
+    const res = (status, body) => ({ ok: status >= 200 && status < 300, status, json: async () => JSON.parse(JSON.stringify(body)) });
+    if (u.searchParams.get('key') !== 'eq.pl_expense_class' && method !== 'POST') return res(200, []);
+    if (method === 'GET') { CL.gets++; if (CL.fail.get) return res(500, {}); return res(200, CL.row ? [{ value: CL.row.value, updated_at: CL.row.updated_at }] : []); }
+    if (CL.hook) { const h = CL.hook; CL.hook = null; await h(); }
+    if (CL.fail.write) return res(500, {});
+    const body = JSON.parse(opt.body);
+    if (method === 'PATCH') {
+      const cond = u.searchParams.get('updated_at');
+      if (!CL.row || cond !== 'eq.' + CL.row.updated_at) return res(200, []);
+      CL.row = { value: body.value, updated_at: body.updated_at }; CL.writes++;
+      return res(200, [{ key: 'pl_expense_class', updated_at: CL.row.updated_at }]);
+    }
+    if (method === 'POST') {
+      if (body.key !== 'pl_expense_class') return res(400, {});
+      if (CL.row) return res(409, {});
+      CL.row = { value: body.value, updated_at: body.updated_at }; CL.writes++;
+      return res(201, [{ key: 'pl_expense_class' }]);
+    }
+    return res(400, {});
+  };
+}
+
+function world({ act = null, cls = undefined, role = 'gm', session = undefined, emps = [], online = true, sync = true, src = SRC, cloud = null } = {}) {
   const LS = {};
   if (act) LS.pl_actual = act;
   if (cls !== undefined) LS.pl_expense_class = cls;
-  const c = { console, JSON, Math, Object, Array, String, Number, RegExp, Date, Promise, isFinite, parseInt, LS, TOASTS: [], PULLS: [], PULL: pull, EMPS: emps, LSFAIL: lsSetFails };
+  const CL = cloud || newCloud(cls);
+  const c = { console, JSON, Math, Object, Array, String, Number, RegExp, Date, Promise, isFinite, parseInt, URL, AbortController, LS, TOASTS: [], EMPS: emps, CL, fetch: cloudFetch(CL), LSREADS: 0 };
   c.window = c;
   c.navigator = { onLine: online };
   if (session !== undefined) c._authSession = session;
@@ -67,15 +98,22 @@ function world({ act = null, cls = undefined, role = 'gm', session = undefined, 
     var PL_BAR_BLUE='#2563eb', PL_BAR_HATCH='hatch', PL_POS='#0f7a4d', PL_NEG='#c62828';
     function t(ja){ return ja; }
     function escapeHtml(s){ return String(s==null?'':s).replace(/[&<>"']/g, function(ch){ return '&#'+ch.charCodeAt(0)+';'; }); }
-    function ls(k, d){ return Object.prototype.hasOwnProperty.call(LS, k) ? JSON.parse(JSON.stringify(LS[k])) : d; }
-    function lsSet(k, v){ if (LSFAIL) return false; LS[k] = JSON.parse(JSON.stringify(v)); return true; }
+    function ls(k, d){ if (k === 'pl_expense_class') LSREADS++; return Object.prototype.hasOwnProperty.call(LS, k) ? JSON.parse(JSON.stringify(LS[k])) : d; }
+    var _RAW = {};
+    function _lsStoreGet(k){ if (!Object.prototype.hasOwnProperty.call(LS, k)) return null; var j = JSON.stringify(LS[k]); if (_RAW[k] !== j) _RAW[k] = j; return _RAW[k]; }
+    function lsSet(){ throw new Error('区分の保存は lsSet（端末に書いてあとで送る）を使わない'); }
+    function _opMergeDef(k){ return k === 'pl_expense_class' ? { merge: mergeMapByTime, cas: true } : null; }
+    function _opWriteBack(k, def, v){ LS[k] = JSON.parse(JSON.stringify(v)); return v; }
+    function _lsMarkFetched(){}
+    var SUPABASE_URL = 'https://x.supabase.co';
+    function supaHeaders(){ return { apikey: 'anon' }; }
+    function clearTimeout(){}
     function getPlActual(){ return ls('pl_actual', {}) || {}; }
     function plScopeLabel(k){ return ({ F01:'ToriTon', F02:'Tenkichi', F06:'LaLa' })[k] || k; }
     function _plStoreLabel(k){ return plScopeLabel(k); }
     function getEmployees(){ return EMPS; }
     function showToast(m, kind){ TOASTS.push([kind, m]); }
-    function pullOpKey(k){ PULLS.push(k); return PULL(k, LS); }
-    function setTimeout(fn){ return 0; }
+    function setTimeout(fn, ms){ if ((Number(ms)||0) < 1000) Promise.resolve().then(fn); return 0; }   /* 15 秒の打ち切りは起こさない */
     function _plKeepsFinal(){ return false; }
   `);
   VARS.forEach(n => run(c, varSrc(n, src)));
@@ -267,89 +305,170 @@ test('要分類の科目の一覧（番号を外して名前でまとめる・�
   assert.deepEqual(Object.keys(u[0].stores), ['F01']);
 });
 
+const MF = { 'mystery fee': { c: 'fixed', name: 'Mystery Fee' } };
+
 test('8A：区分の記録（だれ・いつ・前の区分・記録 10 件まで・メールと金額は入れない）', () => {
   const c = world({ act: ACT, session: { role: 'gm', email: 'someone@example.invalid', emp_id: 'E7' }, emps: [{ id: 'E7', name: 'Test GM' }] });
-  const r = plain(c.plClsSaveRec({ 'mystery fee': { c: 'fixed', name: '70990 Mystery Fee' } }, { 'mystery fee': 0 }));
-  assert.deepEqual(r, { ok: true, n: 1, conflict: [] });
-  const v = c.LS.pl_expense_class['mystery fee'];
+  const r = plain(c.plClsBuild({}, { 'mystery fee': { c: 'fixed', name: '70990 Mystery Fee' } }, { 'mystery fee': 0 }));
+  assert.equal(r.n, 1); assert.deepEqual(r.conflict, []);
+  const v = r.map['mystery fee'];
   assert.equal(v.c, 'fixed'); assert.equal(v.name, 'Mystery Fee'); assert.equal(v.prev, 'other'); assert.equal(v.by, 'Test GM');
   assert.equal(v.hist.length, 1);
   assert.ok(v._at > 0);
-  const txt = JSON.stringify(c.LS.pl_expense_class);
+  const txt = JSON.stringify(r.map);
   assert.doesNotMatch(txt, /@/, 'メールは入れない');
   assert.doesNotMatch(txt, /3700|3100|3000/, '金額は入れない');
-  assert.equal(c.plClassOf('Mystery Fee'), 'fixed', '保存したらすぐに使う');
-  // 同じ区分にするだけなら何も書かない
+  // 同じ区分にするだけなら何も書かない（前の区分は渡した表から決める）
+  let map = r.map;
   const at0 = v._at;
-  assert.equal(plain(c.plClsSaveRec({ 'mystery fee': { c: 'fixed', name: 'Mystery Fee' } }, { 'mystery fee': at0 })).n, 0);
+  assert.equal(c.plClsBuild(map, MF, { 'mystery fee': at0 }).n, 0);
   // 記録は 10 件まで・_at は前より必ず大きい
   let seen = at0;
   for (let i = 0; i < 12; i++) {
     const to = i % 2 ? 'fixed' : 'utility';
-    assert.equal(c.plClsSaveRec({ 'mystery fee': { c: to, name: 'Mystery Fee' } }, { 'mystery fee': seen }).n, 1);
-    const nv = c.LS.pl_expense_class['mystery fee'];
+    const b = c.plClsBuild(map, { 'mystery fee': { c: to, name: 'Mystery Fee' } }, { 'mystery fee': seen });
+    assert.equal(b.n, 1);
+    map = b.map;
+    const nv = map['mystery fee'];
     assert.ok(nv._at > seen); seen = nv._at;
+    assert.equal(nv.prev, i % 2 ? 'utility' : 'fixed');
   }
-  assert.equal(c.LS.pl_expense_class['mystery fee'].hist.length, 10);
+  assert.equal(map['mystery fee'].hist.length, 10);
   // 「未分類」には戻せない（区分を選ぶ画面に無い）・区分でない値は書かない
-  assert.equal(c.plClsSaveRec({ 'mystery fee': { c: 'other', name: 'Mystery Fee' } }, { 'mystery fee': seen }).n, 0);
-  assert.equal(c.plClsSaveRec({ 'mystery fee': { c: 'bogus', name: 'Mystery Fee' } }, { 'mystery fee': seen }).n, 0);
+  assert.equal(c.plClsBuild(map, { 'mystery fee': { c: 'other', name: 'Mystery Fee' } }, { 'mystery fee': seen }).n, 0);
+  assert.equal(c.plClsBuild(map, { 'mystery fee': { c: 'bogus', name: 'Mystery Fee' } }, { 'mystery fee': seen }).n, 0);
 });
 
-test('8A：ほかの端末が先に決めた科目は上書きしない（開いたときの _at と比べる）', () => {
-  const c = world({ act: ACT, cls: { 'mystery fee': { c: 'utility', name: 'Mystery Fee', _at: 500 } } });
-  const r = plain(c.plClsSaveRec({ 'mystery fee': { c: 'fixed', name: 'Mystery Fee' }, 'rent - store': { c: 'variable', name: 'Rent - Store' } }, { 'mystery fee': 0, 'rent - store': 0 }));
+test('8A：ほかの端末が先に決めた科目は上書きしない（開いたときの _at と比べる）・渡した表は変えない', () => {
+  const c = world({ act: ACT });
+  const base = { 'mystery fee': { c: 'utility', name: 'Mystery Fee', _at: 500 } };
+  const r = plain(c.plClsBuild(base, Object.assign({ 'rent - store': { c: 'variable', name: 'Rent - Store' } }, MF), { 'mystery fee': 0, 'rent - store': 0 }));
   assert.deepEqual(r.conflict, ['Mystery Fee']);
   assert.equal(r.n, 1);
-  assert.equal(c.LS.pl_expense_class['mystery fee'].c, 'utility');
-  assert.equal(c.LS.pl_expense_class['mystery fee']._at, 500);
-  assert.equal(c.LS.pl_expense_class['rent - store'].c, 'variable');
-  assert.equal(c.LS.pl_expense_class['rent - store'].prev, 'fixed');
-  // 書けなかったら ok:false
-  const f = world({ act: ACT, lsSetFails: true });
-  assert.equal(f.plClsSaveRec({ 'rent - store': { c: 'variable', name: 'Rent - Store' } }, { 'rent - store': 0 }).ok, false);
+  assert.equal(r.map['mystery fee'].c, 'utility');
+  assert.equal(r.map['mystery fee']._at, 500);
+  assert.equal(r.map['rent - store'].c, 'variable');
+  assert.equal(r.map['rent - store'].prev, 'fixed');
+  assert.equal(base['rent - store'], undefined, '渡した表は変えない');
 });
 
-test('保存の道：クラウドを読んでから・オフラインや読めないときは保存しない・決められない人は保存しない', async () => {
-  const picks = { 'mystery fee': { c: 'fixed', name: 'Mystery Fee' } }, seen = { 'mystery fee': 0 };
-  // 読めた（ほかの端末の新しい区分が入っていた）→ その科目は変えない
-  const a = world({ act: ACT, pull: (k, LS) => { LS.pl_expense_class = { 'mystery fee': { c: 'utility', name: 'Mystery Fee', _at: 77 } }; return true; } });
-  assert.equal(await a.plClsSave(picks, seen), true);
-  assert.deepEqual(a.PULLS, ['pl_expense_class']);
-  assert.equal(a.LS.pl_expense_class['mystery fee'].c, 'utility');
-  assert.ok(a.TOASTS.some(x => x[0] === 'warning' && /先に決まって/.test(x[1])));
-  // 読めた・ぶつからない → 保存して after
+test('保存の道：クラウドに書けてから「保存しました」・オフラインや読めないときは保存しない・決められない人は保存しない', async () => {
+  const seen = { 'mystery fee': 0 };
+  // ぶつからない → クラウドに書いて、端末にも置いて、after
   let after = 0;
   const b = world({ act: ACT });
-  assert.equal(await b.plClsSave(picks, seen, () => { after++; }), true);
+  assert.equal(await b.plClsSave(MF, seen, () => { after++; }), true);
+  assert.equal(b.CL.row.value['mystery fee'].c, 'fixed');
   assert.equal(b.LS.pl_expense_class['mystery fee'].c, 'fixed');
+  assert.equal(b.plClassOf('Mystery Fee'), 'fixed', '保存したらすぐに使う');
   assert.equal(after, 1);
   assert.equal(b._plClsBusy, 0);
+  assert.ok(b.TOASTS.some(x => x[0] === 'success' && /全部の端末で共有/.test(x[1])));
+  // クラウドにほかの端末の新しい区分（端末の写しは古い）→ その科目は変えない
+  const a = world({ act: ACT, cloud: newCloud({ 'mystery fee': { c: 'utility', name: 'Mystery Fee', _at: 77 } }) });
+  assert.equal(await a.plClsSave(MF, seen), true);
+  assert.equal(a.CL.row.value['mystery fee'].c, 'utility');
+  assert.equal(a.CL.writes, 0, '書くものが無ければ書かない');
+  assert.equal(a.LS.pl_expense_class['mystery fee'].c, 'utility', '端末の写しもクラウドの最新に');
+  assert.ok(a.TOASTS.some(x => x[0] === 'warning' && /先に決まって/.test(x[1])));
+  assert.ok(!a.TOASTS.some(x => x[0] === 'success'));
   // 読めない → 保存しない
-  const d = world({ act: ACT, pull: () => false });
-  assert.equal(await d.plClsSave(picks, seen), false);
-  assert.equal(d.LS.pl_expense_class, undefined);
+  const d = world({ act: ACT }); d.CL.fail.get = true;
+  assert.equal(await d.plClsSave(MF, seen), false);
+  assert.equal(d.LS.pl_expense_class, undefined); assert.equal(d.CL.row, null);
   assert.equal(d._plClsBusy, 0);
-  // 読み込みで例外 → 保存しない
-  const e = world({ act: ACT, pull: () => { throw new Error('x'); } });
-  assert.equal(await e.plClsSave(picks, seen), false);
-  assert.equal(e.LS.pl_expense_class, undefined);
+  assert.ok(d.TOASTS.some(x => x[0] === 'danger' && /読めなかった/.test(x[1])));
   // オフライン・同期 OFF → 読まずに止める
   for (const o of [{ online: false }, { sync: false }]) {
     const f = world(Object.assign({ act: ACT }, o));
-    assert.equal(await f.plClsSave(picks, seen), false);
-    assert.deepEqual(f.PULLS, []);
+    assert.equal(await f.plClsSave(MF, seen), false);
+    assert.equal(f.CL.gets, 0);
     assert.equal(f.LS.pl_expense_class, undefined);
   }
   // 決められない人
   const g = world({ act: ACT, role: 'am' });
-  assert.equal(await g.plClsSave(picks, seen), false);
-  assert.deepEqual(g.PULLS, []);
+  assert.equal(await g.plClsSave(MF, seen), false);
+  assert.equal(g.CL.gets, 0);
   // 2 回目の押し（保存中）は何もしない
   const h = world({ act: ACT });
   h._plClsBusy = 1;
-  assert.equal(await h.plClsSave(picks, seen), false);
-  assert.deepEqual(h.PULLS, []);
+  assert.equal(await h.plClsSave(MF, seen), false);
+  assert.equal(h.CL.gets, 0);
+});
+
+test('#189 Codex P2-1：クラウドに書けなかったら「保存しました」と出さない・閉じない・端末の値も変えない（押し直せば保存できる）', async () => {
+  const seen = { 'mystery fee': 0 };
+  let after = 0;
+  const c = world({ act: ACT, cls: { 'rent - store': { c: 'fixed', name: 'Rent - Store', _at: 5 } } });
+  c.CL.fail.write = true;
+  assert.equal(await c.plClsSave(MF, seen, () => { after++; }), false);
+  assert.equal(after, 0, '画面を閉じない');
+  assert.ok(!c.TOASTS.some(x => x[0] === 'success'), '「保存しました」と出さない');
+  assert.ok(c.TOASTS.some(x => x[0] === 'danger' && /保存できませんでした/.test(x[1])));
+  assert.equal(c.LS.pl_expense_class['mystery fee'], undefined, '端末にも置かない（あとで黙って送らない）');
+  assert.equal(c.CL.row.value['mystery fee'], undefined);
+  assert.equal(c._plClsBusy, 0);
+  // つながったら同じ画面のまま押し直せる
+  c.CL.fail.write = false;
+  assert.equal(await c.plClsSave(MF, seen, () => { after++; }), true);
+  assert.equal(after, 1);
+  assert.equal(c.CL.row.value['mystery fee'].c, 'fixed');
+  assert.equal(c.CL.row.value['rent - store'].c, 'fixed', 'ほかの科目は残る');
+});
+
+test('#189 Codex P2-2：2 台が同じ古い版から同じ科目を決める → あとの端末は上書きしない（先の区分と履歴が残る）', async () => {
+  for (const interleave of [false, true]) {
+    const CL = newCloud({});
+    const A = world({ act: ACT, cloud: CL, cls: {}, session: { role: 'gm', emp_id: 'E1' }, emps: [{ id: 'E1', name: 'GM A' }] });
+    const B = world({ act: ACT, cloud: CL, cls: {}, session: { role: 'office', emp_id: 'E2' }, emps: [{ id: 'E2', name: 'Acct B' }] });
+    const seen = { 'mystery fee': 0 };   /* どちらも区分の無いときに開いた */
+    if (interleave) {
+      /* B が読んだあと・書く直前に A が保存し終える（読んだ行が変わる → B は読み直して比べ直す） */
+      CL.hook = async () => { assert.equal(await A.plClsSave(MF, seen), true); };
+      assert.equal(await B.plClsSave({ 'mystery fee': { c: 'utility', name: 'Mystery Fee' } }, seen), true);
+    } else {
+      assert.equal(await A.plClsSave(MF, seen), true);
+      assert.equal(await B.plClsSave({ 'mystery fee': { c: 'utility', name: 'Mystery Fee' } }, seen), true);
+    }
+    const v = CL.row.value['mystery fee'];
+    assert.equal(v.c, 'fixed', `先に決めた区分が残る（interleave=${interleave}）`);
+    assert.equal(v.by, 'GM A');
+    assert.equal(v.hist.length, 1); assert.equal(v.hist[0].to, 'fixed');
+    assert.ok(B.TOASTS.some(x => x[0] === 'warning' && /先に決まって/.test(x[1]) && /Mystery Fee/.test(x[1])));
+    assert.ok(!B.TOASTS.some(x => x[0] === 'success'));
+    assert.equal(B.LS.pl_expense_class['mystery fee'].c, 'fixed', 'B の写しもクラウドの最新に');
+  }
+});
+
+test('#189 Codex P2-2：2 台が同時に別の科目を決める → 両方残る', async () => {
+  for (const interleave of [false, true]) {
+    const CL = newCloud({});
+    const A = world({ act: ACT, cloud: CL, cls: {} }), B = world({ act: ACT, cloud: CL, cls: {} });
+    const seen = { 'mystery fee': 0, 'rent - store': 0 };
+    const pa = MF, pb = { 'rent - store': { c: 'variable', name: 'Rent - Store' } };
+    if (interleave) {
+      CL.hook = async () => { assert.equal(await A.plClsSave(pa, seen), true); };
+      assert.equal(await B.plClsSave(pb, seen), true);
+    } else {
+      assert.equal(await A.plClsSave(pa, seen), true);
+      assert.equal(await B.plClsSave(pb, seen), true);
+    }
+    assert.equal(CL.row.value['mystery fee'].c, 'fixed');
+    assert.equal(CL.row.value['rent - store'].c, 'variable');
+    assert.ok(B.TOASTS.some(x => x[0] === 'success'));
+    assert.ok(!B.TOASTS.some(x => x[0] === 'warning'));
+  }
+});
+
+test('#189 Codex P3：区分の表は保存した文字が同じあいだ 1 回だけ読む（推移の画面で何千回も解かない）', () => {
+  const c = world({ act: ACT, cls: { 'mystery fee': { c: 'fixed', name: 'Mystery Fee', _at: 3, hist: Array.from({ length: 10 }, (_, i) => ({ from: 'other', to: 'fixed', by: 'x', at: i })) } } });
+  c.LSREADS = 0;
+  for (let i = 0; i < 2000; i++) assert.equal(c.plClassOf(i % 2 ? 'Mystery Fee' : 'Rent - Store'), i % 2 ? 'fixed' : 'fixed');
+  assert.equal(c.LSREADS, 1, '1 回だけ解く');
+  // 変わったら読み直す
+  c.LS.pl_expense_class['rent - store'] = { c: 'variable', name: 'Rent - Store', _at: 9 };
+  assert.equal(c.plClassOf('Rent - Store'), 'variable');
+  assert.equal(c.LSREADS, 2);
 });
 
 /* 6A：取り込みの前の差分 */

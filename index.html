@@ -21770,30 +21770,59 @@ function plClsWhen(ms){
 }
 function plClsKey(name){ return plNormKey(plSplitCode(name).name); }
 function plClsCurAt(all, k){ var v = all && all[k]; return (v && typeof v === 'object') ? (Number(v._at)||0) : 0; }
-/* picks：{ key: {c, name} }／seen：開いたときの { key: _at }。{ok, n, conflict:[名前]} */
-function plClsSaveRec(picks, seen){
-  var all = ls('pl_expense_class', null);
-  all = (all && typeof all === 'object' && !Array.isArray(all)) ? JSON.parse(JSON.stringify(all)) : {};
+/* picks：{ key: {c, name} }／seen：開いたときの { key: _at }。base（クラウドの最新）に決めた区分を足した新しい表を作る。
+   {map, n, conflict:[名前]}。同じ科目の _at が開いたときと違えば、その科目は変えない（ほかの端末が先に決めた） */
+function plClsBuild(base, picks, seen){
+  var all = (base && typeof base === 'object' && !Array.isArray(base)) ? JSON.parse(JSON.stringify(base)) : {};
   var who = plClsWho(), now = Date.now(), conflict = [], n = 0;
+  var M = _plClsMapsOf(all);
   Object.keys(picks).forEach(function(k){
     var p = picks[k]; if (!p || !PL_CLASS_LABEL[p.c] || p.c === 'other') return;
     var curAt = plClsCurAt(all, k);
     if ((Number(seen && seen[k])||0) !== curAt){ conflict.push(p.name); return; }
-    var from = plClassOf(p.name);
+    var nk = plNormKey(plSplitCode(p.name).name), from = M.o[nk] || M.d[nk] || 'other';
     if (from === p.c) return;                         /* もうその区分 */
     var cur = all[k], hist = (cur && typeof cur === 'object' && Array.isArray(cur.hist)) ? cur.hist.slice(-9) : [];
     hist.push({ from:from, to:p.c, by:who, at:now });
     all[k] = { c:p.c, name:String(plSplitCode(p.name).name).slice(0, 120), prev:from, by:who, at:now, hist:hist, _at:Math.max(now, curAt + 1) };
     n++;
   });
-  if (!n) return { ok:true, n:0, conflict:conflict };
-  if (lsSet('pl_expense_class', all) === false) return { ok:false, n:0, conflict:conflict };
-  _plClsCache = null;
-  var back = ls('pl_expense_class', null), okAll = true;
-  Object.keys(picks).forEach(function(k){ if (all[k] && all[k]._at && !(back && back[k] && back[k]._at === all[k]._at)) okAll = false; });
-  return { ok:okAll, n:n, conflict:conflict };
+  return { map:all, n:n, conflict:conflict };
 }
-/* クラウドの最新を読んでから決める（ほかの端末で決めた科目を古い写しで消さない） */
+/* #189 の Codex（6964022211）P2 2 つ：
+   ① 前は端末に書いて読み直せたら「保存しました（全部の端末で共有）」と出し、クラウドへの送信を待っていなかった
+   ② 開いたときの _at は端末の写しとだけ比べていたので、2 台が同じ古い版から同じ科目を決めると、送るときの合流（新しい時刻が勝つ）で
+      先に決めた区分と履歴が消えた。
+   → クラウドの行を読み、その最新（＋この端末のまだ送っていない分）で開いたときの _at を比べ、読んだ行が変わっていないときだけ書く
+   （_opCasWrite）。ほかの端末が先に書いたら読み直して比べ直す（5 回まで）。書けたときだけ「保存しました」。
+   'ok'／'stale'（書けたが重なりを確かめられない）／'read'（読めない）／'conflict'／'fail'／'badts'／'busy' */
+async function plClsCasSave(picks, seen){
+  var key = 'pl_expense_class', def = (typeof _opMergeDef === 'function') ? _opMergeDef(key) : null;
+  if (!def || typeof _fetchOpRow !== 'function' || typeof _opCasWrite !== 'function') return { r:'fail', n:0, conflict:[] };
+  var last = null;
+  for (var i = 0; i < 5; i++){
+    var row = await _fetchOpRow(key);
+    if (row === undefined) return { r:'read', n:0, conflict:[] };
+    if (last && row.exists === last.exists && String(row.updatedAt) === String(last.updatedAt)) return { r:'refused', n:0, conflict:[] };
+    var base = def.merge(row.exists ? row.value : null, ls(key, null));
+    var b = plClsBuild(base, picks, seen);
+    if (!b.n){
+      try { _opWriteBack(key, def, base); } catch(e){}
+      _plClsCache = null;
+      return { r:'ok', n:0, conflict:b.conflict };
+    }
+    var w = await _opCasWrite(key, b.map, row);
+    if (w === 'ok' || w === 'stale'){
+      try { _opWriteBack(key, def, b.map); if (typeof _lsMarkFetched === 'function') _lsMarkFetched(key); } catch(e){}
+      _plClsCache = null;
+      return { r:w, n:b.n, conflict:b.conflict };
+    }
+    if (w !== 'conflict') return { r:w, n:0, conflict:[] };
+    last = row;
+    await new Promise(function(res){ setTimeout(res, 40 + Math.floor(Math.random()*160)); });
+  }
+  return { r:'conflict', n:0, conflict:[] };
+}
 function plClsSave(picks, seen, after){
   if (!plClsCanEdit()){ showToast(t('区分を決められるのは GM・CEO・経理です','Only GM, CEO or Accounting can decide classes'),'warning'); return Promise.resolve(false); }
   var off = false;
@@ -21801,19 +21830,21 @@ function plClsSave(picks, seen, after){
   if (off){ showToast(t('オフライン、またはクラウド同期が OFF のため保存していません（ほかの端末で決めた区分を消さないため）。つながってから保存してください','Not saved: offline or cloud sync is off. Save once connected'),'warning'); return Promise.resolve(false); }
   if (window._plClsBusy) return Promise.resolve(false);
   window._plClsBusy = 1;
-  var go = function(){
-    var r = plClsSaveRec(picks, seen);
-    if (!r.ok){ showToast(t('保存できませんでした','Could not save'),'danger'); return false; }
-    if (r.conflict.length) showToast(t('ほかの端末で先に決まっていた科目は変えていません：','Already decided on another device (not changed): ')+r.conflict.join('、'),'warning');
-    if (r.n) showToast(t(r.n+' 科目の区分を保存しました（全部の端末で共有）', r.n+' account classes saved (shared with every device)'),'success');
-    try { if (typeof after === 'function') after(r); } catch(e){}
-    return true;
-  };
-  var bad = function(){ showToast(t('クラウドから最新の区分を読めなかったため、保存していません。もう一度押してください','Could not read the latest classes from the cloud; not saved. Please try again'),'danger'); return false; };
-  var pull = Promise.resolve().then(function(){ return (typeof pullOpKey === 'function') ? pullOpKey('pl_expense_class') : true; });
-  if (typeof setTimeout === 'function') pull = Promise.race([pull, new Promise(function(res){ setTimeout(function(){ res(false); }, 45000); })]);
-  return pull.then(function(r){ _plClsCache = null; return (r === true) ? go() : bad(); }, bad)
-    .then(function(r){ window._plClsBusy = 0; return r; }, function(){ window._plClsBusy = 0; return false; });
+  return Promise.resolve().then(function(){ return plClsCasSave(picks, seen); }).then(function(res){
+    window._plClsBusy = 0;
+    var r = res && res.r;
+    if (r === 'ok' || r === 'stale'){
+      if (res.conflict.length) showToast(t('ほかの端末で先に決まっていた科目は変えていません：','Already decided on another device (not changed): ')+res.conflict.join('、'),'warning');
+      if (res.n) showToast(r === 'stale'
+        ? t(res.n+' 科目の区分を保存しましたが、ほかの端末の保存と重なっていないかを確かめられませんでした。少したってから開き直して確かめてください', res.n+' classes saved, but could not confirm they did not overlap another device. Reopen later to check')
+        : t(res.n+' 科目の区分を保存しました（全部の端末で共有）', res.n+' account classes saved (shared with every device)'), r === 'stale' ? 'warning' : 'success');
+      try { if (typeof after === 'function') after(res); } catch(e){}
+      return true;
+    }
+    if (r === 'read') showToast(t('クラウドから最新の区分を読めなかったため、保存していません。もう一度押してください','Could not read the latest classes from the cloud; not saved. Please try again'),'danger');
+    else showToast(t('ほかの端末の保存と重なったか、通信のため保存できませんでした。もう一度押してください（何も変えていません）','Could not save (another device saved at the same time, or the connection failed). Try again (nothing changed)'),'danger');
+    return false;
+  }, function(){ window._plClsBusy = 0; showToast(t('保存できませんでした（何も変えていません）','Could not save (nothing changed)'),'danger'); return false; });
 }
 /* 要分類の科目（取り込んだすべての月・すべての店）：名前・出ている店・最後の月の額・合計 */
 function plUnknownAccounts(){
@@ -32978,10 +33009,19 @@ var PL_EXPENSE_CLASS_ALIAS = {
 };
 /* 区分の表は、引く側と同じそろえ方（plNormKey：全角半角・空白・ハイフンの前後）で引く。 */
 var _plClsCache = null;
+/* #189 の Codex（6964022211）P3：前は引くたびに表を解いて文字にしていた（24 か月 × 8 店 × 40 科目で 7,680 回）。
+   保存した文字が同じなら前に作った表を使う（文字の比べは同じ文字のものなら 1 回で済む） */
 function _plClsMaps(){
-  var ovr = getPlExpenseClass(), sig = '';
-  try { sig = JSON.stringify(ovr); } catch(e){}
-  if (_plClsCache && _plClsCache.sig === sig) return _plClsCache;
+  var raw = null;
+  try { raw = (typeof _lsStoreGet === 'function') ? _lsStoreGet('pl_expense_class') : null; } catch(e){ raw = undefined; }
+  if (raw !== undefined && _plClsCache && _plClsCache.raw === raw) return _plClsCache;
+  var M = _plClsMapsOf(getPlExpenseClass());
+  M.raw = raw; _plClsCache = M;
+  return M;
+}
+/* 区分の表（ovr）から {d:初めの区分, o:人が決めた区分} を作る（保存の前の比べにも使う） */
+function _plClsMapsOf(ovr){
+  ovr = (ovr && typeof ovr === 'object') ? ovr : {};
   var d = {}, o = {};
   Object.keys(PL_EXPENSE_CLASS_DEFAULT).forEach(function(k){ d[plNormKey(k)] = PL_EXPENSE_CLASS_DEFAULT[k]; });
   Object.keys(PL_EXPENSE_CLASS_ALIAS).forEach(function(k){ var c = d[plNormKey(PL_EXPENSE_CLASS_ALIAS[k])]; if (c && !d[plNormKey(k)]) d[plNormKey(k)] = c; });
@@ -32999,8 +33039,7 @@ function _plClsMaps(){
   });
   /* #156 の Codex（6879068684）：前の名前に人が決めた区分は、新しい名前にも引き継ぐ（新しい名前に決めた区分があればそちら） */
   Object.keys(PL_EXPENSE_CLASS_ALIAS).forEach(function(k){ var nk = plNormKey(k), oc = o[plNormKey(PL_EXPENSE_CLASS_ALIAS[k])]; if (oc && !o[nk]) o[nk] = oc; });
-  _plClsCache = { sig:sig, d:d, o:o };
-  return _plClsCache;
+  return { d:d, o:o };
 }
 /* 未知の科目は 'other'（未分類）。黙って落とすと合計が合わなくなるので必ず区分を返す。 */
 function plClassOf(name){
