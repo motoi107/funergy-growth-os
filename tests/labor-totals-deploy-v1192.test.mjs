@@ -1,6 +1,6 @@
 // v1192 の入れる一式（deploy/labor-totals-v1192/）：secure-state の 1 ファイルが今のソースから作ったものと同じで、
 // 読み込める（同じ名前の宣言が無い）こと・モジュールの handler と同じ答えを返すこと・戻すときの v1152 の 1 ファイルが変わっていないこと。
-// SQL の 4 つ（確かめ・SQL・確かめ・戻す）が元のファイルと 1 文字も違わないこと・手順の順番。
+// SQL の 5 つ（確かめ・1b 捨てる・SQL・確かめ・戻す）が元のファイルと 1 文字も違わないこと・手順の順番。
 // emp-private v1192 は公開しない（このリポジトリに無い）ことも確かめる。合成データだけ。
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -72,7 +72,8 @@ test('the one-file secure-state answers the same as the module handler', async (
 
 test('the SQL files are byte-for-byte copies of the migration and the db files', () => {
   assert.equal(OUT, D + '4_関数_secure-state_index.ts');
-  for (const [a, b] of [['1_確かめ_読むだけ.sql', 'db/md-all-viewers-gm-precheck.sql'], ['2_SQL_全店を見る人を守る.sql', 'supabase/migrations/20261210090000_md_all_viewers_gm.sql'],
+  for (const [a, b] of [['1_確かめ_読むだけ.sql', 'db/md-all-viewers-gm-precheck.sql'], ['1b_止まったときだけ_写しを捨てる.sql', 'db/md-all-viewers-gm-discard.sql'],
+                        ['2_SQL_全店を見る人を守る.sql', 'supabase/migrations/20261210090000_md_all_viewers_gm.sql'],
                         ['3_確かめ_読むだけ.sql', 'db/md-all-viewers-gm-postcheck.sql'], ['戻す_SQL.sql', 'db/md-all-viewers-gm-rollback.sql']])
     assert.equal(rd(D + a), rd(b), a + ' = ' + b);
 });
@@ -81,17 +82,22 @@ test('the rollback file (v1152) is unchanged, the steps name every file in order
   assert.equal(sha('deploy/secure-notifications-v1152/2_関数_secure-state_index.ts'), 'b50e2ba2d822b80b3463914a9d4d4470c396aa3810f8792adf3c35afd983597d');
   assert.ok(!/ltfn/.test(rd('deploy/secure-notifications-v1152/2_関数_secure-state_index.ts')), 'the v1152 function does not know labor');
   const how = rd(D + '手順.md');
-  for (const f of ['1_確かめ_読むだけ.sql', '2_SQL_全店を見る人を守る.sql', '3_確かめ_読むだけ.sql', '4_関数_secure-state_index.ts', '戻す_SQL.sql',
+  for (const f of ['1_確かめ_読むだけ.sql', '1b_止まったときだけ_写しを捨てる.sql', '2_SQL_全店を見る人を守る.sql', '3_確かめ_読むだけ.sql', '4_関数_secure-state_index.ts', '戻す_SQL.sql',
                    'deploy/secure-notifications-v1152/2_関数_secure-state_index.ts', 'docs/LABOR_TOTALS_V1192_JA.md', 'scripts/build-secure-state-one.mjs', 'emp-private'])
     assert.ok(how.includes(f), '手順.md names ' + f);
   const steps = how.slice(how.indexOf('## 入れる順番'), how.indexOf('## 入れたあと'));
   const at = t => { const i = steps.indexOf(t); assert.ok(i >= 0, t); return i; };
-  assert.ok(at('**`1_確かめ') < at('**`2_SQL') && at('**`2_SQL') < at('**`3_確かめ') && at('**`3_確かめ') < at('`4_関数') && at('`4_関数') < at('1192 にする') && at('1192 にする') < at('**emp-private を v1192'),
-    'the order: check, SQL, check, function, every device on 1192, then emp-private');
+  assert.ok(at('**`1_確かめ') < at('**`2_SQL') && at('**`2_SQL') < at('**`3_確かめ') && at('**`3_確かめ') < at('`4_関数') && at('`4_関数') < at('1192 にする')
+    && at('1192 にする') < at('**GM・CEO が全店を見る AM を付け直す') && at('**GM・CEO が全店を見る AM を付け直す') < at('**emp-private を v1192'),
+    'the order: check, SQL, check, function, every device on 1192, the GM/CEO turn the AMs on again, then emp-private');
+  assert.ok(at('2 行目が STOP') < at('**`2_SQL'), 'a STOP on line 2 sends you to 1b before the SQL');
+  assert.ok(/写しません/.test(steps), 'the SQL does not copy md_all_viewers (Codex 6989812896 P2-1)');
   const back = how.slice(how.indexOf('## 戻すとき'), how.indexOf('## 困ったとき'));
   assert.ok(back.indexOf('emp-private') < back.indexOf('secure-notifications-v1152') && back.indexOf('secure-notifications-v1152') < back.indexOf('戻す_SQL.sql'),
     'roll back emp-private first, then the function, then the SQL');
-  assert.deepEqual(fs.readdirSync(path.join(ROOT, D)).sort(), ['1_確かめ_読むだけ.sql', '2_SQL_全店を見る人を守る.sql', '3_確かめ_読むだけ.sql', '4_関数_secure-state_index.ts', '戻す_SQL.sql', '手順.md'].sort());
+  assert.ok(!/0 人にして/.test(back), 'no more "keep the function and set 0 people" way (Codex 6989812896 P2-3)');
+  assert.ok(/1b_/.test(back), 'putting the SQL in again after a rollback goes through 1b');
+  assert.deepEqual(fs.readdirSync(path.join(ROOT, D)).sort(), ['1_確かめ_読むだけ.sql', '1b_止まったときだけ_写しを捨てる.sql', '2_SQL_全店を見る人を守る.sql', '3_確かめ_読むだけ.sql', '4_関数_secure-state_index.ts', '戻す_SQL.sql', '手順.md'].sort());
   const walk = d => fs.readdirSync(d, { withFileTypes: true }).flatMap(x => (x.name === '.git' || x.name === 'node_modules') ? [] : x.isDirectory() ? walk(path.join(d, x.name)) : [path.join(d, x.name)]);
   assert.deepEqual(walk(ROOT).filter(p => /emp-private/i.test(path.basename(p)) && /\.ts$/.test(p)), [], 'no emp-private source file');
   assert.ok(!fs.existsSync(path.join(ROOT, 'supabase/functions/emp-private')), 'emp-private stays outside the repository');

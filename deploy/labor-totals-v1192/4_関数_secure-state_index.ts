@@ -3122,8 +3122,13 @@ export function createHandler(deps) {
       for (const x of [...a.am, ...a.stores]) if (typeof x === 'string' && x) S.add(x);
       // 全店で返すのは、GM・CEO だけが書ける写し（app_state の md_all_viewers_gm・上の LV_KEYS）で ON の人だけ。
       // app_settings の md_all_viewers（ダッシュボードの表示に使う・公開の鍵で書ける）は見ない（Codex 6986713362 の P2-1：AM の自分での書き足し）
-      const rows = await rest('app_state?select=value&key=eq.' + LV_KEYS[0]);
-      const v = Array.isArray(rows) && rows[0] && obj(rows[0].value) ? rows[0].value[a.emp] : null;
+      // 写しを信じるのは、SQL が公開の鍵の書き込みを止めているときだけ（rpc/md_all_viewers_gm_trusted が true。Codex 6989812896 の P2-1・P2-3）。
+      // 関数が無い（SQL の前・戻す SQL のあと＝404）・false・読めないときは写しを見ずに担当の店だけ
+      const [trusted, rows] = await Promise.all([
+        rest('rpc/md_all_viewers_gm_trusted', { method: 'POST', body: '{}' }).then(x => x === true, () => false),
+        rest('app_state?select=value&key=eq.' + LV_KEYS[0]),
+      ]);
+      const v = trusted && Array.isArray(rows) && rows[0] && obj(rows[0].value) ? rows[0].value[a.emp] : null;
       if (obj(v) && v.on === true && !v._deleted) all = true;
     } else throw err('forbidden', 403);
     const ok = asks.filter(x => all || S.has(x.s)), no = asks.filter(x => !(all || S.has(x.s))).map(x => x.s + '|' + x.m);

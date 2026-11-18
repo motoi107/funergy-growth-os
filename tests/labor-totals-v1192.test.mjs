@@ -109,6 +109,7 @@ function makeCloud(over = {}) {
     emps: over.emps || EMP_ROWS, priv: over.priv || PRIV_ROWS, settings: { ...SETTINGS, ...(over.settings || {}) }, state: { ...STATE, ...(over.state || {}) },
     mgr: { [UID.office]: { role: 'office', emp_id: 'e12' }, [UID.ceo]: { role: 'ceo', emp_id: null }, [UID.crew]: { role: 'office_crew', emp_id: 'e1' }, [UID.gone]: { role: 'office', emp_id: 'e13' }, ...(over.mgr || {}) },
     pins: over.pins || {}, failTipLabor: !!over.failTipLabor, labor: over.labor || LABOR, pageCap: over.pageCap || 1000, log: [],
+    trusted: 'trusted' in over ? over.trusted : true,   // rpc/md_all_viewers_gm_trusted（SQL 20261210090000 の守りがあるか）。'404'＝関数が無い・'500'・'throw'・'badjson'
   };
   const res = (v, s = 200) => new Response(JSON.stringify(v), { status: s, headers: { 'content-type': 'application/json' } });
   // PostgREST と同じく limit・offset で切る。サーバーの 1 回の上限（pageCap・Supabase の既定は 1,000 行）を超える分は黙って返さない
@@ -126,6 +127,15 @@ function makeCloud(over = {}) {
       return sub ? res({ id: sub }) : res({ error: 'bad' }, 401);
     }
     assert.ok(url.pathname.startsWith('/rest/v1/'), 'only REST: ' + u);
+    if (url.pathname === '/rest/v1/rpc/md_all_viewers_gm_trusted') {
+      C.log.push('rpc/md_all_viewers_gm_trusted');
+      assert.equal(m, 'POST');
+      if (C.trusted === '404') return res({ code: 'PGRST202', message: 'Could not find the function public.md_all_viewers_gm_trusted' }, 404);
+      if (C.trusted === '500') return new Response('boom', { status: 500 });
+      if (C.trusted === 'throw') throw new TypeError('fetch failed');
+      if (C.trusted === 'badjson') return new Response('<html>gateway</html>', { status: 200 });
+      return res(C.trusted);
+    }
     assert.equal(m, 'GET', 'labor only reads');
     const table = url.pathname.slice(9), q = url.searchParams;
     C.log.push(table + '?' + q.toString());
@@ -271,6 +281,28 @@ test('an AM reads assigned and support stores only; only the GM/CEO copy (md_all
   const r4 = await C4.call({ pin: 'pin-am' }, { action: 'labor', asks: [{ s: 'F01', m: '2026-11' }], to: TODAY });
   assert.deepEqual([r4.j.r, r4.j.no], [{}, ['F01|2026-11']]);
   assert.ok(!C4.log.some(l => l.startsWith('employees_private') || l.startsWith('tip_labor')), 'nothing is loaded when no asked store is in scope');
+});
+
+// v1192（Codex 6989812896 の P2-1・P2-3）：写しを信じるのは、SQL が公開の鍵の書き込みを止めているときだけ（rpc/md_all_viewers_gm_trusted が true）。
+// SQL の前（関数が無い）・戻す SQL のあと・守りが外れた（false）・読めないときは、写しで ON でも担当と応援の店だけ
+test('the copy opens every store only while the SQL guards it (md_all_viewers_gm_trusted is true); missing, false or unreadable means assigned stores only', async () => {
+  const ON = { md_all_viewers_gm: { e10: { on: true, _at: 9 } } };
+  for (const trusted of [false, null, 'yes', 1, '404', '500', 'throw', 'badjson']) {
+    const C = makeCloud({ pins: { 'pin-am': AM_ME }, state: ON, trusted });
+    const r = await C.call({ pin: 'pin-am' }, { action: 'labor', asks: ASKS, to: TODAY });
+    assert.ok(r.ok, String(trusted));
+    assert.deepEqual(r.j.no.sort(), ['F01|2026-10', 'F01|2026-11'], 'trusted=' + String(trusted));
+    assert.ok(C.log.includes('rpc/md_all_viewers_gm_trusted'));
+    assert.ok(!C.log.some(l => l.startsWith('tip_labor') && l.includes(GUID.F01.toLowerCase())), 'the attendance of a store outside the scope is not read: ' + String(trusted));
+  }
+  const T = makeCloud({ pins: { 'pin-am': AM_ME }, state: ON, trusted: true });
+  const rt = await T.call({ pin: 'pin-am' }, { action: 'labor', asks: ASKS, to: TODAY });
+  assert.deepEqual(rt.j.no, []); assert.equal(Object.keys(rt.j.r).length, 5);
+  // CEO・GM・経理は写しを見ない（もともと全店）：守りを聞かない
+  const O = makeCloud({ trusted: '404' });
+  const ro = await O.call({ jwt: JWT(UID.office) }, { action: 'labor', asks: ASKS, to: TODAY });
+  assert.deepEqual(ro.j.no, []);
+  assert.ok(!O.log.includes('rpc/md_all_viewers_gm_trusted'));
 });
 
 test('staff, office crew, a resigned person and a person without a login are refused', async () => {

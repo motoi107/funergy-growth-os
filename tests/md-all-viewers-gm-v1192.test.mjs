@@ -2,8 +2,10 @@
 // 前は関数 secure-state の人件費の合計（labor）が app_settings の md_all_viewers で全店を返していた。md_all_viewers は公開の鍵で書けるので、
 // AM が自分の行を書き足すと、担当外の店の人件費の合計まで受け取れた。合成データだけ（本番には接続しない）。確かめること：
 //  1. 関数：写しを書けるのは GM・CEO だけ（AM が自分の行を足すのも 403）・形・読んだ行の確かめ（409）・答えに ltfn:1
-//  2. SQL（PGlite の本物の PostgreSQL）：v1146 の SQL のあとに流すと、公開の鍵は写しを読めるが書けない・今の md_all_viewers を 1 回だけ写す
-//     （json でも jsonb でも・地図でなければ空）・2 回流しても同じ・v1146 の SQL が無ければ止まる・最初の確かめと確認の SQL・戻す SQL
+//  2. SQL（PGlite の本物の PostgreSQL）：v1146 の SQL のあとに流すと、公開の鍵は写しを読めるが書けない・写しは空で作る（md_all_viewers は写さない・
+//     json でも jsonb でも）・2 回流しても GM・CEO の決めた値を変えない・v1146 の SQL が無ければ止まる・最初の確かめと確認の SQL・戻す SQL
+//     v1192（Codex 6989812896 の P2-1・P2-3）：SQL の前に公開の鍵で作られた写し・守りが外れたあとの写しは信じない（前の確かめも SQL も STOP・
+//     1b で捨ててから）・md_all_viewers_gm_trusted は守りの形を見る・戻す SQL はそれを消す
 //  3. SQL の決まり（ss_guard_key）と関数の決まり（swIsKey・tpIsKey）とアプリの決まり（index.html の gwIsKey）が同じ
 //  4. アプリ：mdAllViewers は写しを先に見る・mdSetAllViewer は写しと md_all_viewers の両方に書く・GM・CEO だけ
 import test from 'node:test';
@@ -25,6 +27,7 @@ const CHEF = rd('supabase/migrations/20261113080000_wr_people_chef.sql');
 const PRE = rd('db/md-all-viewers-gm-precheck.sql');
 const POST = rd('db/md-all-viewers-gm-postcheck.sql');
 const BACK = rd('db/md-all-viewers-gm-rollback.sql');
+const DISCARD = rd('db/md-all-viewers-gm-discard.sql');
 const KEY = 'md_all_viewers_gm';
 
 // ---------- 1. 関数 ----------
@@ -122,7 +125,9 @@ test('the same value as the cloud passes for anyone (the copy is readable anyway
 async function mkdb(o = {}) {
   const db = new PGlite();
   const vt = o.json ? 'json' : 'jsonb';
+  // Supabase と同じく、public に作る関数は anon・authenticated にも既定で実行の権限が付く（だから SQL は両方から明示的に外す）
   await db.exec(`create role anon nologin; create role authenticated nologin; create role service_role nologin bypassrls;
+    alter default privileges in schema public grant execute on functions to anon, authenticated, service_role;
     create table public.app_state(key text primary key, value ${vt} not null, updated_at timestamptz default now());
     grant select, insert, update, delete on public.app_state to anon, authenticated, service_role;
     create table public.manager_auth(user_id uuid primary key default gen_random_uuid(), role text, emp_id text);
@@ -147,6 +152,8 @@ async function mkdb(o = {}) {
 const as = async (db, role, sql, p) => { await db.exec(`set role ${role}`); try { return await db.query(sql, p); } finally { await db.exec('reset role'); } };
 const fails = async (db, role, sql, p) => { await db.exec(`set role ${role}`); try { await db.query(sql, p); return false; } catch { return true; } finally { await db.exec('reset role'); } };
 const copyOf = async db => { const r = await db.query(`select value::text v from public.app_state where key = $1`, [KEY]); return r.rows[0] ? JSON.parse(r.rows[0].v) : undefined; };
+const trustedOf = async db => { const f = (await db.query(`select to_regprocedure('public.md_all_viewers_gm_trusted()') f`)).rows[0].f; return f ? (await db.query('select public.md_all_viewers_gm_trusted() t')).rows[0].t : null; };
+const postRows = async db => { const res = await db.exec(POST); return res.find(r => r.rows && r.rows.length && 'ok' in r.rows[0]).rows; };
 const ONROW = { 'E-AM': { on: true, name: 'Amy Area', by: 'Gina M', at: '2026/11/01', _at: 3 }, 'E-1': { on: true, name: 'Kai One', _at: 4 }, 'E-OUT': { on: false, _at: 2 } };
 
 test('the SQL stops (changes nothing) without the v1146 SQL; after it, the public keys read the copy but cannot add, overwrite, change, delete or rename it in', async () => {
@@ -164,17 +171,15 @@ test('the SQL stops (changes nothing) without the v1146 SQL; after it, the publi
   assert.equal((await d1.query(`select public.ss_guard_key('prep_certs') a`)).rows[0].a, false, 'the v1141 rule is left as it was');
   await d1.close();
   const db = await mkdb({ mdav: ONROW });
-  // 入れる前：公開の鍵で写しを足せる（これが穴）
-  assert.equal(await fails(db, 'anon', `insert into public.app_state(key, value) values ($1, '{"E-AM":{"on":true}}')`, [KEY]), false);
-  await db.query(`delete from public.app_state where key = $1`, [KEY]);
   await db.exec(MIG);
-  assert.deepEqual(await copyOf(db), ONROW, 'the current md_all_viewers is copied as it is');
+  assert.deepEqual(await copyOf(db), {}, 'the copy starts empty: md_all_viewers (publicly writable) is not copied (Codex 6989812896 P2-1)');
+  assert.equal(await trustedOf(db), true);
   for (const role of ['anon', 'authenticated']) {
     assert.equal((await as(db, role, `select key from public.app_state where key = $1`, [KEY])).rows.length, 1, role + ' reads the copy');
     assert.equal(await fails(db, role, `update public.app_state set value = '{"E-AM2":{"on":true}}' where key = $1`, [KEY]) || (await copyOf(db))['E-AM2'] === undefined, true, role + ' update');
-    assert.deepEqual(await copyOf(db), ONROW, role + ' cannot change it');
+    assert.deepEqual(await copyOf(db), {}, role + ' cannot change it');
     await as(db, role, `delete from public.app_state where key = $1`, [KEY]).catch(() => null);
-    assert.deepEqual(await copyOf(db), ONROW, role + ' cannot delete it');
+    assert.deepEqual(await copyOf(db), {}, role + ' cannot delete it');
     assert.equal(await fails(db, role, `update public.app_state set key = $1 where key = 'tasks_all'`, [KEY]), true, role + ' cannot rename a row into it');
     assert.equal(await fails(db, role, `insert into public.app_state(key, value) values ($1, '{}') on conflict (key) do update set value = excluded.value`, [KEY]), true, role + ' upsert');
     // ほかの行（v1146 までのキーは書けないまま・ほかは今までどおり）
@@ -187,34 +192,129 @@ test('the SQL stops (changes nothing) without the v1146 SQL; after it, the publi
   // サーバーの鍵は書ける
   await as(db, 'service_role', `update public.app_state set value = '{"E-AM":{"on":false,"_at":9}}' where key = $1`, [KEY]);
   assert.deepEqual(await copyOf(db), { 'E-AM': { on: false, _at: 9 } });
-  // 2 回流しても同じ（写しがもうあれば写さない＝GM・CEO が関数で書いた値を戻さない）
-  await db.exec(MIG);
-  assert.deepEqual(await copyOf(db), { 'E-AM': { on: false, _at: 9 } }, 'running it again does not copy over the GM/CEO decision');
+  // 2 回流しても同じ（この SQL で守られていた写しはそのまま＝GM・CEO が関数で書いた値を戻さない・空にもしない）
+  await db.exec(MIG); await db.exec(MIG);
+  assert.deepEqual(await copyOf(db), { 'E-AM': { on: false, _at: 9 } }, 'running it again keeps the GM/CEO decision');
+  assert.equal(await trustedOf(db), true);
+  await assert.rejects(db.exec(DISCARD), /STOP/, 'the guarded copy is not thrown away');
+  assert.deepEqual(await copyOf(db), { 'E-AM': { on: false, _at: 9 } });
   assert.equal(await fails(db, 'anon', `insert into public.app_state(key, value) values ('md_all_viewers_gm ', '{}')`), false, 'a look-alike key is an ordinary row');
   await db.close();
 });
 
-test('the copy is made the same way from json or jsonb columns; a missing or non-map md_all_viewers gives an empty map; RLS off with no stray rule is turned on', async () => {
-  for (const o of [{ json: true, settingsJson: true, mdav: ONROW }, { json: false, settingsJson: true, mdav: ONROW }, { json: true, mdav: ONROW }]) {
-    const db = await mkdb(o);
-    await db.exec(MIG);
-    assert.deepEqual(await copyOf(db), ONROW, JSON.stringify(o).slice(0, 40));
-    await db.close();
-  }
-  for (const o of [{ mdav: [1, 2] }, { mdav: 'x' }, {}, { settings: false }]) {
+test('the copy is made empty from json or jsonb columns whatever md_all_viewers holds; RLS off with no stray rule is turned on', async () => {
+  for (const o of [{ json: true, settingsJson: true, mdav: ONROW }, { json: false, settingsJson: true, mdav: ONROW }, { json: true, mdav: ONROW }, { mdav: [1, 2] }, { mdav: 'x' }, {}, { settings: false }]) {
     const db = await mkdb(o);
     await db.exec(MIG);
     assert.deepEqual(await copyOf(db), {}, JSON.stringify(o));
     assert.equal(await fails(db, 'anon', `update public.app_state set value = '{"E-AM":{"on":true}}' where key = $1`, [KEY]) || JSON.stringify(await copyOf(db)) === '{}', true);
     await db.close();
   }
-  const kept = await mkdb({ mdav: ONROW, copy: { 'E-AM2': { on: true, _at: 1 } } });
-  await kept.exec(MIG);
-  assert.deepEqual(await copyOf(kept), { 'E-AM2': { on: true, _at: 1 } }, 'an existing copy is left as it is');
-  await kept.close();
+  // RLS が OFF（効いていない決まりも無い）なら ON にして今までの決まり ss_open を足す（前の版の SQL と同じ）
+  const off = await mkdb({ mdav: ONROW });
+  await off.exec(`drop policy if exists ss_guard_ins on public.app_state; drop policy if exists ss_guard_upd on public.app_state; drop policy if exists ss_guard_del on public.app_state;
+    drop policy if exists ss_open on public.app_state; drop policy if exists ss_secret on public.app_state; alter table public.app_state disable row level security;`);
+  await off.exec(MIG);
+  assert.equal(await trustedOf(off), true);
+  assert.equal(await fails(off, 'anon', `update public.app_state set value = '{"v":2}' where key = 'tasks_all'`), false);
+  assert.equal(await fails(off, 'anon', `insert into public.app_state(key, value) values ($1, '{}') on conflict (key) do update set value = excluded.value`, [KEY]), true);
+  await off.close();
 });
 
-test('the precheck lists who is ON (and who is not an active AM); the postcheck is all OK after the SQL and NG before; the rollback opens the copy again and keeps v1146', async () => {
+test('Codex 6989812896 P2-1: a copy made with the public key before the SQL is not trusted; the precheck and the SQL STOP (nothing changes); 1b throws it away; then the copy starts empty', async () => {
+  for (const json of [false, true]) {
+    const db = await mkdb({ json, mdav: ONROW });
+    // SQL の前：公開の鍵で写しを作れる（Codex の手順。AM が自分を ON にした写し）
+    assert.equal(await fails(db, 'anon', `insert into public.app_state(key, value) values ($1, '{"E-AM":{"on":true,"_at":99}}')`, [KEY]), false);
+    const pre = (await db.query(PRE)).rows;
+    assert.deepEqual([pre[1].ok, pre[1].value], ['STOP（1b で写しを捨ててから）', 'もうあるが、守られていない（公開の鍵で作られた・書かれたかもしれない）']);
+    await assert.rejects(db.exec(MIG), /STOP: app_state に写し md_all_viewers_gm がもうありますが/);
+    assert.deepEqual(await copyOf(db), { 'E-AM': { on: true, _at: 99 } }, 'nothing changed');
+    assert.equal((await db.query(`select public.ss_guard_key($1) b`, [KEY])).rows[0].b, false, 'the guard is not added either');
+    assert.equal(await trustedOf(db), null);
+    // 1b：守られていない写しを捨てる（2 回流しても同じ）→ もう一度流すと空の写し・守られる
+    await db.exec(DISCARD); await db.exec(DISCARD);
+    assert.equal(await copyOf(db), undefined);
+    assert.equal((await db.query(PRE)).rows[1].ok, 'OK');
+    await db.exec(MIG);
+    assert.deepEqual(await copyOf(db), {}, json ? 'json' : 'jsonb');
+    assert.equal(await trustedOf(db), true);
+    assert.equal(await fails(db, 'anon', `update public.app_state set value = '{"E-AM":{"on":true}}' where key = $1`, [KEY]) || JSON.stringify(await copyOf(db)) === '{}', true);
+    await db.close();
+  }
+});
+
+test('Codex 6989812896 P2-3: when the guard is lost again (an older SQL re-run) the copy is no longer trusted; running the SQL again STOPs until 1b, and a proper re-run keeps the GM value', async () => {
+  const db = await mkdb({ mdav: ONROW });
+  await db.exec(MIG);
+  await as(db, 'service_role', `update public.app_state set value = $2 where key = $1`, [KEY, JSON.stringify({ 'E-AM2': { on: true, _at: 7 } })]);
+  await db.exec(MIG46);
+  assert.equal(await trustedOf(db), false, 'the v1146 SQL takes the key out of the guard');
+  const rows = await postRows(db);
+  assert.deepEqual([rows.find(r => r.n === 1).ok, rows.find(r => r.n === 4).ok, rows.find(r => r.n === 4).value], ['NG', 'NG', 'いいえ'], 'the postcheck shows it (手順.md 困ったとき)');
+  assert.equal(await fails(db, 'anon', `update public.app_state set value = '{"E-AM":{"on":true}}' where key = $1`, [KEY]), false, 'so the public key can write the copy again');
+  assert.equal((await db.query(PRE)).rows[1].ok, 'STOP（1b で写しを捨ててから）');
+  await assert.rejects(db.exec(MIG), /STOP/);
+  assert.deepEqual(await copyOf(db), { 'E-AM': { on: true } });
+  assert.equal(await trustedOf(db), false, 'the stopped SQL left the trust check saying no');
+  await db.exec(DISCARD);
+  await db.exec(MIG);
+  assert.deepEqual(await copyOf(db), {}); assert.equal(await trustedOf(db), true);
+  await db.close();
+});
+
+test('the copy that appears while the SQL runs (after its first check) STOPs the SQL; so does a guard that does not hold at the end (everything rolls back)', async () => {
+  const at = MIG.indexOf('create or replace function public.ss_guard_key');
+  assert.ok(at > 0);
+  const db = await mkdb({ mdav: ONROW });
+  await db.exec(MIG.slice(0, at));
+  await as(db, 'service_role', `insert into public.app_state(key, value) values ($1, '{"E-AM":{"on":true}}')`, [KEY]);
+  await assert.rejects(db.exec(MIG.slice(at)), /STOP: この SQL を流しているあいだに写し/);
+  assert.deepEqual(await copyOf(db), { 'E-AM': { on: true } });
+  assert.equal((await db.query(`select public.ss_guard_key($1) b`, [KEY])).rows[0].b, false);
+  await db.close();
+  // 最後の確かめ：anon が RLS を飛ばせる DB では守れない → STOP・写しも決まりも残らない
+  const d2 = await mkdb({ mdav: ONROW });
+  await d2.exec('alter role anon bypassrls');
+  await assert.rejects(d2.exec(MIG), /STOP/);
+  assert.equal(await copyOf(d2), undefined, 'the empty copy is rolled back');
+  assert.equal((await d2.query(`select public.ss_guard_key($1) b`, [KEY])).rows[0].b, false, 'the guard change is rolled back too');
+  assert.equal(await trustedOf(d2), null);
+  await d2.close();
+});
+
+test('md_all_viewers_gm_trusted says no when RLS is off, a guard rule is missing, permissive, narrowed or changed, or anon can skip RLS; the public keys cannot run it', async () => {
+  const cases = [
+    ['rls off', 'alter table public.app_state disable row level security'],
+    ['no update rule', 'drop policy ss_guard_upd on public.app_state'],
+    ['permissive insert rule', `drop policy ss_guard_ins on public.app_state; create policy ss_guard_ins on public.app_state as permissive for insert to anon, authenticated with check (not public.ss_guard_key(key))`],
+    ['delete rule changed', `drop policy ss_guard_del on public.app_state; create policy ss_guard_del on public.app_state as restrictive for delete to anon, authenticated using (not public.ss_guard_key(key) or true)`],
+    ['update rule only for anon', `drop policy ss_guard_upd on public.app_state; create policy ss_guard_upd on public.app_state as restrictive for update to anon using (not public.ss_guard_key(key)) with check (not public.ss_guard_key(key))`],
+    ['update rule without check', `drop policy ss_guard_upd on public.app_state; create policy ss_guard_upd on public.app_state as restrictive for update to anon, authenticated using (not public.ss_guard_key(key))`],
+    ['anon bypassrls', 'alter role anon bypassrls'],
+    ['authenticated superuser', 'alter role authenticated superuser'],
+    ['anon is the table owner role', `create role owner_r nologin; alter table public.app_state owner to owner_r; grant owner_r to anon`],
+  ];
+  for (const [name, sql] of cases) {
+    const db = await mkdb({ mdav: ONROW });
+    await db.exec(MIG);
+    assert.equal(await trustedOf(db), true, name + ' (before)');
+    await db.exec(sql);
+    assert.equal(await trustedOf(db), false, name);
+    if (name === 'anon is the table owner role') {
+      await db.exec('alter table public.app_state force row level security');
+      assert.equal(await trustedOf(db), true, 'forced RLS covers the owner role');
+    }
+    await db.close();
+  }
+  const db = await mkdb({ mdav: ONROW });
+  await db.exec(MIG);
+  for (const role of ['anon', 'authenticated']) assert.equal(await fails(db, role, 'select public.md_all_viewers_gm_trusted()'), true, role);
+  assert.equal((await as(db, 'service_role', 'select public.md_all_viewers_gm_trusted() t')).rows[0].t, true);
+  await db.close();
+});
+
+test('the precheck lists who is ON (and who is not an active AM); the postcheck is all OK after the SQL and NG before; the rollback opens the copy again, drops the trust check and keeps v1146', async () => {
   const db = await mkdb({ mdav: ONROW });
   const pre = (await db.query(PRE)).rows;
   assert.equal(pre[0].ok, 'OK');
@@ -224,25 +324,42 @@ test('the precheck lists who is ON (and who is not an active AM); the postcheck 
   const listed = pre.filter(r => r.n >= 7).map(r => r.what).sort();
   assert.deepEqual(listed, ['E-1', 'E-AM']);
   assert.ok(pre.find(r => r.what === 'E-1').value.includes('crew'));
-  const postRows = async () => { const res = await db.exec(POST); const sel = res.find(r => r.rows && r.rows.length && 'ok' in r.rows[0]); return sel.rows; };
-  const b = await postRows();
+  const b = await postRows(db);
   assert.ok(b.some(r => r.ok !== 'OK' && r.ok !== 'info'), 'before the SQL the postcheck finds the hole');
-  assert.equal(b.find(r => r.n === 6).ok, 'NG');
+  assert.equal(b.find(r => r.n === 7).ok, 'NG');
+  assert.deepEqual([b.find(r => r.n === 4).value, b.find(r => r.n === 4).ok], ['関数が無い', 'NG'], 'the trust row does not break before the SQL');
   await db.exec(MIG);
-  const a = await postRows();
-  assert.equal(a.length, 10);
+  const pre2 = (await db.query(PRE)).rows;
+  assert.deepEqual([pre2[1].ok, pre2[1].value], ['OK', 'もうある・この SQL で守られている（ON 0 人・そのまま）'], 'running the precheck again after the SQL');
+  const a = await postRows(db);
+  assert.equal(a.length, 11);
   for (const r of a) assert.ok(r.ok === 'OK' || r.ok === 'info', JSON.stringify(r));
-  assert.equal(a.find(r => r.n === 4).value, '2');
-  assert.equal(a.find(r => r.n === 5).value, '同じ');
-  assert.deepEqual(await copyOf(db), ONROW, 'the postcheck rolls back');
+  assert.equal(a.find(r => r.n === 4).value, 'はい');
+  assert.equal(a.find(r => r.n === 5).value, '0', 'the copy starts empty');
+  assert.equal(a.find(r => r.n === 6).value, '違う', 'md_all_viewers still has two people ON until the GM/CEO turn them on again');
+  assert.deepEqual(await copyOf(db), {}, 'the postcheck rolls back');
+  // GM・CEO が関数で付け直した（サーバーの鍵）
+  await as(db, 'service_role', `update public.app_state set value = $2 where key = $1`, [KEY, JSON.stringify({ 'E-AM': ONROW['E-AM'] })]);
+  assert.equal((await postRows(db)).find(r => r.n === 5).value, '1');
   await db.query(`update public.app_settings set value = $1 where key = 'md_all_viewers'`, [JSON.stringify({ 'E-AM': { on: true } })]);
-  assert.equal((await postRows()).find(r => r.n === 5).value, '違う');
-  // 戻す：写しはまた公開の鍵で書ける・v1146 までのキーは書けないまま・写しの行は残る。2 回流しても同じ
+  assert.equal((await postRows(db)).find(r => r.n === 6).value, '同じ');
+  // 戻す：写しはまた公開の鍵で書ける・守りの関数も消える（v1192 の関数は写しを使わなくなる）・v1146 までのキーは書けないまま・写しの行は残る。2 回流しても同じ
   await db.exec(BACK); await db.exec(BACK);
+  assert.equal(await trustedOf(db), null, 'md_all_viewers_gm_trusted is gone (the v1192 function gets 404 and stops using the copy)');
   assert.equal(await fails(db, 'anon', `update public.app_state set value = '{"E-1":{"on":true}}' where key = $1`, [KEY]), false);
   assert.deepEqual(await copyOf(db), { 'E-1': { on: true } });
   assert.equal((await db.query(`select public.ss_guard_key('prep_certs') a, public.ss_guard_key($1) b`, [KEY])).rows[0].a, true);
   assert.equal((await db.query(`select public.ss_guard_key($1) b`, [KEY])).rows[0].b, false);
+  const back = await postRows(db);
+  assert.deepEqual([back.find(r => r.n === 4).value, back.find(r => r.n === 4).ok], ['関数が無い', 'NG']);
+  // 戻したあとにもう一度入れる：写しは守られていない（anon が書いた）ので STOP → 1b で捨てる → 入れ直すと空
+  assert.equal((await db.query(PRE)).rows[1].ok, 'STOP（1b で写しを捨ててから）');
+  await assert.rejects(db.exec(MIG), /STOP/);
+  assert.deepEqual(await copyOf(db), { 'E-1': { on: true } }, 'nothing changed by the stopped SQL');
+  await db.exec(DISCARD); await db.exec(DISCARD);
+  assert.equal(await copyOf(db), undefined);
+  await db.exec(MIG);
+  assert.deepEqual(await copyOf(db), {}); assert.equal(await trustedOf(db), true);
   await db.close();
   // v1146 の SQL が無ければ、戻す SQL は何もしない
   const d2 = await mkdb({ v1146: false });
