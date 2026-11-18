@@ -22,6 +22,15 @@ union all select '7. ブラウザの鍵では ar_ の表を読めない・書け
      where n.nspname = 'public' and c.relname in ('ar_settings','ar_rules','ar_delegates','ar_bulk')
        and (has_table_privilege('anon', c.oid, 'select,insert,update,delete') or has_table_privilege('authenticated', c.oid, 'select,insert,update,delete'))) = 0
    then 'OK' else 'NG（② をもう一度流す）' end
+union all select '8. PR #191 のレビューの直しが入っている（ルールの版・差し戻し中のルート・役割の一覧の写し）',
+  case when (select count(*) from pg_proc p join pg_namespace s on s.oid = p.pronamespace where s.nspname = 'public'
+       and ((p.proname in ('ar_rule_activate','ar_rule_discard','ar_rule_save') and p.prosrc like '%expect_ver%')
+         or (p.proname = 'ar_apply' and p.prosrc like '%(p->>''ver'')::int <> g.ver%')
+         or (p.proname = 'ar_go_off' and p.prosrc like '%returned%')
+         or (p.proname = 'ar_holders' and p.prosrc like '%ar_role_cache%'))) = 6
+     and (select count(*) from pg_trigger where tgname = 'ar_role_cache_reset' and not tgisinternal)
+       = (select count(*) from unnest(array['manager_auth','wr_people','employees','stores','wr_exp_grants']) t where to_regclass('public.' || t) is not null)
+   then 'OK' else 'NG（② の今の版をもう一度流す）' end
 union all select '（参考）共通ルールで動いているか（入れたばかりは false＝今までの決まりのまま）',
   (select live::text from public.ar_settings where id = 1)
 union all select '（参考）ルール：有効 / 下書き',

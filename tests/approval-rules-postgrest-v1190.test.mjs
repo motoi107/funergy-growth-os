@@ -39,7 +39,7 @@ test('the approval rules work end to end through the PostgREST adapter', async (
   assert.equal(me.fn, 13); assert.equal(me.sql, 8); assert.ok(me.ar && me.ar.admin === true);
   let st = await ok('E2', { action: 'ar_state' });
   assert.equal(st.kinds.length, 16);
-  for (const k of st.kinds) if (k.draft) await ok('E2', { action: 'ar_rule_activate', kind: k.kind, expect_rev: k.draft.rev, note: '確かめた' });
+  for (const k of st.kinds) if (k.draft) await ok('E2', { action: 'ar_rule_activate', kind: k.kind, expect_ver: k.draft.ver, expect_rev: k.draft.rev, note: '確かめた' });
   st = await ok('E2', { action: 'ar_state' });
   assert.ok(st.kinds.every(k => KINDS16.includes(k.kind) && k.active));
   const pv = await ok('E2', { action: 'ar_rule_preview', kind: 'reimburse', store_id: 'S1', amount_cents: 5000, requester: 'E6' });

@@ -148,3 +148,34 @@ test('今の関数 work-requests（main d14d444）のままで ② を入れて�
   assert.equal(l.status, 200); assert.ok(l.body.rows.some(r => r.id === sub.body.id));
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+/* PR #191 のレビューの直し：本番に入っている前の ②（352dbcc）の上に今の ② を流す。
+   ③ の 8 は前の ② では NG・今の ② で OK。承認待ちと差し戻し中の申請はそのまま続く。そのコミットが無いとき（浅い clone）は理由を出して落ちる（CI は取ってくる） */
+const PREV_V1190 = '352dbcc813b937bc2a077a49cb6fd370d7572ff3';
+test('前の ②（352dbcc）の上に今の ② を流す：③ の 8 が NG → OK・使い始めたあとの申請はそのまま続く', async () => {
+  let old;
+  try { old = execSync('git show ' + PREV_V1190 + ':supabase/migrations/20261209090000_approval_rules.sql', { cwd: new URL('..', import.meta.url), maxBuffer: 16 << 20 }).toString('utf8'); }
+  catch { assert.fail('前の ②（' + PREV_V1190 + '）が取れません（浅い clone）。CI のように git fetch してから流してください'); }
+  assert.notEqual(old, D('2_SQL_承認ルール.sql'));
+  const s = await setup({ ar: false });
+  await s.pg.exec('reset role'); await s.pg.exec(old); await s.pg.exec('set role service_role');
+  await s.activate(); await s.live();
+  const a = await s.subOk('E8', 'shift', 'S1');
+  const b = await s.subOk('E6', 'reimburse', 'S1');   // 差し戻しは経費・予算だけ
+  const ret = await s.act('E2', await s.fresh(b), 'return', { note: 'もう一度' });
+  assert.equal(ret.status, 200, JSON.stringify(ret.body));
+  const before = await rows(s.pg, D('3_確認_読むだけ.sql'));
+  assert.match(res(before, '8.'), /^NG/);
+  assert.equal(res(before, '1.'), 'OK');
+  await s.pg.exec('reset role'); await s.pg.exec(D('2_SQL_承認ルール.sql')); await s.pg.exec('set role service_role');
+  const after = await rows(s.pg, D('3_確認_読むだけ.sql'));
+  assert.ok(!after.some(r => /NG/.test(r.result)), JSON.stringify(after));
+  assert.equal(res(after, '（参考）共通ルールで動いているか'), 'true');
+  // 承認待ち：ルートのまま GM が承認できる
+  const r1 = await s.approve('E2', a);
+  assert.equal(r1.status, 200, JSON.stringify(r1.body));
+  assert.notEqual((await s.fresh(a)).status, 'pending');
+  // 差し戻し中：出し直すとルートのまま承認待ちに戻る
+  const rb = (await s.q(`select route is not null as has_route, status from wr_requests where id = $1`, [b.id]))[0];
+  assert.deepEqual(rb, { has_route: true, status: 'returned' });
+});

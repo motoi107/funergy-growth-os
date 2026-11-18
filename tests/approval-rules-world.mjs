@@ -69,16 +69,16 @@ export async function setup({ ar = true, twice = false } = {}) {
   const state = () => ok('E2', { action: 'ar_state' });
   const activate = async (kinds = KINDS16, by = 'E2') => {
     const st = await state();
-    for (const k of st.kinds) if (kinds.includes(k.kind) && k.draft) await ok(by, { action: 'ar_rule_activate', kind: k.kind, expect_rev: k.draft.rev, note: '確かめた' });
+    for (const k of st.kinds) if (kinds.includes(k.kind) && k.draft) await ok(by, { action: 'ar_rule_activate', kind: k.kind, expect_ver: k.draft.ver, expect_rev: k.draft.rev, note: '確かめた' });
   };
   const live = async (by = 'E2') => { const st = await state(); return ok(by, { action: 'ar_go_live', expect_rev: st.rev, note: '使い始め' }); };
   const saveRule = async (kind, def, by = 'E2') => {
     const st = await state(); const k = st.kinds.find(x => x.kind === kind);
-    return call(by, { action: 'ar_rule_save', kind, def, expect_rev: k.draft ? k.draft.rev : 0, note: 'テスト' });
+    return call(by, { action: 'ar_rule_save', kind, def, expect_ver: k.draft ? k.draft.ver : 0, expect_rev: k.draft ? k.draft.rev : 0, base_ver: k.active ? k.active.ver : 0, note: 'テスト' });
   };
   const setRule = async (kind, def) => {   // 下書きにして有効にする
     const s = await saveRule(kind, def); assert.equal(s.status, 200, JSON.stringify(s.body));
-    const r = await call('E2', { action: 'ar_rule_activate', kind, expect_rev: s.body.draft.rev, note: 'テスト' });
+    const r = await call('E2', { action: 'ar_rule_activate', kind, expect_ver: s.body.draft.ver, expect_rev: s.body.draft.rev, note: 'テスト' });
     assert.equal(r.status, 200, JSON.stringify(r.body)); return r.body;
   };
   const retire = async emp => { await pg.exec('reset role'); await pg.query(`update employees set status = '退職', data = data || '{"status":"退職"}' where id = $1`, [emp]); await pg.exec('set role service_role'); };

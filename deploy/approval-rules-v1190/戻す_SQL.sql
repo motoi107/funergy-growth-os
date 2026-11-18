@@ -1,11 +1,19 @@
 -- v1190 を戻す：承認・閲覧の共通ルールの前の関数に戻す（20261209090000_approval_rules.sql を入れたあと、困ったときだけ）。
 -- 戻すと：今までの決まり（GM・CEO が残りの段も代わりに承認する・wr_visible の今までの見える人）。
 -- 残すもの：ルール（ar_rules）・代理（ar_delegates）・一括承認の記録（ar_bulk）・申請の記録（wr_events）・使い始めのスイッチの記録。
--- 承認待ちの申請のルート（wr_requests.route）は記録（wr_events の route_stop）に写してから外す。
+-- 承認待ち・差し戻し中の申請のルート（wr_requests.route）は記録（wr_events の route_stop）に写してから外す。
 -- もう一度 20261209090000 を流したら、CEO・GM が「共通ルールで動かす」をもう一度押すまで今までの決まりのまま。
 -- 2 回流しても同じ。
 begin;
 drop trigger if exists ar_route_trg on public.wr_requests;
+-- 役割の一覧の写し（取引の中だけ）を消すトリガーも外す（関数は残る・害はない）
+do $$ declare t text; begin
+ foreach t in array array['manager_auth','wr_people','employees','stores','wr_exp_grants'] loop
+  if to_regclass('public.' || t) is not null then
+   execute format('drop trigger if exists ar_role_cache_reset on public.%I', t);
+  end if;
+ end loop;
+end $$;
 do $$ begin
  if to_regclass('public.ar_settings') is not null then
   update public.ar_settings set live = false, rev = rev + 1, updated_at = now() where id = 1 and live;
@@ -13,8 +21,8 @@ do $$ begin
  if exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'wr_requests' and column_name = 'route') then
   insert into public.wr_events(request_id, at, action, from_status, to_status, version, rev, by_name, by_role, note, detail)
   select x.id, now(), 'route_stop', x.status, x.status, x.version, x.rev, 'sql', 'sql', '共通ルールを戻した', jsonb_build_object('route', x.route)
-   from public.wr_requests x where x.status = 'pending' and x.route is not null;
-  update public.wr_requests set route = null where status = 'pending' and route is not null;
+   from public.wr_requests x where x.status in ('pending','returned') and x.route is not null;
+  update public.wr_requests set route = null where status in ('pending','returned') and route is not null;
  end if;
 end $$;
 -- wr_visible を戻す（20261104090000_work_requests.sql）

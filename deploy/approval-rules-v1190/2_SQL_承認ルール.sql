@@ -209,15 +209,19 @@ begin
 end $$;
 
 -- ---------------------------------------------------------------- 基本
+-- 一覧で何千回も呼ぶ小さな関数は plpgsql にする（search_path を決めた SQL の関数は、呼ぶたびに計画を作り直すため・PR #191 のレビュー）
 create or replace function public.ar_live() returns boolean
-language sql stable security invoker set search_path = public, pg_temp as $$ select coalesce((select live from public.ar_settings where id = 1), false); $$;
+language plpgsql stable security invoker set search_path = public, pg_temp as $$
+begin return coalesce((select live from public.ar_settings where id = 1), false); end $$;
 
 -- この申請は共通ルールで動くか（スイッチが入っていて、出したときのルールの記録がある）
 create or replace function public.ar_on(r public.wr_requests) returns boolean
-language sql stable security invoker set search_path = public, pg_temp as $$ select r.route is not null and public.ar_live(); $$;
+language plpgsql stable security invoker set search_path = public, pg_temp as $$
+begin return r.route is not null and public.ar_live(); end $$;
 
 create or replace function public.ar_today() returns date
-language sql stable security invoker set search_path = public, pg_temp as $$ select timezone('Pacific/Honolulu', now())::date; $$;
+language plpgsql stable security invoker set search_path = public, pg_temp as $$
+begin return timezone('Pacific/Honolulu', now())::date; end $$;
 
 create or replace function public.ar_kinds() returns text[]
 language sql immutable security invoker set search_path = public, pg_temp as $$
@@ -226,20 +230,17 @@ $$;
 
 -- 在籍で利用停止でない人
 create or replace function public.ar_emp_ok(p_emp text) returns boolean
-language sql stable security invoker set search_path = public, pg_temp as $$
- select p_emp is not null and exists (select 1 from public.employees e where e.id::text = p_emp and not public.wr_emp_out(e));
-$$;
+language plpgsql stable security invoker set search_path = public, pg_temp as $$
+begin return p_emp is not null and exists (select 1 from public.employees e where e.id::text = p_emp and not public.wr_emp_out(e)); end $$;
 
 create or replace function public.ar_emp_name(p_emp text) returns text
-language sql stable security invoker set search_path = public, pg_temp as $$
- select coalesce((select btrim(coalesce(e.name, '')) from public.employees e where e.id::text = p_emp limit 1), '');
-$$;
+language plpgsql stable security invoker set search_path = public, pg_temp as $$
+begin return coalesce((select btrim(coalesce(e.name, '')) from public.employees e where e.id::text = p_emp limit 1), ''); end $$;
 
 create or replace function public.ar_role_label(p_role text) returns text
-language sql immutable security invoker set search_path = public, pg_temp as $$
- select case p_role when 'ceo' then 'CEO' when 'gm' then 'GM' when 'am' then 'AM' when 'chef' then 'Head Chef'
-  when 'acct_mgr' then '経理マネージャー' when 'acct_lead' then '経理リーダー' when 'office_crew' then '事務Crew' else coalesce(p_role, '') end;
-$$;
+language plpgsql immutable security invoker set search_path = public, pg_temp as $$
+begin return case p_role when 'ceo' then 'CEO' when 'gm' then 'GM' when 'am' then 'AM' when 'chef' then 'Head Chef'
+  when 'acct_mgr' then '経理マネージャー' when 'acct_lead' then '経理リーダー' when 'office_crew' then '事務Crew' else coalesce(p_role, '') end; end $$;
 
 -- 承認上の役割（決めてほしいこと 1B：従業員マスターとアカウントから毎回決める・別の欄は持たない）
 --   CEO・GM＝アカウント（manager_auth の ceo・gm）。
@@ -270,41 +271,96 @@ language sql stable security invoker set search_path = public, pg_temp as $$
   ) x group by x.emp;
 $$;
 
+-- 承認上の役割の一覧（在籍で利用停止でない人だけ）を、1 回の呼び出し（取引）の中で 1 回だけ作る（PR #191 のレビュー：一覧のたびに何百回も作っていた）。
+-- 取引の中だけの設定（ar.role_cache）に置く。元の表（アカウント・写し・社員・店・経費の権限）が書き換わったら、同じ取引の中でもトリガーが消して作り直す。
+create or replace function public.ar_role_cache_reset() returns trigger
+language plpgsql security invoker set search_path = public, pg_temp as $$
+begin
+ perform set_config('ar.role_cache', '', true);
+ return null;
+end $$;
+do $$ declare t text; begin
+ foreach t in array array['manager_auth','wr_people','employees','stores','wr_exp_grants'] loop
+  if to_regclass('public.' || t) is not null then
+   execute format('drop trigger if exists ar_role_cache_reset on public.%I', t);
+   execute format('create trigger ar_role_cache_reset after insert or update or delete or truncate on public.%I for each statement execute function public.ar_role_cache_reset()', t);
+  end if;
+ end loop;
+end $$;
+
+create or replace function public.ar_role_cache() returns jsonb
+language plpgsql stable security invoker set search_path = public, pg_temp as $$
+declare v text := current_setting('ar.role_cache', true); j jsonb;
+begin
+ if v is not null and v <> '' then return v::jsonb; end if;
+ -- 役割ごとに {e: 社員 ID, s: 受け持ちの店} を社員 ID の順に
+ select coalesce(jsonb_object_agg(t.role, t.rows), '{}'::jsonb) into j from (
+   select y.role, jsonb_agg(jsonb_build_object('e', y.emp_id, 's', to_jsonb(coalesce(y.stores, '{}'::text[]))) order by y.emp_id) as rows
+    from public.ar_role_rows() y where public.ar_emp_ok(y.emp_id) group by y.role) t;
+ perform set_config('ar.role_cache', j::text, true);
+ return j;
+end $$;
+
 -- その役割を今持っている人（社員 ID）。範囲：all＝全社・mine＝申請の店を受け持つ人・stores＝指定の店のどれかを受け持つ人
--- CEO・GM はいつも全社。AM 以外で受け持ちの店が空の人は全社とみなす。退職・利用停止の人は入らない。
+-- CEO・GM はいつも全社。AM 以外で受け持ちの店が空の人は全社とみなす。退職・利用停止の人は入らない（ar_role_cache で外している）。
+-- plpgsql にしたのは、呼ぶたびに計画を作り直さないため（一覧で何千回も呼ぶ）。
 create or replace function public.ar_holders(p_role text, p_scope text, p_store text, p_stores text[]) returns text[]
-language sql stable security invoker set search_path = public, pg_temp as $$
- select coalesce(array(select distinct y.emp_id from public.ar_role_rows() y where y.role = p_role
-   and (y.role in ('ceo','gm') or case coalesce(p_scope, 'all')
+language plpgsql stable security invoker set search_path = public, pg_temp as $$
+declare o text[] := '{}'::text[]; y jsonb; v_scope text := coalesce(p_scope, 'all'); v_any boolean;
+begin
+ for y in select x from jsonb_array_elements(coalesce(public.ar_role_cache()->p_role, '[]'::jsonb)) x loop
+  v_any := p_role <> 'am' and jsonb_array_length(y->'s') = 0;
+  if p_role in ('ceo','gm') or (case v_scope
      when 'all' then true
-     when 'mine' then p_store = any(y.stores) or (y.role <> 'am' and cardinality(y.stores) = 0)
-     when 'stores' then y.stores && coalesce(p_stores, '{}'::text[]) or (y.role <> 'am' and cardinality(y.stores) = 0)
-     else false end)
-   and public.ar_emp_ok(y.emp_id) order by y.emp_id), '{}'::text[]);
-$$;
+     when 'mine' then (p_store is not null and jsonb_exists(y->'s', p_store)) or v_any
+     when 'stores' then jsonb_exists_any(y->'s', coalesce(p_stores, '{}'::text[])) or v_any
+     else false end) then
+   if not ((y->>'e') = any(o)) then o := o || (y->>'e'); end if;
+  end if;
+ end loop;
+ return o;
+end $$;
 
 -- 代理：p_to が今日 p_from の代わりに、この申請を承認できるか
+-- この人に今日効いている代理があるか（一覧で 1 件ごとに枠を全部見る前に、無い人はすぐ飛ばす）
+create or replace function public.ar_has_delegate(p_to text) returns boolean
+language plpgsql stable security invoker set search_path = public, pg_temp as $$
+begin return p_to is not null and exists (select 1 from public.ar_delegates d where d.active and d.to_emp = p_to and public.ar_today() between d.starts and d.ends); end $$;
+
 create or replace function public.ar_delegate_ok(p_to text, p_from text, r public.wr_requests) returns boolean
-language sql stable security invoker set search_path = public, pg_temp as $$
- select public.ar_emp_ok(p_to) and exists (select 1 from public.ar_delegates d where d.active and d.to_emp = p_to and d.from_emp = p_from
+language plpgsql stable security invoker set search_path = public, pg_temp as $$
+begin
+ -- 先に代理の記録を見る（ほとんどの人には無い）・そのあと代理の人が在籍か
+ if p_to is null or p_from is null or not exists (select 1 from public.ar_delegates d where d.active and d.to_emp = p_to and d.from_emp = p_from
    and public.ar_today() between d.starts and d.ends
-   and (cardinality(d.kinds) = 0 or r.kind = any(d.kinds)) and (cardinality(d.stores) = 0 or r.store_id = any(d.stores)));
-$$;
+   and (cardinality(d.kinds) = 0 or r.kind = any(d.kinds)) and (cardinality(d.stores) = 0 or r.store_id = any(d.stores))) then return false; end if;
+ return public.ar_emp_ok(p_to);
+end $$;
 
 -- 枠に当てはまる人（今の状態）
+-- 「役割の全員」を出したときに 1 人ずつに分けた枠（of あり）は、その人が今もその役割・範囲にいるときだけ（役割を外した・担当の店が変わった人は承認できない）。
+-- 名前で決めた枠（of なし）は在籍・利用停止だけを見る。
 create or replace function public.ar_slot_people(s jsonb, r public.wr_requests) returns text[]
-language sql stable security invoker set search_path = public, pg_temp as $$
- select case s->>'t'
-  when 'emp' then case when public.ar_emp_ok(s->>'emp') then array[s->>'emp'] else '{}'::text[] end
-  when 'role' then public.ar_holders(s->>'role', s->>'scope', r.store_id, public.wr_arr(s->'stores'))
-  else '{}'::text[] end;
-$$;
+language plpgsql stable security invoker set search_path = public, pg_temp as $$
+begin
+ if s->>'t' = 'emp' then
+  if public.ar_emp_ok(s->>'emp')
+     and (s->'of' is null or (jsonb_typeof(s->'of') = 'object' and (s->'of'->>'t') = 'role'
+       and (s->>'emp') = any(public.ar_holders(s->'of'->>'role', s->'of'->>'scope', r.store_id,
+             case when s->'of'->>'scope' = 'stores' then public.wr_arr(s->'of'->'stores') end)))) then
+   return array[s->>'emp'];
+  end if;
+  return '{}'::text[];
+ elsif s->>'t' = 'role' then
+  return public.ar_holders(s->>'role', s->>'scope', r.store_id, case when s->>'scope' = 'stores' then public.wr_arr(s->'stores') end);
+ end if;
+ return '{}'::text[];
+end $$;
 
 -- 自分の申請を本人が承認できるか（決めてほしいこと 3：GM の申請は GM 本人が承認できる＝ルールの self が gm のとき）
 create or replace function public.ar_self_ok(r public.wr_requests, p_self text) returns boolean
-language sql stable security invoker set search_path = public, pg_temp as $$
- select coalesce(p_self, 'ceo') = 'gm' and r.requester_emp is not null and r.requester_emp = any(public.ar_holders('gm', 'all', null, null));
-$$;
+language plpgsql stable security invoker set search_path = public, pg_temp as $$
+begin return coalesce(p_self, 'ceo') = 'gm' and r.requester_emp is not null and r.requester_emp = any(public.ar_holders('gm', 'all', null, null)); end $$;
 
 -- 承認できる人。申請した本人は除く（self が gm で本人が GM なら除かない）。
 -- 本人しか当てはまらないときは、self が ceo か gm なら CEO に回す（block なら止まる）
@@ -332,27 +388,24 @@ $$;
 
 -- 1 つの段で承認に使った人。同じ人は同じ段で 1 回だけ（兼任でも 2 枠を埋めない）。段が違えば同じ人でもよい（決めてほしいこと 7B）
 create or replace function public.ar_stage_signed(st jsonb) returns text[]
-language sql immutable security invoker set search_path = public, pg_temp as $$
- select coalesce(array(select distinct z.x from (
+language plpgsql immutable security invoker set search_path = public, pg_temp as $$
+begin return coalesce(array(select distinct z.x from (
    select g->>'emp' as x from jsonb_array_elements(coalesce(st->'signs', '[]'::jsonb)) g
    union all
    select g->>'for_emp' from jsonb_array_elements(coalesce(st->'signs', '[]'::jsonb)) g
-  ) z where z.x is not null), '{}'::text[]);
-$$;
+  ) z where z.x is not null), '{}'::text[]); end $$;
 
 -- まだ埋まっていない枠
 create or replace function public.ar_open_slots(st jsonb) returns setof jsonb
-language sql immutable security invoker set search_path = public, pg_temp as $$
- select x from jsonb_array_elements(coalesce(st->'slots', '[]'::jsonb)) x
-  where not exists (select 1 from jsonb_array_elements(coalesce(st->'signs', '[]'::jsonb)) g where g->>'k' = x->>'k');
-$$;
+language plpgsql immutable security invoker set search_path = public, pg_temp as $$
+begin return query select x from jsonb_array_elements(coalesce(st->'slots', '[]'::jsonb)) x
+  where not exists (select 1 from jsonb_array_elements(coalesce(st->'signs', '[]'::jsonb)) g where g->>'k' = x->>'k'); end $$;
 
 -- 段が済んだか（誰か 1 人：1 人の承認・全員：すべての枠）
 create or replace function public.ar_stage_done(st jsonb) returns boolean
-language sql immutable security invoker set search_path = public, pg_temp as $$
- select case when coalesce(st->>'mode', 'any') = 'all' then not exists (select 1 from public.ar_open_slots(st))
-  else jsonb_array_length(coalesce(st->'signs', '[]'::jsonb)) > 0 end;
-$$;
+language plpgsql immutable security invoker set search_path = public, pg_temp as $$
+begin return case when coalesce(st->>'mode', 'any') = 'all' then not exists (select 1 from public.ar_open_slots(st))
+  else jsonb_array_length(coalesce(st->'signs', '[]'::jsonb)) > 0 end; end $$;
 
 -- この人が今の段で承認できるか。できるなら {k（枠）, via（self／self_ceo／delegate）, for_emp, for_name}
 create or replace function public.ar_can_approve(a jsonb, r public.wr_requests) returns jsonb
@@ -376,6 +429,7 @@ begin
   end if;
  end loop;
  if v_best is not null then return v_best; end if;
+ if not public.ar_has_delegate(v_me) then return null; end if;
  for s in select x from public.ar_open_slots(st) x loop
   foreach f in array public.ar_slot_elig(s, r, rt->>'self') loop
    if not (f = any(v_used)) and public.ar_delegate_ok(v_me, f, r) then
@@ -470,7 +524,11 @@ create or replace function public.ar_route_trg() returns trigger
 language plpgsql security invoker set search_path = public, pg_temp as $$
 declare v_ver integer; v_old jsonb;
 begin
- if not public.ar_live() then return new; end if;
+ if not public.ar_live() then
+  -- 止めているあいだに承認待ちに戻る申請は、前のルート（前の中身への承認）を持たない（止めたときに外しているはず・念のため）
+  if tg_op = 'UPDATE' and new.status = 'pending' and old.status is distinct from 'pending' and new.route is not null then new.route := null; end if;
+  return new;
+ end if;
  if tg_op = 'INSERT' then
   if new.status = 'pending' and new.route is null then new.route := public.ar_route_build(new, null, 'submit'); end if;
   return new;
@@ -501,7 +559,7 @@ $$;
 -- ---------------------------------------------------------------- 閲覧（決めてほしいこと 4A・5A・6A）
 create or replace function public.ar_visible(a jsonb, r public.wr_requests) returns boolean
 language plpgsql stable security invoker set search_path = public, pg_temp as $$
-declare rt jsonb := r.route; v_me text := a->>'emp'; v_cur integer; i integer; s jsonb; v_el text[]; v jsonb; v_from text; v_n integer;
+declare rt jsonb := r.route; v_me text := a->>'emp'; v_cur integer; i integer; s jsonb; v_el text[]; v jsonb; v_from text; v_n integer; v_del boolean;
 begin
  if public.wr_is_mine(a, r) then return true; end if;
  if (a->>'role') in ('ceo','gm') then return true; end if;                                       -- 4A
@@ -515,7 +573,8 @@ begin
   for s in select x from jsonb_array_elements(rt->'stages'->i->'slots') x loop
    v_el := public.ar_slot_elig(s, r, rt->>'self');
    if v_me = any(v_el) then return true; end if;
-   if exists (select 1 from unnest(v_el) f where public.ar_delegate_ok(v_me, f, r)) then return true; end if;
+   if v_del is null then v_del := public.ar_has_delegate(v_me); end if;
+   if v_del and exists (select 1 from unnest(v_el) f where public.ar_delegate_ok(v_me, f, r)) then return true; end if;
   end loop;
  end loop;
  for v in select x from jsonb_array_elements(coalesce(rt->'viewers', '[]'::jsonb)) x loop
@@ -530,14 +589,13 @@ end $$;
 
 -- ---------------------------------------------------------------- 画面に返すルート
 create or replace function public.ar_slot_label(s jsonb) returns text
-language sql stable security invoker set search_path = public, pg_temp as $$
- select case s->>'t'
+language plpgsql stable security invoker set search_path = public, pg_temp as $$
+begin return case s->>'t'
   when 'emp' then case when s->'of' is not null then public.ar_slot_label(s->'of') || '：' else '' end || public.ar_emp_name(s->>'emp')
   when 'role' then public.ar_role_label(s->>'role') || case s->>'scope' when 'mine' then '（担当店舗）'
      when 'stores' then '（' || array_to_string(public.wr_arr(s->'stores'), '・') || '）' else '' end
      || case when coalesce(s->>'each', '') = 'true' then '（全員）' else '' end
-  else '' end;
-$$;
+  else '' end; end $$;
 
 create or replace function public.ar_route_view(a jsonb, r public.wr_requests) returns jsonb
 language plpgsql stable security invoker set search_path = public, pg_temp as $$
@@ -1027,21 +1085,26 @@ begin
   'ready', not exists (select 1 from unnest(public.ar_kinds()) k2 where not exists (select 1 from public.ar_rules x where x.kind = k2 and x.status = 'active')));
 end $$;
 
+-- 画面が見た下書きを、版（expect_ver）と変更の回数（expect_rev）の両方で確かめる（版ごとに rev が 1 から始まるので、rev だけでは別の版の下書きに当たる）。
+-- 下書きが無いとき（expect_ver・expect_rev が 0）は、画面が見た有効な版（base_ver・無ければ 0）が今と同じときだけ新しい下書きを作る。
 create or replace function public.ar_rule_save(p jsonb) returns jsonb
 language plpgsql volatile security invoker set search_path = public, pg_temp as $$
 declare a jsonb := public.ar_admin(p); v_kind text := p->>'kind'; d jsonb := p->'def'; g public.ar_rules; v_note text := public.ar_note(p, false); v_now timestamptz := now(); v_ver integer;
+ v_active integer;
 begin
- if not (coalesce(v_kind, '') = any(public.ar_kinds())) or jsonb_typeof(p->'expect_rev') is distinct from 'number' then raise exception 'bad_value'; end if;
+ if not (coalesce(v_kind, '') = any(public.ar_kinds())) or jsonb_typeof(p->'expect_rev') is distinct from 'number'
+    or jsonb_typeof(p->'expect_ver') is distinct from 'number' or jsonb_typeof(p->'base_ver') is distinct from 'number' then raise exception 'bad_value'; end if;
  if cardinality(public.ar_def_errors(d)) > 0 then raise exception 'rule_invalid'; end if;
  perform pg_advisory_xact_lock(hashtext('ar_rule:' || v_kind));
  select * into g from public.ar_rules x where x.kind = v_kind and x.status = 'draft' for update;
  if g.kind is null then
-  if (p->>'expect_rev')::int <> 0 then raise exception 'conflict'; end if;
+  select coalesce(max(x.ver), 0) into v_active from public.ar_rules x where x.kind = v_kind and x.status = 'active';
+  if (p->>'expect_rev')::int <> 0 or (p->>'expect_ver')::int <> 0 or (p->>'base_ver')::int <> v_active then raise exception 'conflict'; end if;
   select coalesce(max(x.ver), 0) + 1 into v_ver from public.ar_rules x where x.kind = v_kind;
   insert into public.ar_rules(kind, ver, status, def, note, rev, created_by, created_emp, created_at, updated_by, updated_emp, updated_at)
    values (v_kind, v_ver, 'draft', d, v_note, 1, a->>'name', a->>'emp', v_now, a->>'name', a->>'emp', v_now) returning * into g;
  else
-  if (p->>'expect_rev')::int <> g.rev then raise exception 'conflict'; end if;
+  if (p->>'expect_rev')::int <> g.rev or (p->>'expect_ver')::int <> g.ver then raise exception 'conflict'; end if;
   update public.ar_rules set def = d, note = v_note, rev = g.rev + 1, updated_by = a->>'name', updated_emp = a->>'emp', updated_at = v_now
    where kind = g.kind and ver = g.ver returning * into g;
  end if;
@@ -1052,10 +1115,11 @@ create or replace function public.ar_rule_activate(p jsonb) returns jsonb
 language plpgsql volatile security invoker set search_path = public, pg_temp as $$
 declare a jsonb := public.ar_admin(p); v_kind text := p->>'kind'; g public.ar_rules; v_note text := public.ar_note(p, true); c jsonb; v_now timestamptz := now();
 begin
- if not (coalesce(v_kind, '') = any(public.ar_kinds())) or jsonb_typeof(p->'expect_rev') is distinct from 'number' then raise exception 'bad_value'; end if;
+ if not (coalesce(v_kind, '') = any(public.ar_kinds())) or jsonb_typeof(p->'expect_rev') is distinct from 'number'
+    or jsonb_typeof(p->'expect_ver') is distinct from 'number' then raise exception 'bad_value'; end if;
  perform pg_advisory_xact_lock(hashtext('ar_rule:' || v_kind));
  select * into g from public.ar_rules x where x.kind = v_kind and x.status = 'draft' for update;
- if g.kind is null or (p->>'expect_rev')::int <> g.rev then raise exception 'conflict'; end if;
+ if g.kind is null or (p->>'expect_rev')::int <> g.rev or (p->>'expect_ver')::int <> g.ver then raise exception 'conflict'; end if;
  c := public.ar_rule_check(v_kind, g.def);
  if jsonb_array_length(c->'errors') > 0 then raise exception 'rule_invalid'; end if;
  update public.ar_rules set status = 'old' where kind = v_kind and status = 'active';
@@ -1068,10 +1132,11 @@ create or replace function public.ar_rule_discard(p jsonb) returns jsonb
 language plpgsql volatile security invoker set search_path = public, pg_temp as $$
 declare a jsonb := public.ar_admin(p); v_kind text := p->>'kind'; g public.ar_rules;
 begin
- if not (coalesce(v_kind, '') = any(public.ar_kinds())) or jsonb_typeof(p->'expect_rev') is distinct from 'number' then raise exception 'bad_value'; end if;
+ if not (coalesce(v_kind, '') = any(public.ar_kinds())) or jsonb_typeof(p->'expect_rev') is distinct from 'number'
+    or jsonb_typeof(p->'expect_ver') is distinct from 'number' then raise exception 'bad_value'; end if;
  perform pg_advisory_xact_lock(hashtext('ar_rule:' || v_kind));
  select * into g from public.ar_rules x where x.kind = v_kind and x.status = 'draft' for update;
- if g.kind is null or (p->>'expect_rev')::int <> g.rev then raise exception 'conflict'; end if;
+ if g.kind is null or (p->>'expect_rev')::int <> g.rev or (p->>'expect_ver')::int <> g.ver then raise exception 'conflict'; end if;
  delete from public.ar_rules where kind = g.kind and ver = g.ver;
  return jsonb_build_object('ok', true);
 end $$;
@@ -1300,9 +1365,13 @@ language plpgsql volatile security invoker set search_path = public, pg_temp as 
 declare a jsonb := public.ar_admin(p); v_kind text := p->>'kind'; v_note text := public.ar_note(p, true); g public.ar_rules; it jsonb; r public.wr_requests; nw jsonb;
  v_res jsonb := '[]'::jsonb; v_out text; v_now timestamptz := now(); v_last jsonb; v_from integer; v_n integer;
 begin
- if not (coalesce(v_kind, '') = any(public.ar_kinds())) or jsonb_typeof(p->'items') is distinct from 'array' or jsonb_array_length(p->'items') < 1 or jsonb_array_length(p->'items') > 200 then raise exception 'bad_value'; end if;
+ if not (coalesce(v_kind, '') = any(public.ar_kinds())) or jsonb_typeof(p->'items') is distinct from 'array' or jsonb_array_length(p->'items') < 1 or jsonb_array_length(p->'items') > 200
+    or jsonb_typeof(p->'ver') is distinct from 'number' then raise exception 'bad_value'; end if;
+ perform pg_advisory_xact_lock(hashtext('ar_rule:' || v_kind));   -- 有効にする操作と重ならない
  select * into g from public.ar_rules x where x.kind = v_kind and x.status = 'active';
  if g.kind is null then raise exception 'rules_missing'; end if;
+ -- 確かめの画面で見た版（ar_apply_preview の ver）と今の有効な版が違えば何もしない（確かめていないルールを当てない）
+ if (p->>'ver')::int <> g.ver then raise exception 'conflict'; end if;
  for it in select x from jsonb_array_elements(p->'items') x loop
   v_out := null; r := null;
   begin
@@ -1384,12 +1453,13 @@ begin
  select * into s from public.ar_settings where id = 1 for update;
  if s.rev <> (p->>'expect_rev')::int or not s.live then raise exception 'conflict'; end if;
  update public.ar_settings set live = false, rev = s.rev + 1, updated_at = now() where id = 1;
- -- 承認待ちの申請のルートを外す（切れているあいだの直しで古くならないように）。記録は wr_events に残す。
- -- もう一度「共通ルールで動かす」を押すと、そのときの有効なルールで付け直す（段の途中の承認は、今までの AM の承認だけ写す）
+ -- 承認待ち・差し戻し中の申請のルートを外す（切れているあいだの直し・出し直しで、前の中身への承認が残らないように）。記録は wr_events に残す。
+ -- もう一度「共通ルールで動かす」を押すと、そのときの有効なルールで付け直す（段の途中の承認は、今までの AM の承認だけ写す）。
+ -- 差し戻し中だったものは、出し直したとき（共通ルールで動いていれば）段 1 から取り直す。
  insert into public.wr_events(request_id, at, action, from_status, to_status, version, rev, by_emp, by_name, by_role, note, detail)
  select x.id, now(), 'route_stop', x.status, x.status, x.version, x.rev, a->>'emp', a->>'name', a->>'role', v_note, jsonb_build_object('route', x.route)
-  from public.wr_requests x where x.status = 'pending' and x.route is not null;
- update public.wr_requests set route = null where status = 'pending' and route is not null;
+  from public.wr_requests x where x.status in ('pending','returned') and x.route is not null;
+ update public.wr_requests set route = null where status in ('pending','returned') and route is not null;
  return jsonb_build_object('live', false, 'rev', s.rev + 1);
 end $$;
 -- ---------------------------------------------------------------- 初めの写し（2 回流しても足さない）

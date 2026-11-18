@@ -694,15 +694,17 @@ export function createHandler(deps) {
     },
     ar_rule_save: (w, b) => {
       if (!ALL_KINDS.includes(b.kind)) throw bad();
-      return db.rpc('ar_rule_save', { ...w, kind: b.kind, def: RULE_DEF(b.def), expect_rev: REV0(b.expect_rev), note: TS(b.note, LIMITS.note) || null });
+      // 見た下書きの版（expect_ver）と変更の回数（expect_rev）。下書きが無かったときは両方 0 と、見た有効な版（base_ver・無ければ 0）
+      return db.rpc('ar_rule_save', { ...w, kind: b.kind, def: RULE_DEF(b.def), expect_ver: REV0(b.expect_ver), expect_rev: REV0(b.expect_rev), base_ver: REV0(b.base_ver),
+        note: TS(b.note, LIMITS.note) || null });
     },
     ar_rule_activate: (w, b) => {
       if (!ALL_KINDS.includes(b.kind)) throw bad();
-      return db.rpc('ar_rule_activate', { ...w, kind: b.kind, expect_rev: REV(b.expect_rev), note: TS(b.note, LIMITS.note) || null });
+      return db.rpc('ar_rule_activate', { ...w, kind: b.kind, expect_ver: REV(b.expect_ver), expect_rev: REV(b.expect_rev), note: TS(b.note, LIMITS.note) || null });
     },
     ar_rule_discard: (w, b) => {
       if (!ALL_KINDS.includes(b.kind)) throw bad();
-      return db.rpc('ar_rule_discard', { ...w, kind: b.kind, expect_rev: REV(b.expect_rev) });
+      return db.rpc('ar_rule_discard', { ...w, kind: b.kind, expect_ver: REV(b.expect_ver), expect_rev: REV(b.expect_rev) });
     },
     ar_role_list: w => db.rpc('ar_role_list', w),   // 見るだけ（役割は従業員マスターとアカウントから決まる・1B）
     ar_delegate_list: w => db.rpc('ar_delegate_list', w),
@@ -729,7 +731,8 @@ export function createHandler(deps) {
     ar_apply_preview: (w, b) => { if (!ALL_KINDS.includes(b.kind)) throw bad(); return db.rpc('ar_apply_preview', { ...w, kind: b.kind }); },
     ar_apply: (w, b) => {
       if (!ALL_KINDS.includes(b.kind)) throw bad();
-      return db.rpc('ar_apply', { ...w, kind: b.kind, items: REV_ITEMS(b.items), note: TS(b.note, LIMITS.note) || null });
+      // ver＝確かめの画面（ar_apply_preview）で見た有効な版。違えば 409（確かめていない版を当てない）
+      return db.rpc('ar_apply', { ...w, kind: b.kind, ver: REV(b.ver), items: REV_ITEMS(b.items), note: TS(b.note, LIMITS.note) || null });
     },
     ar_go_live: (w, b) => db.rpc('ar_go_live', { ...w, expect_rev: REV(b.expect_rev), note: TS(b.note, LIMITS.note) || null }),
     ar_go_off: (w, b) => db.rpc('ar_go_off', { ...w, expect_rev: REV(b.expect_rev), note: TS(b.note, LIMITS.note) || null }),

@@ -148,7 +148,7 @@ test('v1190 one person with two roles signs once per stage; in an "all" stage th
   const a2 = await s.approve('E3', r2); assert.equal(a2.body.status, 'pending'); assert.equal(a2.body.route.stuck, true);
   const sv = await s.saveRule('shift', { default: { stages: [ALL2] } });
   assert.ok(sv.body.check.errors.some(e => e.code === 'same_person'), JSON.stringify(sv.body.check));
-  assert.equal((await s.call('E2', { action: 'ar_rule_activate', kind: 'shift', expect_rev: sv.body.draft.rev, note: 'x' })).body.error, 'rule_invalid');
+  assert.equal((await s.call('E2', { action: 'ar_rule_activate', kind: 'shift', expect_ver: sv.body.draft.ver, expect_rev: sv.body.draft.rev, note: 'x' })).body.error, 'rule_invalid');
 });
 
 test('v1190 retirement, suspension and role changes are read at approval time: the stage stops, never auto-skips; a delegate or an exception fixes it', async () => {
@@ -224,8 +224,8 @@ test('v1190 a new version applies to new requests only; applying it to pending o
   const pv = await s.ok('E2', { action: 'ar_apply_preview', kind: 'hire' });
   assert.deepEqual(pv.rows.map(r => r.keep).sort(), [0, 1]);
   const f1 = await s.fresh(old1), f2 = await s.fresh(old2);
-  assert.equal((await s.call('E2', { action: 'ar_apply', kind: 'hire', items: [{ id: f1.id, rev: f1.rev }] })).body.error, 'reason_required');
-  const ap = await s.ok('E2', { action: 'ar_apply', kind: 'hire', items: [{ id: f1.id, rev: f1.rev }, { id: f2.id, rev: f2.rev + 5 }], note: '料理の段を足した' });
+  assert.equal((await s.call('E2', { action: 'ar_apply', kind: 'hire', ver: pv.ver, items: [{ id: f1.id, rev: f1.rev }] })).body.error, 'reason_required');
+  const ap = await s.ok('E2', { action: 'ar_apply', kind: 'hire', ver: pv.ver, items: [{ id: f1.id, rev: f1.rev }, { id: f2.id, rev: f2.rev + 5 }], note: '料理の段を足した' });
   assert.deepEqual(ap.results.map(r => r.outcome), ['applied', 'stale']);
   const g1 = await s.fresh(old1);
   assert.equal(g1.route.rule.ver, 3); assert.equal(g1.route.cur, 2, 'the AM approval is kept (same stage)'); assert.equal(g1.route.stages[0].signs[0].name, 'Ami Area');
@@ -328,9 +328,9 @@ test('v1190 rules: shape and content are checked, preview shows names, only CEO/
   assert.equal(v.status, 200, JSON.stringify(v.body));
   const codes = v.body.check.errors.map(e => e.code).sort();
   assert.ok(codes.includes('unreachable') && codes.includes('same_person'), JSON.stringify(v.body.check));
-  assert.equal((await s.call('E2', { action: 'ar_rule_activate', kind: 'plan', expect_rev: v.body.draft.rev, note: 'x' })).body.error, 'rule_invalid');
-  assert.equal((await s.call('E2', { action: 'ar_rule_save', kind: 'plan', def: { default: { stages: [STAGE(G)] } }, expect_rev: v.body.draft.rev - 1 })).status, 409);
-  assert.equal((await s.call('E5', { action: 'ar_rule_save', kind: 'plan', def: { default: { stages: [STAGE(G)] } }, expect_rev: v.body.draft.rev })).status, 403);
+  assert.equal((await s.call('E2', { action: 'ar_rule_activate', kind: 'plan', expect_ver: v.body.draft.ver, expect_rev: v.body.draft.rev, note: 'x' })).body.error, 'rule_invalid');
+  assert.equal((await s.call('E2', { action: 'ar_rule_save', kind: 'plan', def: { default: { stages: [STAGE(G)] } }, expect_ver: v.body.draft.ver, expect_rev: v.body.draft.rev - 1, base_ver: 0 })).status, 409);
+  assert.equal((await s.call('E5', { action: 'ar_rule_save', kind: 'plan', def: { default: { stages: [STAGE(G)] } }, expect_ver: v.body.draft.ver, expect_rev: v.body.draft.rev, base_ver: 0 })).status, 403);
   const ok7 = await s.saveRule('plan', { default: { stages: [STAGE(G), STAGE(G, C)] } });
   assert.deepEqual(ok7.body.check.errors, [], '7B: the same person in two stages is fine');
   const p = await s.ok('E2', { action: 'ar_rule_preview', kind: 'leave', store_id: 'S1', requester: 'E8' });
