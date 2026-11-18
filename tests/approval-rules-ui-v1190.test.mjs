@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
 import { webcrypto } from 'node:crypto';
-import { setup, NAME, KINDS16, G, C, AMm, STAGE } from './approval-rules-world.mjs';
+import { setup, NAME, KINDS16, G, C, AMm, STAGE, ALLS } from './approval-rules-world.mjs';
 
 const html = fs.readFileSync(process.env.FUNERGY_INDEX || new URL('../index.html', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
 const cut = (b, e) => { const i = html.indexOf(b), j = html.indexOf(e); assert.ok(i > 0 && j > i, 'module markers ' + b); return html.slice(i, j); };
@@ -268,3 +268,90 @@ test('bulk approval: the answer did not arrive → send again with the same numb
   assert.equal(bl.arRes[0].outcome, 'final');
   assert.equal((await W.q(`select count(*)::int n from public.wr_events where action = 'approve' and request_id = $1`, [a.id]))[0].n, 1, 'approved once');
 });
+
+// PR #192 のレビュー（Codex 66608b3）：「全員」の段でほかの枠が残るときは「段 N へ」ではなく「この段のほかの承認を待つ」
+test('PR #192: an "all" step says it waits for the others — on the route card, the bulk check and the bulk result', async () => {
+  const W = await setup();
+  await W.activate();
+  await W.setRule('shift', { default: { stages: [ALLS(G, C), STAGE(G)] } });
+  await W.setRule('hire', { default: { stages: [STAGE(G), STAGE(C)] } });
+  await W.setRule('plan', { default: { stages: [ALLS(G, C)] } });
+  await W.live();
+  const sh = await W.subOk('E8', 'shift', 'S1');
+  const hi = await W.subOk('E8', 'hire', 'S1');
+  const pl = await W.subOk('E8', 'plan', 'S1');
+  const gm = await app(W, 'E2', { page: 'tasks' });
+  gm.ctx.renderWrTab(); await gm.settle(); gm.ctx.renderWrTab(); await gm.settle();
+  gm.ctx.wrOpen(pl.id); await gm.settle();
+  let d = gm.dom.els['wr-detail'].innerHTML;
+  assert.match(d, /あなたが承認すると：<b>この段のほかの承認を待ちます<\/b>/, 'plan: one step, CEO still to sign');
+  assert.match(d, /あと 1 人/);
+  assert.doesNotMatch(d, /あなたが承認すると：<b>段 2 へ/, 'before: it said "to step 2" for a one-step route');
+  gm.ctx.wrOpen(hi.id); await gm.settle();
+  assert.match(gm.dom.els['wr-detail'].innerHTML, /あなたが承認すると：<b>段 2 へ/, 'an "any" step still goes to the next step');
+  // bulk: the check screen and the result
+  gm.ctx.renderWrTab(); await gm.settle();
+  gm.ctx.wrSelAll(true); gm.ctx.renderWrTab(); await gm.settle();
+  gm.ctx.wrBulkAsk();
+  let m = gm.dom.els['wr-bulk'].innerHTML;
+  assert.match(m, /この段のほかの承認を待つ/); assert.match(m, /この段のほかを待つ/);
+  gm.ctx.wrBulkGo(); await gm.settle();
+  const by = Object.fromEntries(gm.S().bulk.arRes.map(x => [x.id, x.outcome]));
+  assert.equal(by[sh.id], 'stage'); assert.equal(by[pl.id], 'stage'); assert.equal(by[hi.id], 'next');
+  m = gm.dom.els['wr-bulk'].innerHTML;
+  assert.equal((m.match(/>ほかを待つ</g) || []).length, 2, 'two rows marked “waiting” (not failed)');
+  assert.match(m, /はほかの承認を待っています（Cora CEO）/);
+  assert.equal((await W.fresh(pl)).status, 'pending'); assert.equal((await W.fresh(sh)).route.cur, 1, 'the step did not move');
+  // an older server (no my.after): the screen works it out from the open slots
+  const aft = gm.ctx.arAfter;
+  assert.deepEqual(JSON.parse(JSON.stringify(aft({ cur: 1, my: { final: false }, stages: [{ mode: 'all', slots: [{ filled: false }, { filled: false }] }] }))), { after: 'same', left: 1 });
+  assert.deepEqual(JSON.parse(JSON.stringify(aft({ cur: 1, my: { final: false }, stages: [{ mode: 'any', slots: [{ filled: false }, { filled: false }] }] }))), { after: 'next', left: 0 });
+  assert.deepEqual(JSON.parse(JSON.stringify(aft({ cur: 1, my: { final: false, after: 'next', left: 0 }, stages: [{ mode: 'all', slots: [{ filled: false }, { filled: false }] }] }))), { after: 'next', left: 0 }, 'the server’s answer wins');
+  assert.deepEqual(JSON.parse(JSON.stringify(aft({ cur: 1, my: { final: true }, stages: [{ mode: 'all', slots: [{ filled: false }, { filled: false }] }] }))), { after: 'final', left: 0 });
+});
+
+test('PR #192: a discarded draft stays in the history; activate refused → the screen reloads and keeps the note; limits checked on screen', async () => {
+  const W = await setup();
+  const gm = await app(W, 'E2'); await gm.page0();
+  gm.h.kind('plan'); await gm.settle();
+  const seen = gm.A().ed; assert.equal(seen.from, 'draft');
+  // someone else discards and makes a new draft
+  await W.ok('E1', { action: 'ar_rule_discard', kind: 'plan', expect_ver: seen.ver, expect_rev: seen.rev });
+  const re = await W.ok('E1', { action: 'ar_rule_save', kind: 'plan', def: { default: { stages: [STAGE(C)] } }, expect_ver: 0, expect_rev: 0, base_ver: 0, note: '作り直し' });
+  gm.h.note('GM のメモ');
+  gm.h.activate(); await gm.settle();
+  assert.ok(gm.toasts.some(t => /先に変えました/.test(t[1])));
+  const st = await W.state(); const k = st.kinds.find(x => x.kind === 'plan');
+  assert.equal(k.active, undefined, 'nothing activated from the old screen');
+  assert.ok(gm.A().ed, 'the editor stays open');
+  assert.equal(gm.A().ed.note, 'GM のメモ', 'the note is kept');
+  assert.equal(gm.A().ed.ver, re.draft.ver, 'the editor now shows the new draft');
+  assert.match(gm.root(), /捨てた下書き/, 'the discarded draft is in the history');
+  // the amount limit is the server's (12 digits of cents)
+  gm.h.addBranch();
+  gm.h.bAmt(0, 'min', '9999999999.99');
+  assert.equal(gm.A().ed.def.branches[0].when.min_cents, 999999999999);
+  gm.h.bAmt(0, 'min', '10000000000');
+  assert.equal(gm.A().ed.def.branches[0].when.min_cents, 999999999999, 'over the limit: not taken');
+  assert.ok(gm.toasts.some(t => /9,999,999,999\.99/.test(t[1])));
+});
+
+test('PR #192: "remove a step" stops on screen when only one unfinished step is left (nothing is sent)', async () => {
+  const W = await setup();
+  await W.activate();
+  await W.setRule('mileage', { default: { stages: [STAGE(G)] } });
+  await W.live();
+  const r = await W.subOk('E7', 'mileage', 'S1');
+  const gm = await app(W, 'E2', { page: 'tasks' });
+  let sent = 0; const f0 = gm.ctx.fetch;
+  gm.ctx.fetch = async (u, i) => { if (JSON.parse(i.body).action === 'ar_exception') sent++; return f0(u, i); };
+  gm.ctx.renderWrTab(); await gm.settle();
+  gm.ctx.wrOpen(r.id); await gm.settle();
+  gm.h.exToggle(r.id, true);
+  gm.h.ex('op', 'remove_stage'); gm.h.ex('note', '外す', 1);
+  gm.h.exGo(); await gm.settle();
+  assert.equal(sent, 0, 'not sent');
+  assert.match(gm.dom.els['ar-ex'].innerHTML, /承認の済んでいない段を 1 つは残します/);
+  assert.equal(((await W.fresh(r)).route.ex || []).length, 0);
+});
+

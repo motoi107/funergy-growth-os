@@ -114074,17 +114074,26 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     if (!st) return '';
     return (st.slots || []).map(function(sl){ return W.arLabel ? W.arLabel(sl.label || '') : (sl.label || ''); }).filter(Boolean).join(T('・', ', '));   /* 英語の画面では役割の名前を英語に（FUNERGY_AR） */
   }
+  /* 承認したあと：最終承認／次の段へ／この段のほかの承認を待つ（「全員」の段でほかの枠が残る）。FUNERGY_AR の arAfter（サーバーの my.after・前の版のサーバーなら段の枠から） */
+  function willOf(x){
+    var rt = x.route || {}, my = rt.my; if (!my) return null;
+    if (W.arAfter) return W.arAfter(rt);
+    return my.after ? { after:my.after, left:Number(my.left) || 0 } : { after:my.final ? 'final' : 'next', left:0 };
+  }
   function bulkWillL(x){
-    var my = (x.route || {}).my;
-    if (!my) return '<div style="grid-column:1/-1;font-size:11.5px;color:var(--muted)">' + T('承認したあと：サーバーで確かめます','After approval: the server checks') + '</div>';
-    return '<div style="grid-column:1/-1;font-size:11.5px">' + T('承認したあと：','After approval: ') + (my.final ? '<b style="color:#0f6b44">' + T('最終承認','final approval') + '</b>'
-      : '<b>' + T('段 ','step ') + ((x.route.cur || 1) + 1) + T(' へ',' next') + '</b>' + (nextStageL(x) ? ' <span style="color:var(--muted)">（' + esc(nextStageL(x)) + '）</span>' : ''))
+    var my = (x.route || {}).my, w = willOf(x);
+    if (!my || !w) return '<div style="grid-column:1/-1;font-size:11.5px;color:var(--muted)">' + T('承認したあと：サーバーで確かめます','After approval: the server checks') + '</div>';
+    return '<div style="grid-column:1/-1;font-size:11.5px">' + T('承認したあと：','After approval: ') + (w.after === 'final' ? '<b style="color:#0f6b44">' + T('最終承認','final approval') + '</b>'
+      : w.after === 'same' ? '<b style="color:#8a4a0b">' + T('この段のほかの承認を待つ','waits for the others in this step') + '</b> <span style="color:var(--muted)">' + T('（あと ',' (') + w.left + T(' 人）',' more)') + '</span>'
+      : '<b>' + T('段 ','step ') + ((x.route.cur || 1) + 1) + T(' へ',' next') + '</b>' + (nextStageL(x) ? ' <span style="color:var(--muted)">' + T('（',' (') + esc(nextStageL(x)) + T('）',')') + '</span>' : ''))
       + (my.via === 'delegate' && my.for_name ? ' <span class="tag" style="font-size:9px">' + esc(my.for_name) + T(' の代理',' — delegate') + '</span>' : '') + '</div>';
   }
   function arTile(label, n, color){ return '<div style="flex:1;min-width:90px;border:1px solid var(--border);border-radius:10px;padding:8px 10px"><div style="font-size:11px;color:var(--muted)">' + label + '</div><div style="font-size:20px;font-weight:800;color:' + color + '">' + n + '</div></div>'; }
   function bulkWillTiles(list){
-    var fin = list.filter(function(x){ return x.route && x.route.my && x.route.my.final; }).length, nxt = list.filter(function(x){ return x.route && x.route.my && !x.route.my.final; }).length;
-    return '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">' + arTile(T('最終承認','Final'), fin, '#0f6b44') + arTile(T('次の段へ','To the next step'), nxt, '#2b6cb0') + '</div>'
+    var c = { final:0, next:0, same:0 };
+    list.forEach(function(x){ var w = willOf(x); if (w) c[w.after] = (c[w.after] || 0) + 1; });
+    return '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">' + arTile(T('最終承認','Final'), c.final, '#0f6b44') + arTile(T('次の段へ','To the next step'), c.next, '#2b6cb0')
+      + (c.same ? arTile(T('この段のほかを待つ','Waits in this step'), c.same, '#8a4a0b') : '') + '</div>'
       + '<div style="font-size:11.5px;color:var(--muted);margin-top:6px;line-height:1.6">' + T('ほかの人の段を代わりに承認しません（今の段であなたが承認できるものだけ）。1 件ずつ別に確かめるので、1 件が通らなくてもほかは進みます。','You do not approve someone else’s step (only the steps you can approve now). Each request is checked on its own, so one failure does not stop the rest.') + '</div>';
   }
   var BULK_WHY = { stale:['あなたが見たあと内容が変わりました。開いて確かめてください','It changed after you looked. Open it to check'], not_pending:['もう処理されています','It was already handled'],
@@ -114098,16 +114107,19 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       + '<br>' + T('サーバーで承認できたかは分かりません。同じ番号でもう一度送ると、承認できていたものは前の結果を返し、二重には承認しません。','We do not know whether it went through. Sending again with the same number returns the earlier result and never approves twice.') + '</div>'
       + '<div style="display:flex;gap:10px;margin-top:12px"><button class="btn btn-secondary" style="flex:1;min-height:46px" onclick="closeModal()">' + T('閉じる','Close') + '</button>'
       + '<button class="btn btn-primary" style="flex:2;min-height:46px;font-weight:800" onclick="wrBulkGo()">' + T('同じ番号でもう一度送る','Send again (same number)') + '</button></div>';
-    var rs = b.arRes || [], c = { final:0, next:0, skip:0, failed:0 };
+    var rs = b.arRes || [], c = { final:0, next:0, stage:0, skip:0, failed:0 };
     rs.forEach(function(x){ c[x.outcome] = (c[x.outcome] || 0) + 1; });
     if (b.phase === 'apply') h += '<div style="font-size:13px;font-weight:700;margin-bottom:8px;color:var(--accent)">' + T('続けて反映しています… ','Applying… ') + (b.ap || 0) + ' / ' + (b.apN || 0) + T('（閉じずに待ってください）',' (please wait)') + '</div>';
     h += '<div style="font-size:17px;font-weight:800;margin-bottom:8px">' + T('まとめて承認の結果','Bulk approval result') + (b.replay ? ' <span class="tag" style="font-size:10px">' + T('前の結果（送り直し）','earlier result (resent)') + '</span>' : '') + '</div>'
-      + '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">' + arTile(T('最終承認','Final'), c.final, '#0f6b44') + arTile(T('次の段へ','To the next step'), c.next, '#2b6cb0') + arTile(T('対象外','Skipped'), c.skip, '#8a4a0b') + arTile(T('失敗','Failed'), c.failed, '#a51f1f') + '</div>'
+      + '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">' + arTile(T('最終承認','Final'), c.final, '#0f6b44') + arTile(T('次の段へ','To the next step'), c.next, '#2b6cb0')
+        + (c.stage ? arTile(T('この段のほかを待つ','Waits in this step'), c.stage, '#6b4e16') : '') + arTile(T('対象外','Skipped'), c.skip, '#8a4a0b') + arTile(T('失敗','Failed'), c.failed, '#a51f1f') + '</div>'
       + rs.map(function(x){
-        var sty = x.outcome === 'final' ? ['#f1faf5','#0f6b44',T('最終承認','Final')] : x.outcome === 'next' ? ['#eef4fb','#1f3d70',T('次の段へ','Next step')] : x.outcome === 'skip' ? ['#fff8ef','#8a4a0b',T('対象外','Skipped')] : ['#fff6f6','#a51f1f',T('失敗','Failed')];
+        var sty = x.outcome === 'final' ? ['#f1faf5','#0f6b44',T('最終承認','Final')] : x.outcome === 'next' ? ['#eef4fb','#1f3d70',T('次の段へ','Next step')]
+          : x.outcome === 'stage' ? ['#fbf6ec','#6b4e16',T('ほかを待つ','Waiting')] : x.outcome === 'skip' ? ['#fff8ef','#8a4a0b',T('対象外','Skipped')] : ['#fff6f6','#a51f1f',T('失敗','Failed')];
         var why = BULK_WHY[x.reason] || null, nx = x.next || {};
-        var msg = x.outcome === 'next' ? (nx.stuck ? T('段 ','Step ') + (nx.stage || '?') + '/' + (nx.stages || '?') + T('：承認できる人がいません（例外で直す）',': nobody can approve (fix with an exception)')
-            : T('段 ','Step ') + (nx.stage || '?') + '/' + (nx.stages || '?') + T(' へ（',' (') + esc((nx.names || []).slice(0, 3).join('・')) + ((nx.names || []).length > 3 ? T(' ほか',' +') : '') + T('）',')'))
+        var msg = (x.outcome === 'next' || x.outcome === 'stage') && nx.stuck ? T('段 ','Step ') + (nx.stage || '?') + '/' + (nx.stages || '?') + T('：承認できる人がいません（例外で直す）',': nobody can approve (fix with an exception)')
+          : x.outcome === 'stage' ? T('承認しました。段 ','Approved. Step ') + (nx.stage || '?') + '/' + (nx.stages || '?') + T(' はほかの承認を待っています（',' still waits for the others (') + esc((nx.names || []).slice(0, 3).join(T('・', ', '))) + ((nx.names || []).length > 3 ? T(' ほか',' +') : '') + T('）',')')
+          : x.outcome === 'next' ? T('段 ','Step ') + (nx.stage || '?') + '/' + (nx.stages || '?') + T(' へ（',' (') + esc((nx.names || []).slice(0, 3).join(T('・', ', '))) + ((nx.names || []).length > 3 ? T(' ほか',' +') : '') + T('）',')')
           : x.outcome === 'final' ? T('承認がそろいました','All approvals are in') + (x.ap ? ' · ' + esc(x.ap) : '')
           : x.msg ? T('承認していません：','Not approved: ') + esc(x.msg) : why ? T(why[0], why[1]) : esc(x.reason || '');
         return '<div style="display:flex;gap:10px;align-items:flex-start;padding:9px 11px;border-radius:10px;background:' + sty[0] + ';margin-bottom:6px;font-size:12.5px"><span style="font-weight:800;color:' + sty[1] + ';white-space:nowrap">' + sty[2] + '</span><div style="flex:1;min-width:0"><b>' + esc(x.code || '') + '</b> '
@@ -114135,7 +114147,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     b.arRes = b.list.map(function(x){ var o = by[x.id] || { outcome:'failed', reason:'error' }; return { id:x.id, code:o.code || x.code, kind:o.kind || x.kind, outcome:o.outcome || 'failed', reason:o.reason || '', status:o.status, next:o.next || null }; });
     b.list.forEach(function(x){ delete S.sel[x.id]; });
     /* 知らせ（次の段の人・最終承認なら経理と申請した人）と、段階 2 の続けての反映には、その申請の今の中身が要る（1 件ずつ読む） */
-    var need = b.arRes.filter(function(x){ return x.outcome === 'final' || x.outcome === 'next'; });
+    var need = b.arRes.filter(function(x){ return x.outcome === 'final' || x.outcome === 'next' || x.outcome === 'stage'; });
     for (var i = 0; i < need.length; i++) {
       if (b.k0 !== authKey()) break;
       try { need[i].row = await api({ action:'get', id:need[i].id }, b.k0); try{ notifyAfter('approve', need[i].row); }catch(e2){} } catch(e1) { need[i].row = null; }
@@ -116113,7 +116125,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       + '</div><div style="font-size:11.5px;color:var(--muted);margin-top:6px;line-height:1.6">' + T('有効にすると、これから出す申請に使います。進行中の申請は前の版のまま（下の「進行中の申請にも当てる」で選んで当てる）。','Once active, it applies to new requests. Requests in progress keep their version (apply it below if you choose).') + '</div></div>';
     if (k.active && k.old_routes) h += applyBox(k);
     if ((k.history || []).length) h += '<details class="ar-box"><summary style="cursor:pointer;font-weight:700">' + T('版の履歴','Version history') + '</summary>'
-      + '<table class="ar-tbl" style="margin-top:6px">' + k.history.map(function(x){ return '<tr><td>v' + x.ver + '</td><td>' + esc(x.status === 'active' ? T('有効','active') : x.status === 'draft' ? T('下書き','draft') : T('前の版','old')) + '</td><td>' + esc(hst(x.at)) + ' ' + esc(x.by || '') + '</td><td>' + esc(x.note || '') + '</td></tr>'; }).join('') + '</table></details>';
+      + '<table class="ar-tbl" style="margin-top:6px">' + k.history.map(function(x){ return '<tr><td>v' + x.ver + '</td><td>' + esc(x.status === 'active' ? T('有効','active') : x.status === 'draft' ? T('下書き','draft') : x.status === 'discarded' ? T('捨てた下書き','discarded draft') : T('前の版','old')) + '</td><td>' + esc(hst(x.at)) + ' ' + esc(x.by || '') + '</td><td>' + esc(x.note || '') + '</td></tr>'; }).join('') + '</table></details>';
     return h;
   }
   function checkHtml(c){
@@ -116329,6 +116341,21 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
 
   /* ---------------------------------------------------------------- 申請の画面：ルートの表示と例外（W.arRouteCard は FUNERGY_WR の drawDetail が呼ぶ） */
   var VIA = { own:['本人の申請','own request'], self:['',''], self_ceo:['CEO に回した','sent to CEO'], copied:['前の AM の承認を写した','copied from the earlier AM approval'] };
+  /* v1190（PR #192 のレビュー）：承認したあとどうなるか。サーバーの my.after（final／next／same）と my.left（この段に残る枠）。
+     前の版のサーバー（after が無い）は、「全員」の段でまだ埋まっていない枠がほかにもあれば same にする（前は「段 N へ」と出していた） */
+  function arAfter(rt){
+    var my = (rt && rt.my) || null; if (!my) return null;
+    if (my.after === 'final' || my.after === 'next' || my.after === 'same') return { after:my.after, left:Number(my.left) || 0 };
+    if (my['final']) return { after:'final', left:0 };
+    var st = (rt.stages || [])[(rt.cur || 1) - 1] || {}, open = (st.slots || []).filter(function(x){ return !x.filled; }).length;
+    return st.mode === 'all' && open > 1 ? { after:'same', left:open - 1 } : { after:'next', left:0 };
+  }
+  function afterHtml(rt){
+    var a = arAfter(rt) || { after:'next', left:0 }, cur = rt.cur || 1;
+    if (a.after === 'final') return '<b style="color:#0f6b44">' + T('最終承認','final approval') + '</b>';
+    if (a.after === 'same') return '<b>' + T('この段のほかの承認を待ちます','the step waits for the others') + '</b> <span style="color:var(--muted)">' + PO() + T('あと ','') + a.left + T(' 人',' more to approve') + PC() + '</span>';
+    return '<b>' + T('段 ','step ') + (cur + 1) + T(' へ',' next') + '</b>';
+  }
   function routeCard(r){
     var rt = r.route; if (!rt) return '';
     var cur = rt.cur || 1, n = (rt.stages || []).length, open = r.status === 'pending', ar = W.wrAr ? W.wrAr() : null;
@@ -116346,7 +116373,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
           + (g.bulk ? ' <span class="ar-chip">' + T('まとめて承認','bulk') + '</span>' : '') + (g.note ? ' · ' + esc(g.note) : '') + '</div>'; }).join('') + '</div></div>';
     });
     if ((rt.viewers || []).length) h += '<div style="font-size:12px;margin-top:6px;border-top:1px solid var(--border);padding-top:6px"><b>' + T('閲覧者','Viewers') + '</b> ' + rt.viewers.map(function(v){ return esc(svL(v.label)) + PO() + esc(fromL(v.from)) + PC(); }).join(T('、', ', ')) + '</div>';
-    if (open && rt.my) h += '<div style="font-size:12.5px;margin-top:6px;padding:8px 10px;border-radius:8px;background:#f1faf5">' + T('あなたが承認すると：','If you approve: ') + (rt.my['final'] ? '<b style="color:#0f6b44">' + T('最終承認','final approval') + '</b>' : '<b>' + T('段 ','step ') + (cur + 1) + T(' へ',' next') + '</b>')
+    if (open && rt.my) h += '<div style="font-size:12.5px;margin-top:6px;padding:8px 10px;border-radius:8px;background:#f1faf5">' + T('あなたが承認すると：','If you approve: ') + afterHtml(rt)
       + (rt.my.via === 'delegate' && rt.my.for_name ? ' <span class="ar-chip">' + esc(rt.my.for_name) + T(' の代理',' — delegate') + '</span>' : '') + '</div>';
     if ((rt.ex || []).length) h += '<details style="margin-top:6px"><summary style="font-size:12px;cursor:pointer">' + T('例外・当て直しの記録 ','Exceptions and re-applies ') + rt.ex.length + '</summary>'
       + rt.ex.map(function(x){ return '<div style="font-size:11.5px;padding:3px 0;border-top:1px solid var(--border)">' + esc(hst(x.at)) + ' · ' + esc(x.by || '') + ' · ' + esc(exOpL(x)) + (x.note ? ' · ' + esc(x.note) : '') + '</div>'; }).join('') + '</details>';
@@ -116417,7 +116444,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     bDel: function(i){ if (!confirm(T('この条件を消しますか？','Delete this condition?'))) return; A.ed.def.branches.splice(i, 1); A.pick = null; touch(); paint(); },
     bAmt: function(i, which, v){
       var w = A.ed.def.branches[i].when = A.ed.def.branches[i].when || {}, k = which === 'min' ? 'min_cents' : 'max_cents', s = String(v || '').trim();
-      if (s === '') delete w[k]; else { var c = Math.round(parseFloat(s) * 100); if (!isFinite(c) || c < 0 || c > 1e12) { toast(T('金額を数字で入れてください','Enter an amount'), 'error'); paint(); return; } w[k] = c; }
+      if (s === '') delete w[k]; else { var c = Math.round(parseFloat(s) * 100); if (!isFinite(c) || c < 0 || c > 999999999999) { toast(T('金額を数字で入れてください（$9,999,999,999.99 まで）','Enter an amount (up to $9,999,999,999.99)'), 'error'); paint(); return; } w[k] = c; }
       touch(); paint();
     },
     bFlag: function(i, k, v){ var w = A.ed.def.branches[i].when = A.ed.def.branches[i].when || {}; if (v === '') delete w[k]; else w[k] = v === '1'; touch(); paint(); },
@@ -116472,14 +116499,14 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       var k0 = A.k0, kind = e.kind;
       api({ action:'ar_rule_activate', kind:kind, expect_ver:k.draft.ver, expect_rev:k.draft.rev, note:e.note }, k0).then(function(){
         A.busy = ''; if (k0 !== A.k0) return; toast(T('有効にしました','Activated'), 'success'); A.ed = null; A.load = ''; paint();
-      }, function(err){ A.busy = ''; toast(err && err.code === 'rule_invalid' ? T('確かめで問題があります。下の赤い行を直してください','The check found problems. Fix the red lines') : err && err.code === 'conflict' ? T('ほかの人が先に変えました。読み直します','Someone changed it first. Reloading') : errMsg(err), 'error'); A.ed = null; A.load = ''; paint(); });
+      }, function(err){ A.busy = ''; toast(err && err.code === 'rule_invalid' ? T('確かめで問題があります。下の赤い行を直してください','The check found problems. Fix the red lines') : err && err.code === 'conflict' ? T('ほかの人が先に変えました。読み直します','Someone changed it first. Reloading') : errMsg(err), 'error'); reopenKeepNote(kind, e.note); });
     },
     discard: function(){
       var k = kr(A.ed.kind); if (!k.draft || A.busy) return;
       if (!confirm(T('下書き（v','Delete the draft (v') + k.draft.ver + T('）を捨てますか？',')?'))) return;
       A.busy = 'disc'; paint(); var k0 = A.k0;
       api({ action:'ar_rule_discard', kind:k.kind, expect_ver:k.draft.ver, expect_rev:k.draft.rev }, k0).then(function(){ A.busy = ''; toast(T('下書きを捨てました','Draft deleted'), 'success'); A.ed = null; A.load = ''; paint(); },
-        function(err){ A.busy = ''; toast(errMsg(err), 'error'); A.ed = null; A.load = ''; paint(); });
+        function(err){ A.busy = ''; toast(err && err.code === 'conflict' ? T('ほかの人が先に変えました。読み直します','Someone changed it first. Reloading') : errMsg(err), 'error'); reopenKeepNote(k.kind, A.ed && A.ed.note); });
     },
     pv: function(k, v){ A.prev[k] = String(v || ''); A.prev.res = null; },
     preview: function(){
@@ -116565,7 +116592,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
         var sd = { mode:e.mode === 'all' ? 'all' : 'any', slots:e.slots.map(cleanSlot) };
         var o = []; stagesErr([sd], T('段','Step'), o); if (!e.err && o.length) e.err = o[0];
         q.stage = e.stage; q.def = sd;
-      } else if (e.op === 'remove_stage') q.stage = e.stage;
+      } else if (e.op === 'remove_stage') { q.stage = e.stage; var rt0 = r.route || {}; if (!e.err && (rt0.stages || []).length - (rt0.cur || 1) < 1) e.err = T('承認の済んでいない段を 1 つは残します（例外で最終承認にはしません）','At least one unfinished step must remain'); }
       else if (e.op === 'add_viewer') { if (!e.who && !e.err) e.err = T('閲覧者を選んでください','Choose a viewer'); q.who = e.who ? cleanSlot(e.who) : null; q.from = e.from || 'submit'; }
       else { if (!(r.route.viewers || []).length && !e.err) e.err = T('閲覧者はいません','No viewers'); q.viewer = e.viewer || 1; }
       if (e.err) { paintEx(r.id); return; }
@@ -116576,6 +116603,14 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
           : err && err.code === 'forbidden' ? T('自分の申請の承認者は変えられません','You cannot change the approvers of your own request') : errMsg(err); paintEx(r.id); });
     }
   };
+  /* 有効にする・捨てるが通らなかったとき：画面を閉じずに最新を読み直し、メモは残す（赤い行を見て直せるように） */
+  function reopenKeepNote(kind, note){
+    A.load = 'loading'; paint(); var k0 = A.k0;
+    api({ action:'ar_state' }, k0).then(function(j){
+      if (k0 !== A.k0) return; A.st = j; A.load = 'done';
+      var fr = edFrom(kr(kind)); fr.note = note || ''; A.ed = fr; paint();
+    }, function(er){ A.load = 'err'; A.err = errMsg(er); paint(); });
+  }
   function keepAndReload(kind){
     var mine = A.ed; A.load = 'loading'; var k0 = A.k0;
     api({ action:'ar_state' }, k0).then(function(j){
@@ -116586,6 +116621,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
 
   W.arRouteCard = routeCard;
   W.arLabel = svL;
+  W.arAfter = arAfter;
   W.FUNERGY_AR = { render:render, h:h, _A:function(){ return A; }, _defErrors:defErrors, _cleanDef:cleanDef };
 })();
 /* ==== FUNERGY_AR end ==== */
