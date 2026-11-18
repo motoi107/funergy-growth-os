@@ -216,11 +216,74 @@ test('when another device keeps saving newer settings while this one sends, it s
   assert.ok(!B.TOASTS.some(x => x[1] === 'success'), 'no "saved"');
   assert.match(B.MSG.textContent, /ほかの端末が同じころに別の FUNERGY TIMES の設定を保存したため/);
   assert.equal(run(B, 'timesCfg().title'), 'C3');
+  assert.match(B.MSG.textContent, /この保存は履歴に残しません/);
+  assert.deepEqual(titles(await cloudOf(db, 'funergy_times')), ['10月号', 'C1', 'C2', 'C3'], 'PR #194 Codex P3: a save that never became current is not shown as an earlier setting');
+  assert.ok(!run(B, 'timesCfg().hist').some(h => h.title === '設定B'));
   B.hold = null;
   assert.equal(await run(B, 'saveTimesSettings()'), true, 'pressing again (same form) wins');
   assert.equal(B.CLOSED, 1);
   const cloud = await cloudOf(db, 'funergy_times');
-  assert.deepEqual(titles(cloud), ['10月号', 'C1', 'C2', 'C3', '設定B'], 'one record for B (the same id), nothing lost');
+  assert.deepEqual(titles(cloud), ['10月号', 'C1', 'C2', 'C3', '設定B'], 'one record for B (the losing save was taken out of the history), nothing lost');
   for (const d of [B, C]) { await pullTo(d, db); assert.equal(run(d, 'timesCfg().title'), '設定B'); }
   await db.close();
+});
+
+// PR #194・#195 の Codex（fdbdc1f の 6986520267・31bed6e の 6986713362 の P2）：時計が 1 日進んだ A の保存をまだ受け取っていない B が保存し、
+// 送る道が合流した値を B の端末に書き戻せない（_opWriteBack の書き込みが断られる）。前は B の端末の写しだけで「今の設定か」を見たので、
+// クラウドの今の設定は A のままなのに「保存しました」と出て閉じた。いまはクラウドの行で確かめ、A より後の順で付け直してから「保存しました」。
+test('when the merged value cannot be written back to this device, "saved" is decided from the cloud row, not from the local copy', async () => {
+  const db = await cloudDb();
+  await putState(db, 'funergy_times', OLD);
+  const A = timesDevice(db, 'ceo', 'CEO Taro'), B = timesDevice(db, 'gm', 'GM Hana');
+  for (const d of [A, B]) d.S.funergy_times = await cloudOf(db, 'funergy_times');
+  assert.equal(await saveOn(A, '設定A', 'https://times.funergygroup.com/a', Date.UTC(2026, 10, 19, 2)), true);
+  B._lsWriteVerified = () => false;   // この端末にもう書けない（容量など）：合流した値の書き戻しだけが断られる
+  const res = await saveOn(B, '設定B', 'https://times.funergygroup.com/b', Date.UTC(2026, 10, 18, 2));
+  const cloud = await cloudOf(db, 'funergy_times');
+  const current = Object.values(cloud).filter(e => e && !e._deleted).sort((x, y) => y.at - x.at)[0];
+  if (res === true) {
+    assert.equal(current.title, '設定B', '"saved" only when B is the current setting in the cloud');
+    assert.ok(B.TOASTS.some(x => x[1] === 'success'));
+  } else {
+    assert.equal(B.CLOSED, 0, 'the form stays open');
+    assert.ok(!B.TOASTS.some(x => x[1] === 'success'), 'no "saved"');
+  }
+  assert.equal(res, true, 'B re-sends ordered after A and becomes current');
+  assert.deepEqual(titles(cloud), ['10月号', '設定A', '設定B'], 'nothing lost, B is one record');
+  const rec = Object.values(cloud).find(e => e.title === '設定B');
+  assert.equal(rec.saved, Date.UTC(2026, 10, 18, 2), 'the time shown is when B pressed, not the order value');
+  assert.ok(rec.at > Object.values(cloud).find(e => e.title === '設定A').at, 'ordered after A');
+  await db.close();
+});
+
+test('when the cloud row cannot be read back after sending, it does not say "saved"; the form stays and pressing again checks again', async () => {
+  const db = await cloudDb();
+  await putState(db, 'funergy_times', OLD);
+  const B = timesDevice(db, 'gm', 'GM Hana');
+  B.S.funergy_times = await cloudOf(db, 'funergy_times');
+  const real = B.fetch; let failReads = 1;
+  B.fetch = async (url, o = {}) => {   // 送ったあとの確かめ（値だけの読み＝select=value）を 1 回だけ失敗させる
+    if (((o && o.method) || 'GET') === 'GET' && /select=value$/.test(url) && failReads > 0) { failReads--; return { ok: false, status: 503, json: async () => ({}) }; }
+    return real(url, o);
+  };
+  assert.equal(await saveOn(B, '設定B', 'https://times.funergygroup.com/b', Date.UTC(2026, 10, 18, 2)), false);
+  assert.equal(B.CLOSED, 0);
+  assert.ok(!B.TOASTS.some(x => x[1] === 'success'), 'no "saved"');
+  assert.match(B.MSG.textContent, /今の設定になったかを確かめられませんでした/);
+  assert.deepEqual(titles(await cloudOf(db, 'funergy_times')), ['10月号', '設定B'], 'it was sent');
+  assert.equal(await run(B, 'saveTimesSettings()'), true, 'pressing again confirms it');
+  assert.equal(B.CLOSED, 1);
+  assert.deepEqual(titles(await cloudOf(db, 'funergy_times')), ['10月号', '設定B'], 'still one record (the same id)');
+  await db.close();
+});
+
+test('the shown change time is the real save time even when the order value is ahead (a fast-clock device saved before)', () => {
+  const c = timesDevice(null, 'gm', 'GM Hana');
+  const pressed = Date.UTC(2026, 10, 18, 2), ahead = Date.UTC(2026, 10, 19, 3);
+  c.S.funergy_times = { x1: { url: 'https://times.funergygroup.com/x', title: 'X', month: '', cover: '', by: 'GM Hana', at: ahead, saved: pressed, _at: ahead } };
+  const cfg = run(c, 'timesCfg()');
+  assert.equal(cfg.saved, pressed);
+  const html = fnSrc('openTimesSettings');
+  assert.match(html, /h\.saved/, 'the history uses the save time');
+  assert.match(SRC, /new Date\(\(typeof c\.saved==='number'&&isFinite\(c\.saved\)&&c\.saved\)\?c\.saved:c\.at\)/, 'the My Page card uses the save time');
 });

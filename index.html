@@ -23088,8 +23088,10 @@ function timesCfg(){
   var str = function(v, n){ return (typeof v==='string') ? v.trim().slice(0, n) : ''; };
   var month = str(c.month, 7); if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) month = '';
   var at = (typeof c.at==='number' && isFinite(c.at)) ? c.at : 0;
+  /* saved：この端末で押した時刻（画面に出す日時）。at は今の設定を決める順で、時計の進んだ端末のあとは今より先になることがある */
+  var saved = (typeof c.saved==='number' && isFinite(c.saved) && c.saved > 0) ? c.saved : 0;
   return { url: timesSafeUrl(c.url), title: str(c.title, 80), month: month, cover: c.cover ? timesHostOk(c.cover) : '',
-           by: str(c.by, 60), at: at, hist: log.slice(1, 11), urlBad: !!(c.url && !timesHostOk(c.url)) };
+           by: str(c.by, 60), at: at, saved: saved, hist: log.slice(1, 11), urlBad: !!(c.url && !timesHostOk(c.url)) };
 }
 function timesMonthLabel(m){ if (!m) return ''; var p = m.split('-'); return (typeof curLang!=='undefined' && curLang==='en') ? (p[1]+'/'+p[0]) : (p[0]+'年'+Number(p[1])+'月号'); }
 /* マイページの入口（全員）。リンクは timesCfg が通したアドレスだけ */
@@ -23118,7 +23120,7 @@ function timesSettingsCardHtml(){
     <div style="font-size:12.5px;word-break:break-all"><i class="ti ti-link" style="color:var(--muted)"></i> ${escapeHtml(c.url)}</div>
     ${c.urlBad ? `<div style="font-size:11.5px;color:var(--yellow);font-weight:700;margin-top:4px"><i class="ti ti-alert-triangle"></i> ${t('保存されているアドレスは使えない形なので、既定のアドレスを開いています。','The saved address is not allowed, so the default address opens instead.')}</div>` : ''}
     ${(c.title||c.month) ? `<div style="font-size:12px;margin-top:4px">${escapeHtml(c.title)}${c.month?' · '+escapeHtml(timesMonthLabel(c.month)):''}</div>` : ''}
-    ${c.at ? `<div style="font-size:11px;color:var(--muted);margin-top:4px">${t('最後の変更','Last change')}：${escapeHtml(c.by||'—')} · ${new Date(c.at).toLocaleString(typeof langDateLocale==='function'?langDateLocale():'ja-JP')}</div>` : ''}
+    ${(c.saved||c.at) ? `<div style="font-size:11px;color:var(--muted);margin-top:4px">${t('最後の変更','Last change')}：${escapeHtml(c.by||'—')} · ${new Date((typeof c.saved==='number'&&isFinite(c.saved)&&c.saved)?c.saved:c.at).toLocaleString(typeof langDateLocale==='function'?langDateLocale():'ja-JP')}</div>` : ''}
     <button class="btn btn-secondary btn-sm" style="margin-top:8px" onclick="openTimesSettings()"><i class="ti ti-edit"></i> ${t('変更','Edit')}</button>
   </div>`;
 }
@@ -23132,7 +23134,7 @@ function openTimesSettings(){
   var hist = c.hist.map(function(h){
     if (!h || typeof h!=='object') return '';
     return '<div style="font-size:11px;color:var(--muted);padding:3px 0;border-top:1px solid var(--border)">'
-      + escapeHtml(typeof h.by==='string'?h.by:'—') + ' · ' + (typeof h.at==='number' && h.at ? escapeHtml(new Date(h.at).toLocaleString(typeof langDateLocale==='function'?langDateLocale():'ja-JP')) : '—')
+      + escapeHtml(typeof h.by==='string'?h.by:'—') + ' · ' + (function(){ var w = (typeof h.saved==='number' && isFinite(h.saved) && h.saved) ? h.saved : h.at; return (typeof w==='number' && w) ? escapeHtml(new Date(w).toLocaleString(typeof langDateLocale==='function'?langDateLocale():'ja-JP')) : '—'; })()
       + '<br>' + escapeHtml(typeof h.url==='string'?h.url:'') + (h.title ? ' · ' + escapeHtml(String(h.title).slice(0,80)) : '') + '</div>';
   }).join('');
   openModal(`<div class="modal-title"><i class="ti ti-news"></i> FUNERGY TIMES <button class="modal-close" onclick="closeModalDirect()">×</button></div>
@@ -23167,32 +23169,53 @@ async function saveTimesSettings(){
   if (!_tmSave.id) _tmSave.id = timesNewId();
   /* PR #194 の Codex（c9bdce8・2bdd2c1 の P2）：前は保存の順（at）をこの端末の写しだけから決めたので、時計の遅い端末が古い写しのまま保存すると、
      クラウドの合流のあとも時計の進んだ端末の前の設定が「今の設定」のままで、それでも「保存しました」と出ていた。
-     → 送ったあとの合流した値（opMergePush がこの端末に書き戻す）で、この保存が今の設定になったかを確かめる。なっていなければ、
-     合流で分かったいちばん新しい設定より後の順で付け直して送り直す（3 回まで）。それでもほかの端末が後から保存し続けたら、
-     「保存しました」とは出さず、画面と入力を残して知らせる（もう一度押すと同じ記録を新しい順で送り直す＝二重にならない） */
+     → 送ったあとクラウドの行を読んで、この保存が今の設定になったかを確かめる（下の Codex の P2）。なっていなければ、
+     クラウドで分かったいちばん新しい設定より後の順で付け直して送り直す（3 回まで）。それでもほかの端末が後から保存し続けたら、
+     「保存しました」とは出さず、画面と入力を残して知らせる（この保存は履歴に残さない。もう一度押すと新しい記録で送る＝二重にならない） */
   var id = _tmSave.id;
   var entry = { url: url, title: gv('tm-title').slice(0, 80), month: month, cover: cover,
     by: String(curUserName || ((ROLE_CONFIG[curRole]||{}).name || curRole)).slice(0, 60) };
   _tmSave.busy = true;
   var btn = document.getElementById('tm-save'); if (btn) btn.disabled = true;
   timesSaveMsg('', '');
-  var P = (typeof _lsPushP!=='undefined' && _lsPushP) ? _lsPushP : null, okLocal = false, r, cur = null, tries = 0;
+  var P = (typeof _lsPushP!=='undefined' && _lsPushP) ? _lsPushP : null, okLocal = false, r, cur = null, tries = 0, cloud = null, cloudRead = true;
+  /* PR #194・#195 の Codex（fdbdc1f・31bed6e の P2）：前は今の設定かを「この端末の写し」で確かめた。送る道が合流した値をこの端末に書き戻せなかったとき
+     （_opWriteBack は書けなくても進む）、写しはこの保存だけのままなので、クラウドではほかの端末の設定が今のままでも「保存しました」と出ていた。
+     → 送り終えたら、クラウドの行そのもの（合流させない読み方）を読んで確かめる。読めなければ「保存しました」とは出さない（入力は残す）。
+     送り直すときの順も、この端末の写しとクラウドの行の両方から決める（書き戻せない端末でも、クラウドのいちばん新しい設定より後にする） */
   while (true) {
     tries++;
     var now = Date.now();
-    var raw = ls('funergy_times', null), map = timesMapOf(raw), newest = timesLogOf(raw).filter(function(e){ return e.id !== id; })[0];
+    var map = timesMapOf(ls('funergy_times', null));
+    if (cloud) { var cm = timesMapOf(cloud); Object.keys(cm).forEach(function(k){ var a = cm[k], b = map[k]; if (k !== id && a && typeof a==='object' && (!b || (Number(a._at)||0) > (Number(b._at)||0))) map[k] = a; }); }
+    var newest = timesLogOf(map).filter(function(e){ return e.id !== id; })[0];
     var at = Math.max(now, ((newest && newest.at) || 0) + 1);
-    map[id] = Object.assign({}, entry, { at: at, _at: Math.max(at, ((map[id] && map[id]._at) || 0) + 1) });
+    /* at は今の設定を決める順（ほかの端末の時計が進んでいると今より先になる）。画面に出す日時は、この端末で押した時刻（saved） */
+    map[id] = Object.assign({}, entry, { at: at, saved: now, _at: Math.max(at, ((map[id] && map[id]._at) || 0) + 1) });
     try { if (P) delete P['funergy_times']; } catch(e) {}
     try { okLocal = lsSet('funergy_times', map) !== false; } catch(e) { okLocal = false; }
     try { r = P && P['funergy_times'] ? await P['funergy_times'] : undefined; } catch(e) { r = false; }
-    if (r !== true || !okLocal) break;   /* 届いていない／この端末に書けなかった（合流の値を読めないので確かめない＝前と同じ） */
-    cur = timesLogOf(ls('funergy_times', null))[0] || null;
-    if ((cur && cur.id === id) || tries >= 3) break;
+    if (r !== true) break;   /* 届いていない */
+    var cv; try { cv = await _fetchOpValue('funergy_times', 'app_state', true); } catch(e) { cv = undefined; }
+    if (cv === undefined) { cloudRead = false; break; }
+    cloud = cv; cur = timesLogOf(cv)[0] || null;
+    if ((cur && cur.id === id) || tries >= 3 || !okLocal) break;
   }
   _tmSave.busy = false; if (btn) btn.disabled = false;
-  if (r === true && okLocal && !(cur && cur.id === id)) {
-    timesSaveMsg(t('クラウドには届きましたが、ほかの端末が同じころに別の FUNERGY TIMES の設定を保存したため、今の設定はそちらになっています。この設定にするには、もう一度押してください','It reached the cloud, but another device saved different FUNERGY TIMES settings at about the same time, so those are current. Press again to make these the current settings'), 'warning');
+  if (r === true && !cloudRead) {
+    timesSaveMsg(t('クラウドには送りましたが、今の設定になったかを確かめられませんでした（読み直せませんでした）。入力はそのままです。もう一度押すと同じ設定を送り直して確かめます','It was sent to the cloud, but we could not confirm it is now the current setting (could not read it back). Your input is kept. Press again to resend the same setting and check'), 'warning');
+    return false;
+  }
+  if (r === true && !(cur && cur.id === id)) {
+    /* PR #194 の Codex（fdbdc1f の P3）：今の設定にならなかった保存は、前の設定として履歴に出さない（自分の記録に消した印）。
+       もう一度押したときは新しい記録で送る（消した印は合流でいつも勝つので、同じ記録は使い直せない） */
+    try {
+      var tm = timesMapOf(ls('funergy_times', null)), mine = tm[id];
+      tm[id] = { _deleted: true, _at: Math.max(Date.now(), ((mine && mine._at) || 0) + 1) };
+      _tmSave.id = null;
+      if (lsSet('funergy_times', tm) !== false && P && P['funergy_times']) { try { await P['funergy_times']; } catch(e) {} }
+    } catch(e) {}
+    timesSaveMsg(t('クラウドには届きましたが、ほかの端末が同じころに別の FUNERGY TIMES の設定を保存したため、今の設定はそちらになっています（この保存は履歴に残しません）。この設定にするには、もう一度押してください','It reached the cloud, but another device saved different FUNERGY TIMES settings at about the same time, so those are current (this save is not kept in the history). Press again to make these the current settings'), 'warning');
     return false;
   }
   if (r === true) {
@@ -46178,10 +46201,14 @@ function _tipCreditCellClick(storeId, date){
 }
 function renderTipPeriodMatrix(storeId, store, info){
   var M = tipPeriodMatrix(storeId, info);
+  var _payHide = payDetailHidden();   /* v1191：経理・事務Crew には個人の配分額を出さない（①〜④と配分合計は出す） */
+  /* v1191（11/18 の画面の確かめ）：理由の一行は表の外（上）に出す。表の中の 1 行（colspan と sticky）だと、PC で名前の列が細くなり ① などの見出しが折れて ④ の行に重なった（画面の確かめで見つけた）。
+     スマホ（1 日ずつ）は今までどおりカードの下に出す。セルを押して Tip 対象外にする案内は、押せない人には出さない */
+  var _payNoteTop = (_payHide && !(typeof u9Mode === 'function' && typeof u11TipDay === 'function' && u9Mode() === 'sp')) ? payDetailNoteHtml() : '';
   var md = function(d){ return d.slice(5).replace('-','/'); };
   /* v1187：No Tip を決めるための勤怠を読み込み中（読み終えると描き直す。そのあいだは仮の額・確定と出力はしない） */
   var _ntBan = M.pending ? `<div class="card" style="border-left:3px solid var(--yellow);padding:10px 12px;margin-bottom:10px;font-size:12px;line-height:1.6"><i class="ti ti-loader"></i> <b>${t('No Tip を決めるための勤怠を読み込んでいます','Loading time records to decide No Tip')}</b><br><span style="color:var(--muted)">${t('入ったばかりの人の、初回勤務日からの勤怠を読んでいます。読み終えるまでの額は仮です（読み終えると変わることがあります）。このあいだは確定・出力をしません。','Reading time records from the first work day for new staff. Amounts are provisional until loaded and may change. Finalizing and exports wait until then.')}${(()=>{ var ns={}; M.dists.forEach(function(x){ (x.dist.pendingNames||[]).forEach(function(n){ ns[n]=1; }); }); var a=Object.keys(ns); return a.length ? '<br>'+t('対象：','For: ')+a.map(function(n){ return escapeHtml(n); }).join(t('、',', ')) : ''; })()}</span></div>` : '';
-  var html = _ntBan + `<div class="card"><div class="card-title"><i class="ti ti-table"></i>${t('配分表（日次 L/D）','Distribution (daily L/D)')}<span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">${info.rangeLabel}</span></div><div style="font-size:10.5px;color:var(--muted);margin:-2px 0 6px"><i class="ti ti-hand-finger"></i> ${t('各スタッフのセルをタップすると、そのシフトをTip対象外にできます（除外分は他スタッフへ自動再配分）。','Tap a staff cell to exclude that shift from tips (the excluded amount is auto-redistributed to others).')}${_tipCashCanEdit(storeId)?t('　<b>「③ キャッシュ」の欄は直接入力できます</b>（空欄は 0 として計算し、翌日に自動で 0 を保存）。','　<b>You can type cash tips directly in the “③ Cash” row</b> (a blank counts as 0 and is saved as 0 the next day).'):''}</div>`;
+  var html = _ntBan + `<div class="card"><div class="card-title"><i class="ti ti-table"></i>${t('配分表（日次 L/D）','Distribution (daily L/D)')}<span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">${info.rangeLabel}</span></div><div style="font-size:10.5px;color:var(--muted);margin:-2px 0 6px">${_payHide?'':'<i class="ti ti-hand-finger"></i> '+t('各スタッフのセルをタップすると、そのシフトをTip対象外にできます（除外分は他スタッフへ自動再配分）。','Tap a staff cell to exclude that shift from tips (the excluded amount is auto-redistributed to others).')}${_tipCashCanEdit(storeId)?t('　<b>「③ キャッシュ」の欄は直接入力できます</b>（空欄は 0 として計算し、翌日に自動で 0 を保存）。','　<b>You can type cash tips directly in the “③ Cash” row</b> (a blank counts as 0 and is saved as 0 the next day).'):''}</div>${_payNoteTop}`;
   if (!M.names.length){
     html += `<div style="text-align:center;color:var(--muted);padding:18px">${t('この期間の配分データがありません。「日別」で各日のTip・勤怠を確認してください。','No distribution data for this period. Check each day\'s tips/labor in the Daily tab.')}</div></div>`;
     return html;
@@ -46330,8 +46357,7 @@ function renderTipPeriodMatrix(storeId, store, info){
     return ' <span title="'+((used && used.length)?t('この期間の配分に使った率（評価係数の日は係数を % で）','Rate used for this period (coefficient days as %)'):'Tip Rate')+'" style="font-size:9px;font-weight:700;color:'+rc+';border:1px solid '+rc+';border-radius:3px;padding:0 3px;margin-left:2px;white-space:nowrap;vertical-align:middle">'+lb+'</span>';
   }
   // 従業員ごと
-  var _payHide = payDetailHidden();   /* v1191：経理・事務Crew には個人の配分額を出さない（①〜④と配分合計は出す） */
-  if (_payHide) html += `<tr><td colspan="${2+M.dists.length*2}" style="${stick}">${payDetailNoteHtml()}</td></tr>`;
+  /* v1191：経理・事務Crew には個人の配分額を出さない（理由の一行は表の上） */
   if (!_payHide) M.names.forEach(function(nm){
     var ptot=0, cells='';
     M.dists.forEach(function(x){
