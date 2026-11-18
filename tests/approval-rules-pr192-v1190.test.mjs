@@ -19,7 +19,7 @@ test('v1190 PR #192 fix 1: a discarded draft keeps its version number — an old
   assert.deepEqual(k1.history.map(h => [h.ver, h.status]), [[seen.ver, 'discarded']], 'the discarded draft stays in the history');
   const re = await s.ok('E1', { action: 'ar_rule_save', kind: 'plan', def: { default: { stages: [STAGE(C)] } }, expect_ver: 0, expect_rev: 0, base_ver: 0, note: '作り直し' });
   assert.equal(re.draft.ver, seen.ver + 1, 'the new draft gets a new version number (before: the same number and count again)');
-  assert.equal(re.draft.rev, 1);
+  assert.ok(re.draft.rev > seen.rev && re.draft.rev > 1000000, 'and a count no earlier draft of the kind had');
   // 画面 A（古い版と回数）：どれも 409・何も変わらない
   for (const op of ['ar_rule_activate', 'ar_rule_discard']) {
     const x = await s.call('E2', { action: op, kind: 'plan', expect_ver: seen.ver, expect_rev: seen.rev, note: '古い画面' });
@@ -30,7 +30,7 @@ test('v1190 PR #192 fix 1: a discarded draft keeps its version number — an old
   const st2 = await s.state(); const k2 = st2.kinds.find(k => k.kind === 'plan');
   assert.equal(k2.active, undefined, 'nothing was activated');
   assert.deepEqual(k2.draft.def, { default: { stages: [STAGE(C)] } }, 'the new draft is unchanged');
-  assert.equal(k2.draft.rev, 1);
+  assert.equal(k2.draft.rev, re.draft.rev);
   // 捨てた版の番号は使い直さない（もう一度捨てて作っても番号は進む）・有効にできるのは今の下書きだけ
   await s.ok('E2', { action: 'ar_rule_discard', kind: 'plan', expect_ver: k2.draft.ver, expect_rev: k2.draft.rev });
   const re2 = await s.ok('E2', { action: 'ar_rule_save', kind: 'plan', def: { default: { stages: [STAGE(G)] } }, expect_ver: 0, expect_rev: 0, base_ver: 0, note: '3 回目' });

@@ -354,4 +354,3 @@ test('PR #192: "remove a step" stops on screen when only one unfinished step is 
   assert.match(gm.dom.els['ar-ex'].innerHTML, /承認の済んでいない段を 1 つは残します/);
   assert.equal(((await W.fresh(r)).route.ex || []).length, 0);
 });
-
