@@ -3,7 +3,7 @@
 ## 2026-11-17 v1188（UI案76・UI案91）とログイン（UI案92）
 
 1. 済（Moto さん 11/17 12:27 HST）：UI案76「全部A」・UI案91「A」。済（Claude・ブランチ `claude/pl-trend-1188`）：v1188（アプリだけ・`docs/PL_TREND_V1188_JA.md`）。済：PR #189（全体の試験は main と同じ失敗だけ）。済（Claude 11/17）：Codex（6964022211・blocked）の P2 2（区分の保存が送信を待たずに成功と出す・同じ科目の同時保存で先の区分が消える）と P3（表を毎回解く・比べの元の SHA）を直した（`docs/PL_TREND_V1188_JA.md` の 8）。次：Codex の再レビュー → Moto さんがマージ → GM・CEO・経理の端末を 1188 に → 推移のタブで要分類の科目を決める。
-2. 済（Moto さん 11/17 12:38 HST）：ログインの UI案92 の答え（共有記録の v1188 の節）。済（Claude・ブランチ `claude/passkey-login-1189`）：v1189（SQL `20261208090000`・関数 device-login・アプリ・`docs/PASSKEY_LOGIN_V1189_JA.md`・入れる一式 `deploy/passkey-login-v1189/`・試験 server 12・app 14・deploy 5・Chrome 38/38）。次（Moto さん）：v1186 の device-login の非公開の 1 ファイル（`cf1ddd633901`）をもう一度添付 → Claude が v1189 の 1 ファイルを作る。次：Codex → #189 → この PR → Moto さんが手順.md（Supabase のパスキーの設定・Google Cloud のリダイレクト URI・送り手の SQL）→ 全部の端末を 1189 に → GM が送り手をつなぐ → 1 人で試す。そのあと (b) RLS の 1 段目。メールのアドレスはリポジトリに書かない。
+2. 済（Moto さん 11/17 12:38 HST）：ログインの UI案92 の答え（共有記録の v1188 の節）。済（Claude・ブランチ `claude/passkey-login-1189`）：v1189（SQL `20261208090000`・関数 device-login・アプリ・`docs/PASSKEY_LOGIN_V1189_JA.md`・入れる一式 `deploy/passkey-login-v1189/`・試験 server 12・app 14・deploy 5・Chrome 38/38）。済（11/17 16:05 HST）：v1186 の 1 ファイルの添付 → Claude が v1189 の 1 ファイル（`6a062ac39d27`）を作って直接渡した（非公開の試験は共有記録）。次：Codex → #189 → この PR → Moto さんが手順.md（Supabase のパスキーの設定・Google Cloud のリダイレクト URI・送り手の SQL）→ 全部の端末を 1189 に → GM が送り手をつなぐ → 1 人で試す。そのあと (b) RLS の 1 段目。メールのアドレスはリポジトリに書かない。
 3. 前から：12/1 より前にチップ管理を開く端末を 1187 に。v1186 の ②③ と実機。① の 9・10 の表は会話にだけ。
 
 ## 2026-11-17 引き継ぎの a〜d（Moto さん「全部一気に進めてください」）
