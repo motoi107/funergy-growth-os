@@ -103,4 +103,13 @@ v1191 で個人の給与は画面と出力から外したが、emp-private v1186
 - `tests/labor-totals-deploy-v1192.test.mjs` 3：1 ファイルが今のソースから作ったものと同じ・読み込める（同じ名前の宣言が無い：`node --check`）・モジュールの handler と同じ答え・戻すときの v1152 の 1 ファイルは変わらない・emp-private のソースがリポジトリに無い。
 - わざと壊す：14 通り（サーバー 5・アプリ 9）。どれも試験が落ちる。
   - 1 回目に落ちなかった「答えに無い日を端末の計算に戻す」は、0 を返す確かめを足した。
-- emp-private v1192（非公開）の試験は Claude の手元だけ（このリポジトリには無い）。
+- emp-private v1192（非公開）の試験は Claude の手元だけ（このリポジトリには無い）：4 件すべて成功。
+  - 経理・AM は全員の連絡先と月給の印だけ・本人の行は全部・時給を読むのは本人の行だけ。
+  - CEO・GM は今までどおり（行の形も v1186 と同じ）。スタッフは本人だけ・退職した人と壊れた印は 401。
+  - 経理の保存は、前の版のアプリが時給を送ってきても連絡先だけを変える（時給・月給は変わらない・新しい人は時給 0 で作る＝前と同じ）。
+  - AM とスタッフは保存できない。
+  - v1186 の 1 ファイルでは、新しい 2 つ（読む範囲・経理の保存）が落ちる。PIN とログインの印の確かめ（`callerOf`）は v1186 と 1 文字も同じ。
+- 全体（重い 2 つ以外・4 並列）：3,351 件のうち 44 件が落ちる。
+  - 2 件はこの版の試験の不具合だった。`email-login-app`・`save-status-v1137` は給与の保存を取り出して動かすので、新しい `empPrivSaveMode` も読み込むようにした。`labor-totals-v1192` の 1 件は、合成データで休みの月曜を「働いた日」として確かめていた（火曜に直した）。直したあと 3 つとも単独で通る。
+  - 残りは main（`29985b6`）でも同じ数で落ちるファイル（bot-center・bot-database・cooking-sake・cs-card-icons・cs-grade-rollback・cs-grade-view・cs-strengths・ingredient-transfers・meeting-budget・meeting-sales・next-v1090・perf-v1098・specialist-career・toast-alias）か、4 並列のときだけ落ちて単独では main でもこの版でも通るファイル（approval-rules-deploy-v1190・chat-deploy-v1156・kpi-sysacct-noid-v1188）。
+- PR #194 の 2 回目のレビューの直し（`fdbdc1f`）を取り込んだあと、関係する 7 ファイル 141/141・static release pass/1192・2 つの作り直しの確かめも成功。
