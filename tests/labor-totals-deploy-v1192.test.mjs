@@ -9,17 +9,20 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { build, withoutTail, OUT, TAIL } from '../scripts/build-secure-state-one.mjs';
+import { withoutTail, TAIL } from '../scripts/build-secure-state-one.mjs';
 import { createHandler } from '../supabase/functions/secure-state/handler.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const rd = p => fs.readFileSync(path.join(ROOT, p), 'utf8');
 const sha = p => crypto.createHash('sha256').update(fs.readFileSync(path.join(ROOT, p))).digest('hex');
 const D = 'deploy/labor-totals-v1192/';
+// v1193 から build() は deploy/page-view-v1193/ に書く。v1192 の 1 ファイルは Moto さんに渡したときのまま（sha256 で固定）
+const ONE = D + '4_関数_secure-state_index.ts';
+const ONE_SHA = '86df77ff4a2d66b83574eab2ffab76687dacddcee5776aa848581382a12bdb6c';
 
-test('the one-file secure-state is built from the current sources and has no private part', () => {
-  const one = rd(OUT);
-  assert.equal(one, build(), 'run node scripts/build-secure-state-one.mjs');
+test('the one-file secure-state (v1192) is the file given to Moto and has no private part', () => {
+  const one = rd(ONE);
+  assert.equal(sha(ONE), ONE_SHA, 'the v1192 one file stays as it was given');
   assert.ok(one.endsWith(TAIL));
   assert.ok(!/^import\s/m.test(one), 'no import left');
   assert.ok(!/verifyPin/.test(one), 'no private part');
@@ -33,7 +36,7 @@ test('the one-file secure-state answers the same as the module handler', async (
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ss-one-test-'));
   try {
     const f = path.join(dir, 'one.mjs');
-    fs.writeFileSync(f, withoutTail(rd(OUT)));
+    fs.writeFileSync(f, withoutTail(rd(ONE)));
     const mod = await import(pathToFileURL(f).href);
     assert.equal(typeof mod.createHandler, 'function');
     const URL0 = 'https://db.example.test', SS = URL0 + '/functions/v1/secure-state';
@@ -65,13 +68,14 @@ test('the one-file secure-state answers the same as the module handler', async (
     const a = await ask(mod.createHandler({ env, fetch: fetchStub, now }));
     const b = await ask(createHandler({ env, fetch: fetchStub, now }));
     assert.equal(a[0], 200);
+    delete b[1].pvfn;   // v1193 の handler は答えに pvfn:1 も付ける（v1192 の 1 ファイルは付けない）
     assert.deepEqual(a, b);
     assert.ok(a[1].r['F01|2026-11'].p.hourly > 0 && a[1].r['F01|2026-11'].p.salary > 0);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
 test('the SQL files are byte-for-byte copies of the migration and the db files', () => {
-  assert.equal(OUT, D + '4_関数_secure-state_index.ts');
+  assert.ok(fs.existsSync(path.join(ROOT, ONE)));
   for (const [a, b] of [['1_確かめ_読むだけ.sql', 'db/md-all-viewers-gm-precheck.sql'], ['1b_止まったときだけ_写しを捨てる.sql', 'db/md-all-viewers-gm-discard.sql'],
                         ['2_SQL_全店を見る人を守る.sql', 'supabase/migrations/20261210090000_md_all_viewers_gm.sql'],
                         ['3_確かめ_読むだけ.sql', 'db/md-all-viewers-gm-postcheck.sql'], ['戻す_SQL.sql', 'db/md-all-viewers-gm-rollback.sql']])
