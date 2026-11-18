@@ -22,8 +22,11 @@ const PAY_FNS = ['salaryDisplayOn', 'salaryVisibleToMe', 'canViewIndividualWage'
   'payDetailHidden', 'payDetailMsg', 'payDetailBlocked', 'payDetailNoteHtml'];
 const ROLES = ['ceo', 'gm', 'office', 'office_crew', 'am', 'chef', 'g4', 'sl', 'g2', 'crew'];
 const ACCT = ['office', 'office_crew'];
-const NOTE_JA = '給与のため、CEO・GM だけが見て出力します';
-const NOTE_EN = 'only the CEO and GM see and export them';
+// PR #194 の Codex（2bdd2c1）：止めている範囲どおりの 3 つの文（店の画面の Tip・手当は今までどおりなので「CEO・GM だけ」とは言わない）
+const NOTE_JA = '経理・事務Crew には出さず、出力もしません';
+const NOTE_EN = 'not shown to or exported by accounting and office crew';
+const NOTE_HQ_JA = '本部シフトインの個人の額と給与のまとめは、CEO・GM だけが見て出力します';
+const NOTE_OUT_JA = 'ここからは出力しません（CEO・GM が出力します';
 
 // Synthetic people (no real staff names) and amounts.
 const A = 'Aki Sample', B = 'Ben Sample', C = 'Cai Trainee';
@@ -67,17 +70,22 @@ test('role rule: per-person pay is hidden from accounting and Office Crew only; 
     // loose check (tip / shift leader exports): blocks accounting only, with a notice
     assert.equal(run(c, 'payDetailBlocked()'), ACCT.includes(r), r + ' blocked (loose)');
     assert.equal(c.TOASTS.length, ACCT.includes(r) ? 1 : 0, r + ' notice (loose)');
+    if (ACCT.includes(r)) assert.ok(c.TOASTS[0].includes(NOTE_JA), r + ': the tip wording');
     // strict check (HQ shift-in, the accounting book): only the CEO and GM pass
     c.TOASTS.length = 0;
     const strict = !(r === 'ceo' || r === 'gm');
     assert.equal(run(c, 'payDetailBlocked(true)'), strict, r + ' blocked (strict)');
     assert.equal(c.TOASTS.length, strict ? 1 : 0, r + ' notice (strict)');
+    if (strict) assert.ok(c.TOASTS[0].includes(NOTE_HQ_JA), r + ': the HQ wording (not "accounting only")');
   }
   // the company-wide "hide pay" switch does not open anything for accounting
   assert.equal(run(app('office', { salaryOn: false }), 'payDetailHidden()'), true);
   assert.equal(run(app('gm', { salaryOn: false }), 'canViewIndividualWage()'), true);
   // the notice says why, in both languages
   assert.ok(run(app('office'), 'payDetailNoteHtml()').includes(NOTE_JA));
+  assert.ok(!run(app('office'), 'payDetailNoteHtml()').includes('CEO・GM だけ'), 'the tip note does not say "CEO/GM only" (store screens still show tip and allowance)');
+  assert.ok(run(app('office'), "payDetailNoteHtml('hq')").includes(NOTE_HQ_JA));
+  assert.ok(run(app('office'), "payDetailNoteHtml('out')").includes(NOTE_OUT_JA));
   assert.ok(run(app('office', { lang: 'en' }), 'payDetailNoteHtml()').includes(NOTE_EN));
 });
 
@@ -233,7 +241,7 @@ test('HQ shift-in: per person (field wage and amount) and the CSV are CEO/GM onl
     for (const nm of [A, B]) assert.equal(h.includes(nm), full, `${r}: ${nm}`);
     assert.equal(h.includes('exportHqSitePayrollCSV'), full, `${r}: CSV`);
     assert.ok(h.includes('$200.00') && h.includes('$123.45'), `${r}: all-store and store totals stay`);
-    assert.equal(h.includes(NOTE_JA), !full, `${r}: note`);
+    assert.equal(h.includes(NOTE_HQ_JA), !full, `${r}: note`);
   }
   // people who could not open the screen still cannot
   for (const r of ['office_crew', 'sl', 'crew']) assert.ok(run(hqApp(r), `renderTipHqSite('F01', ${INFO})`).includes('本部（GM / CEO / 経理 / AM / Head Chef）のみ'), r);
@@ -329,7 +337,7 @@ for (const pc of [false, true]) {
       assert.equal(h.includes(C), full, `${r}: an office person's pay row`);
       assert.ok(h.includes('exportAllInventoryCSV'), `${r}: inventory export stays`);
       assert.ok(h.includes('請求書（仕入）集計'), `${r}: invoice summary stays`);
-      assert.equal(h.includes(NOTE_JA), !full, `${r}: note`);
+      assert.equal(h.includes(NOTE_OUT_JA), !full, `${r}: note`);
     }
   });
 }

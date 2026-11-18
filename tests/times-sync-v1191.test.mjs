@@ -177,6 +177,50 @@ test('two devices save at the same time (A reads, B writes, then A writes): A re
   release(); A.hold = null;
   assert.equal(await pa, true);
   assert.deepEqual(titles(await cloudOf(db, 'funergy_times')), ['10月号', 'A', 'B']);
-  for (const d of [A, B]) { await pullTo(d, db); assert.equal(run(d, 'timesCfg().title'), 'B', 'the newest save is current on both'); }
+  // PR #194 の Codex（2bdd2c1）：「保存しました」と出した端末の設定が今の設定（A は B のあとに書き終えたので、B より後の順で付け直した）
+  for (const d of [A, B]) { await pullTo(d, db); assert.equal(run(d, 'timesCfg().title'), 'A', 'the save that finished last and said "saved" is current on both'); }
+  await db.close();
+});
+
+// PR #194 の Codex（c9bdce8・2bdd2c1 の P2）：時計が 1 日進んだ A が先に保存し、A の保存をまだ受け取っていない時計の遅い B があとで保存する。
+// 前は B に「保存しました」と出て閉じたのに、今の設定は A のままだった（B は履歴に入るだけ）。
+test('a slow-clock device with an old copy saves after a fast-clock device: its save becomes current, or it does not say "saved"', async () => {
+  const db = await cloudDb();
+  await putState(db, 'funergy_times', OLD);
+  const A = timesDevice(db, 'ceo', 'CEO Taro'), B = timesDevice(db, 'gm', 'GM Hana');
+  for (const d of [A, B]) d.S.funergy_times = await cloudOf(db, 'funergy_times');
+  assert.equal(await saveOn(A, '設定A', 'https://times.funergygroup.com/a', Date.UTC(2026, 10, 19, 2)), true);
+  const w0 = B.writes;
+  assert.equal(await saveOn(B, '設定B', 'https://times.funergygroup.com/b', Date.UTC(2026, 10, 18, 2)), true);
+  assert.equal(B.writes - w0, 2, 'B sends once, sees A is newer in the merged value, and sends again ordered after A');
+  assert.equal(B.CLOSED, 1); assert.deepEqual(plain(B.TOASTS.at(-1)), ['FUNERGY TIMES の設定を保存しました（全員のマイページに出ます）', 'success']);
+  const cloud = await cloudOf(db, 'funergy_times');
+  assert.deepEqual(titles(cloud), ['10月号', '設定A', '設定B'], 'nothing is lost and B is one record (not two)');
+  for (const d of [A, B]) { await pullTo(d, db); const c = run(d, 'timesCfg()'); assert.equal(c.title, '設定B'); assert.deepEqual([...c.hist.map(h => h.title)], ['設定A', '10月号']); }
+  await db.close();
+});
+
+test('when another device keeps saving newer settings while this one sends, it stops after 3 tries, keeps the form and does not say "saved"; pressing again wins', async () => {
+  const db = await cloudDb();
+  await putState(db, 'funergy_times', OLD);
+  const B = timesDevice(db, 'gm', 'GM Hana'), C = timesDevice(db, 'ceo', 'CEO Taro');
+  for (const d of [B, C]) d.S.funergy_times = await cloudOf(db, 'funergy_times');
+  let cSaves = 0;
+  B.hold = async m => {   // B の 1 回ごとの送信の最初の読み（奇数回目の GET）のあとに、時計の進んだ C が新しい設定を保存する
+    if (m === 'GET' && B.gets % 2 === 1 && cSaves < 3) { cSaves++; assert.equal(await saveOn(C, 'C' + cSaves, 'https://times.funergygroup.com/c' + cSaves, Date.UTC(2026, 11, 1) + cSaves * 1000), true); }
+  };
+  const w0 = B.writes;
+  assert.equal(await saveOn(B, '設定B', 'https://times.funergygroup.com/b', Date.UTC(2026, 10, 18, 2)), false);
+  assert.equal(cSaves, 3); assert.equal(B.writes - w0 >= 3, true, 'B tried three times');
+  assert.equal(B.CLOSED, 0, 'the form stays open');
+  assert.ok(!B.TOASTS.some(x => x[1] === 'success'), 'no "saved"');
+  assert.match(B.MSG.textContent, /ほかの端末が同じころに別の FUNERGY TIMES の設定を保存したため/);
+  assert.equal(run(B, 'timesCfg().title'), 'C3');
+  B.hold = null;
+  assert.equal(await run(B, 'saveTimesSettings()'), true, 'pressing again (same form) wins');
+  assert.equal(B.CLOSED, 1);
+  const cloud = await cloudOf(db, 'funergy_times');
+  assert.deepEqual(titles(cloud), ['10月号', 'C1', 'C2', 'C3', '設定B'], 'one record for B (the same id), nothing lost');
+  for (const d of [B, C]) { await pullTo(d, db); assert.equal(run(d, 'timesCfg().title'), '設定B'); }
   await db.close();
 });

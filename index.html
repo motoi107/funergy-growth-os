@@ -10345,14 +10345,20 @@ function canEditWages() { return curRole==='gm' || curRole==='ceo'; }
    本部シフトインの個人額（本部の人の現場時給と額）は店の側が無いので canViewIndividualWage（CEO・GM）で決める。
    ★画面と出力の決まり。端末に届くデータ（Tip の確定・勤怠・時給）を絞るのは v1192（サーバーで合計を出す） */
 function payDetailHidden() { return curRole==='office' || curRole==='office_crew'; }
-function payDetailMsg() { return t('Tip・シフトリーダー手当・本部シフトインの個人の額は給与のため、CEO・GM だけが見て出力します（合計はこのまま見られます）','Individual tip, shift leader and HQ shift-in amounts are payroll: only the CEO and GM see and export them (totals stay visible)'); }
+/* PR #194 の Codex（2bdd2c1）：前は 1 つの文で「CEO・GM だけ」と出していたが、店の画面（店長・AM・G2 以上）の Tip・手当は今までどおり見られる。
+   止めている範囲どおりに 3 つの文に分ける：'tip'＝Tip・シフトリーダー手当（経理・事務Crew だけ止める）／'hq'＝本部シフトイン・給与のまとめ（CEO・GM だけ）／'out'＝経理の出力の画面 */
+function payDetailMsg(kind) {
+  if (kind === 'hq') return t('本部シフトインの個人の額と給与のまとめは、CEO・GM だけが見て出力します（合計はこのまま見られます）','Individual HQ shift-in amounts and the payroll summary: only the CEO and GM see and export them (totals stay visible)');
+  if (kind === 'out') return t('Tip・シフトリーダー手当・本部シフトインの個人の額と給与のまとめは、ここからは出力しません（CEO・GM が出力します。店の画面の Tip・手当は今までどおり）','Individual tip, shift leader and HQ shift-in amounts and the payroll summary are not exported here (the CEO and GM export them; tip and allowance on store screens are unchanged)');
+  return t('Tip・シフトリーダー手当の個人の額は給与のため、経理・事務Crew には出さず、出力もしません（店の画面と CEO・GM は今までどおり。合計はこのまま見られます）','Individual tip and shift leader amounts are payroll: they are not shown to or exported by accounting and office crew (store screens and the CEO/GM are unchanged; totals stay visible)');
+}
 function payDetailBlocked(strict) {
   var no = strict ? !canViewIndividualWage() : payDetailHidden();
   if (!no) return false;
-  try { showToast(payDetailMsg(), 'warning'); } catch (e) {}
+  try { showToast(payDetailMsg(strict ? 'hq' : 'tip'), 'warning'); } catch (e) {}
   return true;
 }
-function payDetailNoteHtml() { return '<div class="u-paynote" style="font-size:11.5px;color:var(--muted);line-height:1.6;padding:8px 2px"><i class="ti ti-lock"></i> ' + escapeHtml(payDetailMsg()) + '</div>'; }
+function payDetailNoteHtml(kind) { return '<div class="u-paynote" style="font-size:11.5px;color:var(--muted);line-height:1.6;padding:8px 2px"><i class="ti ti-lock"></i> ' + escapeHtml(payDetailMsg(kind)) + '</div>'; }
 /* 給与閲覧の対象店舗（AM=管轄, SM=自店, 全権=null=全店） */
 function wageScopeStores() {
   if (curRole==='ceo' || curRole==='gm' || curRole==='office') return null; // 全店
@@ -23159,19 +23165,36 @@ async function saveTimesSettings(){
   try { off = (typeof navigator!=='undefined' && navigator && navigator.onLine===false) || (typeof SUPA_SYNC_ENABLED!=='undefined' && !SUPA_SYNC_ENABLED); } catch(e) {}
   if (off) { timesSaveMsg(t('オフラインのため保存していません（全員のマイページに出る設定なので、つながってから保存してください）','Not saved: you are offline. This setting is shown on everyone\'s My Page, so save once connected'), 'warning'); return false; }
   if (!_tmSave.id) _tmSave.id = timesNewId();
-  var id = _tmSave.id, now = Date.now();
-  var raw = ls('funergy_times', null), map = timesMapOf(raw), newest = timesLogOf(raw).filter(function(e){ return e.id !== id; })[0];
-  var at = Math.max(now, ((newest && newest.at) || 0) + 1);
-  map[id] = { url: url, title: gv('tm-title').slice(0, 80), month: month, cover: cover,
-    by: String(curUserName || ((ROLE_CONFIG[curRole]||{}).name || curRole)).slice(0, 60), at: at, _at: Math.max(at, ((map[id] && map[id]._at) || 0) + 1) };
+  /* PR #194 の Codex（c9bdce8・2bdd2c1 の P2）：前は保存の順（at）をこの端末の写しだけから決めたので、時計の遅い端末が古い写しのまま保存すると、
+     クラウドの合流のあとも時計の進んだ端末の前の設定が「今の設定」のままで、それでも「保存しました」と出ていた。
+     → 送ったあとの合流した値（opMergePush がこの端末に書き戻す）で、この保存が今の設定になったかを確かめる。なっていなければ、
+     合流で分かったいちばん新しい設定より後の順で付け直して送り直す（3 回まで）。それでもほかの端末が後から保存し続けたら、
+     「保存しました」とは出さず、画面と入力を残して知らせる（もう一度押すと同じ記録を新しい順で送り直す＝二重にならない） */
+  var id = _tmSave.id;
+  var entry = { url: url, title: gv('tm-title').slice(0, 80), month: month, cover: cover,
+    by: String(curUserName || ((ROLE_CONFIG[curRole]||{}).name || curRole)).slice(0, 60) };
   _tmSave.busy = true;
   var btn = document.getElementById('tm-save'); if (btn) btn.disabled = true;
   timesSaveMsg('', '');
-  var P = (typeof _lsPushP!=='undefined' && _lsPushP) ? _lsPushP : null, okLocal = false, r;
-  try { if (P) delete P['funergy_times']; } catch(e) {}
-  try { okLocal = lsSet('funergy_times', map) !== false; } catch(e) { okLocal = false; }
-  try { r = P && P['funergy_times'] ? await P['funergy_times'] : undefined; } catch(e) { r = false; }
+  var P = (typeof _lsPushP!=='undefined' && _lsPushP) ? _lsPushP : null, okLocal = false, r, cur = null, tries = 0;
+  while (true) {
+    tries++;
+    var now = Date.now();
+    var raw = ls('funergy_times', null), map = timesMapOf(raw), newest = timesLogOf(raw).filter(function(e){ return e.id !== id; })[0];
+    var at = Math.max(now, ((newest && newest.at) || 0) + 1);
+    map[id] = Object.assign({}, entry, { at: at, _at: Math.max(at, ((map[id] && map[id]._at) || 0) + 1) });
+    try { if (P) delete P['funergy_times']; } catch(e) {}
+    try { okLocal = lsSet('funergy_times', map) !== false; } catch(e) { okLocal = false; }
+    try { r = P && P['funergy_times'] ? await P['funergy_times'] : undefined; } catch(e) { r = false; }
+    if (r !== true || !okLocal) break;   /* 届いていない／この端末に書けなかった（合流の値を読めないので確かめない＝前と同じ） */
+    cur = timesLogOf(ls('funergy_times', null))[0] || null;
+    if ((cur && cur.id === id) || tries >= 3) break;
+  }
   _tmSave.busy = false; if (btn) btn.disabled = false;
+  if (r === true && okLocal && !(cur && cur.id === id)) {
+    timesSaveMsg(t('クラウドには届きましたが、ほかの端末が同じころに別の FUNERGY TIMES の設定を保存したため、今の設定はそちらになっています。この設定にするには、もう一度押してください','It reached the cloud, but another device saved different FUNERGY TIMES settings at about the same time, so those are current. Press again to make these the current settings'), 'warning');
+    return false;
+  }
   if (r === true) {
     _tmSave.id = null;
     closeModalDirect();
@@ -45553,7 +45576,7 @@ function renderTipHqSite(storeId, info){
     return h + '<div class="card"><div class="card-title">' + escapeHtml(nm) + '</div>'
       + '<div style="font-size:20px;font-weight:800">' + _money(d.total) + '</div>'
       + '<div style="font-size:11px;color:var(--muted);margin-top:2px">' + d.hours + 'h ／ ' + d.rows.length + t('名','') + '</div>'
-      + payDetailNoteHtml() + '</div>';
+      + payDetailNoteHtml('hq') + '</div>';
   }
   h += '<div class="card"><div class="card-title">' + escapeHtml(nm) + '</div>'
     + '<div style="overflow-x:auto"><table class="inv-table" style="width:100%;min-width:700px;font-size:11px">'
@@ -68120,7 +68143,7 @@ function renderAcctExport() {
      経理が使い慣れた導線を消さない。 */
   /* v1191（Moto 11/18「はい」）：Tip・シフトリーダー手当・本部シフトインの個人の額は給与＝CEO・GM だけ。経理には月次棚卸・請求書などだけ */
   var _payOk = !payDetailHidden() && canViewIndividualWage();
-  if (!_payOk) html += '<div class="card" style="padding:6px 12px">' + payDetailNoteHtml() + '</div>';
+  if (!_payOk) html += '<div class="card" style="padding:6px 12px">' + payDetailNoteHtml('out') + '</div>';
   if (_payOk) html += `<div class="card ax-sum${_axPc ? ' ax-sum-pc' : ''}" style="border:1.5px solid var(--accent)">
     <div class="card-title"><i class="ti ti-file-spreadsheet" style="color:var(--accent)"></i>まとめて出力（Excel・タブ分け）</div>
     <p style="font-size:12px;color:var(--muted);margin-bottom:10px">Tip / Shift Leader / 本部シフトイン を
