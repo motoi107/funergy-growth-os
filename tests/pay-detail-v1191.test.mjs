@@ -165,6 +165,7 @@ for (const mode of ['pc', 'sp']) {
           const ni = h.indexOf(lang === 'en' ? NOTE_EN : NOTE_JA);
           assert.ok(ni >= 0 && ni < h.indexOf('<table'), `${mode} ${r} ${lang}: the note is above the table`);
           assert.ok(!/<tr><td colspan="[^"]*" style="position:sticky[^"]*"><div class="u-paynote"/.test(h), `${mode} ${r} ${lang}: no note row inside the table`);
+          assert.match(h, /<th style="position:sticky;left:0;[^"]*min-width:128px;white-space:nowrap">/, `${mode} ${r} ${lang}: the label column keeps its width (no name rows)`);
         }
       }
     }
