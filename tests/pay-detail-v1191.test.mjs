@@ -158,6 +158,14 @@ for (const mode of ['pc', 'sp']) {
         // ④ actual tips stay
         assert.ok(h.includes('106.50') && h.includes('213.00'), `${mode} ${r} ${lang}: actual tips`);
         assert.equal(h.includes(lang === 'en' ? NOTE_EN : NOTE_JA), hidden, `${mode} ${r} ${lang}: the note`);
+        // the "tap a staff cell to exclude it" hint is only for people who can tap the cells
+        assert.equal(h.includes(lang === 'en' ? 'Tap a staff cell' : '各スタッフのセルをタップ'), !hidden, `${mode} ${r} ${lang}: the tap hint`);
+        // PC: the note is above the table, not a table row (a colspan + sticky row squeezed the name column and overlapped ④ — 11/18 screen check)
+        if (hidden && mode === 'pc') {
+          const ni = h.indexOf(lang === 'en' ? NOTE_EN : NOTE_JA);
+          assert.ok(ni >= 0 && ni < h.indexOf('<table'), `${mode} ${r} ${lang}: the note is above the table`);
+          assert.ok(!/<tr><td colspan="[^"]*" style="position:sticky[^"]*"><div class="u-paynote"/.test(h), `${mode} ${r} ${lang}: no note row inside the table`);
+        }
       }
     }
   });

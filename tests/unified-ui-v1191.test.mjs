@@ -201,14 +201,17 @@ function timesApp(role, stored, opts) {
   opts = opts || {};
   const store = { funergy_times: stored === undefined ? null : JSON.parse(JSON.stringify(stored)) };
   const c = { curRole: role, curUserName: 'Moto', curLang: opts.lang || 'ja', curPage: 'mypage', TOASTS: [], OPENED: [], CLOSED: 0, STORE: store, FIELDS: {}, MSG: { style: {} },
-    ROLE_CONFIG: { gm: { name: 'GM' } }, URL, _lsPushP: {}, LOCAL_OK: true, PUSH: true, SUPA_SYNC_ENABLED: true };
+    ROLE_CONFIG: { gm: { name: 'GM' } }, URL, _lsPushP: {}, LOCAL_OK: true, PUSH: true, SUPA_SYNC_ENABLED: true, CLOUD: {} };
   vm.createContext(c);
   vm.runInContext(`
     function t(ja, en){ return curLang === 'en' ? en : ja; }
     function escapeHtml(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
     function ls(k, d){ return Object.prototype.hasOwnProperty.call(STORE, k) && STORE[k] != null ? JSON.parse(JSON.stringify(STORE[k])) : d; }
     /* 本物の lsSet と同じく、端末に書けたかを返し、送った結果を _lsPushP に置く（LOCAL_OK・PUSH で失敗を入れる） */
-    function lsSet(k, v){ if (LOCAL_OK) STORE[k] = JSON.parse(JSON.stringify(v)); _lsPushP[k] = Promise.resolve(PUSH); return LOCAL_OK; }
+    function lsSet(k, v){ if (LOCAL_OK) STORE[k] = JSON.parse(JSON.stringify(v)); var vv = JSON.parse(JSON.stringify(v));
+      _lsPushP[k] = Promise.resolve(PUSH).then(function(r){ if (r === true) CLOUD[k] = vv; return r; }); return LOCAL_OK; }
+    /* 送ったあと、クラウドの行そのものを読んで今の設定か確かめる（PR #195 の Codex の P2）。この試験のクラウドは届いた最後の値 */
+    function _fetchOpValue(k){ return Promise.resolve(Object.prototype.hasOwnProperty.call(CLOUD, k) ? JSON.parse(JSON.stringify(CLOUD[k])) : null); }
     function showToast(m, ty){ TOASTS.push([m, ty]); } function openModal(h){ OPENED.push(h); } function closeModalDirect(){ CLOSED++; } function renderPage(){}
     function langDateLocale(){ return 'ja'; }
     var document = { getElementById: function(id){
