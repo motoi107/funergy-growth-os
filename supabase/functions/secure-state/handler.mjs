@@ -33,6 +33,10 @@
 //   （Moto さん 11/10「Career Score と同じ範囲に」：GM・CEO 以外は Career Score で見られる人と本人の記録だけ。経理・事務Crew のグレード履歴は全部＝HR・福利厚生の画面）。
 //   書くのは今までどおり GM・CEO だけ（swPut）。取り込みは gb_have を送ったアプリにだけ gb の部分を付ける。下の「v1148」の節・
 //   docs/SECURE_GRADE_BONUS_READ_V1148_JA.md）。答えにはいつも gbfn:1。
+// ・v1192：人件費の合計（labor）。経理・AM の端末には全員の時給が届かなくなる（emp-private v1192）ので、店・月ごとのお金の合計だけを
+//   この関数が出す（計算は index.html の関数そのもの＝labor-core.gen.mjs・labor.mjs。人ごとの額は返さない。docs/LABOR_TOTALS_V1192_JA.md）。答えにはいつも ltfn:1。
+
+import { ltAsks, ltCompute, ltLoad, ltToday, LT_MAX_ASKS } from './labor.mjs';
 
 export const SS_KEYS = ['growth_karte', 'karte_pin', 'karte_bonus_config', 'bonus_q', 'bonus_eval', 'bonus_store_q', 'bonus_rules', 'bonus_pool_extra'];
 export const SS_PREFIX = ['spl_bonus_q_'];
@@ -2117,7 +2121,35 @@ export function createHandler(deps) {
     throw err('conflict', 409);
   }
 
-  const ACTIONS = { pull, get, put, hist: csHist, pin_check: pinCheck, pin_set: pinSet, hr_get: hrGet, hr_op: hrOp, hr_match: hrMatch, pii_get: piiGet, pii_op: piiOp, card_match: cardMatch, tcf_status: tcfStatus, change_log: clGet };
+  // ---- v1192：人件費の合計（店・月ごと）。見られるのは CEO・GM・経理（全店）と AM（担当の店と応援の店・ダッシュボードで全店を見る人は全店）。
+  //   頼めない店は no に入れて返す（端末は今までどおり自分で数える）。社員と結ばれた人は今の社員の表で退職・OS 停止なら何も出さない
+  async function ltGet(a, b) {
+    const asks = ltAsks(b.asks);
+    if (!asks) throw bad();
+    const empOk = async () => {
+      const es = await rest('employees?id=eq.' + encodeURIComponent(a.emp) + '&select=id,role,status,data');
+      const e0 = Array.isArray(es) ? es[0] : null;
+      return !!(e0 && !empOut(e0));
+    };
+    let all = false; const S = new Set();
+    if (['ceo', 'gm', 'office'].includes(a.role)) {
+      if (a.emp && !(await empOk())) throw err('forbidden', 403);
+      all = true;
+    } else if (a.role === 'am' && a.emp) {
+      if (!(await empOk())) throw err('forbidden', 403);
+      for (const x of [...a.am, ...a.stores]) if (typeof x === 'string' && x) S.add(x);
+      const rows = await rest('app_settings?select=value&key=eq.md_all_viewers');
+      const v = Array.isArray(rows) && rows[0] && obj(rows[0].value) ? rows[0].value[a.emp] : null;
+      if (obj(v) && v.on === true && !v._deleted) all = true;
+    } else throw err('forbidden', 403);
+    const ok = asks.filter(x => all || S.has(x.s)), no = asks.filter(x => !(all || S.has(x.s))).map(x => x.s + '|' + x.m);
+    const today = ltToday(b.to, now());
+    if (!ok.length) return { r: {}, no, today, max: LT_MAX_ASKS };
+    const data = await ltLoad(rest, ok, today);
+    return { r: ltCompute(data, ok), no, today, max: LT_MAX_ASKS };
+  }
+
+  const ACTIONS = { pull, get, put, hist: csHist, pin_check: pinCheck, pin_set: pinSet, hr_get: hrGet, hr_op: hrOp, hr_match: hrMatch, pii_get: piiGet, pii_op: piiOp, card_match: cardMatch, tcf_status: tcfStatus, change_log: clGet, labor: ltGet };
   const CODES = { forbidden: 403, bad_value: 400, conflict: 409, locked: 429, gone: 410, not_found: 404 };
 
   return async function handle(req) {
@@ -2137,7 +2169,8 @@ export function createHandler(deps) {
     // gbfn:1＝グレード履歴・賞与の個人設定・G3 の職種を読む範囲（v1148）も扱う。アプリは gbfn の無い答えを前の版とみなし、その 3 つを今までどおり REST で読む
     // clfn:1＝変更の記録（v1151）を読める（change_log）・書き込みに確かめた人を付ける。アプリは clfn の無い答えを前の版とみなし、記録のタブで「関数を v1151 に」と出す
     // ntfn:1＝通知（v1152）を読み書きする（nt）。アプリは ntfn の無い答えを前の版とみなし、通知を今までどおり REST で読み書きする
-    const json = (v, s = 200) => new Response(JSON.stringify({ ...v, fn: 1, csfn: 1, swfn: 1, hrfn: 1, sw2: 1, piifn: 1, ghfn: 1, tpfn: 1, scfn: 1, gbfn: 1, clfn: 1, ntfn: 1 }), { status: s, headers: { 'content-type': 'application/json', 'cache-control': 'no-store', ...cors } });
+    // ltfn:1＝人件費の合計（v1192・labor）を出す。アプリは ltfn の無い答え（unknown_action）を前の版とみなし、10 分は端末で数える
+    const json = (v, s = 200) => new Response(JSON.stringify({ ...v, fn: 1, csfn: 1, swfn: 1, hrfn: 1, sw2: 1, piifn: 1, ghfn: 1, tpfn: 1, scfn: 1, gbfn: 1, clfn: 1, ntfn: 1, ltfn: 1 }), { status: s, headers: { 'content-type': 'application/json', 'cache-control': 'no-store', ...cors } });
     if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });
     if (req.method !== 'POST') return json({ error: 'method' }, 405);
     let body;
