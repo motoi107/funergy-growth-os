@@ -10323,7 +10323,7 @@ function canViewWages() {
   if ((ROLE_CONFIG[curRole]||{}).noWage) return false; // 事務Crew等は給与一切不可
   /* v950: Head Chef を AM と同じ扱いにする（Motoさん指示）。
      ★合計・率だけ。個人の給与額は canViewIndividualWage が別に見ており、
-       そちらは ceo / gm / office のまま。chef は足さない。 */
+       そちらは ceo / gm（v1191 から。前は office も）。chef は足さない。 */
   return curRole==='ceo' || curRole==='gm' || curRole==='office' || curRole==='am'
       || curRole==='chef' || isStoreManager();
 }
@@ -10339,6 +10339,20 @@ function canViewIndividualWage() {
 }
 /* 給与を編集できるのは GM/CEO のみ（従来どおり） */
 function canEditWages() { return curRole==='gm' || curRole==='ceo'; }
+/* v1191（Moto 11/18「はい」）：Tip の個人額・シフトリーダー手当の個人額・本部シフトインの個人額・採用の Payroll の段は給与。
+   経理（office）・事務Crew（office_crew）には見せない・出力させない（CEO・GM だけ）。合計（店・日・期間・全店）は今のまま見せる。
+   店の画面（店長・AM・G2 以上が自店のチップの配分・シフトリーダーを見る）は今のまま＝決めたのは経理への見せ方だけ。
+   本部シフトインの個人額（本部の人の現場時給と額）は店の側が無いので canViewIndividualWage（CEO・GM）で決める。
+   ★画面と出力の決まり。端末に届くデータ（Tip の確定・勤怠・時給）を絞るのは v1192（サーバーで合計を出す） */
+function payDetailHidden() { return curRole==='office' || curRole==='office_crew'; }
+function payDetailMsg() { return t('Tip・シフトリーダー手当・本部シフトインの個人の額は給与のため、CEO・GM だけが見て出力します（合計はこのまま見られます）','Individual tip, shift leader and HQ shift-in amounts are payroll: only the CEO and GM see and export them (totals stay visible)'); }
+function payDetailBlocked(strict) {
+  var no = strict ? !canViewIndividualWage() : payDetailHidden();
+  if (!no) return false;
+  try { showToast(payDetailMsg(), 'warning'); } catch (e) {}
+  return true;
+}
+function payDetailNoteHtml() { return '<div class="u-paynote" style="font-size:11.5px;color:var(--muted);line-height:1.6;padding:8px 2px"><i class="ti ti-lock"></i> ' + escapeHtml(payDetailMsg()) + '</div>'; }
 /* 給与閲覧の対象店舗（AM=管轄, SM=自店, 全権=null=全店） */
 function wageScopeStores() {
   if (curRole==='ceo' || curRole==='gm' || curRole==='office') return null; // 全店
@@ -45326,6 +45340,7 @@ function slPayrollRows(storeId, fromISO, toISO){
 }
 /* 単独出力。給与にそのまま渡せる形にする。 */
 function exportSlPayrollCSV(storeId, anyDate){
+  if(payDetailBlocked()) return;   /* v1191：給与の個人額＝経理・事務Crew は出力しない */
   var per = _p4Period(anyDate);
   var p = slPayrollData(storeId, per.from, per.to);
   var nm = _owStoreName(storeId);
@@ -45336,6 +45351,7 @@ function exportSlPayrollCSV(storeId, anyDate){
   showToast(nm + '（' + per.label + '）' + _money(p.total) + ' を出力しました','success');
 }
 function exportAllSlPayrollCSV(d1, d2){
+  if(payDetailBlocked()) return;   /* v1191：給与の個人額＝経理・事務Crew は出力しない */
   var rows = [], grand = 0, hit = 0;
   (getVisibleStores()||[]).forEach(function(s){
     if(typeof slStoreEnabled==='function' && !slStoreEnabled(s.id)) return;
@@ -45483,6 +45499,7 @@ function hqSitePayrollRows(storeId, fromISO, toISO){
   return rows;
 }
 function exportHqSitePayrollCSV(storeId, fromISO, toISO){
+  if(payDetailBlocked(true)) return;   /* v1191：本部シフトインの個人額・給与まとめ＝CEO・GM だけ */
   var d = hqSiteLaborData(storeId, fromISO, toISO);
   var nm = (typeof _owStoreName==='function') ? _owStoreName(storeId) : storeId;
   if(!d.rows.length){ showToast(nm + ' はこの期間に本部シフトインがありません','danger'); return; }
@@ -45491,6 +45508,7 @@ function exportHqSitePayrollCSV(storeId, fromISO, toISO){
   showToast(nm + ' ' + _money(d.total) + ' を出力しました','success');
 }
 function exportAllHqSitePayrollCSV(fromISO, toISO){
+  if(payDetailBlocked(true)) return;   /* v1191：本部シフトインの個人額・給与まとめ＝CEO・GM だけ */
   var all = hqSiteLaborAll(fromISO, toISO);
   if(!all.stores.length){ showToast('この期間に本部シフトインがありません','danger'); return; }
   var rows = [];
@@ -45521,7 +45539,8 @@ function renderTipHqSite(storeId, info){
         + '<i class="ti ti-alert-triangle"></i> 現場時給が未設定の人が ' + all.noWage
         + '名います。$0 で計上され、店舗にも本部にも乗りません。役職テーブルで設定してください。</div>' : '')
     + '</div>';
-  h += '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">'
+  var _hqPay = canViewIndividualWage();   /* v1191：本部シフトインの個人額（現場時給・額）と CSV は CEO・GM だけ。ほかは合計 */
+  if (_hqPay) h += '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">'
     + '<button class="btn btn-secondary btn-sm" onclick="exportHqSitePayrollCSV(\''+storeId+'\',\''+info.from+'\',\''+info.to+'\')">'
     + '<i class="ti ti-table-export"></i> ' + escapeHtml(nm) + 'をCSV</button>'
     + '<button class="btn btn-secondary btn-sm" onclick="exportAllHqSitePayrollCSV(\''+info.from+'\',\''+info.to+'\')">'
@@ -45529,6 +45548,12 @@ function renderTipHqSite(storeId, info){
   if(!d.rows.length){
     return h + '<div class="card" style="padding:18px;text-align:center;font-size:12.5px;color:var(--muted)">'
       + escapeHtml(nm) + ' はこの期間に本部シフトインがありません</div>';
+  }
+  if (!_hqPay) {
+    return h + '<div class="card"><div class="card-title">' + escapeHtml(nm) + '</div>'
+      + '<div style="font-size:20px;font-weight:800">' + _money(d.total) + '</div>'
+      + '<div style="font-size:11px;color:var(--muted);margin-top:2px">' + d.hours + 'h ／ ' + d.rows.length + t('名','') + '</div>'
+      + payDetailNoteHtml() + '</div>';
   }
   h += '<div class="card"><div class="card-title">' + escapeHtml(nm) + '</div>'
     + '<div style="overflow-x:auto"><table class="inv-table" style="width:100%;min-width:700px;font-size:11px">'
@@ -45610,7 +45635,7 @@ function renderTipShiftLeader(){
         +'<div style="font-size:9.5px;color:var(--muted)">'+x.s+'</div></div>';
     }).join('') + '</div>';
   /* 出力（給与にそのまま渡せる形） */
-  if(sum.rows.length){
+  if(sum.rows.length && !payDetailHidden()){
     h+='<button class="btn btn-secondary btn-sm" style="width:100%;margin-top:8px" '
       +'onclick="exportSlPayrollCSV(\''+escapeHtml(storeId)+'\',\''+per.to+'\')">'
       +'<i class="ti ti-file-download" style="color:var(--green)"></i> '
@@ -45625,6 +45650,8 @@ function renderTipShiftLeader(){
 
   if(!sum.rows.length){
     h+='<div class="card" style="font-size:12px;color:var(--muted)"><i class="ti ti-info-circle"></i> この期間の Shift Leader 記録はまだありません。</div>';
+  } else if(payDetailHidden()){
+    h+='<div class="card" style="padding:4px 11px">'+payDetailNoteHtml()+'</div>';   /* v1191：経理・事務Crew には人ごとの手当を出さない（上の合計は出す） */
   } else {
     /* v887: 表だと横に流れて金額が読めなかった。1人1枚にして、
        支給額を右に大きく緑で出す。順位・L/D・該当日を色分けする。 */
@@ -45812,7 +45839,7 @@ function renderTipMgmt() {/* v1129 ③：全店のときの店は soloStoreId（
     ${_hqSiteOn?`<div class="phase-tab${tipPeriodView==='hqsite'?' active':''}" onclick="setTipPeriodView('hqsite')"><i class="ti ti-briefcase" style="font-size:12px"></i> ${t('本部シフトイン','HQ shift-in')}</div>`:''}
   </div>`;
   // ペイロール期間（半月）の日次ランチ/ディナー配分内訳をCSV出力
-  if (tipPeriodView!=='rate' && tipPeriodView!=='ratemgmt') html += `<div style="margin-bottom:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap"><button class="btn btn-secondary btn-sm" id="tip-refresh-btn" onclick="tipRefreshPeriodFromToast('${storeId}','${info.from}','${info.to}')"><i class="ti ti-cloud-download"></i> ${t('この期間を Toast から取り直す','Re-fetch this period from Toast')}</button><button class="btn btn-secondary btn-sm" onclick="exportTipPeriodCsv()"><i class="ti ti-table-export"></i> ${t('期間の日次L/D配分をCSV出力','Export daily L/D distribution (CSV)')}</button><button class="btn btn-secondary btn-sm" onclick="exportAcctPayrollBook('${info.from}','${info.to}')"><i class="ti ti-file-spreadsheet"></i> ${t('経理まとめ（3タブ）','Accounting book (3 tabs)')}</button><span id="tip-refresh-status" style="font-size:10.5px;color:var(--muted)"></span></div>`;
+  if (tipPeriodView!=='rate' && tipPeriodView!=='ratemgmt') html += `<div style="margin-bottom:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap"><button class="btn btn-secondary btn-sm" id="tip-refresh-btn" onclick="tipRefreshPeriodFromToast('${storeId}','${info.from}','${info.to}')"><i class="ti ti-cloud-download"></i> ${t('この期間を Toast から取り直す','Re-fetch this period from Toast')}</button>${payDetailHidden()?'':`<button class="btn btn-secondary btn-sm" onclick="exportTipPeriodCsv()"><i class="ti ti-table-export"></i> ${t('期間の日次L/D配分をCSV出力','Export daily L/D distribution (CSV)')}</button>`}${canViewIndividualWage()?`<button class="btn btn-secondary btn-sm" onclick="exportAcctPayrollBook('${info.from}','${info.to}')"><i class="ti ti-file-spreadsheet"></i> ${t('経理まとめ（3タブ）','Accounting book (3 tabs)')}</button>`:''}<span id="tip-refresh-status" style="font-size:10.5px;color:var(--muted)"></span></div>`;
 
   if (tipPeriodView==='hqsite')   return html + renderTipHqSite(storeId, info);   /* v951 */
   if (tipPeriodView==='sl')       return html + renderTipShiftLeader();   /* v801 */
@@ -45988,6 +46015,7 @@ function tipPeriodRateLabel(rates, nm){
   try{ return (typeof tipRateLabel==='function')?tipRateLabel(nm):''; }catch(e){ return ''; }
 }
 async function exportTipPeriodCsv(){
+  if(payDetailBlocked()) return;   /* v1191：給与の個人額＝経理・事務Crew は出力しない */
   var storeId = (curStore==='ALL'||curStore==='OFFICE')?STORES[0].id:curStore;
   var store = STORES.find(function(s){return s.id===storeId;})||STORES[0];
   var info = tipPeriodInfo();
@@ -46197,6 +46225,10 @@ function renderTipPeriodMatrix(storeId, store, info){
       + '<tr><td style="' + sk + ';color:var(--accent2)">' + t('③ キャッシュ','③ Cash') + (_tipCashCanEdit(storeId) ? ' <i class="ti ti-pencil"></i>' : '') + '</td>' + tipCashCellHtml(storeId, dt, 'l', '') + tipCashCellHtml(storeId, dt, 'd', '') + '<td style="text-align:right;color:var(--accent2)">' + (((tt.lunchCash || 0) + (tt.dinnerCash || 0)) ? '$' + ((tt.lunchCash || 0) + (tt.dinnerCash || 0)).toFixed(2) : '') + '</td></tr>'
       + '<tr style="background:var(--surface2)"><td style="' + sk + ';background:var(--surface2);font-weight:700">' + t('④ 実チップ額','④ Actual tips') + '</td><td style="text-align:right">' + (tt.lunchTotal ? tt.lunchTotal.toFixed(2) : '—') + '</td><td style="text-align:right">' + (tt.dinnerTotal ? tt.dinnerTotal.toFixed(2) : '—') + '</td><td style="text-align:right;font-weight:700">$' + ((tt.lunchTotal || 0) + (tt.dinnerTotal || 0)).toFixed(2) + '</td></tr>'
       + '</tbody></table></div>';
+    if (payDetailHidden()) {   /* v1191：経理・事務Crew にはこの日の配分の合計だけ（個人の額は出さない） */
+      var _hl = 0, _hd = 0; (X.dist.list || []).forEach(function(r){ _hl += r.lunch || 0; _hd += r.dinner || 0; });
+      return h + '<div style="overflow-x:auto;margin-top:8px"><table class="inv-table u11-tdt"><tbody><tr style="font-weight:700"><td style="' + sk + '">' + t('配分合計','Distribution total') + '</td><td style="text-align:right">' + (_hl ? _hl.toFixed(2) : '—') + '</td><td style="text-align:right">' + (_hd ? _hd.toFixed(2) : '—') + '</td><td style="text-align:right;color:var(--green)">$' + (_hl + _hd).toFixed(2) + '</td></tr></tbody></table></div>' + payDetailNoteHtml() + '</div>';
+    }
     h += '<div style="overflow-x:auto;margin-top:8px"><table class="inv-table u11-tdt"><thead><tr><th style="' + sk + '">' + t('従業員','Staff') + '</th><th style="text-align:right;color:#d98908">L</th><th style="text-align:right;color:#8b5cf6">D</th><th style="text-align:right">' + t('期間計','Period') + '</th></tr></thead><tbody>';
     var sl = 0, sd = 0, nIn = 0;
     M.names.forEach(function(nm){
@@ -46275,7 +46307,9 @@ function renderTipPeriodMatrix(storeId, store, info){
     return ' <span title="'+((used && used.length)?t('この期間の配分に使った率（評価係数の日は係数を % で）','Rate used for this period (coefficient days as %)'):'Tip Rate')+'" style="font-size:9px;font-weight:700;color:'+rc+';border:1px solid '+rc+';border-radius:3px;padding:0 3px;margin-left:2px;white-space:nowrap;vertical-align:middle">'+lb+'</span>';
   }
   // 従業員ごと
-  M.names.forEach(function(nm){
+  var _payHide = payDetailHidden();   /* v1191：経理・事務Crew には個人の配分額を出さない（①〜④と配分合計は出す） */
+  if (_payHide) html += `<tr><td colspan="${2+M.dists.length*2}" style="${stick}">${payDetailNoteHtml()}</td></tr>`;
+  if (!_payHide) M.names.forEach(function(nm){
     var ptot=0, cells='';
     M.dists.forEach(function(x){
       var r=(x.dist.list||[]).find(function(z){return z.name===nm;});
@@ -46285,7 +46319,7 @@ function renderTipPeriodMatrix(storeId, store, info){
     html+=`<tr><td style="${stick};font-size:11px;white-space:nowrap">${escapeHtml(nm)}${_rateBadge(nm)}</td>${cells}<td style="text-align:right;font-weight:700;color:var(--green)">$${ptot.toFixed(2)}</td></tr>`;
   });
   // No Tip（Tip Rate 0%）スタッフの勤務時間 — 配分対象外シフトの消化確認用（管理者・本人向け）
-  try{
+  if (!_payHide) try{
     var ntNames = {};
     M.dists.forEach(function(x){
       var lab = getTipLabor(storeId, x.date) || {};
@@ -46468,7 +46502,9 @@ function openTipDayDetail(storeId, date) {
   }
 
   // ===== スタッフ別 ランチ/ディナー配分 =====
-  if (!dist.hasLabor) {
+  if (dist.hasLabor && payDetailHidden()) {
+    html += payDetailNoteHtml();   /* v1191：経理・事務Crew にはスタッフ別の額を出さない（上の合計と差額は出す） */
+  } else if (!dist.hasLabor) {
     html += `<div style="text-align:center;padding:16px;color:var(--muted)">勤怠データがありません。「データ反映」で取得してください。</div>`;
   } else {
     html += `<div style="font-size:12px;font-weight:700;margin:4px 0 6px">スタッフ別配分 <span style="font-size:10px;color:var(--muted);font-weight:400">— 事務作業等で外す場合は L/D のボタンをタップ</span></div>
@@ -62352,7 +62388,7 @@ function obCardInner(ob){
     html += `<button class="btn btn-primary btn-sm" onclick="openI9Modal('${ob.id}')"><i class="ti ti-id-badge-2"></i> I-9確認</button>`;
   }
   // Payroll登録
-  if (st==='経理確認中' && isOffice) {
+  if (st==='経理確認中' && canEditWages()) {   /* v1191：Payroll の段（時給を決めて登録）は給与＝CEO・GM だけ */
     html += `<button class="btn btn-primary btn-sm" onclick="openPayrollRegister('${ob.id}')"><i class="ti ti-user-dollar"></i> Payroll登録＆シフト設定</button>`;
   }
   // 研修チェック（登録完了後はOJT進捗）
@@ -62922,6 +62958,7 @@ function confirmI9(obId) {
 }
 /* Payroll登録＋シフト詳細設定 → 従業員マスター登録 */
 function openPayrollRegister(obId) {
+  if (!canEditWages()) { showToast(t('Payroll の登録（時給）は給与のため CEO・GM が行います','Payroll registration (hourly wage) is done by the CEO or GM'),'warning'); return; }   /* v1191 */
   var ob = ls('onboardings',[]).find(o=>o.id===obId); if(!ob)return;
   var p = ob.personal||{};
   var positions = getStorePositions(ob.store).filter(x=>x!=='Energy'&&x!=='Leadership');
@@ -62954,6 +62991,7 @@ function openPayrollRegister(obId) {
     <button class="btn btn-success" onclick="finalizePayroll('${obId}')"><i class="ti ti-user-check"></i> 従業員登録</button></div>`);
 }
 function finalizePayroll(obId) {
+  if (!canEditWages()) { showToast(t('Payroll の登録（時給）は給与のため CEO・GM が行います','Payroll registration (hourly wage) is done by the CEO or GM'),'warning'); return; }   /* v1191 */
   var obs=ls('onboardings',[]); var ob=obs.find(o=>o.id===obId); if(!ob)return;
   var p = ob.personal||{};
   var role=document.getElementById('pr-role').value;
@@ -66692,8 +66730,10 @@ function ecDetOnboard(){
     var nm=o.name||(o.personal&&o.personal.name)||'(無名)';
     /* v1088: 1 件のオンボーディングごと。fp＝状態（状態が変われば、解除していてもまた出す） */
     var _k={key:'ob|'+(o.id||nm),fp:String(o.obStatus||''),store:o.store||'',who:nm};
-    if(o.obStatus==='提出完了'||o.obStatus==='I-9確認待ち'||o.obStatus==='経理確認中'||o.obStatus==='Payroll登録中')
-      issues.push(Object.assign({sev:'mid',cat:'OB',title:nm+'：Office対応待ち（'+o.obStatus+'）',detail:'オンボーディングがOffice側の対応待ちです。',fix:{label:'採用',action:"go('hiring')"}},_k));
+    if(o.obStatus==='提出完了'||o.obStatus==='I-9確認待ち'||o.obStatus==='経理確認中'||o.obStatus==='Payroll登録中'){
+      var _pay=(o.obStatus==='経理確認中'||o.obStatus==='Payroll登録中');   /* v1191：Payroll の段（時給を決めて登録）は GM・CEO */
+      issues.push(Object.assign({sev:'mid',cat:'OB',title:nm+'：'+(_pay?'GM・CEO の Payroll 登録待ち':'Office対応待ち')+'（'+o.obStatus+'）',detail:_pay?'Payroll の登録（時給）は給与のため GM・CEO が行います。':'オンボーディングがOffice側の対応待ちです。',fix:{label:'採用',action:"go('hiring')"}},_k));
+    }
     else if(o.obStatus==='本人入力待ち'||o.obStatus==='差し戻し')
       issues.push(Object.assign({sev:'low',cat:'OB',title:nm+'：本人入力待ち（'+o.obStatus+'）',detail:'招待済みですが本人の入力が完了していません。',fix:{label:'採用',action:"go('hiring')"}},_k));
   });
@@ -67426,11 +67466,13 @@ function renderOfficeExport(){
     {page:'acct_export', icon:'ti-credit-card', title:'カードレシート', sub:'社員別・Drive保存'},
     {page:'acct_review', icon:'ti-checklist', title:'経理レビュー', sub:'区分・承認'}
   ]);
-  html+=grp('<i class="ti ti-cash" style="color:var(--green)"></i>給与・経理CSV',[
+  /* v1191：給与の CSV（店舗の Tip・手当／Office の給与）は CEO・GM だけ。経理・事務Crew には経理区分エクスポートだけ */
+  html+=grp('<i class="ti ti-cash" style="color:var(--green)"></i>'+(canViewIndividualWage()?'給与・経理CSV':'経理CSV'),(canViewIndividualWage()?[
     {page:'acct_export', icon:'ti-table-export', title:'給与CSV（店舗）', sub:'店舗別Payroll'},
-    {fn:"setOfficeMgrTab('attend')", icon:'ti-building-skyscraper', title:'給与CSV（Office）', sub:'月給/時給混在', col:'var(--accent2)'},
+    {fn:"setOfficeMgrTab('attend')", icon:'ti-building-skyscraper', title:'給与CSV（Office）', sub:'月給/時給混在', col:'var(--accent2)'}
+  ]:[]).concat([
     {page:'acct_export', icon:'ti-file-spreadsheet', title:'経理区分エクスポート', sub:'区分別集計'}
-  ]);
+  ]));
   html+=grp('<i class="ti ti-chart-bar" style="color:var(--accent2)"></i>売上・分析',[   /* v1084: 備品発注（発注CSV）は廃止 */
     {page:'monthly', icon:'ti-calendar-stats', title:'月次サマリー', sub:'KPI・売上分析'},
     {page:'budget', icon:'ti-chart-dots', title:'予実管理', sub:'全社/店舗'}
@@ -68076,7 +68118,10 @@ function renderAcctExport() {
 
   /* v954: まとめて出力を先頭に。個別のボタンは下にそのまま残す。
      経理が使い慣れた導線を消さない。 */
-  html += `<div class="card ax-sum${_axPc ? ' ax-sum-pc' : ''}" style="border:1.5px solid var(--accent)">
+  /* v1191（Moto 11/18「はい」）：Tip・シフトリーダー手当・本部シフトインの個人の額は給与＝CEO・GM だけ。経理には月次棚卸・請求書などだけ */
+  var _payOk = !payDetailHidden() && canViewIndividualWage();
+  if (!_payOk) html += '<div class="card" style="padding:6px 12px">' + payDetailNoteHtml() + '</div>';
+  if (_payOk) html += `<div class="card ax-sum${_axPc ? ' ax-sum-pc' : ''}" style="border:1.5px solid var(--accent)">
     <div class="card-title"><i class="ti ti-file-spreadsheet" style="color:var(--accent)"></i>まとめて出力（Excel・タブ分け）</div>
     <p style="font-size:12px;color:var(--muted);margin-bottom:10px">Tip / Shift Leader / 本部シフトイン を
     <b>1ファイル3タブ</b>で出力します。両期間・全店ぶんが入ります。</p>
@@ -68088,7 +68133,7 @@ function renderAcctExport() {
   /* v1178：PC の店ごとの出力（1 つの表）。押す関数・押せる条件（取り直し中・記録なし）は下の今の形と同じ */
   function _axPcStores(){
     var slOn = function(s){ return (typeof slStoreEnabled === 'function') && slStoreEnabled(s.id); };
-    var slAny = stores.some(slOn), slGr = 0, slAmt = (typeof slCfg === 'function' ? slCfg().amount.toFixed(2) : '0.00');
+    var slAny = _payOk && stores.some(slOn), slGr = 0, slAmt = (typeof slCfg === 'function' ? slCfg().amount.toFixed(2) : '0.00');
     var ymS = y + '-' + String(m+1).padStart(2,'0');
     var rows = stores.map(function(s){
       var sid = String(s.id).replace(/'/g, '');
@@ -68105,25 +68150,26 @@ function renderAcctExport() {
       var invOk = inMonth.length || itMonthlyReport(ymS, [s]).count;
       return '<tr><td class="ax-st"><span class="store-dot" style="background:' + s.color + '"></span><b>' + escapeHtml(s.name) + '</b></td>'
         + '<td class="ax-lb">' + _acctTipStatusHtml(s, _ym) + '</td>'
-        + '<td><div class="ax-bt"><button class="btn btn-secondary btn-sm"' + _busy + ' onclick="exportTipCSV(\'' + sid + '\',\'' + d1 + '\')">1〜15日</button>'
-        + '<button class="btn btn-secondary btn-sm"' + _busy + ' onclick="exportTipCSV(\'' + sid + '\',\'' + d2 + '\')">16〜末</button></div></td>'
+        + (_payOk ? '<td><div class="ax-bt"><button class="btn btn-secondary btn-sm"' + _busy + ' onclick="exportTipCSV(\'' + sid + '\',\'' + d1 + '\')">1〜15日</button>'
+        + '<button class="btn btn-secondary btn-sm"' + _busy + ' onclick="exportTipCSV(\'' + sid + '\',\'' + d2 + '\')">16〜末</button></div></td>' : '')
         + (slAny ? '<td>' + sl + '</td>' : '')
         + '<td><div class="ax-bt"><span class="ax-sub">' + (inMonth.length ? inMonth.length + '回確定' : '記録なし') + '</span>'
         + '<button class="btn btn-secondary btn-sm" ' + (invOk ? '' : 'disabled') + ' onclick="exportInventoryCSV(\'' + sid + '\',' + y + ',' + m + ')">出力</button></div></td></tr>';
     }).join('');
     var h = '<div class="card ax-tbl-card"><div class="card-title"><i class="ti ti-building-store" style="color:var(--accent)"></i>店ごとの出力 <span style="font-size:12px;color:var(--muted);font-weight:400;margin-left:6px">' + acctMonthLabel() + '</span></div>'
-      + '<div style="overflow-x:auto"><table class="ax-tbl"><thead><tr><th>店</th><th>勤怠の取り込み</th><th>Tip 一覧（半月）</th>'
+      + '<div style="overflow-x:auto"><table class="ax-tbl"><thead><tr><th>店</th><th>勤怠の取り込み</th>' + (_payOk ? '<th>Tip 一覧（半月）</th>' : '')
       + (slAny ? '<th>シフトリーダー手当（G1・$' + slAmt + '/回）</th>' : '') + '<th>月次棚卸＋食材移動</th></tr></thead><tbody>' + rows
       + '<tr class="ax-all"><td colspan="2"><b>全店まとめて</b></td>'
-      + '<td><button class="btn btn-primary btn-sm"' + _busy + ' onclick="exportAllTipCSV(\'' + d1 + '\',\'' + d2 + '\')"><i class="ti ti-download"></i> 両期間</button></td>'
+      + (_payOk ? '<td><button class="btn btn-primary btn-sm"' + _busy + ' onclick="exportAllTipCSV(\'' + d1 + '\',\'' + d2 + '\')"><i class="ti ti-download"></i> 両期間</button></td>' : '')
       + (slAny ? '<td><div class="ax-bt"><button class="btn btn-primary btn-sm"' + _busy + ' onclick="exportAllSlPayrollCSV(\'' + d1 + '\',\'' + d2 + '\')"><i class="ti ti-download"></i> 両期間</button><span class="ax-sub">計 <b>' + _money(slGr) + '</b></span></div></td>' : '')
       + '<td><button class="btn btn-primary btn-sm" onclick="exportAllInventoryCSV(' + y + ',' + m + ')"><i class="ti ti-download"></i> 全店</button></td></tr>'
       + '</tbody></table></div>'
-      + '<div style="font-size:11px;color:var(--muted);margin-top:8px;line-height:1.6"><i class="ti ti-info-circle"></i> Tip＝各店のスタッフ別チップ配分（1日〜15日／16日〜月末）。'
+      + '<div style="font-size:11px;color:var(--muted);margin-top:8px;line-height:1.6"><i class="ti ti-info-circle"></i> ' + (_payOk ? 'Tip＝各店のスタッフ別チップ配分（1日〜15日／16日〜月末）。' : '')
       + (slAny ? 'シフトリーダー手当＝だれが何回務めていくら払うか（該当日つき・G1 のみ）。' : '')
       + '月次棚卸＝同月の食材移動の集計・明細と 1 つの Excel。</div></div>';
     return h;
   }
+  if (_payOk) {   /* v1191：Tip 一覧と本部の給与は CEO・GM だけ */
   html += `<div class="card"><div class="card-title"><i class="ti ti-coin" style="color:var(--green)"></i>Tip一覧（半月別）</div>
     <p style="font-size:12px;color:var(--muted);margin-bottom:10px">各店のスタッフ別チップ配分を、1日〜15日 / 16日〜月末 の2期間で出力します。</p>`;
   stores.forEach(s => {
@@ -68140,12 +68186,13 @@ function renderAcctExport() {
 
   html += officePayrollCardHtml(y, m);
   html += `</div>`;
+  }
 
   /* v887: 出力する前に「どの店にいくら出るか」が見えるようにする。Motoさん依頼。 */
   var _slStores = stores.filter(function(s){
     return (typeof slStoreEnabled==='function') && slStoreEnabled(s.id);
   });
-  if(_slStores.length){
+  if(_payOk && _slStores.length){   /* v1191：シフトリーダー手当の人ごとの額は CEO・GM だけ */
     var _slGrand = 0, _slCards = '';
     _slStores.forEach(function(s){
       var a = slPayrollData(s.id, _p4Period(d1).from, _p4Period(d1).to);
@@ -68760,6 +68807,7 @@ function acctPayrollSheets(d1, d2){
            tipHit:tipHit, slHit:slHit, hqHit:hqHit, hqTotal:Math.round(hqTotal*100)/100, pending:tipPending };
 }
 async function exportAcctPayrollBook(d1, d2){
+  if(payDetailBlocked(true)) return;   /* v1191：本部シフトインの個人額・給与まとめ＝CEO・GM だけ */
   var r = await tipNtSettle(function(){ return acctPayrollSheets(d1, d2); });   /* v1187 */
   if(!r) return;   /* 待つあいだにログインが変わった */
   if(r.pending){ showToast(tipNtPendingMsg(),'danger'); return; }
@@ -68771,6 +68819,7 @@ async function exportAcctPayrollBook(d1, d2){
   showToast('Tip / Shift Leader / 本部シフトイン を1ファイルで出力しました','success');
 }
 async function exportTipCSV(storeId, anyDate) {
+  if(payDetailBlocked()) return;   /* v1191：給与の個人額＝経理・事務Crew は出力しない */
   var s = STORES.find(x=>x.id===storeId)||{name:storeId};
   var settle = await tipNtSettle(function(){ return calcHalfMonthSettlement(storeId, anyDate); });   /* v1187 */
   if (!settle) return;   /* 待つあいだにログインが変わった */
@@ -68781,6 +68830,7 @@ async function exportTipCSV(storeId, anyDate) {
   showToast(`${s.name} のTip一覧を出力しました`,'success');
 }
 async function exportAllTipCSV(d1, d2) {
+  if(payDetailBlocked()) return;   /* v1191：給与の個人額＝経理・事務Crew は出力しない */
   var stores = getVisibleStores();
   /* v1187：No Tip がまだ分からない店・期間は読み終えるまで待つ（読めなければ出力しない＝仮の額を出さない） */
   var pend = function(){ var p=false; stores.forEach(s=>{ _acctPeriods(d1, d2).forEach(d=>{ if (calcHalfMonthSettlement(s.id, d).pending) p=true; }); }); return { pending:p }; };
@@ -92477,8 +92527,8 @@ function u11ObSt(ob){ return (ob && ob.obStatus) || '本人入力待ち'; }
 function u11ObStep(st){ var m = { '本人入力待ち':0, '差し戻し':0, '提出完了':1, 'I-9確認待ち':2, '経理確認中':3, 'Payroll登録中':3, '登録完了':4 }; return (st in m) ? m[st] : 0; }
 function u11ObNext(st){
   var m = { '本人入力待ち':['本人が入力（招待を再送できます）','New hire enters info (resend invite)'], '差し戻し':['本人が直して出し直す','New hire fixes and resubmits'],
-    '提出完了':['経理が確認','Accounting reviews'], 'I-9確認待ち':['店長が I-9 を確認','Manager checks I-9'], '経理確認中':['Payroll に登録','Register in Payroll'],
-    'Payroll登録中':['Payroll に登録','Register in Payroll'], '登録完了':['研修チェック','Training checklist'], 'キャンセル':['中止','Cancelled'] };
+    '提出完了':['経理が確認','Accounting reviews'], 'I-9確認待ち':['店長が I-9 を確認','Manager checks I-9'], '経理確認中':['GM・CEO が Payroll に登録','GM/CEO registers in Payroll'],
+    'Payroll登録中':['GM・CEO が Payroll に登録','GM/CEO registers in Payroll'], '登録完了':['研修チェック','Training checklist'], 'キャンセル':['中止','Cancelled'] };
   var x = m[st] || ['確認','Check']; return t(x[0], x[1]);
 }
 function u11ObTag(st){

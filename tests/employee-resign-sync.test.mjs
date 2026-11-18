@@ -717,6 +717,11 @@ test('v1085: the quick status buttons and the onboarding never bring a resigned 
   assert.equal((await S.emp('e1')).data.status, '退職');
   assert.ok(a.TOASTS.some(([m]) => /在籍には戻していません/.test(m)));
   Object.assign(a.DOMV, { 'pr-role': 'crew', 'pr-emp': 'パート', 'pr-wage': '16', 'pr-firstwork': '', 'pr-days': 'any', 'pr-maxh': '40' });
+  // v1191 (Moto 11/18): the Payroll step (hourly wage) is CEO/GM only. The harness stubs canEditWages to false; use the real rule here.
+  a.run("canEditWages = function(){ return curRole === 'gm' || curRole === 'ceo'; }; 0");
+  a.curRole = 'office'; a.run("finalizePayroll('on1')");
+  assert.ok(a.TOASTS.some(([m]) => /CEO・GM が行います/.test(m)), 'accounting cannot run the Payroll step');
+  a.curRole = 'gm';
   a.run("finalizePayroll('on1')");
   assert.equal(a.list().filter(e => e.name === 'Ann Sample').length, 1);
   assert.ok(a.TOASTS.some(([m]) => /同じ名前の退職者がいます/.test(m)));

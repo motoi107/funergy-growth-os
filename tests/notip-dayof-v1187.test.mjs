@@ -46,7 +46,7 @@ async function settle(c) { for (let i = 0; i < 20; i++) { await tick(); if (run(
 const FNS = ['calcTipDistribution', 'tipWeightByRate', '_tipDecDay', '_tipDecDayRaw', '_tipFromOk', '_tipDecDayExact', '_tipDayOk', 'tipRateOn', '_tipLatestApproved',
   '_tipDecT', 'firstWorkDate', 'isThreeMonths', 'effectiveTipRate', 'isTipEligibleRole', 'tipBaseRole', 'isTipExcludedTitle', 'getTipLeaderSplit',
   'calcHalfMonthSettlement', 'halfMonthRange', 'halfMonthDates', 'isoOf', '_tipHstDay', 'workedShiftCount',
-  'tipPeriodRates', 'tipPeriodRateFrom', '_tipUsedRate', '_tipRateSlotUsed', 'tipPeriodMatrix', 'confirmTip', 'exportTipCSV', 'exportAllTipCSV', 'estimateMyTip',
+  'tipPeriodRates', 'tipPeriodRateFrom', '_tipUsedRate', '_tipRateSlotUsed', 'tipPeriodMatrix', 'confirmTip', 'payDetailHidden', 'payDetailMsg', 'payDetailBlocked', 'exportTipCSV', 'exportAllTipCSV', 'estimateMyTip',
   'syncTipLaborFromDB', 'fetchTipLaborFromDB', '_tipLaborFetchErr', '_tipLaborNewer', '_tipLaborMark', 'fetchTipLabor',
   'toastNameKey', 'toastAliasField', '_toastAliasRec', 'empToastAliases', 'toastAliasIndex', 'toastAliasFind', 'toastAliasResolve', 'tipLaborPut', '_toastShiftsOverlap', 'tipLaborWithGuid'];
 
