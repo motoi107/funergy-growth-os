@@ -164,6 +164,8 @@ function device(S, src, { user = 'Gus Sample', role = 'gm', me = null, idb = tru
   for (const n of ['_pushQOf', '_pushBusy', '_pushRun']) if (x.has('\nfunction ' + n + '(')) parts.push(x.fn(n));
   if (v1085) {
     for (const n of FNS_1085) parts.push(x.fn(n));
+    // v1191：管理者セキュアページは CEO・GM だけ（doManagerLogin が経理を断る）。前の版の index.html には無い
+    if (x.has('\nfunction secureRoleAllowed(')) parts.push(x.fn('secureRoleAllowed'), x.fn('secureSessionAllowed'), x.line('var SECURE_ONLY_MSG = '));
     // v1087: the undo of an approval reads the approval list from the cloud first and moves the item to a new generation.
     if (x.has('function apPullLatest(')) { for (const n of ['apPullLatest', '_apOnApprovalPage', '_apRerender', '_apReopenRec', '_apGen', '_apRecordState']) parts.push(x.fn(n));
       parts.push(x.line('var _apPullAt'), 'var curPage = "approval";');
@@ -425,9 +427,13 @@ test('v1085: a second status change made while the first is being sent is kept (
 test('v1085: the manager e-mail sign-in asks the server when this device still shows the person as resigned (restored elsewhere); without the server it refuses', async () => {
   const S = await server();
   const a = await pulled(S, NOW);
+  // v1191：管理者セキュアページは CEO・GM だけ。経理のアカウントはここで断る（在籍でも）→ この試験は GM のアカウントで
+  Object.assign(a.DOMV, { 'mgr-email': 'ann@example.test', 'mgr-pass': 'pw' });
+  await a.run('doManagerLogin()'); await S.settle();
+  assert.equal(a.SECURE, 0, 'v1191: an accounting (office) account does not open the secure page');
+  await S.pg.query("update manager_auth set role = 'gm' where emp_id = 'e1'");
   a.run("deleteEmp('e1')"); await S.settle();
   assert.equal((await S.pg.query("select role from manager_auth where emp_id='e1'")).rows[0].role, 'suspended');
-  Object.assign(a.DOMV, { 'mgr-email': 'ann@example.test', 'mgr-pass': 'pw' });
   await a.run('doManagerLogin()'); await S.settle();
   assert.equal(a.SECURE, 0, 'resigned: refused');
   await S.pg.query("select public.employee_restore('e1', 'Gus Sample')");     // restored on another device / by the administrator
