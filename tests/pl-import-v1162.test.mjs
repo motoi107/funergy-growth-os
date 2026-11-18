@@ -34,7 +34,7 @@ function load(store = {}) {
   vm.runInContext(block('var PL_SHEET_MAP = {', '/* SheetJS は取り込みのときだけ読む'), ctx);
   // v1174 の直し（PR #172 Codex P2）：保存は pl_public の合流（mergePlPublic）を使う
   vm.runInContext((/^var PL_YM_RE = [^\n]+/m.exec(html) || [''])[0] + '\n' + ['_cjson', '_mapPick', '_plIsObj', '_plIsNumPos', '_plRecRank', '_plAt', '_plRecPick', '_plMergeMonth', 'mergePlPublic'].map(fnSrc).join('\n'), ctx);
-  vm.runInContext(['_plKeepsFinal', '_plPreviewHtml', '_plStoreLabel', 'plImportSave'].map(fnSrc).join('\n') + '\nvar _plImport = null;', ctx);
+  vm.runInContext(['_plKeepsFinal', '_plDiffPair', '_plImportDiff', '_plImportDiffHtml', '_plPreviewHtml', '_plStoreLabel', 'plImportSave'].map(fnSrc).join('\n') + '\nvar _plImport = null;', ctx);
   return Object.assign(ctx, { store, toasts });
 }
 
@@ -229,24 +229,27 @@ test('② a new account with its subtotal updated is counted once; without the s
 
 test('③ a new operating-expense account is kept with its amount and shown as unclassified; renamed accounts keep their earlier class', () => {
   const c = load();
-  const s = store(); s.opex.push(['70980 Travel - Hotel & Transportation', n([480, null, null])]);
+  // v1188（UI案76 9A）：Travel - Hotel & Transportation は初めから裁量費になったので、まだ決まっていない科目は別の名前で確かめる
+  const s = store(); s.opex.push(['70985 Training & Seminars', n([480, null, null])]);
   const r = c.parsePLWorkbook(book({ 'Marujuu': sheetOf(rowsOf(s).R) }), {});
   const m = r.rows[0];
-  assert.ok(near(m.dets.detail['Travel - Hotel & Transportation'], 480));
-  assert.equal(c.plClassOf('Travel - Hotel & Transportation'), 'other');
+  assert.ok(near(m.dets.detail['Training & Seminars'], 480));
+  assert.equal(c.plClassOf('Training & Seminars'), 'other');
   const t = c.plClassTotals(m.dets.detail);
-  assert.ok(t._unknown.includes('Travel - Hotel & Transportation'));
+  assert.ok(t._unknown.includes('Training & Seminars'));
   // 名前が変わった科目（Oct26）：前の区分を引き継ぐ
   assert.equal(c.plClassOf('70500 Taxes - General Excise'), 'variable');
   assert.equal(c.plClassOf('Taxes, Licenses & Fees'), 'fixed');
   assert.equal(c.plClassOf('70991 Freight / Delivery(Dont USE)'), 'variable');
   assert.equal(c.plClassOf('Gift - Under $25'), 'discretionary', 'the spacing around the hyphen no longer matters');
   assert.equal(c.plClassOf('70925 Staff Meal Expense  (賄い)'), 'variable');
-  assert.equal(c.plClassOf('41200 Sales - State Tax（GET pass-on)'), 'other', 'a new account needs a decision');
-  assert.equal(c.plClassOf('70510 Taxes - Liquor Commission'), 'other');
+  // v1188（UI案76 9A）：Oct26 から出てきた 3 科目の初期の区分
+  assert.equal(c.plClassOf('41200 Sales - State Tax（GET pass-on)'), 'variable');
+  assert.equal(c.plClassOf('70510 Taxes - Liquor Commission'), 'fixed');
+  assert.equal(c.plClassOf('70980 Travel - Hotel & Transportation'), 'discretionary');
   // 画面で決めた区分（pl_expense_class）は前のそろえ方のキーでも効く
-  const c2 = load({ pl_expense_class: { 'taxes - liquor commission': 'fixed', 'gift- under $25': 'variable' } });
-  assert.equal(c2.plClassOf('70510 Taxes - Liquor Commission'), 'fixed');
+  const c2 = load({ pl_expense_class: { 'taxes - liquor commission': 'utility', 'gift- under $25': 'variable' } });
+  assert.equal(c2.plClassOf('70510 Taxes - Liquor Commission'), 'utility', 'a decided class beats the default');
   assert.equal(c2.plClassOf('Gift - Under $25'), 'variable');
 });
 

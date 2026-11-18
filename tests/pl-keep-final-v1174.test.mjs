@@ -41,7 +41,7 @@ const DEF = (() => { const m = /^\s*pl_public:\s*(\{[^\n]*\}),?\s*$/m.exec(SRC);
 
 const PURE = ['_cjson', '_mapPick', 'mergeMapByKey', '_coversMapByKey', '_plIsObj', '_plIsNumPos', '_plRecRank', '_plAt', '_plRecPick', '_plMergeMonth', 'mergePlPublic', '_coversPlPublic'];
 const DEVICE = ['_fetchOpValue', '_opWriteBack', 'opMergePush', '_opUpsertRow', '_opCloudVal', 'pullSettingKey',
-  '_plKeepsFinal', '_plReadCloudPub', '_plPreviewHtml', '_plStoreLabel', 'plImportSave', 'plFilePicked'];
+  '_plKeepsFinal', '_plReadCloudPub', '_plDiffPair', '_plImportDiff', '_plImportDiffHtml', '_plPreviewHtml', '_plStoreLabel', 'plImportSave', 'plFilePicked'];
 
 const plain = v => JSON.parse(JSON.stringify(v));
 const run = (c, code) => vm.runInContext(code, c);
