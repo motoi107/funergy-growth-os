@@ -3934,6 +3934,28 @@ function toastAliasCatchUp(){
   _toastAliasCatchQ=p.catch(function(){});
   return p;
 }
+/* v1192：DB の 1 日の勤怠（hyper-worker が保存した Toast の一覧）から、その日の勤怠の表（名前 → 時間）を作る。
+   syncTipLaborFromDB から取り出した（中身は同じ）。関数 secure-state の人件費の合計（経理・AM の端末に時給を送らない）も、この関数をそのまま使う */
+function tipLaborBuildDay(storeId, _bdA, list, staff, _aidx){
+  var labor = {}, _conf = {};
+  list.forEach(emp=>{
+    /* Order Only（注文専用アカウント）はレイバー/チップから除外（getTipLabor が名前で外す）。
+       v1175（Codex #173 の指摘）：勤怠の写しには Toast の名前のまま残す（従業員には結ばない）。Toast から直接取ったときと同じ形。
+       総労働時間の KPI が、業務用アカウントの一覧（4A）で「外すのをやめた」Order Only を数えられるように。給与・Tip は変わらない */
+    if (isOrderOnlyAccount(emp.name)) {
+      var _oos = emp.shifts||[], _ooh = _oos.length ? tipHoursFromShifts(storeId, _oos) : { lunch: emp.lunchHours||0, dinner: emp.dinnerHours||0 };
+      tipLaborPut(labor, _conf, String(emp.name), tipLaborWithGuid({ lunch: _ooh.lunch, dinner: _ooh.dinner, rawLunch: emp.lunchHours||0, rawDinner: emp.dinnerHours||0, shifts: _oos, toastName: emp.name }, emp), { conf:true });
+      return;
+    }
+    var m = staff.find(s=>s.name===emp.name || (emp.name&&s.name.toLowerCase()===emp.name.toLowerCase()) || (emp.name&&s.name.includes(emp.name)) || (emp.name&&emp.name.includes(s.name)));
+    var _r = toastAliasResolve(m, emp.name, _bdA, _aidx, storeId);   /* v1111：別名（店ごとの別名はこの店だけ）・同じ日の 2 つを足す */
+    var key = _r.emp ? _r.emp.name : emp.name;
+    var shifts = emp.shifts||[];
+    var hrs = shifts.length ? tipHoursFromShifts(storeId, shifts) : { lunch: emp.lunchHours||0, dinner: emp.dinnerHours||0 };
+    tipLaborPut(labor, _conf, key, tipLaborWithGuid({ lunch: hrs.lunch, dinner: hrs.dinner, rawLunch: emp.lunchHours||0, rawDinner: emp.dinnerHours||0, shifts: shifts, toastName: emp.name }, emp), _r);   /* v1153：Toast のアカウント ID（hyper-worker は前から保存していた） */
+  });
+  return labor;
+}
 async function syncTipLaborFromDB(storeId, guid, days, opts) {
   if (!guid) return { updated: 0, diag:'GUID未設定' };
   var _seq = ++_tipLaborSeq;
@@ -3963,23 +3985,7 @@ async function syncTipLaborFromDB(storeId, guid, days, opts) {
     }
     if (!Array.isArray(list) || !list.length) { emptyData++; if (typeof _tipNtRecordDay === 'function') _tipNtRecordDay(storeId, _bdA, {}, _seq, _ntTk); return; }   /* v1187：DB に勤怠の無い日＝シフト 0 */
     var _skipL = _tipLaborNewer(storeId, _bdA, 'L', _seq);   /* あとから始めた読み込みがもう勤怠を保存した日（v1187：表は作って No Tip の数えに使う・端末には書かない） */
-    var labor = {}, _conf = {};
-    list.forEach(emp=>{
-      /* Order Only（注文専用アカウント）はレイバー/チップから除外（getTipLabor が名前で外す）。
-         v1175（Codex #173 の指摘）：勤怠の写しには Toast の名前のまま残す（従業員には結ばない）。Toast から直接取ったときと同じ形。
-         総労働時間の KPI が、業務用アカウントの一覧（4A）で「外すのをやめた」Order Only を数えられるように。給与・Tip は変わらない */
-      if (isOrderOnlyAccount(emp.name)) {
-        var _oos = emp.shifts||[], _ooh = _oos.length ? tipHoursFromShifts(storeId, _oos) : { lunch: emp.lunchHours||0, dinner: emp.dinnerHours||0 };
-        tipLaborPut(labor, _conf, String(emp.name), tipLaborWithGuid({ lunch: _ooh.lunch, dinner: _ooh.dinner, rawLunch: emp.lunchHours||0, rawDinner: emp.dinnerHours||0, shifts: _oos, toastName: emp.name }, emp), { conf:true });
-        return;
-      }
-      var m = staff.find(s=>s.name===emp.name || (emp.name&&s.name.toLowerCase()===emp.name.toLowerCase()) || (emp.name&&s.name.includes(emp.name)) || (emp.name&&emp.name.includes(s.name)));
-      var _r = toastAliasResolve(m, emp.name, _bdA, _aidx, storeId);   /* v1111：別名（店ごとの別名はこの店だけ）・同じ日の 2 つを足す */
-      var key = _r.emp ? _r.emp.name : emp.name;
-      var shifts = emp.shifts||[];
-      var hrs = shifts.length ? tipHoursFromShifts(storeId, shifts) : { lunch: emp.lunchHours||0, dinner: emp.dinnerHours||0 };
-      tipLaborPut(labor, _conf, key, tipLaborWithGuid({ lunch: hrs.lunch, dinner: hrs.dinner, rawLunch: emp.lunchHours||0, rawDinner: emp.dinnerHours||0, shifts: shifts, toastName: emp.name }, emp), _r);   /* v1153：Toast のアカウント ID（hyper-worker は前から保存していた） */
-    });
+    var labor = tipLaborBuildDay(storeId, _bdA, list, staff, _aidx);   /* v1192：関数 secure-state の人件費の合計も同じ関数で作る */
     // business_date を YYYY-MM-DD に正規化（タイムスタンプ/YYYYMMDD等に対応）
     var bd = normalizeBusinessDate(row.business_date);
     if (typeof _tipNtRecordDay === 'function') _tipNtRecordDay(storeId, bd, labor, _seq, _ntTk);   /* v1187：No Tip を数えるための DB の勤怠（このログインのあいだだけ） */
@@ -27254,6 +27260,28 @@ function checkRangeSub(scopeStores, days){
     +_kpiMiniChip(t('最高 /日','Max /day'), '$'+hi.toFixed(2), md(hiD), true)
     +'</div>';
 }
+/* v1192：1 店の G2 以上／G1 の賃金（laborGradeSub の 1 店ぶん。core は laborCoreForYm か _laborWageParts の答え。経理・AM の端末はサーバーの合計） */
+function _laborGradeSplit(sid, ym, core, emps){
+  var _sv=(typeof ltServerGrade==='function') ? ltServerGrade(sid, ym) : null;
+  if(_sv) return _sv;
+  var g1=0, g2=0, has=false;
+  var gradeOf=function(n){ var e=emps.find(function(x){return x.name===n && x.store===sid;})||emps.find(function(x){return x.name===n;}); return e?(empGradeNum(e)||0):0; };
+  var mNames={};
+  var mStaff=(typeof storeMonthlyStaff==='function')?(storeMonthlyStaff(sid)||[]):[];
+  mStaff.forEach(function(e){
+    var m=(typeof empMonthlyOf==='function')?empMonthlyOf(e):0; if(!(m>0)) return;
+    mNames[e.name]=1;
+    var cost=(core.dim>0)?(m*core.periodDays/core.dim):0;
+    if(cost>0){ has=true; if((empGradeNum(e)||0)>=2) g2+=cost; else g1+=cost; }
+  });
+  Object.keys(core.byName||{}).forEach(function(n){
+    if(mNames[n]) return;
+    var a=core.byName[n]; var cost=0;
+    try{ cost=laborForEmployee(n,{regular:a.reg,ot:a.ot,pay:a.pay}).total; }catch(e){}
+    if(cost>0){ has=true; if(gradeOf(n)>=2) g2+=cost; else g1+=cost; }
+  });
+  return {g1:g1, g2:g2, has:has};
+}
 /* 人件費率: G2以上 / G1 の人件費(賃金＝時給＋月給按分)内訳。税・保険・手入力は含まない */
 function laborGradeSub(scopeStores, days){
   var ym=(days&&days[0])?days[0].date.slice(0,7):''; if(!ym) return '';
@@ -27262,21 +27290,8 @@ function laborGradeSub(scopeStores, days){
   (scopeStores||[]).forEach(function(s){
     var core; try{ core=laborCoreForYm(s.id, ym); }catch(e){ return; }
     if(!core) return;
-    var gradeOf=function(n){ var e=emps.find(function(x){return x.name===n && x.store===s.id;})||emps.find(function(x){return x.name===n;}); return e?(empGradeNum(e)||0):0; };
-    var mNames={};
-    var mStaff=(typeof storeMonthlyStaff==='function')?(storeMonthlyStaff(s.id)||[]):[];
-    mStaff.forEach(function(e){
-      var m=(typeof empMonthlyOf==='function')?empMonthlyOf(e):0; if(!(m>0)) return;
-      mNames[e.name]=1;
-      var cost=(core.dim>0)?(m*core.periodDays/core.dim):0;
-      if(cost>0){ has=true; if((empGradeNum(e)||0)>=2) g2+=cost; else g1+=cost; }
-    });
-    Object.keys(core.byName||{}).forEach(function(n){
-      if(mNames[n]) return;
-      var a=core.byName[n]; var cost=0;
-      try{ cost=laborForEmployee(n,{regular:a.reg,ot:a.ot,pay:a.pay}).total; }catch(e){}
-      if(cost>0){ has=true; if(gradeOf(n)>=2) g2+=cost; else g1+=cost; }
-    });
+    var x=_laborGradeSplit(s.id, ym, core, emps);
+    if(x.has) has=true; g1+=x.g1; g2+=x.g2;
   });
   if(!has) return '';
   return '<div style="margin-top:6px;display:flex;gap:4px">'
@@ -27775,6 +27790,8 @@ function canEditBudget(b, ym) {
    今日までの日次予算と日次実績を積み上げ、現在地を返す */
 /* 指定日のToast実績人件費($) = Σ(従業員の(lunch+dinner)時間 × 時給)。Order Onlyは除外済み(getTipLabor)。 */
 function toastLaborCostForDate(storeId, dateISO){
+  var _sv = (typeof ltServerDay==='function') ? ltServerDay(storeId, dateISO) : null;   /* v1192：経理・AM の端末はサーバーの合計（全員の時給を持たない） */
+  if (_sv) return _sv.c;
   var labor = getTipLabor(storeId, dateISO);
   if(!labor) return 0;
   var cost = 0;
@@ -27826,6 +27843,8 @@ function storeInsuranceDaily(storeId, ym){
 }
 /* その店舗に在籍する月給制スタッフ（退職除く）の 月額給与 合計 */
 function storeSalaryMonthly(storeId){
+  var _sv = (typeof ltServerSalary==='function') ? ltServerSalary(storeId) : null;   /* v1192：経理・AM の端末はサーバーの合計（月給を持たない） */
+  if (_sv!=null) return _sv;
   var sum = 0;
   getEmployees().forEach(function(e){
     if (!e || e.store!==storeId) return;
@@ -34133,19 +34152,26 @@ function _meetLaborLD(storeId, ym){
   days.forEach(function(d){
     var ov=salesActualForDay(storeId,d.date,da[d.date]);
     lsv+=Number(ov.lunchSales)||0; dsv+=Number(ov.dinnerSales)||0;
-    var lab=null; try{ lab=getTipLabor(storeId, d.date); }catch(e){}
-    if(!lab) return;
-    Object.keys(lab).forEach(function(n){
-      var e=lab[n]; if(!e) return;
-      var rL=Number(e.rawLunch)||0, rD=Number(e.rawDinner)||0;
-      var wL=Number(e.lunch)||0,    wD=Number(e.dinner)||0;
-      /* _laborHrs と同じ選び方（合計が大きい側を採用）にそろえる */
-      var useRaw=(rL+rD)>=(wL+wD);
-      var w=0; try{ w=empWageAt(n, storeId, d.date)||0; }catch(e2){}   /* v1106 */
-      lc+=(useRaw?rL:wL)*w; dc+=(useRaw?rD:wD)*w;
-    });
+    var x=_meetLaborLDDay(storeId, d.date); lc+=x.lc; dc+=x.dc;
   });
   return {lunchCost:lc, dinnerCost:dc, lunchSales:lsv, dinnerSales:dsv};
+}
+/* v1192：1 日のランチ／ディナーの時給×時間（_meetLaborLD の 1 日ぶん。経理・AM の端末はサーバーの合計） */
+function _meetLaborLDDay(storeId, date){
+  var _sv=(typeof ltServerDay==='function') ? ltServerDay(storeId, date) : null;
+  if(_sv) return {lc:_sv.ml, dc:_sv.md};
+  var lc=0, dc=0, lab=null; try{ lab=getTipLabor(storeId, date); }catch(e){}
+  if(!lab) return {lc:0, dc:0};
+  Object.keys(lab).forEach(function(n){
+    var e=lab[n]; if(!e) return;
+    var rL=Number(e.rawLunch)||0, rD=Number(e.rawDinner)||0;
+    var wL=Number(e.lunch)||0,    wD=Number(e.dinner)||0;
+    /* _laborHrs と同じ選び方（合計が大きい側を採用）にそろえる */
+    var useRaw=(rL+rD)>=(wL+wD);
+    var w=0; try{ w=empWageAt(n, storeId, date)||0; }catch(e2){}   /* v1106 */
+    lc+=(useRaw?rL:wL)*w; dc+=(useRaw?rD:wD)*w;
+  });
+  return {lc:lc, dc:dc};
 }
 /* 中間MTG: 区分別内訳（客数L/D/TO・客単価L/D/TO・ドリンク酒/ソフト）を目標差リンクで表示 */
 function _meetSegExtra(k, key, storeId, ym, paceFrac, unit){
@@ -39201,6 +39227,8 @@ function ldLaborDay(storeId, date){
     var useRaw=(rL+rD)>=(wL+wD), hL=useRaw?rL:wL, hD=useRaw?rD:wD, w=0; try{ w=(pmHasAt(n, storeId)?empWageAt(n, storeId, date):_ldWage(n))||0; }catch(e2){}   /* v1048・v1106: プレップの認定はその日の時給 */
     r.hL+=hL; r.hD+=hD; r.cL+=hL*w; r.cD+=hD*w;
   });
+  var _sv=(typeof ltServerDay==='function') ? ltServerDay(storeId, date) : null;   /* v1192：時間は端末で数えたまま、お金だけサーバーの合計 */
+  if(_sv){ r.cL=_sv.ll; r.cD=_sv.ld; }
   return r;
 }
 /* v1048: 時給の表（1回の描画で1回だけ作る。empWage(名前) と同じ答え） */
@@ -48035,7 +48063,7 @@ function laborHoursData(storeId) {
     if (actualH<=0 && sales<=0 && plannedH<=0) return;
     if (d.date<=todayStr) { cumHours+=actualH; cumSales+=sales; cumPlanned+=plannedH; }
     var laborCost = 0;
-    if (labor) Object.keys(labor).forEach(n=>{ var w=empWageAt(n, storeId, d.date)||0; var h=_laborHrs(labor[n]); laborCost += w*h; });   /* v1106 */
+    laborCost = toastLaborCostForDate(storeId, d.date);   /* v1106：Σ（時間×その日の時給）。v1192：同じ式を 1 か所に（経理・AM の端末はサーバーの合計） */
     if (actualH>0) laborCost += storeSalaryDaily(storeId, d.date.slice(0,7)); // 月給制の日割り（生・税なし＝時給と同扱い）
     rows.push({date:d.date, dow:d.dow, sales, plannedH, actualH, diff:actualH-plannedH,
       laborCost, laborRate: sales?Math.round(laborCost/sales*1000)/10:0,
@@ -48351,7 +48379,8 @@ function sumWeekStats(storeId, dates) {
     if (ov.foodCost!=null) food += ov.foodCost;
     var labor = getTipLabor(storeId, date);
     var hadH=false;   /* v1057: 実働（Labor 集計と同じ _laborHrs）。lunch/dinner は Tip の対象時間で、営業時間のみの店は窓の外が抜ける */
-    if (labor) Object.keys(labor).forEach(n=>{ var h=_laborHrs(labor[n]); if(h>0)hadH=true; hours+=h; laborCost+=h*(empWageAt(n, storeId, date)||0); });   /* v1106 */
+    if (labor) Object.keys(labor).forEach(n=>{ var h=_laborHrs(labor[n]); if(h>0)hadH=true; hours+=h; });
+    if (labor) laborCost += toastLaborCostForDate(storeId, date);   /* v1106：Σ（時間×その日の時給）。v1192：同じ式を 1 か所に（経理・AM の端末はサーバーの合計） */
     if (hadH) laborCost += storeSalaryDaily(storeId, date.slice(0,7)); // 月給制の日割り（生）
   });
   return {sales, guests, hours, laborCost, food,
@@ -48482,7 +48511,10 @@ function laborCoreForYm(storeId, ym, opts){
   if(opts && (opts.endBefore !== undefined || opts.weekSun)) return _laborCoreForYmRaw(storeId, ym, opts);
   return _mdMemo('labor', String(storeId) + '|' + ym, function(){ return _laborCoreForYmRaw(storeId, ym, opts); });
 }
-function _laborCoreForYmRaw(storeId, ym, opts){
+/* v1192：共通コアのうち、時給・月給に関わる部分（人ごとの時間・時給の合計（丸める前）・月給の日割り・有給）。
+   CEO・GM の端末はここで計算する。全員の時給を持たない経理・AM の端末は、関数 secure-state がこの関数をそのまま動かした答え
+   （時給の合計・月給・有給のお金だけ）を使い、人ごとの時間は端末で数える（_laborCoreForYmRaw）。中身は v1191 の _laborCoreForYmRaw の前半と同じ */
+function _laborWageParts(storeId, ym, opts){
   opts = opts||{};
   var cutoff = (opts.endBefore!==undefined) ? opts.endBefore : (ym===curYm() ? bizToday() : null);
   var weeks = laborMonthWeeks(ym).filter(function(w){ return !opts.weekSun || w.sun===opts.weekSun; });
@@ -48538,6 +48570,20 @@ function _laborCoreForYmRaw(storeId, ym, opts){
   } catch(e){}
   leavePay = Math.round(leavePay*100)/100;
   var dim = daysInMonthOf(ym);
+  var periodDays=0, seen={};
+  weeks.forEach(function(w){ laborWeekDays(w.sun).forEach(function(dt){ if(!inRange(dt) || seen[dt]) return; seen[dt]=1; periodDays++; }); });
+  var salary = 0;
+  mStaff.forEach(function(e){ var m=(typeof empMonthlyOf==='function')?empMonthlyOf(e):0; if(m>0 && dim>0) salary += m*periodDays/dim; });
+  salary = Math.round(salary*100)/100;
+  return { cutoff:cutoff, weeks:weeks, byName:byName, hourly:hourly, leave:leavePay, leaveDays:leaveDays, salary:salary, periodDays:periodDays, dim:dim };
+}
+function _laborCoreForYmRaw(storeId, ym, opts){
+  opts = opts||{};
+  var P = _laborWageParts(storeId, ym, opts);
+  /* v1192：経理・AM の端末（全員の時給を持たない）は、お金の部分だけ関数 secure-state の答えに置き換える（人ごとの時間は端末で数えたまま） */
+  if (typeof ltServerParts==='function') P = ltServerParts(storeId, ym, opts, P);
+  var cutoff=P.cutoff, weeks=P.weeks, byName=P.byName, hourly=P.hourly, leavePay=P.leave, leaveDays=P.leaveDays, dim=P.dim;
+  var inRange = function(dt){ return String(dt).slice(0,7)===ym && (!cutoff || dt<cutoff); };
   var periodDays=0, sales=0, manual=0, daysWithActual=0, seen={};
   var laborDays=0, noLaborDays=[];   /* v1067（Codex レビュー R3）：勤怠の記録（Toast の打刻を取得した日・手入力の人件費）がある日／売上はあるのに勤怠が無い日（未取得） */
   var acts = _daRO(storeId);
@@ -48553,9 +48599,7 @@ function _laborCoreForYmRaw(storeId, ym, opts){
       else if((Number(v.actual)||0)>0) noLaborDays.push(dt);           /* チップの画面の「勤怠なし」と同じ考え方 */
     });
   });
-  var salary = 0;
-  mStaff.forEach(function(e){ var m=(typeof empMonthlyOf==='function')?empMonthlyOf(e):0; if(m>0 && dim>0) salary += m*periodDays/dim; });
-  salary = Math.round(salary*100)/100;
+  var salary = P.salary;
   var ins = Math.round(((typeof storeInsuranceDaily==='function')?storeInsuranceDaily(storeId, ym):0)*periodDays*100)/100;
   var wage = Math.round((hourly+salary+leavePay)*100)/100;
   var tax = Math.round(wage*PAYROLL_TAX_RATE*100)/100;

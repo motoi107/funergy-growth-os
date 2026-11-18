@@ -44,7 +44,7 @@ const fnSrc = n => fnFrom(SRC, n);
 function varFrom(src, name) { const m = new RegExp('^var ' + name + '\\b[^\\n]*$', 'm').exec(src); if (!m) throw new Error('var not found: ' + name); return m[0]; }
 const PM = (() => { const a = SRC.indexOf('/* FUNERGY_PREP_BEGIN */'), b = SRC.indexOf('/* FUNERGY_PREP_END */'); assert.ok(a > 0 && b > a, 'prep module markers'); return SRC.slice(a, b); })();
 
-const LABOR = ['_laborHrs', 'laborWeekDays', 'laborMonthWeeks', 'laborWeekRange', 'isoOf', 'isoLocalDate', 'laborForEmployee', '_laborCoreForYmRaw',
+const LABOR = ['_laborHrs', 'laborWeekDays', 'laborMonthWeeks', 'laborWeekRange', 'isoOf', 'isoLocalDate', 'laborForEmployee', '_laborCoreForYmRaw', '_laborWageParts',
   'toastLaborCostForDate', 'ldLaborDay', '_ldWage', 'laborBreakdownForPeriod', 'empWage', 'empWageOf', 'empPayType', '_mdMemo', 'mdCacheClear'];
 const APPROVAL = ['_apFollowPage', '_apNewestForRef', 'apFinalize', 'apNotifyAcctApplied', '_apSigBody', '_actorName', '_apGradeChainTypes', '_apApplicantGrade', '_apUserInScope', '_apStoreHasAm', 'approvalRequiredRoles',
   '_approvalStore', '_approvalStoreId', '_approvalMyRoles', '_approvalSignedMap', '_approvalAllDone', 'addApproval', '_apOldNotif', 'signoffApproval', 'overrideApproveAll', 'rejectApprovalItem', 'approveItem', 'reopenApproval',
