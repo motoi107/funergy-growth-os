@@ -7642,7 +7642,8 @@ const NAV_ITEMS = [
   {id:'announce',     label:'アナウンス',   icon:'ti-broadcast',     roles:['ceo','gm','office','am','sl']},
   {id:'settings',    label:'設定',        icon:'ti-settings',         roles:['ceo','gm','office','office_crew','chef']},
   /* v1137（決めてほしいこと 12A）：同期・診断のボタンを一般の画面から外して、ここに集める（GM・CEO・経理・事務Crew） */
-  {id:'diag_center', label:'診断と記録',   icon:'ti-stethoscope',      roles:['ceo','gm','office','office_crew','am','g4','sl']},   /* 独立レビュー P2-4：AM・G4・SL は前の同期センターの復旧の道具（予算・棚卸の復元・取り込み）だけ */
+  {id:'diag_center', label:'診断と記録',   icon:'ti-stethoscope',      roles:['ceo','gm','office','office_crew','am','g4','sl']},
+  {id:'ar_settings', label:'承認・閲覧設定', icon:'ti-route',           roles:['ceo','gm']},   /* v1190（UI案93）：承認・閲覧の共通ルール（CEO・GM だけ。サーバーも CEO・GM だけ） */   /* 独立レビュー P2-4：AM・G4・SL は前の同期センターの復旧の道具（予算・棚卸の復元・取り込み）だけ */
 ];
 
 /* ===== 6メインタブ構成（ダッシュボード/予実/食材管理/人材管理/設定/マイページ） ===== */
@@ -7673,7 +7674,7 @@ const MENU_GROUPS = [
   {id:'g_acct_review', label:'経理レビュー', icon:'ti-checklist', roles:['ceo','gm','office'],
     children:['acct_review']},
   {id:'g_settings', label:'設定', icon:'ti-settings', roles:['ceo','gm','office','am','sl'],
-    children:['store_master','required','settings','diag_center']},   /* v1137: 診断と記録（GM・CEO・経理・事務Crew。AM・G4・SL は復旧の道具だけ。NAV_ITEMS の roles で絞る） */
+    children:['store_master','required','settings','diag_center','ar_settings']},   /* v1137: 診断と記録（GM・CEO・経理・事務Crew。AM・G4・SL は復旧の道具だけ。NAV_ITEMS の roles で絞る） */
 ];
 
 /* Office（本部）モード専用メニュー（curStore==='OFFICE'時） */
@@ -7694,7 +7695,7 @@ const OFFICE_GROUPS = [
   {id:'go_chat', label:'チャット', icon:'ti-messages', roles:['ceo','gm','office'],
     children:['chat']},   /* v1156 */
   {id:'go_set', label:'設定', icon:'ti-settings', roles:['ceo','gm','office'],
-    children:['settings','diag_center','profile']},   /* v1137 */
+    children:['settings','diag_center','ar_settings','profile']},   /* v1137 */
 ]
 /* 経理(office)専用：キッチン側を含まない */
 const ACCT_GROUPS = [
@@ -10673,7 +10674,8 @@ var NAV_LABEL_EN = {
   '休暇承認':'Vacation Approval',
   '従業員割引':'Employee Discount',   /* v1028 */
   '会議':'Meeting','仕入れ':'Purchases','経理センター':'Accounting Center',   /* v1084 */
-  'DM・チャット':'Chat','チャット':'Chat'   /* v1156 */
+  'DM・チャット':'Chat','チャット':'Chat',   /* v1156 */
+  '承認・閲覧設定':'Approval & viewer rules'   /* v1190 */
 };
 function navLabelEn(l){ return (curLang==='en' && NAV_LABEL_EN[l]!=null) ? NAV_LABEL_EN[l] : l; }
 /* 従業員マスターを閲覧・編集できる個人（役職ではなく個人名・名で判定） */
@@ -23268,7 +23270,7 @@ var OFFICE_OK_PAGES = ['lunch_challenge','crew_handbook','biz_guide','office_mgr
   /* v884: 経理センターと紛失届。ここに載せ忘れると、オフィス表示では
      switch に到達する前に Office管理へ差し替えられ、何を押しても
      ダッシュボードが出続ける。新しいページを足したら必ずここにも足すこと。 */
-  'acct_center','lost_receipt','expense','diag_center','chat'];   /* v1156: chat */   /* v809-811 */   /* v767-768 */
+  'acct_center','lost_receipt','expense','diag_center','chat','ar_settings'];   /* v1190: ar_settings */   /* v1156: chat */   /* v809-811 */   /* v767-768 */
 
 /* ============================================================
    ROUTER
@@ -25055,6 +25057,7 @@ case 'acct_center':
     case 'growth_karte': el.innerHTML = renderGrowthKarte(); break;
     case 'settings':     el.innerHTML = renderSettings(); break;
     case 'diag_center':  el.innerHTML = (window.FUNERGY_STATUS ? FUNERGY_STATUS.renderDiagCenter() : ''); break;   /* v1137 */
+    case 'ar_settings':  el.innerHTML = (window.FUNERGY_AR ? FUNERGY_AR.render() : ''); break;   /* v1190（UI案93） */
     default:             el.innerHTML = '<div class="card"><p style="color:var(--muted)">準備中</p></div>';
   }
   try{ var _psc=pageSyncScope(page); if(_psc){ el.insertAdjacentHTML('afterbegin', pageSyncStrip(_psc)); } }catch(e){}   /* v1127：前は画面全体を文字に戻して読み直していた */
@@ -25193,6 +25196,7 @@ case 'acct_center':
     case 'growth_karte': el.innerHTML = renderGrowthKarte(); break;
     case 'settings':     el.innerHTML = renderSettings(); break;
     case 'diag_center':  el.innerHTML = (window.FUNERGY_STATUS ? FUNERGY_STATUS.renderDiagCenter() : ''); break;   /* v1137 */
+    case 'ar_settings':  el.innerHTML = (window.FUNERGY_AR ? FUNERGY_AR.render() : ''); break;   /* v1190（UI案93） */
     default:             el.innerHTML = '<div class="card"><p style="color:var(--muted)">準備中</p></div>';
   }
   try{ var _psc=pageSyncScope(page); if(_psc){ el.insertAdjacentHTML('afterbegin', pageSyncStrip(_psc)); } }catch(e){}   /* v1127：前は画面全体を文字に戻して読み直していた */
@@ -49325,7 +49329,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1189';
+const APP_VERSION = '1190';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -112877,7 +112881,10 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     apply_start:['反映を始めた（ほかの端末を止めた）','started applying (others wait)'], apply_done:['正式な値に反映した','applied'], apply_cancel:['反映をやめた（何も変えていない）','stopped applying (nothing changed)'],
     revise:['予算を変えて出し直した（新しい版）','changed the budget (new version)'],
     link_pre:['事前経費に結んだ','linked to the pre-approval'], link_pre_over:['事前経費に結んだ（予定を超えたので GM の承認をもう一度）','linked to the pre-approval (over the plan: back to the GM)'],
-    unlink_pre:['事前経費から外した','unlinked from the pre-approval'], actual_linked:['実費を結んだ','linked the actual'] };
+    unlink_pre:['事前経費から外した','unlinked from the pre-approval'], actual_linked:['実費を結んだ','linked the actual'],
+    /* v1190（UI案93）：承認・閲覧の共通ルール */
+    route_start:['共通ルールの承認の順番を付けた','attached the approval route'], route_stop:['共通ルールを止めた（今までの決まりに戻した）','stopped the approval rules (back to the earlier way)'],
+    route_exception:['この申請だけ承認者・閲覧者を変えた（例外）','changed approvers / viewers for this request only'], route_apply:['新しい版のルールを当てた','applied the new rule version'] };
   var MILEAGE_PURPOSES = ['買い出し','ミーティング','銀行・郵便','店舗間移動','その他'];
   var RB_PURPOSES = ['仕入れ','消耗品','修理','交通','その他'];
   /* 用途は日本語の値のまま保存し（サーバーが確かめる）、英語の画面では英語で出す（#123 のレビュー） */
@@ -112924,6 +112931,9 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     flt:{ kind:'', store:'', who:'' }, sel:{}, att:{}, bulk:null, acct:null, gen:0, busy:'', d:null, dErr:'', ask:null, form:null, keys:{}, openCode:'', people:null, pp:null, views:{}, vw:null, tipForm:null, tipApply:null, claims:{}, pend:{}, tipDone:{}, seen:{}, s2:false, fn:0, sql:0 }; }
   var S = fresh();
   W._wrState = function(){ return S; };
+  /* v1190（UI案93）：承認・閲覧設定の画面（FUNERGY_AR）が同じ入り方・言葉で話す */
+  W.wrAr = function(){ return S.ar || null; };
+  W.wrHelpers = { esc:esc, money:money, kindL:kindL, storeName:storeName, hstTime:hstTime, hstToday:hstToday, newKey:newKey, errText:errText, authKey:function(){ return authKey(); } };
 
   var ERR = {
     signin:['PIN のログインがありません。ログアウトしてログインし直してください','There is no PIN login. Log out and log in again'],
@@ -112955,7 +112965,14 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     /* v1184：経費の申請の権限（G2 より下の人は GM・CEO が人ごとに決める） */
     no_exp_right:['この申請を出す権限がありません（GM・CEO が経費の申請の権限を変えたかもしれません。サーバーで確かめました）。出せるものを読み直しました','You may not send this request (the GM or CEO may have changed your expense rights; checked by the server). What you can send was reloaded'],
     grant_old:['経費の申請の権限の SQL がまだ入っていません（deploy/three-fixes-v1184 の手順・Moto さんに知らせてください）','The SQL for expense rights is not in yet (deploy/three-fixes-v1184; tell Moto)'],
-    not_crew:['従業員マスターでは事務Crew ではないので、事務Crew と確かめられません（役割・肩書きを確かめてください）。読み直しました','This person is not office crew in the employee master, so you cannot confirm them as office crew (check the role / title). Reloaded']
+    not_crew:['従業員マスターでは事務Crew ではないので、事務Crew と確かめられません（役割・肩書きを確かめてください）。読み直しました','This person is not office crew in the employee master, so you cannot confirm them as office crew (check the role / title). Reloaded'],
+    /* v1190（UI案93）：承認・閲覧の共通ルール */
+    ar_old:['承認・閲覧の共通ルールの SQL（deploy/approval-rules-v1190）がまだ入っていません（Moto さんに知らせてください）','The SQL for the approval rules (deploy/approval-rules-v1190) is not in yet (tell Moto)'],
+    no_route:['この申請に当てはまる承認の順番がありません（設定 › 承認・閲覧設定で「それ以外」を確かめてください）。送っていません','No approval route fits this request (check “Otherwise” in Settings › Approval rules). Nothing was sent'],
+    rule_invalid:['ルールの形が正しくないか、赤の確かめが残っています（保存・有効にしていません）','The rule is not complete, or a red check is left (nothing was saved)'],
+    delegate_cycle:['代理が輪になります（A の代わりが B・B の代わりが A など）。保存していません','The delegation would go in a circle (A for B and B for A). Nothing was saved'],
+    rules_missing:['16 種類すべてのルールを有効にしてから動かせます','Turn on a rule for all 16 kinds first'],
+    no_approver:['その変え方だと承認できる人がいない段ができます（変えていません）','That change would leave a step with nobody who can approve (nothing changed)']
   };
   function errText(code, status){
     if (Object.prototype.hasOwnProperty.call(ERR, code)) return T(ERR[code][0], ERR[code][1]);
@@ -113021,6 +113038,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       S.expKinds = Array.isArray(me.exp_kinds) ? me.exp_kinds.filter(function(k){ return KINDS.indexOf(k) >= 0; }) : null;   /* v1164：出せる経費の種類（サーバーが決める） */
       S.expHq = me.exp_hq === true; S.expGrants = me.exp_grants === true;   /* v1184：本部（---）で出せるか・人ごとの権限の SQL があるか */
       S.expBase = typeof me.exp_base === 'string' ? me.exp_base : '';   /* v1184：crew_wait＝従業員マスターでは事務Crew・GM・CEO の確かめ待ち */
+      S.ar = (me.ar && typeof me.ar === 'object') ? me.ar : null;   /* v1190：承認・閲覧の共通ルール（live＝共通ルールで動いている・admin＝CEO・GM） */
       EXPR.at = Date.now();
       setLiveSeen(S.live, me.settings_at, S.s2);
       if (S.live) legacyAuto();
@@ -113087,6 +113105,12 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     var me = S.me || {};
     var mine = (r.can || []).some(function(x){ return ['approve','check','pay','resubmit','dup_ok','apply_start'].indexOf(x) >= 0; }) || (EVAL_K[r.kind] && (claimHeld(r) || claimPending(r)));
     var who = n.who === 'am' ? (n.name || 'AM') : n.who === 'gm' ? 'GM' : n.who === 'acct' ? T('経理','Accounting') : n.who === 'requester' ? (n.name || T('申請した人','Requester')) : '';
+    /* v1190：共通ルールで動いている申請は、段と承認できる人 */
+    if (n.step === 'approve' && n.stages) {
+      if (n.stuck) return '<span class="tag tag-red" style="font-size:9px">' + T('承認できる人がいない','nobody can approve') + '</span>';
+      who = (n.names || []).slice(0, 2).join('・') + ((n.names || []).length > 2 ? T(' ほか',' +') : '');
+      return (mine ? '<b style="color:var(--accent)">' + T('あなた','You') + '</b>' : esc(who || '—')) + ' <span style="color:var(--muted);font-size:10px">' + T('承認 段 ','approve step ') + n.stage + '/' + n.stages + '</span>';
+    }
     var step = n.step === 'approve' ? T('承認','approve') : n.step === 'check' ? T('確認','check') : n.step === 'pay' ? T('精算','pay') : n.step === 'fix' ? T('修正','fix') : n.step === 'apply' ? T('反映','apply') : '';
     return (mine ? '<b style="color:var(--accent)">' + T('あなた','You') + '</b>' : esc(who)) + ' <span style="color:var(--muted);font-size:10px">' + esc(step) + '</span>';
   }
@@ -113588,6 +113612,8 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
           : '<div style="margin-top:4px;color:var(--muted)">' + T('自動では消さない・まとめない。確かめるまで精算できません。','Never removed or merged automatically. Payment waits until someone confirms.') + '</div>')
         + '</div>';
     }
+    /* v1190（UI案93）：共通ルールの承認の順番（段・承認した人・代理・閲覧者・例外）。承認のあとの段階（経理・反映）は下の「段階と担当」 */
+    if (r.route && typeof W.arRouteCard === 'function') h += W.arRouteCard(r);
     /* 段階 */
     h += '<div style="margin-top:10px"><div style="font-size:12px;font-weight:700;margin-bottom:4px">' + T('段階と担当','Steps') + '</div>' + (EVAL_K[r.kind] ? evalSteps(r) : s2 ? s2Steps(r) : steps(r)) + '</div>';
     if (r.status === 'apply_error') h += '<div class="alert alert-danger" style="margin-top:8px;font-size:12px">' + T('反映エラー：','Apply error: ') + esc(((r.events || []).filter(function(e){ return e.action === 'apply_fail'; }).pop() || {}).note || '') + '</div>';
@@ -113596,11 +113622,19 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     if (r.status === 'applied' && r.closed && r.closed.reason) h += '<div style="margin-top:6px;font-size:11.5px;color:var(--muted)">' + T('反映した中身：','Applied: ') + esc(r.closed.reason) + '</div>';
     /* 履歴 */
     h += '<details style="margin-top:10px"' + ((r.events || []).length <= 6 ? ' open' : '') + '><summary style="font-size:12px;font-weight:700;cursor:pointer">' + T('履歴','History') + '（' + (r.events || []).length + '）</summary><div style="font-size:11px;line-height:1.7;margin-top:4px">'
-      + (r.events || []).map(function(e){ var a = ACT_L[e.action] || [e.action, e.action]; return '<div><span style="color:var(--muted)">' + esc(hstTime(e.at)) + '</span> ' + esc(e.by || T('記録なし','no record')) + ' ' + T('が','') + esc(T(a[0], a[1])) + (e.version > 1 ? '（' + T('版 ','v') + e.version + '）' : '') + (e.note ? '：' + esc(e.note) : '') + '</div>'; }).join('')
+      + (r.events || []).map(function(e){ var a = ACT_L[e.action] || [e.action, e.action]; return '<div><span style="color:var(--muted)">' + esc(hstTime(e.at)) + '</span> ' + esc(e.by || T('記録なし','no record')) + ' ' + T('が','') + esc(T(a[0], a[1])) + evDetail(e) + (e.version > 1 ? '（' + T('版 ','v') + e.version + '）' : '') + (e.note ? '：' + esc(e.note) : '') + '</div>'; }).join('')
       + '</div></details>';
     if (typeof W.chatCaseButton === 'function') h += W.chatCaseButton(r);   /* v1156：申請のチャット（4A） */
     h += askHtml(r) + buttons(r);
     el.innerHTML = h;
+  }
+  /* v1190：共通ルールの承認の段・代理・まとめて承認（記録の detail と bulk） */
+  function evDetail(e){
+    var d = (e && e.detail && typeof e.detail === 'object') ? e.detail : {}, o = '';
+    if (e.action === 'approve' && d.stage) o += '（' + T('段 ','step ') + d.stage + (d.stages ? '/' + d.stages : '') + (d.final ? T('・最終承認',' · final') : '') + '）';
+    if (d.for_name) o += '（' + esc(d.for_name) + T(' の代理',' — as delegate') + '）';
+    if (e.bulk) o += ' <span class="tag" style="font-size:9px">' + T('まとめて承認','bulk') + '</span>';
+    return o;
   }
   function diffNote(r){
     var v = r.versions || []; if (v.length < 2) return '';
@@ -113640,12 +113674,19 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     else right = waitText;
     return '<div style="display:flex;gap:8px;padding:6px 0;border-bottom:1px solid var(--border);font-size:11.5px"><div style="width:22px;color:var(--muted)">' + no + '</div><div style="width:120px">' + esc(label) + '</div><div style="flex:1">' + right + '</div></div>';
   }
+  /* v1190：共通ルールで動いている申請の「承認」の待ち（段と、承認できる人）。中身は上の「承認の順番」 */
+  function rtWait(r){
+    var n = r.next || {}, rt = r.route || {};
+    if (rt.stuck || n.stuck) return '<span class="tag tag-red">' + T('承認できる人がいません','nobody can approve') + '</span> ' + T('（CEO・GM が例外で直す）','(the CEO or GM fixes it as an exception)');
+    var nm = (n.names || []).slice(0, 3).map(esc).join('・') + ((n.names || []).length > 3 ? T(' ほか',' and others') : '');
+    return '<span class="tag tag-yellow">' + T('待ち','waiting') + '</span> ' + T('段 ','step ') + (n.stage || rt.cur || '?') + '/' + (n.stages || (rt.stages || []).length || '?') + (nm ? ' · ' + nm : '');
+  }
   function steps(r){
     var n = r.next || {}, lg = r.legacy_info || {};
     var wait = function(step, who){ return n.step === step ? '<span class="tag tag-yellow">' + T('待ち','waiting') + '</span> ' + esc(who) : '<span style="color:var(--muted)">' + T('まだ','not yet') + '</span>'; };
     var apWho = r.kind === 'mileage' ? (n.who === 'am' ? (n.name || 'AM') : 'GM') : 'GM';
     var closed = r.status === 'rejected' || r.status === 'withdrawn';
-    var h = stepRow('①', T('承認','Approval'), r.approved, closed ? '—' : r.legacy && r.status !== 'pending' ? T('記録なし','no record') : wait('approve', apWho), r.legacy ? esc(lg.approvedAt || T('日時 記録なし','time: no record')) : '');
+    var h = stepRow('①', T('承認','Approval'), r.approved, closed ? '—' : r.route && r.status === 'pending' ? rtWait(r) : r.legacy && r.status !== 'pending' ? T('記録なし','no record') : wait('approve', apWho), r.legacy ? esc(lg.approvedAt || T('日時 記録なし','time: no record')) : '');
     h += stepRow('②', T('経理の確認','Accounting check'), r.checked, closed ? '—' : r.legacy && ['checked','paid','done'].indexOf(r.status) >= 0 ? T('記録なし','no record') : wait('check', T('経理・事務Crew','Accounting')), r.legacy ? esc(lg.acctAt || T('日時 記録なし','time: no record')) : '');
     if (r.kind !== 'expense_pre') h += stepRow('③', T('支払・精算','Payment'), r.paid, closed ? '—' : wait('pay', T('経理','Accounting')), r.legacy ? esc(lg.paidAt || T('日時 記録なし','time: no record')) : '');
     h += '<div style="font-size:10.5px;color:var(--muted);margin-top:4px">' + (r.kind === 'expense_pre' ? T('事前経費は ② で完了です。','A pre-approval ends at step 2.') : T('「承認」だけでは終わりません。③ で支払日と方法を記録して完了。','Approval alone does not finish it: step 3 records the payment date and method.')) + '</div>';
@@ -113982,7 +114023,10 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     checkAuth();
     var sel = selRows(byWho(S.rows)).sort(function(a, b){ return new Date(a.updated_at) - new Date(b.updated_at); });   /* 一覧（要対応）と同じ並び */
     if (!sel.length || S.busy) return;
-    S.bulk = { phase:'ask', k0:authKey(), list:sel.map(function(r){ return { id:r.id, rev:S.sel[r.id].rev, code:r.code, kind:r.kind, store_id:r.store_id, requester_name:r.requester_name, amount_cents:r.amount_cents, payload:r.payload, use:useL(r) }; }), res:[] };
+    S.bulk = { phase:'ask', k0:authKey(), list:sel.map(function(r){ return { id:r.id, rev:S.sel[r.id].rev, code:r.code, kind:r.kind, store_id:r.store_id, requester_name:r.requester_name, amount_cents:r.amount_cents, payload:r.payload, use:useL(r), route:r.route || null }; }), res:[] };
+    /* v1190（UI案93）：共通ルールで動いているとき、GM・CEO のまとめて承認はサーバーの一括承認（bulk_approve）で 1 回に送る。
+       番号（client_key）は押す前に決める：答えが届かなかったら同じ番号で送り直す（二重には承認しない・前の結果が返る） */
+    if (S.ar && S.ar.live && S.ar.admin) { S.bulk.ar = true; S.bulk.key = newKey(); }
     openModal('<div id="wr-bulk" style="width:100%"></div>');
     drawBulk();
   };
@@ -113996,14 +114040,17 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
         + list.map(function(x){ return '<div style="display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 10px;padding:8px 10px;border-bottom:1px solid var(--border);font-size:12.5px">'
           + '<div><b>' + esc(x.code) + '</b> <span style="color:var(--muted)">' + esc(kindL(x.kind)) + '・' + esc(storeName(x.store_id)) + '・' + esc(x.requester_name || '') + '</span></div>'
           + '<div style="text-align:right;font-weight:700">' + (S2_K[x.kind] && x.kind !== 'budget' ? '' : money(x.amount_cents)) + '</div>'
-          + '<div style="grid-column:1/-1;font-size:11.5px;color:var(--muted)">' + x.use + '</div></div>'; }).join('') + '</div>'
+          + '<div style="grid-column:1/-1;font-size:11.5px;color:var(--muted)">' + x.use + '</div>' + (b.ar ? bulkWillL(x) : '') + '</div>'; }).join('') + '</div>'
         + '<div style="font-size:13px;margin-top:8px">' + list.length + T(' 件','') + T('・精算対象 ',' · to pay ') + '<b>' + money(payCents(list)) + '</b>' + (bgLine(list) ? '・' + bgLine(list) : '') + (pre ? T('・事前経費 ',' · pre-approval ') + '<b>' + money(pre) + '</b>' + T('（精算には入れない）',' (not paid now)') : '') + '</div>'
         + (list.some(function(x){ return S2_K[x.kind]; }) ? '<div style="font-size:11.5px;color:var(--muted);margin-top:4px;line-height:1.6">' + T('休暇・予算など（段階 2）は、承認のあとこの端末で続けて反映します（シフト変更・採用・退職・スキルも）。Leadership・Tip Rate・プレップ認定・月間行動計画は確かめの画面があるので、あとで 1 件ずつ開いて反映してください。','Step 2 requests (leave, budgets, shift changes, hiring, offboarding, skills) are applied on this device right after approval. Leadership, Tip Rate, prep and monthly plans need a check screen, so open each one later to apply it.') + '</div>' : '');
+      if (b.ar) h += bulkWillTiles(list);
       if (un.length) h += '<div style="margin-top:8px;padding:10px 12px;border-radius:10px;background:#fffaf0;border:1px solid #e8c98a;font-size:12.5px;line-height:1.7">'
         + T('まだ開いていない領収書が ','Receipts not opened yet: ') + un.length + T(' 件（開かずに承認もできます）',' (you can approve without opening)')
         + un.map(function(x){ return '<div>' + esc(x.code) + ' ' + attLink(x) + '</div>'; }).join('') + '</div>';
       h += '<div style="display:flex;gap:10px;margin-top:12px"><button class="btn btn-secondary" style="flex:1;min-height:46px" onclick="closeModal()">' + T('戻る','Back') + '</button>'
         + '<button class="btn btn-primary" style="flex:2;min-height:46px;font-weight:800" onclick="wrBulkGo()">' + list.length + T(' 件を承認',' — approve') + '</button></div>';
+    } else if (b.ar && (b.phase === 'run' || b.phase === 'retry' || ((b.phase === 'done' || b.phase === 'apply') && b.arRes))) {
+      h += bulkArHtml(b);
     } else if (b.phase === 'run') {
       h += '<div style="font-size:15px;font-weight:800">' + T('承認しています… ','Approving… ') + b.res.length + ' / ' + list.length + '</div>'
         + '<div style="font-size:11.5px;color:var(--muted);margin-top:6px">' + T('閉じずに待ってください（1 件ずつ送っています）','Please wait (sending one by one)') + '</div>';
@@ -114021,9 +114068,97 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     }
     el.innerHTML = h;
   }
+  /* ---------------------------------------------------------------- v1190（UI案93）：共通ルールで動いているときの一括承認 */
+  function nextStageL(x){
+    var rt = x.route || {}, st = (rt.stages || [])[rt.cur || 0];   /* cur は 1 から。次の段は stages[cur] */
+    if (!st) return '';
+    return (st.slots || []).map(function(sl){ return W.arLabel ? W.arLabel(sl.label || '') : (sl.label || ''); }).filter(Boolean).join(T('・', ', '));   /* 英語の画面では役割の名前を英語に（FUNERGY_AR） */
+  }
+  function bulkWillL(x){
+    var my = (x.route || {}).my;
+    if (!my) return '<div style="grid-column:1/-1;font-size:11.5px;color:var(--muted)">' + T('承認したあと：サーバーで確かめます','After approval: the server checks') + '</div>';
+    return '<div style="grid-column:1/-1;font-size:11.5px">' + T('承認したあと：','After approval: ') + (my.final ? '<b style="color:#0f6b44">' + T('最終承認','final approval') + '</b>'
+      : '<b>' + T('段 ','step ') + ((x.route.cur || 1) + 1) + T(' へ',' next') + '</b>' + (nextStageL(x) ? ' <span style="color:var(--muted)">（' + esc(nextStageL(x)) + '）</span>' : ''))
+      + (my.via === 'delegate' && my.for_name ? ' <span class="tag" style="font-size:9px">' + esc(my.for_name) + T(' の代理',' — delegate') + '</span>' : '') + '</div>';
+  }
+  function arTile(label, n, color){ return '<div style="flex:1;min-width:90px;border:1px solid var(--border);border-radius:10px;padding:8px 10px"><div style="font-size:11px;color:var(--muted)">' + label + '</div><div style="font-size:20px;font-weight:800;color:' + color + '">' + n + '</div></div>'; }
+  function bulkWillTiles(list){
+    var fin = list.filter(function(x){ return x.route && x.route.my && x.route.my.final; }).length, nxt = list.filter(function(x){ return x.route && x.route.my && !x.route.my.final; }).length;
+    return '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">' + arTile(T('最終承認','Final'), fin, '#0f6b44') + arTile(T('次の段へ','To the next step'), nxt, '#2b6cb0') + '</div>'
+      + '<div style="font-size:11.5px;color:var(--muted);margin-top:6px;line-height:1.6">' + T('ほかの人の段を代わりに承認しません（今の段であなたが承認できるものだけ）。1 件ずつ別に確かめるので、1 件が通らなくてもほかは進みます。','You do not approve someone else’s step (only the steps you can approve now). Each request is checked on its own, so one failure does not stop the rest.') + '</div>';
+  }
+  var BULK_WHY = { stale:['あなたが見たあと内容が変わりました。開いて確かめてください','It changed after you looked. Open it to check'], not_pending:['もう処理されています','It was already handled'],
+    own:['自分の申請は承認しません（ルールの「本人の申請」）','You do not approve your own request (the rule’s “own request”)'], not_your_stage:['今の段はあなたの段ではありません（ほかの人の段を代わりに承認しません）','The current step is not yours (you do not approve someone else’s step)'],
+    not_allowed:['承認できません（サーバーで確かめました）','You cannot approve it (the server checked)'], not_found:['見られません','You cannot see it'], error:['うまくいきませんでした','Something went wrong'] };
+  function bulkArHtml(b){
+    var h = '';
+    if (b.phase === 'run') return '<div style="font-size:15px;font-weight:800">' + T('まとめて承認しています… ','Approving… ') + b.list.length + T(' 件',' requests') + '</div>'
+      + '<div style="font-size:11.5px;color:var(--muted);margin-top:6px">' + T('閉じずに待ってください（1 回で送り、1 件ずつ確かめています）','Please wait (sent at once, checked one by one)') + '</div>';
+    if (b.phase === 'retry') return '<div class="alert alert-warning" style="font-size:12.5px;line-height:1.7">' + T('答えが届きませんでした：','No answer came back: ') + esc(b.err || '')
+      + '<br>' + T('サーバーで承認できたかは分かりません。同じ番号でもう一度送ると、承認できていたものは前の結果を返し、二重には承認しません。','We do not know whether it went through. Sending again with the same number returns the earlier result and never approves twice.') + '</div>'
+      + '<div style="display:flex;gap:10px;margin-top:12px"><button class="btn btn-secondary" style="flex:1;min-height:46px" onclick="closeModal()">' + T('閉じる','Close') + '</button>'
+      + '<button class="btn btn-primary" style="flex:2;min-height:46px;font-weight:800" onclick="wrBulkGo()">' + T('同じ番号でもう一度送る','Send again (same number)') + '</button></div>';
+    var rs = b.arRes || [], c = { final:0, next:0, skip:0, failed:0 };
+    rs.forEach(function(x){ c[x.outcome] = (c[x.outcome] || 0) + 1; });
+    if (b.phase === 'apply') h += '<div style="font-size:13px;font-weight:700;margin-bottom:8px;color:var(--accent)">' + T('続けて反映しています… ','Applying… ') + (b.ap || 0) + ' / ' + (b.apN || 0) + T('（閉じずに待ってください）',' (please wait)') + '</div>';
+    h += '<div style="font-size:17px;font-weight:800;margin-bottom:8px">' + T('まとめて承認の結果','Bulk approval result') + (b.replay ? ' <span class="tag" style="font-size:10px">' + T('前の結果（送り直し）','earlier result (resent)') + '</span>' : '') + '</div>'
+      + '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">' + arTile(T('最終承認','Final'), c.final, '#0f6b44') + arTile(T('次の段へ','To the next step'), c.next, '#2b6cb0') + arTile(T('対象外','Skipped'), c.skip, '#8a4a0b') + arTile(T('失敗','Failed'), c.failed, '#a51f1f') + '</div>'
+      + rs.map(function(x){
+        var sty = x.outcome === 'final' ? ['#f1faf5','#0f6b44',T('最終承認','Final')] : x.outcome === 'next' ? ['#eef4fb','#1f3d70',T('次の段へ','Next step')] : x.outcome === 'skip' ? ['#fff8ef','#8a4a0b',T('対象外','Skipped')] : ['#fff6f6','#a51f1f',T('失敗','Failed')];
+        var why = BULK_WHY[x.reason] || null, nx = x.next || {};
+        var msg = x.outcome === 'next' ? (nx.stuck ? T('段 ','Step ') + (nx.stage || '?') + '/' + (nx.stages || '?') + T('：承認できる人がいません（例外で直す）',': nobody can approve (fix with an exception)')
+            : T('段 ','Step ') + (nx.stage || '?') + '/' + (nx.stages || '?') + T(' へ（',' (') + esc((nx.names || []).slice(0, 3).join('・')) + ((nx.names || []).length > 3 ? T(' ほか',' +') : '') + T('）',')'))
+          : x.outcome === 'final' ? T('承認がそろいました','All approvals are in') + (x.ap ? ' · ' + esc(x.ap) : '')
+          : x.msg ? T('承認していません：','Not approved: ') + esc(x.msg) : why ? T(why[0], why[1]) : esc(x.reason || '');
+        return '<div style="display:flex;gap:10px;align-items:flex-start;padding:9px 11px;border-radius:10px;background:' + sty[0] + ';margin-bottom:6px;font-size:12.5px"><span style="font-weight:800;color:' + sty[1] + ';white-space:nowrap">' + sty[2] + '</span><div style="flex:1;min-width:0"><b>' + esc(x.code || '') + '</b> '
+          + (x.kind ? '<span style="color:var(--muted)">' + esc(kindL(x.kind)) + '</span> ' : '') + msg
+          + (x.outcome !== 'final' ? ' <a href="#" data-a="' + esc(x.id) + '" onclick="wrOpen(this.dataset.a);return false">' + T('開く','Open') + '</a>' : '') + '</div></div>';
+      }).join('')
+      + '<div style="font-size:11.5px;color:var(--muted);line-height:1.6;margin-top:6px">' + T('一括承認の番号 ','Bulk number ') + esc(b.bulkId || b.key) + T('（各申請の記録に残ります）',' (kept on each request’s history)') + '</div>'
+      + (b.phase === 'apply' ? '' : '<div style="margin-top:10px"><button class="btn btn-primary" style="width:100%;min-height:46px" onclick="closeModal()">' + T('閉じる','Close') + '</button></div>');
+    return h;
+  }
+  async function bulkGoAr(b){
+    b.phase = 'run'; S.busy = 'bulk'; drawBulk();
+    var j;
+    try { j = await api({ action:'bulk_approve', items:b.list.map(function(x){ return { id:x.id, rev:x.rev }; }), client_key:b.key }, b.k0); }
+    catch(e) {
+      S.busy = '';
+      /* 答えが届かない（通信・サーバーの 5xx）：承認できたかは分からない → 同じ番号で送り直す（前の結果が返る）。
+         ほか（ログインが変わった・権限・SQL がまだ など）はサーバーが断った＝何も承認していない */
+      if (e && (e.code === 'network' || Number(e.status) >= 500)) { b.phase = 'retry'; b.err = String(e.message || e); drawBulk(); return; }
+      b.phase = 'done'; b.arRes = b.list.map(function(x){ return { id:x.id, code:x.code, kind:x.kind, outcome:'failed', reason:'refused', msg:String(e && e.message || e) }; });
+      showToast(String(e && e.message || e), 'error'); drawBulk(); reloadList(); return;
+    }
+    b.bulkId = j.bulk_id || b.key; b.replay = !!j.replay;
+    var by = {}; (j.results || []).forEach(function(x){ if (x && x.id) by[x.id] = x; });
+    b.arRes = b.list.map(function(x){ var o = by[x.id] || { outcome:'failed', reason:'error' }; return { id:x.id, code:o.code || x.code, kind:o.kind || x.kind, outcome:o.outcome || 'failed', reason:o.reason || '', status:o.status, next:o.next || null }; });
+    b.list.forEach(function(x){ delete S.sel[x.id]; });
+    /* 知らせ（次の段の人・最終承認なら経理と申請した人）と、段階 2 の続けての反映には、その申請の今の中身が要る（1 件ずつ読む） */
+    var need = b.arRes.filter(function(x){ return x.outcome === 'final' || x.outcome === 'next'; });
+    for (var i = 0; i < need.length; i++) {
+      if (b.k0 !== authKey()) break;
+      try { need[i].row = await api({ action:'get', id:need[i].id }, b.k0); try{ notifyAfter('approve', need[i].row); }catch(e2){} } catch(e1) { need[i].row = null; }
+    }
+    var todo = b.arRes.filter(function(x){ return x.outcome === 'final' && x.row && S2_K[x.row.kind] && x.row.status === 'approved'; });
+    todo.forEach(function(x){ if (!S2_AUTO[x.row.kind] || (x.row.can || []).indexOf('apply_start') < 0) x.ap = T('反映は開いて 1 件ずつ（確かめの画面があります）','Open it to apply (it has a check screen)'); });
+    var auto = todo.filter(function(x){ return S2_AUTO[x.row.kind] && (x.row.can || []).indexOf('apply_start') >= 0; });
+    if (!auto.length || b.k0 !== authKey()) { S.busy = ''; b.phase = 'done'; drawBulk(); reloadList(); acctReload(); return; }
+    b.phase = 'apply'; b.ap = 0; b.apN = auto.length; drawBulk();
+    for (var k = 0; k < auto.length; k++) {
+      var x = auto[k];
+      if (b.k0 !== authKey()) { x.ap = errText('signin_changed'); continue; }
+      try { var o = await s2Apply(x.row, { quiet:true }); x.ap = s2OutText(o); } catch(e3) { x.ap = String(e3 && e3.message || e3); }
+      b.ap++; drawBulk();
+    }
+    S.busy = ''; b.phase = 'done'; drawBulk(); reloadList(); acctReload();
+  }
   W.wrBulkGo = function(){
-    var b = S.bulk; if (!b || b.phase !== 'ask' || S.busy) return;
+    var b = S.bulk; if (!b || S.busy) return;
+    if (b.ar && b.phase === 'retry') { if (b.k0 !== authKey()) { showToast(errText('signin_changed'), 'error'); closeModal(); return; } bulkGoAr(b); return; }
+    if (b.phase !== 'ask') return;
     if (b.k0 !== authKey()) { showToast(errText('signin_changed'), 'error'); closeModal(); return; }
+    if (b.ar) { bulkGoAr(b); return; }
     b.phase = 'run'; b.res = []; S.busy = 'bulk'; drawBulk();
     var stopped = false;
     b.list.reduce(function(pr, x){ return pr.then(function(){
@@ -114195,6 +114330,18 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     var base = { id:'ntf_wr_' + r.code + '_' + r.rev, page:'tasks', wrTab:'todo', refId:r.code, type:'wr' };
     var name = kindL(r.kind) + ' ' + r.code;
     try {
+      /* v1190（UI案93）：共通ルールで動いている申請は、今の段の承認できる人に名前で知らせる（出したとき・直したとき・段が進んだとき）。
+         段が進んだだけ（まだ承認待ち）のときは、経理・申請した人には知らせない（最終承認のときに今までどおり） */
+      if (r.route && r.status === 'pending' && ['submit','resubmit','revise','edit','approve'].indexOf(op) >= 0) {
+        var nx = r.next || {};
+        (nx.names || []).slice(0, 10).forEach(function(nm, i){
+          addNotifOnce(Object.assign({}, base, { id:base.id + '_r' + i, toUser:nm, title:T('承認待ち（段 ','Waiting for approval (step ') + (nx.stage || '?') + '/' + (nx.stages || '?') + T('）：','): ') + name,
+            text:r.requester_name + (KINDS.indexOf(r.kind) >= 0 ? ' · ' + money(r.amount_cents) : '') }));
+        });
+        if (nx.stuck || !(nx.names || []).length) addNotifOnce(Object.assign({}, base, { id:base.id + '_stuck', toRoles:['gm','ceo'], wrTab:'team',
+          title:T('承認できる人がいない申請：','Nobody can approve: ') + name, text:T('設定 › 承認・閲覧設定、または申請の画面の「例外」で直してください','Fix it in Settings › Approval rules, or with an exception on the request') }));
+        return;
+      }
       /* v1155：段階 2。申請した人への承認・却下は、反映のときに前の画面の決め方が今までどおり知らせる（二重にしない） */
       if (S2_K[r.kind]) {
         var tx2 = (r.payload || {}).title || useL(r).replace(/<[^>]*>/g, '');
@@ -114630,7 +114777,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   function evalSteps(r){
     var n = r.next || {}, closed = r.status === 'rejected' || r.status === 'withdrawn';
     var wait = function(step){ return n.step === step ? '<span class="tag tag-yellow">' + T('待ち','waiting') + '</span> GM' : '<span style="color:var(--muted)">' + T('まだ','not yet') + '</span>'; };
-    var h = stepRow('①', T('GM の承認','GM approval'), r.approved, closed ? '—' : wait('approve'), '');
+    var h = stepRow('①', r.route ? T('承認','Approval') : T('GM の承認','GM approval'), r.approved, closed ? '—' : r.route && r.status === 'pending' ? rtWait(r) : wait('approve'), '');
     h += stepRow('②', T('正式な値に反映','Applied to the official value'), r.status === 'applied' ? r.closed : null, closed ? '—' : (r.status === 'apply_error' ? '<span class="tag tag-red">' + T('反映エラー','apply error') + '</span> GM' : wait('apply')), '');
     h += '<div style="font-size:10.5px;color:var(--muted);margin-top:4px">' + T('申請しただけでは変わりません。GM の承認のあと反映して変わります（反映は 1 回だけ）。','Nothing changes when asked. It changes when a GM approves and it is applied (once).') + '</div>';
     return h;
@@ -115406,6 +115553,12 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     var so = r.signoffs || [], st = (r.steps && r.steps.length) ? r.steps : ['gm'], n = r.next || {}, closed = r.status === 'rejected' || r.status === 'withdrawn';
     var NO = ['①','②','③','④','⑤'], h = '', i = 0;
     var wait = function(who){ return '<span class="tag tag-yellow">' + T('待ち','waiting') + '</span> ' + who; }, notYet = '<span style="color:var(--muted)">' + T('まだ','not yet') + '</span>';
+    /* v1190：共通ルールで動いている申請は、承認を 1 行に（段ごとは上の「承認の順番」） */
+    if (r.route) {
+      h += s2Row(NO[i++], T('承認','Approval'), r.approved && (r.approved.by || r.approved.at) ? '<b>' + esc(r.approved.by || '') + '</b> <span style="color:var(--muted)">' + esc(hstTime(r.approved.at)) + '</span>'
+        : closed ? '—' : r.status === 'pending' ? rtWait(r) : notYet);
+      st = [];
+    }
     st.forEach(function(x){
       var rec = so.filter(function(s){ return s && s.step === x; }).pop();
       var right = rec ? '<b>' + esc(rec.by || '') + '</b> <span style="color:var(--muted)">' + esc(hstTime(rec.at)) + '</span>' + (rec.proxy ? ' <span class="tag" style="font-size:9px">' + T('GM が代わりに','by the GM') + '</span>' : '')
@@ -115640,6 +115793,802 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   });
 })();
 /* ==== FUNERGY_WR end ==== */
+</script>
+<script>
+/* ==== FUNERGY_AR（v1190・UI案93）：承認・閲覧の共通ルールの画面（設定 › 承認・閲覧設定・申請の画面のルートと例外）====
+   仕様：docs/APPROVAL_RULES_JA.md（決めてほしいこと 1B・2B・3「GM 本人が全て承認可能」・4A・5A・6A・7B）。
+   ・見る・変えるのは CEO・GM だけ（サーバーの ar_admin が確かめる。画面はその答えのまま出す）。
+   ・ルールは種類ごとに版（下書き → 有効）。保存は下書きの版と変更の回数で確かめる（ほかの人が先に変えたら conflict・読み直す）。
+   ・有効にしても進行中の申請は前の版のまま。「進行中の申請にも当てる」は確かめの画面で見た版だけ（ar_apply）。
+   ・例外（この申請だけ）は CEO・GM・理由が要る・自分の申請は変えない・済んだ段は変えない（サーバーが確かめる）。
+   ・この端末には何も残さない（メモリだけ・ログインが変わったら捨てる）。 */
+(function(){
+  'use strict';
+  var W = window;
+  if (W.FUNERGY_AR) return;
+  function T(ja, en){ try{ return typeof t === 'function' ? t(ja, en) : ja; }catch(e){ return ja; } }
+  function hp(){ return W.wrHelpers || {}; }
+  function esc(s){ return String(s == null ? '' : s).replace(/[&<>"']/g, function(c){ return { '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]; }); }
+  function money(c){ return hp().money ? hp().money(c) : '$' + (Number(c || 0) / 100).toFixed(2); }
+  function kindL(k){ return hp().kindL ? hp().kindL(k) : String(k || ''); }
+  function hst(x){ return hp().hstTime ? hp().hstTime(x) : String(x || ''); }
+  function today(){ return hp().hstToday ? hp().hstToday() : new Date().toISOString().slice(0, 10); }
+  function authKey(){ return hp().authKey ? hp().authKey() : ''; }
+  function api(p, k0){ if (typeof W.wrAPI !== 'function') return Promise.reject(new Error(T('申請の画面がまだ読み込まれていません','The requests screen is not loaded yet'))); return W.wrAPI(p, k0); }
+  function toast(m, k){ try{ showToast(m, k || 'info'); }catch(e){} }
+  function clone(o){ return o == null ? o : JSON.parse(JSON.stringify(o)); }
+  function errMsg(e){ return String((e && e.message) || e || ''); }
+  function onPage(){ return typeof curPage !== 'undefined' && curPage === 'ar_settings'; }
+
+  var GROUPS = [
+    ['お金', 'Money', ['mileage','reimburse','expense_pre','budget']],
+    ['評価', 'Evaluation', ['skill','cs','tiprate','tip_self','skill_self','prep']],
+    ['人・シフト', 'People & shifts', ['leave','shift','hire','resign','promo','plan']]
+  ];
+  var ROLES = [['ceo','CEO','CEO'], ['gm','GM','GM'], ['am','AM','AM'], ['chef','Head Chef','Head Chef'],
+    ['acct_mgr','経理マネージャー','Accounting manager'], ['acct_lead','経理リーダー','Accounting leader'], ['office_crew','事務Crew','Office crew']];
+  var ROLE_L = {}; ROLES.forEach(function(r){ ROLE_L[r[0]] = r; });
+  function roleL(r){ var x = ROLE_L[r]; return x ? T(x[1], x[2]) : String(r || ''); }
+  /* サーバーが作る名前（役割・閲覧者・ルートの名前）は日本語。英語の画面では知っている言葉だけ置き換える（人の名前・店の名前はそのまま） */
+  function PO(){ return T('（', ' ('); }   /* 英語の画面ではかっこ・区切りを半角に */
+  function PC(){ return T('）', ')'); }
+  function svL(s){ s = String(s == null ? '' : s); if (T('ja', 'en') !== 'en') return s;
+    return s.replace(/経理マネージャー/g, 'Accounting manager').replace(/経理リーダー/g, 'Accounting lead').replace(/事務Crew/g, 'Office crew')
+      .replace(/（担当店舗）/g, ' (assigned stores)').replace(/（全員）/g, ' (everyone)').replace(/^既定$/, 'Default').replace(/^条件 (\d+)$/, 'Condition $1')
+      .replace(/（/g, ' (').replace(/）/g, ')').replace(/：/g, ': ').replace(/・/g, ', '); }
+
+  /* ---------------------------------------------------------------- 状態（メモリだけ） */
+  function fresh(){ return { k0:'', tab:'rules', st:null, load:'', err:'', errCode:'', kind:'mileage', ed:null, pick:null,
+    prev:{ store:'', emp:'', amt:'', res:null, busy:false, err:'' }, roles:null, rload:'', rerr:'', dels:null, dload:'', derr:'', dform:null, dend:null,
+    stuck:null, sload:'', serr:'', ap:null, busy:'', live:{ note:'', res:null }, ex:{} }; }
+  var A = fresh();
+  function sync(){ var k = authKey(); if (A.k0 !== k) { A = fresh(); A.k0 = k; } }
+  function paint(){ if (!onPage()) return; var el = document.getElementById('ar-root'); if (el) el.innerHTML = body(); }
+
+  function kr(k){ return ((A.st && A.st.kinds) || []).find(function(x){ return x.kind === k; }) || { kind:k }; }
+  function stores(){ return (A.roles && A.roles.stores) || (typeof STORES !== 'undefined' && Array.isArray(STORES) ? STORES.map(function(s){ return { id:s.id, name:s.name || s.id }; }) : []); }
+  function storeL(id){ if (id === '---') return T('本部','HQ'); var s = stores().find(function(x){ return String(x.id) === String(id); }); return s ? (s.name || s.id) : String(id || ''); }
+  function people(){
+    var seen = {}, o = [];
+    ((A.roles && A.roles.people) || []).forEach(function(p){ if (!p.out && p.emp && !seen[p.emp]) { seen[p.emp] = 1; o.push({ id:p.emp, name:p.name || p.emp }); } });
+    try { (typeof getEmployees === 'function' ? getEmployees() : []).forEach(function(e){
+      if (!e || !e.id || seen[e.id] || (typeof empBlocked === 'function' && empBlocked(e))) return;
+      seen[e.id] = 1; o.push({ id:String(e.id), name:String(e.name || e.id) });
+    }); } catch(e) {}
+    return o.sort(function(a, b){ return a.name.localeCompare(b.name); });
+  }
+  function empL(id){ var p = people().find(function(x){ return x.id === id; }); return p ? p.name : T('（社員 ID ','(employee ID ') + id + T('）',')'); }
+  function slotL(s){
+    if (!s) return '';
+    if (s.t === 'emp') return empL(s.emp);
+    var l = roleL(s.role);
+    if (s.scope === 'mine') l += T('（担当店舗）',' (their stores)');
+    else if (s.scope === 'stores') l += PO() + (s.stores || []).map(storeL).join('・') + PC();
+    if (s.each) l += T('（全員）',' (everyone)');
+    return l;
+  }
+  function fromL(f){ f = f || 'submit'; if (f === 'submit') return T('出したときから','from submission'); if (f === 'final') return T('最終承認から','from final approval'); var m = /^stage:(\d)$/.exec(f); return m ? T('段 ' + m[1] + ' から','from step ' + m[1]) : f; }
+  function modeL(m){ return m === 'all' ? T('全員の承認','all must approve') : T('だれか 1 人','any one'); }
+
+  /* ---------------------------------------------------------------- 定義の形（サーバーの ar_def_errors と同じ決まり。rule_invalid は理由を返さないので先に確かめる） */
+  function slotErr(s, viewer){
+    if (!s || typeof s !== 'object') return T('枠の形が違います','Bad slot');
+    if (s.t === 'role') {
+      if (!ROLE_L[s.role]) return T('役割を選んでください','Choose a role');
+      if (s.scope === 'stores' && (!Array.isArray(s.stores) || !s.stores.length || s.stores.length > 50)) return T('「決めた店」は店を 1 つ以上（50 まで）','Pick 1–50 stores');
+      if (viewer && s.each) return T('閲覧者に「全員」は付けられません','“Everyone” is for approvers only');
+      return '';
+    }
+    if (s.t === 'emp') return /^[A-Za-z0-9_.:-]{1,64}$/.test(String(s.emp || '')) ? '' : T('人を選んでください','Choose a person');
+    return T('枠の形が違います','Bad slot');
+  }
+  function stagesErr(st, where, o){
+    if (!Array.isArray(st) || st.length < 1 || st.length > 5) { o.push(where + T('：段は 1〜5 つ',': 1–5 steps')); return; }
+    st.forEach(function(x, j){
+      var w = where + T(' 段 ',' step ') + (j + 1);
+      if (!x || (x.mode !== 'any' && x.mode !== 'all')) o.push(w + T('：承認のしかたを選んでください',': choose how it is approved'));
+      if (!x || !Array.isArray(x.slots) || x.slots.length < 1 || x.slots.length > 8) { o.push(w + T('：承認者の枠は 1〜8 つ',': 1–8 approver slots')); return; }
+      x.slots.forEach(function(s){ var e = slotErr(s, false); if (e) o.push(w + '：' + e); });
+    });
+  }
+  function bLabel(b, i){ return (b && b.label) || (i < 0 ? T('既定','Default') : T('条件 ','Condition ') + (i + 1)); }
+  function defErrors(d){
+    var o = [];
+    if (!d || typeof d !== 'object') return [T('定義がありません','No rule')];
+    if (JSON.stringify(d).length > 20000) o.push(T('ルールが大きすぎます','The rule is too large'));
+    var br = d.branches || [];
+    if (br.length > 10) o.push(T('条件は 10 まで','Up to 10 conditions'));
+    br.forEach(function(b, i){
+      var w = b.when || {}, keys = Object.keys(w), nm = bLabel(b, i);
+      if (b.label && String(b.label).length > 60) o.push(nm + T('：名前は 60 文字まで',': name up to 60 characters'));
+      if (!keys.length) o.push(nm + T('：条件を 1 つ以上決めてください',': set at least one condition'));
+      if (w.min_cents != null && w.max_cents != null && w.min_cents >= w.max_cents) o.push(nm + T('：金額は「以上」が「未満」より小さく',': the minimum must be below the maximum'));
+      if (w.stores && (!w.stores.length || w.stores.length > 50)) o.push(nm + T('：店を 1 つ以上（50 まで）',': pick 1–50 stores'));
+      stagesErr(b.stages, nm, o);
+    });
+    var df = d['default'];
+    if (!df || typeof df !== 'object') o.push(T('既定（どの条件にも当たらないとき）を決めてください','Set the default'));
+    else if (!df.block) stagesErr(df.stages, T('既定','Default'), o);
+    (d.viewers || []).forEach(function(v, i){ var e = slotErr(v && v.who, true); if (e) o.push(T('閲覧者 ','Viewer ') + (i + 1) + '：' + e); });
+    if ((d.viewers || []).length > 20) o.push(T('閲覧者は 20 まで','Up to 20 viewers'));
+    return o;
+  }
+  /* 保存する形（空の項目を外す・サーバーが知らない鍵を出さない） */
+  function cleanSlot(s){
+    if (s.t === 'emp') return { t:'emp', emp:s.emp };
+    var o = { t:'role', role:s.role, scope:s.scope || 'all' };
+    if (o.scope === 'stores') o.stores = (s.stores || []).slice();
+    if (s.each) o.each = true;
+    return o;
+  }
+  function cleanStages(st){ return (st || []).map(function(x){ return { mode:x.mode === 'all' ? 'all' : 'any', slots:(x.slots || []).map(cleanSlot) }; }); }
+  function cleanDef(d){
+    var o = {};
+    if ((d.branches || []).length) o.branches = d.branches.map(function(b){
+      var w = {}, x = b.when || {};
+      if (x.min_cents != null) w.min_cents = x.min_cents;
+      if (x.max_cents != null) w.max_cents = x.max_cents;
+      if (x.stores && x.stores.length) w.stores = x.stores.slice();
+      if (typeof x.hq === 'boolean') w.hq = x.hq;
+      if (typeof x.has_am === 'boolean') w.has_am = x.has_am;
+      var r = { when:w, stages:cleanStages(b.stages) };
+      if (b.label) r.label = String(b.label).slice(0, 60);
+      return r;
+    });
+    var df = d['default'] || {};
+    o['default'] = df.block ? { block:true } : (function(){ var r = { stages:cleanStages(df.stages) }; if (df.label) r.label = String(df.label).slice(0, 60); return r; })();
+    if ((d.viewers || []).length) o.viewers = d.viewers.map(function(v){ return { who:cleanSlot(v.who), from:v.from || 'submit' }; });
+    if (d.self) o.self = d.self;
+    return o;
+  }
+
+  /* ---------------------------------------------------------------- 読み込み */
+  function loadState(){
+    A.load = 'loading'; var k0 = A.k0;
+    return api({ action:'ar_state' }, k0).then(function(j){
+      if (k0 !== A.k0) return;
+      A.st = j; A.load = 'done'; A.err = '';
+      if (!A.ed || !A.ed.dirty) A.ed = edFrom(kr(A.kind));
+      if (!A.roles && A.rload !== 'loading') loadRoles();
+      paint();
+    }, function(e){ if (k0 !== A.k0) return; A.load = 'err'; A.err = errMsg(e); A.errCode = (e && e.code) || ''; paint(); });
+  }
+  function loadRoles(){
+    A.rload = 'loading'; var k0 = A.k0;
+    return api({ action:'ar_role_list' }, k0).then(function(j){ if (k0 !== A.k0) return; A.roles = j; A.rload = 'done'; paint(); },
+      function(e){ if (k0 !== A.k0) return; A.rload = 'err'; A.rerr = errMsg(e); paint(); });
+  }
+  function loadDels(){
+    A.dload = 'loading'; var k0 = A.k0;
+    return api({ action:'ar_delegate_list' }, k0).then(function(j){ if (k0 !== A.k0) return; A.dels = j.delegates || []; A.dload = 'done'; paint(); },
+      function(e){ if (k0 !== A.k0) return; A.dload = 'err'; A.derr = errMsg(e); paint(); });
+  }
+  function loadStuck(){
+    A.sload = 'loading'; var k0 = A.k0;
+    return api({ action:'ar_stuck' }, k0).then(function(j){ if (k0 !== A.k0) return; A.stuck = j.rows || []; A.sload = 'done'; paint(); },
+      function(e){ if (k0 !== A.k0) return; A.sload = 'err'; A.serr = errMsg(e); paint(); });
+  }
+  function setWrLive(live, rev){ try { var s = W._wrState && W._wrState(); if (s && s.ar) { s.ar.live = !!live; if (rev) s.ar.rev = rev; } } catch(e) {} }
+
+  /* ---------------------------------------------------------------- 編集中のルール */
+  function edFrom(k){
+    var d = k.draft, a = k.active;
+    var src = d ? d.def : a ? a.def : { 'default':{ stages:[{ mode:'any', slots:[{ t:'role', role:'gm', scope:'all' }, { t:'role', role:'ceo', scope:'all' }] }] }, self:'gm' };
+    var def = clone(src) || {};
+    if (!def['default']) def['default'] = { stages:[] };
+    return { kind:k.kind, def:def, from:d ? 'draft' : a ? 'active' : 'none', ver:d ? d.ver : 0, rev:d ? d.rev : 0, base:a ? a.ver : 0, dirty:false, note:'' };
+  }
+  function touch(){ if (A.ed) A.ed.dirty = true; }
+  function stagesAt(path){
+    /* path：b<i>＝条件 i の段・d＝既定の段・x<id>＝例外の段（1 つ） */
+    var d = A.ed && A.ed.def;
+    if (path === 'd') return d['default'].stages || (d['default'].stages = []);
+    var m = /^b(\d+)$/.exec(path); if (m) { var b = d.branches[+m[1]]; return b.stages || (b.stages = []); }
+    return null;
+  }
+
+  /* ---------------------------------------------------------------- 画面 */
+  var CSS = '<style>'
+    + '.ar-grid{display:grid;grid-template-columns:230px minmax(0,1fr) 300px;gap:14px;align-items:start}'
+    + '.ar-kinds{border:1px solid var(--border);border-radius:12px;padding:8px;position:sticky;top:8px}'
+    + '.ar-k{display:flex;align-items:center;gap:6px;width:100%;text-align:left;border:0;background:none;padding:7px 8px;border-radius:8px;font-size:12.5px;cursor:pointer;min-height:36px}'
+    + '.ar-k.on{background:var(--accent-light,#fdf0e6);font-weight:800}'
+    + '.ar-chip{font-size:10px;padding:1px 6px;border-radius:999px;border:1px solid var(--border);white-space:nowrap}'
+    + '.ar-box{border:1px solid var(--border);border-radius:12px;padding:12px;margin-bottom:10px}'
+    + '.ar-stage{border:1px dashed var(--border);border-radius:10px;padding:8px 10px;margin-top:8px}'
+    + '.ar-pill{display:inline-flex;align-items:center;gap:4px;border:1px solid var(--border);border-radius:999px;padding:3px 4px 3px 10px;font-size:12px;margin:3px 4px 3px 0;background:var(--card,#fff)}'
+    + '.ar-pill button{border:0;background:none;cursor:pointer;min-width:28px;min-height:28px;font-size:14px;color:var(--muted)}'
+    + '.ar-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}'
+    + '.ar-err{color:#a51f1f}.ar-warn{color:#8a4a0b}'
+    + '.ar-side{border:1px solid var(--border);border-radius:12px;padding:12px;position:sticky;top:8px}'
+    + '.ar-pick{border:1px solid var(--accent,#c2410c);border-radius:10px;padding:10px;margin-top:8px;background:var(--bg,#fffaf5)}'
+    + '.ar-tbl{width:100%;border-collapse:collapse;font-size:12.5px}.ar-tbl td,.ar-tbl th{border-bottom:1px solid var(--border);padding:6px 8px;text-align:left;vertical-align:top}'
+    + '.ar-rt{border:1px solid var(--border);border-radius:12px;padding:10px 12px;margin-top:10px}'
+    + '.ar-st{display:flex;gap:8px;align-items:flex-start;padding:6px 0;border-top:1px solid var(--border)}.ar-st:first-of-type{border-top:0}'
+    + '@media (max-width:1100px){.ar-grid{grid-template-columns:200px minmax(0,1fr)}.ar-side{grid-column:1/-1;position:static}}'
+    + '@media (max-width:767px){.ar-grid{grid-template-columns:minmax(0,1fr)}.ar-kinds,.ar-side{position:static}}'
+    + '</style>';
+
+  function render(){
+    sync();
+    return '<div class="section-header"><div><div class="section-title">' + T('承認・閲覧設定','Approval & viewer rules') + '</div>'
+      + '<div class="section-sub">' + T('申請の種類ごとに、だれが承認し・だれが見られるかを決めます（CEO・GM だけ）','Who approves and who can see each kind of request (CEO and GM only)') + '</div></div></div>'
+      + CSS + '<div id="ar-root">' + body() + '</div>';
+  }
+  function body(){
+    if (!A.load) loadState();
+    if (A.load === 'loading' && !A.st) return '<div style="padding:20px;color:var(--muted)">' + T('読み込み中…','Loading…') + '</div>';
+    if (A.load === 'err' && !A.st) {
+      var m = A.errCode === 'forbidden' ? T('この画面は CEO・GM だけが開けます','Only the CEO and GM can open this') : A.errCode === 'ar_old'
+        ? T('承認・閲覧の共通ルールの SQL（deploy/approval-rules-v1190）がまだ入っていません','The approval rules SQL (deploy/approval-rules-v1190) is not installed yet') : esc(A.err);
+      return '<div class="alert alert-warning" style="font-size:13px">' + m + '</div><button class="btn btn-secondary" style="min-height:44px" onclick="FUNERGY_AR.h.reload()">' + T('もう一度読む','Try again') + '</button>';
+    }
+    var st = A.st || {}, nStuck = st.stuck || 0;
+    var h = banner(st);
+    var tabs = [['rules', T('ルール（16）','Rules (16)')], ['roles', T('役割の人','People by role')], ['dels', T('代理','Delegates')],
+      ['stuck', T('承認者がいない ','No approver ') + nStuck], ['live', T('使い始め','Go live')]];
+    h += '<div class="seg-tabs" style="max-width:760px">' + tabs.map(function(x){ return '<div class="seg-tab' + (A.tab === x[0] ? ' active' : '') + '" onclick="FUNERGY_AR.h.tab(\'' + x[0] + '\')"'
+      + (x[0] === 'stuck' && nStuck ? ' style="color:#a51f1f"' : '') + '>' + esc(x[1]) + '</div>'; }).join('') + '</div>';
+    if (A.tab === 'roles') h += rolesTab();
+    else if (A.tab === 'dels') h += delsTab();
+    else if (A.tab === 'stuck') h += stuckTab();
+    else if (A.tab === 'live') h += liveTab(st);
+    else h += rulesTab();
+    return h;
+  }
+  function banner(st){
+    if (st.live) return '<div class="alert alert-success" style="font-size:12.5px;margin-bottom:8px"><b>' + T('共通ルールで動いています','Running on the common rules') + '</b>'
+      + (st.live_at ? ' · ' + esc(hst(st.live_at)) + (st.live_by ? ' ' + esc(st.live_by) : '') : '') + '</div>';
+    var act = (st.kinds || []).filter(function(k){ return k.active; }).length;
+    return '<div class="alert alert-info" style="font-size:12.5px;margin-bottom:8px">' + T('まだ使っていません（今までの承認のまま）。16 種類すべてのルールを有効にしてから「使い始め」で動かします。今：有効 ','Not in use yet (the old approvals still run). Activate all 16 rules, then use “Go live”. Active now: ') + act + ' / 16</div>';
+  }
+
+  /* ---- ルール */
+  function kindChip(k){
+    if (k.draft && k.draft_check && (k.draft_check.errors || []).length) return '<span class="ar-chip ar-err">' + T('下書き・要修正','draft · fix') + '</span>';
+    if (k.draft) return '<span class="ar-chip">' + T('下書き','draft') + ' v' + k.draft.ver + '</span>';
+    if (k.active) return '<span class="ar-chip" style="color:#0f6b44">' + T('有効','active') + ' v' + k.active.ver + '</span>';
+    return '<span class="ar-chip ar-err">' + T('有効なし','none') + '</span>';
+  }
+  function rulesTab(){
+    var h = '<div class="ar-grid"><div class="ar-kinds">';
+    GROUPS.forEach(function(g){
+      h += '<div style="font-size:11px;color:var(--muted);margin:6px 6px 2px">' + esc(T(g[0], g[1])) + '</div>';
+      g[2].forEach(function(k){ var r = kr(k); h += '<button class="ar-k' + (A.kind === k ? ' on' : '') + '" onclick="FUNERGY_AR.h.kind(\'' + k + '\')"><span style="flex:1;min-width:0">' + esc(kindL(k)) + '</span>' + kindChip(r)
+        + (r.old_routes ? '<span class="ar-chip ar-warn">' + T('前の版 ','old ') + r.old_routes + '</span>' : '') + '</button>'; });
+    });
+    h += '</div><div style="min-width:0">' + editor() + '</div>' + previewBox() + '</div>';
+    return h;
+  }
+  function editor(){
+    var e = A.ed; if (!e) return '';
+    var k = kr(e.kind), d = e.def, h = '';
+    h += '<div class="ar-box"><div class="ar-row"><div style="font-size:16px;font-weight:800;flex:1">' + esc(kindL(e.kind)) + '</div>'
+      + (k.active ? '<span class="ar-chip" style="color:#0f6b44">' + T('有効 ','active ') + 'v' + k.active.ver + ' · ' + esc(hst(k.active.activated_at)) + (k.active.activated_by ? ' ' + esc(k.active.activated_by) : '') + '</span>' : '<span class="ar-chip ar-err">' + T('有効な版はまだありません','no active version') + '</span>')
+      + (k.draft ? '<span class="ar-chip">' + T('下書き ','draft ') + 'v' + k.draft.ver + ' · ' + esc(hst(k.draft.updated_at)) + (k.draft.updated_by ? ' ' + esc(k.draft.updated_by) : '') + '</span>' : '') + '</div>'
+      + '<div style="font-size:11.5px;color:var(--muted);margin-top:4px">' + (e.from === 'draft' ? T('下書きを直しています','Editing the draft') : e.from === 'active' ? T('有効な版の写しから新しい下書きを作ります（保存するまで何も変わりません）','Editing a copy of the active version (nothing changes until you save)') : T('まだルールがありません','No rule yet'))
+      + (e.dirty ? ' · <b style="color:#8a4a0b">' + T('保存していない変更があります','Unsaved changes') + '</b>' : '') + '</div>';
+    /* 確かめ（サーバーの中身の確かめは保存した下書きのもの・形の確かめはこの画面で） */
+    var local = defErrors(d), chk = (!e.dirty && e.from === 'draft' && k.draft_check) ? k.draft_check : null;
+    if (local.length) h += '<div style="margin-top:8px;font-size:12px" class="ar-err">' + local.map(function(x){ return '<div>• ' + esc(x) + '</div>'; }).join('') + '</div>';
+    if (chk) h += checkHtml(chk);
+    h += '</div>';
+    /* 条件 */
+    h += '<div class="ar-box"><div style="font-weight:800;margin-bottom:4px">' + T('条件（上から順に、最初に当たったもの）','Conditions (first match wins, top to bottom)') + '</div>';
+    (d.branches || []).forEach(function(b, i){ h += branchHtml(b, i); });
+    h += '<button class="btn btn-secondary btn-sm" style="margin-top:8px;min-height:40px" ' + ((d.branches || []).length >= 10 ? 'disabled' : '') + ' onclick="FUNERGY_AR.h.addBranch()">＋ ' + T('条件を足す','Add a condition') + '</button></div>';
+    /* 既定 */
+    var df = d['default'] || {};
+    h += '<div class="ar-box"><div class="ar-row"><div style="font-weight:800;flex:1">' + T('既定（どの条件にも当たらないとき）','Default (when no condition matches)') + '</div>'
+      + '<label style="font-size:12px"><input type="checkbox" ' + (df.block ? 'checked' : '') + ' onchange="FUNERGY_AR.h.block(this.checked)"> ' + T('出せない（止める）','Block (cannot be submitted)') + '</label></div>';
+    if (!df.block) h += stagesHtml('d', df.stages || []);
+    h += '</div>';
+    /* 閲覧者 */
+    h += '<div class="ar-box"><div style="font-weight:800">' + T('閲覧者（承認しないが見られる人）','Viewers (can see, do not approve)') + '</div>'
+      + '<div style="font-size:11.5px;color:var(--muted);margin:2px 0 6px">' + T('申請した人・承認する人・承認した人はいつも見られます。','The requester, approvers and those who approved can always see it.') + '</div>';
+    (d.viewers || []).forEach(function(v, i){
+      h += '<div class="ar-row" style="padding:4px 0;border-top:1px solid var(--border)"><span style="flex:1;min-width:140px;font-size:12.5px">' + esc(slotL(v.who)) + '</span>'
+        + '<select style="min-height:36px" onchange="FUNERGY_AR.h.vFrom(' + i + ',this.value)">' + fromOpts(v.from) + '</select>'
+        + '<button class="btn btn-secondary btn-sm" style="min-height:36px" onclick="FUNERGY_AR.h.vDel(' + i + ')">' + T('外す','Remove') + '</button></div>';
+    });
+    h += A.pick && A.pick.path === 'v' ? pickHtml() : '<button class="btn btn-secondary btn-sm" style="margin-top:6px;min-height:40px" ' + ((d.viewers || []).length >= 20 ? 'disabled' : '') + ' onclick="FUNERGY_AR.h.pick(\'v\')">＋ ' + T('閲覧者を足す','Add a viewer') + '</button>';
+    h += '</div>';
+    /* 自分の申請 */
+    var sf = d.self || 'ceo';
+    h += '<div class="ar-box"><div style="font-weight:800;margin-bottom:4px">' + T('自分の申請（本人が承認者に当たるとき）','Own requests (when the requester is an approver)') + '</div>'
+      + [['gm', T('GM の申請は GM 本人も承認できる（ほかの人は本人しか当たらない枠を CEO に回す）','The GM may approve their own requests (for others, a slot only they fit goes to the CEO)')],
+         ['ceo', T('本人しか当たらない枠は CEO に回す','A slot only the requester fits goes to the CEO')],
+         ['block', T('止める（CEO・GM が例外で直す）','Stop (the CEO or GM fixes it with an exception)')]].map(function(x){
+        return '<label style="display:flex;gap:8px;align-items:flex-start;font-size:12.5px;padding:4px 0;min-height:32px"><input type="radio" name="ar-self" ' + (sf === x[0] ? 'checked' : '') + ' onchange="FUNERGY_AR.h.self(\'' + x[0] + '\')"> <span>' + esc(x[1]) + '</span></label>'; }).join('')
+      + '</div>';
+    /* 保存・有効にする */
+    var canAct = !e.dirty && e.from === 'draft' && k.draft && !(chk && (chk.errors || []).length) && !local.length;
+    h += '<div class="ar-box"><div style="font-size:12px;font-weight:700;margin-bottom:4px">' + T('メモ（有効にするときは要る）','Note (required to activate)') + '</div>'
+      + '<input type="text" maxlength="400" style="width:100%;min-height:40px" value="' + esc(e.note) + '" placeholder="' + esc(T('例：AM の段を足した','e.g. added an AM step')) + '" oninput="FUNERGY_AR.h.note(this.value)">'
+      + '<div class="ar-row" style="margin-top:10px">'
+      + '<button class="btn btn-primary" style="min-height:44px;font-weight:800" ' + (A.busy || local.length || (!e.dirty && e.from === 'draft') ? 'disabled' : '') + ' onclick="FUNERGY_AR.h.save()">' + T('下書きに保存','Save draft') + '</button>'
+      + '<button class="btn btn-primary" style="min-height:44px;font-weight:800;background:#0f6b44;border-color:#0f6b44" ' + (A.busy || !canAct ? 'disabled' : '') + ' onclick="FUNERGY_AR.h.activate()">' + T('この下書きを有効にする','Activate this draft') + '</button>'
+      + (e.dirty ? '<button class="btn btn-secondary" style="min-height:44px" ' + (A.busy ? 'disabled' : '') + ' onclick="FUNERGY_AR.h.revert()">' + T('変更をやめる','Discard changes') + '</button>' : '')
+      + (k.draft && !e.dirty ? '<button class="btn btn-secondary" style="min-height:44px" ' + (A.busy ? 'disabled' : '') + ' onclick="FUNERGY_AR.h.discard()">' + T('下書きを捨てる','Delete draft') + '</button>' : '')
+      + '</div><div style="font-size:11.5px;color:var(--muted);margin-top:6px;line-height:1.6">' + T('有効にすると、これから出す申請に使います。進行中の申請は前の版のまま（下の「進行中の申請にも当てる」で選んで当てる）。','Once active, it applies to new requests. Requests in progress keep their version (apply it below if you choose).') + '</div></div>';
+    if (k.active && k.old_routes) h += applyBox(k);
+    if ((k.history || []).length) h += '<details class="ar-box"><summary style="cursor:pointer;font-weight:700">' + T('版の履歴','Version history') + '</summary>'
+      + '<table class="ar-tbl" style="margin-top:6px">' + k.history.map(function(x){ return '<tr><td>v' + x.ver + '</td><td>' + esc(x.status === 'active' ? T('有効','active') : x.status === 'draft' ? T('下書き','draft') : T('前の版','old')) + '</td><td>' + esc(hst(x.at)) + ' ' + esc(x.by || '') + '</td><td>' + esc(x.note || '') + '</td></tr>'; }).join('') + '</table></details>';
+    return h;
+  }
+  function checkHtml(c){
+    var er = c.errors || [], wa = c.warnings || [];
+    if (!er.length && !wa.length) return '<div style="margin-top:8px;font-size:12px;color:#0f6b44">' + T('確かめ：問題なし（有効にできます）','Check: no problems (ready to activate)') + '</div>';
+    var L = function(x){
+      var w = esc(x.branch || '') + (x.stage ? T(' 段 ',' step ') + x.stage : '');
+      if (x.code === 'unreachable') return w + T('：前の条件で必ず当たるので、ここには来ません',': never reached (an earlier condition always matches)');
+      if (x.code === 'emp_out') return w + T('：「','： “') + esc(x.name || x.emp) + T('」は退職か利用停止です','” has left or is disabled');
+      if (x.code === 'no_approver') return w + T('：承認できる人がいない店 ',': no approver at ') + esc((x.stores || []).map(storeL).join('・'));
+      if (x.code === 'same_person') return w + T('：「全員」の段で、1 人が 2 つの枠を埋めることになる店 ',': in an “all” step one person would fill two slots at ') + esc((x.stores || []).map(storeL).join('・'));
+      if (x.code === 'default_unused') return w + T('：前の条件で必ず当たるので、既定は使いません',': the default is never used');
+      if (x.code === 'dup_slot') return w + T('：同じ枠が 2 つあります',': the same slot appears twice');
+      return w + '：' + esc(x.code);
+    };
+    return '<div style="margin-top:8px;font-size:12px">' + er.map(function(x){ return '<div class="ar-err">• ' + L(x) + '</div>'; }).join('') + wa.map(function(x){ return '<div class="ar-warn">• ' + L(x) + '</div>'; }).join('') + '</div>';
+  }
+  function fromOpts(f){ f = f || 'submit'; var o = ['submit','final','stage:1','stage:2','stage:3','stage:4','stage:5']; return o.map(function(x){ return '<option value="' + x + '"' + (x === f ? ' selected' : '') + '>' + esc(fromL(x)) + '</option>'; }).join(''); }
+  function dollars(c){ return c == null ? '' : (c / 100).toFixed(2).replace(/\.00$/, ''); }
+  function branchHtml(b, i){
+    var w = b.when || {}, n = (A.ed.def.branches || []).length, ss = w.stores || [];
+    var h = '<div class="ar-stage" style="border-style:solid"><div class="ar-row"><b style="font-size:12.5px">' + T('条件 ','Condition ') + (i + 1) + '</b>'
+      + '<input type="text" maxlength="60" style="flex:1;min-width:120px;min-height:36px" placeholder="' + esc(T('名前（任意・例：$500 以上）','Name (optional)')) + '" value="' + esc(b.label || '') + '" onchange="FUNERGY_AR.h.bLabel(' + i + ',this.value)">'
+      + '<button class="btn btn-secondary btn-sm" style="min-height:36px" ' + (i === 0 ? 'disabled' : '') + ' onclick="FUNERGY_AR.h.bMove(' + i + ',-1)" aria-label="' + esc(T('上へ','Up')) + '">↑</button>'
+      + '<button class="btn btn-secondary btn-sm" style="min-height:36px" ' + (i === n - 1 ? 'disabled' : '') + ' onclick="FUNERGY_AR.h.bMove(' + i + ',1)" aria-label="' + esc(T('下へ','Down')) + '">↓</button>'
+      + '<button class="btn btn-secondary btn-sm" style="min-height:36px" onclick="FUNERGY_AR.h.bDel(' + i + ')">' + T('消す','Delete') + '</button></div>'
+      + '<div class="ar-row" style="margin-top:6px;font-size:12px">' + T('金額 $','Amount $') + '<input type="number" min="0" step="0.01" style="width:100px;min-height:36px" value="' + dollars(w.min_cents) + '" onchange="FUNERGY_AR.h.bAmt(' + i + ',\'min\',this.value)">' + T(' 以上',' or more')
+      + ' · $<input type="number" min="0" step="0.01" style="width:100px;min-height:36px" value="' + dollars(w.max_cents) + '" onchange="FUNERGY_AR.h.bAmt(' + i + ',\'max\',this.value)">' + T(' 未満',' or less (excl.)') + '</div>'
+      + '<div class="ar-row" style="margin-top:6px;font-size:12px"><select style="min-height:36px" onchange="FUNERGY_AR.h.bFlag(' + i + ',\'hq\',this.value)">'
+      + [['', T('本部・店を問わない','HQ or store')], ['1', T('本部の申請だけ','HQ requests only')], ['0', T('店の申請だけ','Store requests only')]].map(function(o){ return '<option value="' + o[0] + '"' + ((w.hq === true ? '1' : w.hq === false ? '0' : '') === o[0] ? ' selected' : '') + '>' + esc(o[1]) + '</option>'; }).join('') + '</select>'
+      + '<select style="min-height:36px" onchange="FUNERGY_AR.h.bFlag(' + i + ',\'has_am\',this.value)">'
+      + [['', T('担当 AM を問わない','AM or not')], ['1', T('担当 AM がいる店','Stores with an AM')], ['0', T('担当 AM がいない店','Stores without an AM')]].map(function(o){ return '<option value="' + o[0] + '"' + ((w.has_am === true ? '1' : w.has_am === false ? '0' : '') === o[0] ? ' selected' : '') + '>' + esc(o[1]) + '</option>'; }).join('') + '</select></div>'
+      + '<details style="margin-top:6px"' + (ss.length ? ' open' : '') + '><summary style="font-size:12px;cursor:pointer">' + T('店を決める ','Stores ') + (ss.length ? PO() + ss.map(storeL).map(esc).join('・') + PC() : T('（すべての店）','(all stores)')) + '</summary><div class="ar-row" style="margin-top:4px">'
+      + stores().map(function(s){ return '<label style="font-size:12px;min-height:32px;display:inline-flex;align-items:center;gap:4px"><input type="checkbox" ' + (ss.indexOf(String(s.id)) >= 0 ? 'checked' : '') + ' onchange="FUNERGY_AR.h.bStore(' + i + ',\'' + esc(String(s.id)) + '\',this.checked)">' + esc(s.name || s.id) + '</label>'; }).join('') + '</div></details>';
+    h += stagesHtml('b' + i, b.stages || []);
+    return h + '</div>';
+  }
+  function stagesHtml(path, st){
+    var h = '';
+    st.forEach(function(x, j){
+      h += '<div class="ar-stage"><div class="ar-row"><b style="font-size:12.5px">' + T('段 ','Step ') + (j + 1) + '</b>'
+        + '<select style="min-height:36px" onchange="FUNERGY_AR.h.sMode(\'' + path + '\',' + j + ',this.value)"><option value="any"' + (x.mode !== 'all' ? ' selected' : '') + '>' + esc(modeL('any')) + '</option><option value="all"' + (x.mode === 'all' ? ' selected' : '') + '>' + esc(modeL('all')) + '</option></select>'
+        + '<span style="flex:1"></span>'
+        + '<button class="btn btn-secondary btn-sm" style="min-height:36px" ' + (j === 0 ? 'disabled' : '') + ' onclick="FUNERGY_AR.h.sMove(\'' + path + '\',' + j + ',-1)">↑</button>'
+        + '<button class="btn btn-secondary btn-sm" style="min-height:36px" ' + (j === st.length - 1 ? 'disabled' : '') + ' onclick="FUNERGY_AR.h.sMove(\'' + path + '\',' + j + ',1)">↓</button>'
+        + '<button class="btn btn-secondary btn-sm" style="min-height:36px" onclick="FUNERGY_AR.h.sDel(\'' + path + '\',' + j + ')">' + T('段を消す','Delete step') + '</button></div><div style="margin-top:4px">'
+        + (x.slots || []).map(function(s, q){ return '<span class="ar-pill">' + esc(slotL(s)) + '<button onclick="FUNERGY_AR.h.slotDel(\'' + path + '\',' + j + ',' + q + ')" aria-label="' + esc(T('外す','Remove')) + '">×</button></span>'; }).join('')
+        + (A.pick && A.pick.path === path + ':' + j ? pickHtml() : ((x.slots || []).length < 8 ? '<button class="btn btn-secondary btn-sm" style="min-height:36px" onclick="FUNERGY_AR.h.pick(\'' + path + ':' + j + '\')">＋ ' + T('承認者','Approver') + '</button>' : ''))
+        + '</div></div>';
+    });
+    if (st.length < 5) h += '<button class="btn btn-secondary btn-sm" style="margin-top:8px;min-height:40px" onclick="FUNERGY_AR.h.sAdd(\'' + path + '\')">＋ ' + T('段を足す','Add a step') + '</button>';
+    return h;
+  }
+  /* 枠を選ぶ（その場で開く・設定の画面と例外の画面で同じ） */
+  function pickHtml(){
+    var p = A.pick, viewer = p.path === 'v' || p.path.slice(0, 2) === 'xv';
+    var h = '<div class="ar-pick"><div class="ar-row" style="font-size:12.5px"><label><input type="radio" name="ar-pt" ' + (p.t === 'role' ? 'checked' : '') + ' onchange="FUNERGY_AR.h.pk(\'t\',\'role\')"> ' + T('役割','Role') + '</label>'
+      + '<label><input type="radio" name="ar-pt" ' + (p.t === 'emp' ? 'checked' : '') + ' onchange="FUNERGY_AR.h.pk(\'t\',\'emp\')"> ' + T('人を決める','A person') + '</label></div>';
+    if (p.t === 'emp') {
+      var ps = people();
+      h += '<div style="margin-top:6px"><select style="min-height:40px;max-width:100%" onchange="FUNERGY_AR.h.pk(\'emp\',this.value)"><option value="">' + T('選ぶ','Choose') + '</option>'
+        + ps.map(function(x){ return '<option value="' + esc(x.id) + '"' + (p.emp === x.id ? ' selected' : '') + '>' + esc(x.name) + '</option>'; }).join('') + '</select>'
+        + (A.rload === 'loading' ? ' <span style="font-size:11px;color:var(--muted)">' + T('読み込み中…','Loading…') + '</span>' : '') + '</div>';
+    } else {
+      h += '<div class="ar-row" style="margin-top:6px"><select style="min-height:40px" onchange="FUNERGY_AR.h.pk(\'role\',this.value)">' + ROLES.map(function(r){ return '<option value="' + r[0] + '"' + (p.role === r[0] ? ' selected' : '') + '>' + esc(T(r[1], r[2])) + '</option>'; }).join('') + '</select>'
+        + '<select style="min-height:40px" onchange="FUNERGY_AR.h.pk(\'scope\',this.value)">' + [['all', T('すべての店','All stores')], ['mine', T('申請の店の担当','Assigned to the request’s store')], ['stores', T('決めた店','Chosen stores')]].map(function(o){ return '<option value="' + o[0] + '"' + (p.scope === o[0] ? ' selected' : '') + '>' + esc(o[1]) + '</option>'; }).join('') + '</select>'
+        + (viewer ? '' : '<label style="font-size:12px;min-height:32px;display:inline-flex;align-items:center;gap:4px"><input type="checkbox" ' + (p.each ? 'checked' : '') + ' onchange="FUNERGY_AR.h.pk(\'each\',this.checked)"> ' + T('全員（1 人ずつ枠にする）','Everyone (one slot each)') + '</label>') + '</div>';
+      if (p.scope === 'stores') h += '<div class="ar-row" style="margin-top:6px">' + stores().map(function(s){ return '<label style="font-size:12px;min-height:32px;display:inline-flex;align-items:center;gap:4px"><input type="checkbox" ' + ((p.stores || []).indexOf(String(s.id)) >= 0 ? 'checked' : '') + ' onchange="FUNERGY_AR.h.pkStore(\'' + esc(String(s.id)) + '\',this.checked)">' + esc(s.name || s.id) + '</label>'; }).join('') + '</div>';
+    }
+    if (viewer) h += '<div style="margin-top:6px;font-size:12px">' + T('見られるのは ','Can see ') + '<select style="min-height:36px" onchange="FUNERGY_AR.h.pk(\'from\',this.value)">' + fromOpts(p.from) + '</select></div>';
+    var cand = pickSlot(), e = slotErr(cand, viewer);
+    h += (e && p.tried ? '<div class="ar-err" style="font-size:12px;margin-top:4px">' + esc(e) + '</div>' : '')
+      + '<div class="ar-row" style="margin-top:8px"><button class="btn btn-primary btn-sm" style="min-height:40px" onclick="FUNERGY_AR.h.pkOk()">' + T('足す','Add') + (e ? '' : '：' + esc(slotL(cand))) + '</button>'
+      + '<button class="btn btn-secondary btn-sm" style="min-height:40px" onclick="FUNERGY_AR.h.pkNo()">' + T('やめる','Cancel') + '</button></div></div>';
+    return h;
+  }
+  function pickSlot(){
+    var p = A.pick || {};
+    if (p.t === 'emp') return { t:'emp', emp:p.emp || '' };
+    var s = { t:'role', role:p.role || 'gm', scope:p.scope || 'all' };
+    if (s.scope === 'stores') s.stores = (p.stores || []).slice();
+    if (p.each && !(p.path === 'v' || p.path.slice(0, 2) === 'xv')) s.each = true;
+    return s;
+  }
+
+  /* ---- 試す（右の欄） */
+  function previewBox(){
+    var p = A.prev, ps = people(), r = p.res;
+    var h = '<div class="ar-side"><div style="font-weight:800;margin-bottom:6px">' + T('試す','Try it') + '</div>'
+      + '<div style="font-size:11.5px;color:var(--muted);margin-bottom:6px">' + T('いま画面にあるルール（保存していなくても）で、だれに回るかを見ます。何も保存しません。','See who it goes to with the rule on screen (even unsaved). Nothing is saved.') + '</div>'
+      + '<label style="font-size:12px">' + T('店','Store') + '</label><select style="width:100%;min-height:40px" onchange="FUNERGY_AR.h.pv(\'store\',this.value)"><option value="">' + T('選ぶ','Choose') + '</option>'
+      + stores().map(function(s){ return '<option value="' + esc(String(s.id)) + '"' + (p.store === String(s.id) ? ' selected' : '') + '>' + esc(s.name || s.id) + '</option>'; }).join('') + '<option value="---"' + (p.store === '---' ? ' selected' : '') + '>' + T('本部','HQ') + '</option></select>'
+      + '<label style="font-size:12px">' + T('申請した人（任意）','Requester (optional)') + '</label><select style="width:100%;min-height:40px" onchange="FUNERGY_AR.h.pv(\'emp\',this.value)"><option value="">' + T('（決めない）','(none)') + '</option>'
+      + ps.map(function(x){ return '<option value="' + esc(x.id) + '"' + (p.emp === x.id ? ' selected' : '') + '>' + esc(x.name) + '</option>'; }).join('') + '</select>'
+      + '<label style="font-size:12px">' + T('金額 $（任意）','Amount $ (optional)') + '</label><input type="number" min="0" step="0.01" style="width:100%;min-height:40px" value="' + esc(p.amt) + '" onchange="FUNERGY_AR.h.pv(\'amt\',this.value)">'
+      + '<button class="btn btn-secondary" style="width:100%;margin-top:8px;min-height:44px" ' + (p.busy ? 'disabled' : '') + ' onclick="FUNERGY_AR.h.preview()">' + (p.busy ? T('確かめています…','Checking…') : T('この条件で試す','Try')) + '</button>';
+    if (p.err) h += '<div class="ar-err" style="font-size:12px;margin-top:6px">' + esc(p.err) + '</div>';
+    if (r && r.blocked) h += '<div class="alert alert-warning" style="margin-top:8px;font-size:12px">' + T('この条件では出せません（既定が「止める」）','This request cannot be submitted (the default blocks it)') + '</div>';
+    else if (r && r.route) {
+      var rt = r.route;
+      h += '<div style="margin-top:8px;font-size:12px"><b>' + esc(svL(rt.label || '')) + '</b>' + (r.requester_name ? ' · ' + esc(r.requester_name) : '') + '</div>'
+        + (rt.stuck ? '<div class="ar-err" style="font-size:12px">' + T('承認できる人がいません','Nobody can approve') + '</div>' : '')
+        + (rt.stages || []).map(function(s){ return '<div style="font-size:12px;padding:4px 0;border-top:1px solid var(--border)">' + T('段 ','Step ') + s.n + PO() + esc(modeL(s.mode)) + PC()
+          + (s.slots || []).map(function(x){ return '<div style="margin-left:8px">' + esc(svL(x.label)) + '：' + (x.names && x.names.length ? esc(x.names.join('・')) : '<span class="ar-err">' + T('いない','nobody') + '</span>') + '</div>'; }).join('') + '</div>'; }).join('')
+        + ((r.viewers || []).length ? '<div style="font-size:12px;padding-top:4px;border-top:1px solid var(--border)"><b>' + T('閲覧者','Viewers') + '</b>' + r.viewers.map(function(v){ return '<div style="margin-left:8px">' + esc(svL(v.label)) + PO() + esc(fromL(v.from)) + '）：' + esc((v.names || []).join('・') || T('いない','nobody')) + '</div>'; }).join('') + '</div>' : '');
+    }
+    return h + '</div>';
+  }
+
+  /* ---- 進行中の申請にも当てる（明示の操作・確かめの画面で見た版だけ） */
+  function applyBox(k){
+    var ap = A.ap && A.ap.kind === k.kind ? A.ap : null;
+    var h = '<div class="ar-box" style="border-color:#e8c98a"><div style="font-weight:800">' + T('進行中の申請 ','Requests in progress on an older version: ') + k.old_routes + T(' 件は前の版のままです','') + '</div>';
+    if (!ap) return h + '<div style="font-size:11.5px;color:var(--muted);margin:4px 0 8px">' + T('当てると、同じ中身の段（前から順）は承認を残し、違う段から後は取り直します。','Steps with the same content (from the start) keep their approvals; later ones start over.') + '</div>'
+      + '<button class="btn btn-secondary" style="min-height:44px" onclick="FUNERGY_AR.h.apOpen()">' + T('進行中の申請にも当てる…','Apply to requests in progress…') + '</button></div>';
+    if (ap.load === 'loading') return h + '<div style="font-size:12px;color:var(--muted)">' + T('読み込み中…','Loading…') + '</div></div>';
+    if (ap.err) h += '<div class="ar-err" style="font-size:12px">' + esc(ap.err) + '</div>';
+    if (ap.res) {
+      var c = { final:0, applied:0, stale:0, failed:0 }; ap.res.forEach(function(x){ c[x.outcome] = (c[x.outcome] || 0) + 1; });
+      return h + '<div style="font-size:12.5px;margin-top:6px">' + T('当てた ','Applied ') + c.applied + T(' · 最終承認になった ',' · became final ') + c['final'] + T(' · 変わっていた ',' · changed ') + c.stale + T(' · できなかった ',' · failed ') + c.failed + '</div>'
+        + '<button class="btn btn-secondary btn-sm" style="margin-top:8px;min-height:40px" onclick="FUNERGY_AR.h.apClose()">' + T('閉じる','Close') + '</button></div>';
+    }
+    h += '<div style="font-size:12px;margin:4px 0">' + T('版 ','Version ') + 'v' + ap.ver + T(' を当てます。選んだ申請だけ。',' will be applied to the selected requests only.') + '</div>'
+      + '<div style="max-height:40vh;overflow:auto"><table class="ar-tbl">' + (ap.rows || []).map(function(x){
+        if (x.blocked) return '<tr><td></td><td>' + esc(x.code) + '</td><td colspan="3" class="ar-err">' + T('この版では止まります（当てられません）','This version would block it (cannot apply)') + '</td></tr>';
+        return '<tr><td><input type="checkbox" ' + (ap.sel[x.id] ? 'checked' : '') + ' onchange="FUNERGY_AR.h.apSel(\'' + esc(x.id) + '\',this.checked)" aria-label="' + esc(x.code) + '"></td><td><b>' + esc(x.code) + '</b><div style="font-size:11px;color:var(--muted)">' + esc(storeL(x.store_id)) + ' · ' + esc(x.requester_name || '') + (x.amount_cents ? ' · ' + money(x.amount_cents) : '') + '</div></td>'
+          + '<td>v' + x.from_ver + ' ' + esc(x.from_label || '') + ' → ' + esc(x.to_label || '') + '</td><td>' + T('段 ','steps ') + x.from_stages + ' → ' + x.to_stages + T('・承認を残す段 ',' · keeps ') + x.keep + '</td><td>' + (x['final'] ? '<b style="color:#0f6b44">' + T('当てると最終承認','becomes final') + '</b>' : '') + '</td></tr>';
+      }).join('') + '</table></div>'
+      + '<input type="text" maxlength="400" style="width:100%;min-height:40px;margin-top:8px" placeholder="' + esc(T('理由（要る）','Reason (required)')) + '" value="' + esc(ap.note || '') + '" oninput="FUNERGY_AR.h.apNote(this.value)">'
+      + '<div class="ar-row" style="margin-top:8px"><button class="btn btn-primary" style="min-height:44px" ' + (A.busy || !Object.keys(ap.sel).length ? 'disabled' : '') + ' onclick="FUNERGY_AR.h.apGo()">' + T('選んだ ','Apply to ') + Object.keys(ap.sel).length + T(' 件に当てる',' selected') + '</button>'
+      + '<button class="btn btn-secondary" style="min-height:44px" onclick="FUNERGY_AR.h.apClose()">' + T('やめる','Cancel') + '</button></div></div>';
+    return h;
+  }
+
+  /* ---- 役割の人（見るだけ：従業員マスターとアカウントから決まる・1B） */
+  function rolesTab(){
+    if (!A.roles) { if (A.rload !== 'loading' && A.rload !== 'err') loadRoles(); return A.rload === 'err' ? '<div class="alert alert-warning">' + esc(A.rerr) + '</div><button class="btn btn-secondary" onclick="FUNERGY_AR.h.rolesReload()">' + T('もう一度読む','Try again') + '</button>' : '<div style="color:var(--muted)">' + T('読み込み中…','Loading…') + '</div>'; }
+    var R = A.roles, h = '<div style="font-size:12px;color:var(--muted);margin-bottom:8px;line-height:1.6">' + T('役割はここでは変えません。CEO・GM はアカウント、AM と Head Chef は「承認・閲覧の権限の確かめ」と従業員マスター、経理はアカウント、事務Crew はアカウントか経費の画面の確かめで決まります。','Roles are not edited here: CEO/GM come from accounts, AM and Head Chef from the permission check and the employee master, accounting from accounts, office crew from accounts or the expense screen check.') + '</div>';
+    var byRole = {}; (R.people || []).forEach(function(p){ (p.roles || []).forEach(function(r){ (byRole[r.role] = byRole[r.role] || []).push({ p:p, r:r }); }); });
+    h += '<div class="ar-box"><table class="ar-tbl"><tr><th>' + T('役割','Role') + '</th><th>' + T('人数','People') + '</th><th>' + T('人（担当店舗）','People (stores)') + '</th></tr>'
+      + ROLES.map(function(r){ var xs = byRole[r[0]] || []; return '<tr><td><b>' + esc(T(r[1], r[2])) + '</b></td><td>' + xs.length + '</td><td>' + (xs.length ? xs.map(function(x){ return esc(x.p.name) + ((x.r.stores || []).length ? PO() + x.r.stores.map(storeL).map(esc).join('・') + PC() : '') + (x.p.out ? ' <span class="ar-err">' + T('退職・停止','left/disabled') + '</span>' : ''); }).join(T('、', ', ')) : '<span class="ar-warn">' + T('いません','nobody') + '</span>') + '</td></tr>'; }).join('') + '</table></div>';
+    if ((R.wait || []).length) h += '<div class="ar-box" style="border-color:#e8c98a"><div style="font-weight:800;margin-bottom:4px">' + T('まだ役割になっていない人','Not a role yet') + '</div><table class="ar-tbl">'
+      + R.wait.map(function(x){ return '<tr><td>' + esc(x.name) + '</td><td>' + esc(svL(x.label)) + '</td><td style="font-size:12px">' + (x.why === 'confirm' ? T('GM・CEO の確かめがまだ（ワークセンター › 承認・閲覧の権限の確かめ）','Waiting for the GM/CEO check (Work Center › permission check)') : T('経理のアカウントがまだ','No accounting account yet')) + '</td></tr>'; }).join('') + '</table></div>';
+    h += '<div class="ar-box"><div style="font-weight:800;margin-bottom:4px">' + T('店と担当 AM（店舗マスターの AM 欄）','Stores and AM (store master)') + '</div><table class="ar-tbl">'
+      + (R.stores || []).map(function(s){ return '<tr><td>' + esc(s.name || s.id) + '</td><td>' + esc(s.am || '') + (s.am ? '' : '<span class="ar-warn">' + T('なし','none') + '</span>') + '</td></tr>'; }).join('') + '</table></div>';
+    return h;
+  }
+
+  /* ---- 代理 */
+  function delsTab(){
+    if (A.dload === '' ) loadDels();
+    var h = '<div style="font-size:12px;color:var(--muted);margin-bottom:8px;line-height:1.6">' + T('休みのあいだなど、決めた期間だけ、ある人の承認をほかの人が代わりにできます（記録は「〇〇の代理」）。','For a set period, one person can approve in place of another (recorded as “on behalf of”).') + '</div>';
+    if (A.dload === 'loading' && !A.dels) return h + '<div style="color:var(--muted)">' + T('読み込み中…','Loading…') + '</div>';
+    if (A.dload === 'err') h += '<div class="alert alert-warning">' + esc(A.derr) + '</div>';
+    var ds = A.dels || [];
+    h += '<div class="ar-box"><table class="ar-tbl"><tr><th>' + T('代わる人 → 代わりにする人','From → to') + '</th><th>' + T('期間','Period') + '</th><th>' + T('種類・店','Kinds · stores') + '</th><th>' + T('メモ','Note') + '</th><th></th></tr>'
+      + (ds.length ? ds.map(function(d){
+        var stt = !d.active ? T('終わった','ended') : d.now ? T('今','now') : d.starts > today() ? T('予定','planned') : T('終わった','ended');
+        return '<tr><td><b>' + esc(d.from_name) + '</b> → <b>' + esc(d.to_name) + '</b><div><span class="ar-chip">' + esc(stt) + '</span></div></td><td>' + esc(d.starts) + ' 〜 ' + esc(d.ends) + '</td>'
+          + '<td style="font-size:12px">' + ((d.kinds || []).length ? d.kinds.map(kindL).map(esc).join('・') : T('すべての種類','all kinds')) + '<br>' + ((d.stores || []).length ? d.stores.map(storeL).map(esc).join('・') : T('すべての店','all stores')) + '</td>'
+          + '<td style="font-size:12px">' + esc(d.note || '') + '<div style="color:var(--muted)">' + esc(d.by || '') + (d.ended_by ? ' · ' + T('終えた ','ended by ') + esc(d.ended_by) : '') + '</div></td>'
+          + '<td>' + (d.active ? (A.dend && A.dend.id === d.id ? '<input type="text" maxlength="400" style="min-height:36px;width:140px" placeholder="' + esc(T('理由','Reason')) + '" value="' + esc(A.dend.note) + '" oninput="FUNERGY_AR.h.dEndNote(this.value)"> <button class="btn btn-primary btn-sm" style="min-height:36px" ' + (A.busy ? 'disabled' : '') + ' onclick="FUNERGY_AR.h.dEndGo()">' + T('終える','End') + '</button>'
+            : '<button class="btn btn-secondary btn-sm" style="min-height:36px" onclick="FUNERGY_AR.h.dEnd(\'' + esc(d.id) + '\')">' + T('終える…','End…') + '</button>') : '') + '</td></tr>';
+      }).join('') : '<tr><td colspan="5" style="color:var(--muted)">' + T('ありません','None') + '</td></tr>') + '</table></div>';
+    var f = A.dform;
+    if (!f) return h + '<button class="btn btn-primary" style="min-height:44px" onclick="FUNERGY_AR.h.dNew()">＋ ' + T('代理を決める','Add a delegate') + '</button>';
+    var ps = people(), opt = function(v){ return '<option value="">' + T('選ぶ','Choose') + '</option>' + ps.map(function(x){ return '<option value="' + esc(x.id) + '"' + (v === x.id ? ' selected' : '') + '>' + esc(x.name) + '</option>'; }).join(''); };
+    h += '<div class="ar-box"><div style="font-weight:800;margin-bottom:6px">' + T('代理を決める','Add a delegate') + '</div>'
+      + '<div class="ar-row" style="font-size:12.5px">' + T('代わる人','From') + ' <select style="min-height:40px" onchange="FUNERGY_AR.h.df(\'from\',this.value)">' + opt(f.from) + '</select> → ' + T('代わりにする人','To') + ' <select style="min-height:40px" onchange="FUNERGY_AR.h.df(\'to\',this.value)">' + opt(f.to) + '</select></div>'
+      + '<div class="ar-row" style="font-size:12.5px;margin-top:6px">' + T('期間','Period') + ' <input type="date" style="min-height:40px" value="' + esc(f.starts) + '" onchange="FUNERGY_AR.h.df(\'starts\',this.value)"> 〜 <input type="date" style="min-height:40px" value="' + esc(f.ends) + '" onchange="FUNERGY_AR.h.df(\'ends\',this.value)"> <span style="font-size:11px;color:var(--muted)">' + T('（ハワイ時間・1 年まで）','(Hawaii time · up to 1 year)') + '</span></div>'
+      + '<details style="margin-top:6px"><summary style="font-size:12px;cursor:pointer">' + T('種類 ','Kinds ') + (f.kinds.length ? PO() + f.kinds.length + PC() : T('（すべて）','(all)')) + '</summary><div class="ar-row" style="margin-top:4px">'
+      + GROUPS.reduce(function(a, g){ return a.concat(g[2]); }, []).map(function(k){ return '<label style="font-size:12px;min-height:32px;display:inline-flex;align-items:center;gap:4px"><input type="checkbox" ' + (f.kinds.indexOf(k) >= 0 ? 'checked' : '') + ' onchange="FUNERGY_AR.h.dfList(\'kinds\',\'' + k + '\',this.checked)">' + esc(kindL(k)) + '</label>'; }).join('') + '</div></details>'
+      + '<details style="margin-top:6px"><summary style="font-size:12px;cursor:pointer">' + T('店 ','Stores ') + (f.stores.length ? PO() + f.stores.length + PC() : T('（すべて）','(all)')) + '</summary><div class="ar-row" style="margin-top:4px">'
+      + stores().concat([{ id:'---', name:T('本部','HQ') }]).map(function(s){ return '<label style="font-size:12px;min-height:32px;display:inline-flex;align-items:center;gap:4px"><input type="checkbox" ' + (f.stores.indexOf(String(s.id)) >= 0 ? 'checked' : '') + ' onchange="FUNERGY_AR.h.dfList(\'stores\',\'' + esc(String(s.id)) + '\',this.checked)">' + esc(s.name || s.id) + '</label>'; }).join('') + '</div></details>'
+      + '<input type="text" maxlength="400" style="width:100%;min-height:40px;margin-top:6px" placeholder="' + esc(T('理由（要る・例：休暇のあいだ）','Reason (required)')) + '" value="' + esc(f.note) + '" oninput="FUNERGY_AR.h.df(\'note\',this.value,1)">'
+      + (f.err ? '<div class="ar-err" style="font-size:12px;margin-top:4px">' + esc(f.err) + '</div>' : '')
+      + '<div class="ar-row" style="margin-top:8px"><button class="btn btn-primary" style="min-height:44px" ' + (A.busy ? 'disabled' : '') + ' onclick="FUNERGY_AR.h.dSave()">' + T('決める','Save') + '</button><button class="btn btn-secondary" style="min-height:44px" onclick="FUNERGY_AR.h.dCancel()">' + T('やめる','Cancel') + '</button></div></div>';
+    return h;
+  }
+
+  /* ---- 承認者がいない */
+  function stuckTab(){
+    if (A.sload === '') loadStuck();
+    var h = '<div style="font-size:12px;color:var(--muted);margin-bottom:8px;line-height:1.6">' + T('今の段に承認できる人がいない申請です（段は自動では通しません）。開いて「例外（この申請だけ）」で段を直すか、代理を決めてください。','Requests whose current step has nobody who can approve (steps are never skipped). Open one and use “Exception” to fix the step, or add a delegate.') + '</div>';
+    if (A.sload === 'loading' && !A.stuck) return h + '<div style="color:var(--muted)">' + T('読み込み中…','Loading…') + '</div>';
+    if (A.sload === 'err') h += '<div class="alert alert-warning">' + esc(A.serr) + '</div>';
+    var rs = A.stuck || [];
+    if (!rs.length) return h + '<div class="ar-box" style="color:#0f6b44">' + T('ありません','None') + '</div><button class="btn btn-secondary btn-sm" onclick="FUNERGY_AR.h.stuckReload()">' + T('読み直す','Reload') + '</button>';
+    return h + '<div class="ar-box"><table class="ar-tbl">' + rs.map(function(r){ var rt = r.route || {};
+      return '<tr><td><b>' + esc(r.code) + '</b><div style="font-size:11px;color:var(--muted)">' + esc(kindL(r.kind)) + ' · ' + esc(storeL(r.store_id)) + ' · ' + esc(r.requester_name || '') + '</div></td><td>' + esc(svL(rt.label || '')) + T(' · 段 ',' · step ') + (rt.cur || '?') + '/' + ((rt.stages || []).length || '?') + '</td>'
+        + '<td><button class="btn btn-secondary btn-sm" style="min-height:36px" data-a="' + esc(r.id) + '" onclick="wrOpen(this.dataset.a)">' + T('開く','Open') + '</button></td></tr>'; }).join('') + '</table></div>'
+      + '<button class="btn btn-secondary btn-sm" onclick="FUNERGY_AR.h.stuckReload()">' + T('読み直す','Reload') + '</button>';
+  }
+
+  /* ---- 使い始め */
+  function liveTab(st){
+    var miss = (st.kinds || []).filter(function(k){ return !k.active; }), L = A.live, h = '';
+    if (st.live) {
+      h += '<div class="ar-box"><div style="font-weight:800">' + T('共通ルールで動いています','Running on the common rules') + '</div>'
+        + '<div style="font-size:12px;color:var(--muted);margin:4px 0 8px;line-height:1.6">' + T('止めると、承認待ち・差し戻しの申請からルートを外し、今までの決め方に戻します（承認の記録は残ります）。','Stopping removes routes from pending and returned requests and goes back to the old approvals (the records stay).') + '</div>'
+        + '<input type="text" maxlength="400" style="width:100%;min-height:40px" placeholder="' + esc(T('理由（要る）','Reason (required)')) + '" value="' + esc(L.note) + '" oninput="FUNERGY_AR.h.liveNote(this.value)">'
+        + '<button class="btn btn-secondary" style="margin-top:8px;min-height:44px;color:#a51f1f" ' + (A.busy ? 'disabled' : '') + ' onclick="FUNERGY_AR.h.goOff()">' + T('共通ルールを止める','Stop the common rules') + '</button></div>';
+    } else {
+      h += '<div class="ar-box"><div style="font-weight:800">' + T('共通ルールで動かす','Go live') + '</div>'
+        + '<div style="font-size:12px;color:var(--muted);margin:4px 0 8px;line-height:1.6">' + T('動かすと、承認待ちの申請にも有効な版のルートを付けます（AM がもう承認していればその段は写します）。全部の端末を 1190 にしてからにしてください。','Going live also attaches routes to pending requests (an AM’s earlier approval is copied). Update every device to 1190 first.') + '</div>'
+        + (miss.length ? '<div class="ar-err" style="font-size:12px;margin-bottom:8px">' + T('有効な版がない種類：','Kinds without an active version: ') + miss.map(function(k){ return esc(kindL(k.kind)); }).join('・') + '</div>' : '<div style="font-size:12px;color:#0f6b44;margin-bottom:8px">' + T('16 種類すべて有効です','All 16 kinds are active') + '</div>')
+        + '<input type="text" maxlength="400" style="width:100%;min-height:40px" placeholder="' + esc(T('メモ（任意）','Note (optional)')) + '" value="' + esc(L.note) + '" oninput="FUNERGY_AR.h.liveNote(this.value)">'
+        + '<button class="btn btn-primary" style="margin-top:8px;min-height:44px;font-weight:800" ' + (A.busy || miss.length ? 'disabled' : '') + ' onclick="FUNERGY_AR.h.goLive()">' + T('共通ルールで動かす','Go live') + '</button></div>';
+    }
+    if (L.res) h += '<div class="ar-box" style="font-size:12.5px">' + (L.res.live ? T('動かしました。ルートを付けた申請 ','Live. Routes attached: ') + (L.res.attached || 0) + ((L.res.blocked || []).length ? T(' · 止まった申請（ルールで出せない）：',' · blocked: ') + L.res.blocked.map(esc).join(T('、', ', ')) : '') : T('止めました','Stopped')) + '</div>';
+    return h;
+  }
+
+  /* ---------------------------------------------------------------- 申請の画面：ルートの表示と例外（W.arRouteCard は FUNERGY_WR の drawDetail が呼ぶ） */
+  var VIA = { own:['本人の申請','own request'], self:['',''], self_ceo:['CEO に回した','sent to CEO'], copied:['前の AM の承認を写した','copied from the earlier AM approval'] };
+  function routeCard(r){
+    var rt = r.route; if (!rt) return '';
+    var cur = rt.cur || 1, n = (rt.stages || []).length, open = r.status === 'pending', ar = W.wrAr ? W.wrAr() : null;
+    var h = '<div class="ar-rt">' + CSS + '<div class="ar-row"><b style="font-size:13px;flex:1">' + T('承認のルート','Approval route') + (rt.label ? T('：',': ') + esc(svL(rt.label)) : '') + '</b>'
+      + '<span class="ar-chip">' + esc(kindL((rt.rule || {}).kind || r.kind)) + ' v' + esc((rt.rule || {}).ver || '?') + '</span>'
+      + (open ? '<span class="ar-chip">' + T('段 ','step ') + cur + '/' + n + '</span>' : '') + '</div>';
+    if (open && rt.stuck) h += '<div class="alert alert-danger" style="font-size:12px;margin:6px 0">' + T('今の段に承認できる人がいません。CEO・GM が下の「例外」で直すか、代理を決めてください。','Nobody can approve the current step. The CEO or GM can fix it with an exception or a delegate.') + '</div>';
+    (rt.stages || []).forEach(function(s){
+      var done = !!s.done, now = open && !done && s.n === cur;
+      h += '<div class="ar-st"><span style="font-size:15px;width:18px;text-align:center;color:' + (done ? '#0f6b44' : now ? 'var(--accent,#c2410c)' : 'var(--muted)') + '">' + (done ? '✓' : now ? '●' : '○') + '</span><div style="flex:1;min-width:0;font-size:12.5px">'
+        + '<b>' + T('段 ','Step ') + s.n + '</b> <span style="color:var(--muted)">' + esc(modeL(s.mode)) + '</span><div>'
+        + (s.slots || []).map(function(x){ return '<span class="ar-pill" style="padding-right:10px' + (x.filled ? ';border-color:#0f6b44;color:#0f6b44' : '') + '">' + (x.filled ? '✓ ' : '') + esc(svL(x.label)) + (now && !x.filled && x.names && x.names.length ? ' <span style="color:var(--muted)">' + PO() + esc(x.names.slice(0, 4).join('・')) + (x.names.length > 4 ? T(' ほか',' +') : '') + PC() + '</span>' : '') + '</span>'; }).join('') + '</div>'
+        + (s.signs || []).map(function(g){ var v = VIA[g.via]; return '<div style="font-size:11.5px;color:var(--muted)">' + esc(g.name || '') + (g.role ? PO() + esc(roleL(g.role)) + PC() : '') + ' · ' + esc(hst(g.at))
+          + (g.via === 'delegate' && g.for_name ? ' <span class="ar-chip">' + esc(g.for_name) + T(' の代理',' — delegate') + '</span>' : v && v[0] ? ' <span class="ar-chip">' + esc(T(v[0], v[1])) + '</span>' : '')
+          + (g.bulk ? ' <span class="ar-chip">' + T('まとめて承認','bulk') + '</span>' : '') + (g.note ? ' · ' + esc(g.note) : '') + '</div>'; }).join('') + '</div></div>';
+    });
+    if ((rt.viewers || []).length) h += '<div style="font-size:12px;margin-top:6px;border-top:1px solid var(--border);padding-top:6px"><b>' + T('閲覧者','Viewers') + '</b> ' + rt.viewers.map(function(v){ return esc(svL(v.label)) + PO() + esc(fromL(v.from)) + PC(); }).join(T('、', ', ')) + '</div>';
+    if (open && rt.my) h += '<div style="font-size:12.5px;margin-top:6px;padding:8px 10px;border-radius:8px;background:#f1faf5">' + T('あなたが承認すると：','If you approve: ') + (rt.my['final'] ? '<b style="color:#0f6b44">' + T('最終承認','final approval') + '</b>' : '<b>' + T('段 ','step ') + (cur + 1) + T(' へ',' next') + '</b>')
+      + (rt.my.via === 'delegate' && rt.my.for_name ? ' <span class="ar-chip">' + esc(rt.my.for_name) + T(' の代理',' — delegate') + '</span>' : '') + '</div>';
+    if ((rt.ex || []).length) h += '<details style="margin-top:6px"><summary style="font-size:12px;cursor:pointer">' + T('例外・当て直しの記録 ','Exceptions and re-applies ') + rt.ex.length + '</summary>'
+      + rt.ex.map(function(x){ return '<div style="font-size:11.5px;padding:3px 0;border-top:1px solid var(--border)">' + esc(hst(x.at)) + ' · ' + esc(x.by || '') + ' · ' + esc(exOpL(x)) + (x.note ? ' · ' + esc(x.note) : '') + '</div>'; }).join('') + '</details>';
+    var admin = (ar && ar.admin) || !!(A.st && A.st.me && (A.st.me.role === 'ceo' || A.st.me.role === 'gm'));   /* 一覧をまだ読んでいなくても、設定の画面で分かっていれば */
+    if (open && admin && !r.mine) h += '<details style="margin-top:8px"' + (A.ex[r.id] ? ' open' : '') + ' ontoggle="FUNERGY_AR.h.exToggle(\'' + esc(r.id) + '\',this.open)"><summary style="font-size:12.5px;cursor:pointer;font-weight:700">' + T('例外（この申請だけ・CEO・GM）','Exception (this request only · CEO/GM)') + '</summary>'
+      + '<div id="ar-ex">' + (A.ex[r.id] ? exForm(r) : '') + '</div></details>';
+    return h + '</div>';
+  }
+  function exOpL(x){
+    var s = x.stage ? T('段 ','step ') + x.stage : '';
+    return x.op === 'set_stage' ? T('段を変えた ','changed ') + s : x.op === 'add_stage' ? T('段を足した ','added ') + s : x.op === 'remove_stage' ? T('段を外した ','removed ') + s
+      : x.op === 'add_viewer' ? T('閲覧者を足した','added a viewer') : x.op === 'remove_viewer' ? T('閲覧者を外した','removed a viewer') : x.op === 'apply' ? T('版を当て直した v','re-applied v') + (x.from_ver || '?') + ' → v' + (x.to_ver || '?') : String(x.op || '');
+  }
+  function exState(r){
+    sync();
+    var e = A.ex[r.id];
+    if (!e) e = A.ex[r.id] = { op:'set_stage', stage:(r.route && r.route.cur) || 1, mode:'any', slots:[], viewer:1, from:'submit', who:null, note:'', busy:false, err:'' };
+    e.r = r; return e;
+  }
+  function exForm(r){
+    var e = exState(r), rt = r.route || {}, cur = rt.cur || 1, n = (rt.stages || []).length;
+    var ops = [['set_stage', T('段の承認者を変える','Change a step')], ['add_stage', T('段を足す','Add a step')], ['remove_stage', T('段を外す','Remove a step')], ['add_viewer', T('閲覧者を足す','Add a viewer')], ['remove_viewer', T('閲覧者を外す','Remove a viewer')]];
+    var h = '<div style="padding:8px 0;font-size:12.5px"><div class="ar-row"><select style="min-height:40px" onchange="FUNERGY_AR.h.ex(\'op\',this.value)">' + ops.map(function(o){ return '<option value="' + o[0] + '"' + (e.op === o[0] ? ' selected' : '') + '>' + esc(o[1]) + '</option>'; }).join('') + '</select>';
+    if (e.op === 'set_stage' || e.op === 'add_stage' || e.op === 'remove_stage') {
+      var max = e.op === 'add_stage' ? n + 1 : n, opts = [];
+      for (var i = cur; i <= max; i++) opts.push(i);
+      if (e.stage < cur || e.stage > max) e.stage = cur;
+      h += '<select style="min-height:40px" onchange="FUNERGY_AR.h.ex(\'stage\',+this.value)">' + opts.map(function(i){ return '<option value="' + i + '"' + (e.stage === i ? ' selected' : '') + '>' + (e.op === 'add_stage' ? T('段 ','before step ') + i + (i === n + 1 ? T('（最後）',' (last)') : T(' の前に','')) : T('段 ','step ') + i + (i === cur ? T('（今の段）',' (current)') : '')) + '</option>'; }).join('') + '</select>';
+    }
+    h += '</div>';
+    var bef = '', aft = '';
+    if (e.op === 'set_stage' || e.op === 'add_stage') {
+      h += '<div class="ar-row" style="margin-top:6px"><select style="min-height:36px" onchange="FUNERGY_AR.h.ex(\'mode\',this.value)"><option value="any"' + (e.mode !== 'all' ? ' selected' : '') + '>' + esc(modeL('any')) + '</option><option value="all"' + (e.mode === 'all' ? ' selected' : '') + '>' + esc(modeL('all')) + '</option></select></div><div style="margin-top:4px">'
+        + e.slots.map(function(s, q){ return '<span class="ar-pill">' + esc(slotL(s)) + '<button onclick="FUNERGY_AR.h.exSlotDel(' + q + ')">×</button></span>'; }).join('')
+        + (A.pick && A.pick.path === 'x' + r.id ? pickHtml() : (e.slots.length < 8 ? '<button class="btn btn-secondary btn-sm" style="min-height:36px" onclick="FUNERGY_AR.h.pick(\'x' + esc(r.id) + '\')">＋ ' + T('承認者','Approver') + '</button>' : '')) + '</div>';
+      if (e.op === 'set_stage') bef = stageSum((rt.stages || [])[e.stage - 1]);
+      aft = e.slots.length ? modeL(e.mode) + '：' + e.slots.map(slotL).join('・') : '';
+    } else if (e.op === 'remove_stage') {
+      bef = stageSum((rt.stages || [])[e.stage - 1]); aft = T('（この段は無くなります）','(this step is removed)');
+      if (n - cur < 1) h += '<div class="ar-err" style="font-size:12px;margin-top:4px">' + T('承認の済んでいない段を 1 つは残します（例外で最終承認にはしません）','At least one unfinished step must remain') + '</div>';
+    } else if (e.op === 'add_viewer') {
+      h += '<div style="margin-top:6px">' + (e.who ? '<span class="ar-pill">' + esc(slotL(e.who)) + PO() + esc(fromL(e.from)) + '）<button onclick="FUNERGY_AR.h.ex(\'who\',null)">×</button></span>' : (A.pick && A.pick.path === 'xv' + r.id ? pickHtml() : '<button class="btn btn-secondary btn-sm" style="min-height:36px" onclick="FUNERGY_AR.h.pick(\'xv' + esc(r.id) + '\')">＋ ' + T('閲覧者を選ぶ','Choose a viewer') + '</button>')) + '</div>';
+    } else {
+      var vs = rt.viewers || [];
+      if (!vs.length) h += '<div style="color:var(--muted);margin-top:4px">' + T('閲覧者はいません','No viewers') + '</div>';
+      else h += '<select style="min-height:40px;margin-top:6px" onchange="FUNERGY_AR.h.ex(\'viewer\',+this.value)">' + vs.map(function(v, i){ return '<option value="' + (i + 1) + '"' + (e.viewer === i + 1 ? ' selected' : '') + '>' + esc(svL(v.label)) + PO() + esc(fromL(v.from)) + PC() + '</option>'; }).join('') + '</select>';
+    }
+    if (bef || aft) h += '<div style="font-size:12px;margin-top:6px;line-height:1.6">' + (bef ? T('今：','Now: ') + esc(bef) + '<br>' : '') + (aft ? T('変えたあと：','After: ') + esc(aft) : '') + '</div>';
+    h += '<input type="text" maxlength="400" style="width:100%;min-height:40px;margin-top:6px" placeholder="' + esc(T('理由（要る）','Reason (required)')) + '" value="' + esc(e.note) + '" oninput="FUNERGY_AR.h.ex(\'note\',this.value,1)">'
+      + (e.err ? '<div class="ar-err" style="font-size:12px;margin-top:4px">' + esc(e.err) + '</div>' : '')
+      + '<button class="btn btn-primary" style="margin-top:8px;min-height:44px" ' + (e.busy ? 'disabled' : '') + ' onclick="FUNERGY_AR.h.exGo()">' + (e.busy ? T('送っています…','Sending…') : T('この申請だけ変える','Change this request only')) + '</button>'
+      + '<div style="font-size:11px;color:var(--muted);margin-top:4px;line-height:1.6">' + T('済んだ段は変えません。変えた段から後の承認は取り直します。記録に残ります。','Finished steps do not change. Approvals from the changed step on start over. It is recorded.') + '</div></div>';
+    return h;
+  }
+  function stageSum(s){ if (!s) return ''; return modeL(s.mode) + '：' + (s.slots || []).map(function(x){ return x.label; }).join('・'); }
+  function paintEx(id){ var el = document.getElementById('ar-ex'), e = A.ex[id]; if (el && e && e.r) el.innerHTML = exForm(e.r); }
+
+  /* ---------------------------------------------------------------- 押したとき */
+  function needSaved(fn){ return function(){ if (A.ed && A.ed.dirty && !confirm(T('保存していない変更があります。捨てて進みますか？','You have unsaved changes. Discard them?'))) return; return fn.apply(null, arguments); }; }
+  function repaintPick(){ var p = A.pick; if (p && p.path.charAt(0) === 'x') { var id = p.path.replace(/^xv?/, ''); paintEx(id); } else paint(); }
+  var h = {
+    reload: function(){ A.load = ''; paint(); },
+    tab: function(x){ A.tab = x; A.pick = null; if (x === 'stuck') A.sload = ''; if (x === 'dels' && A.dload !== 'loading') A.dload = ''; paint(); },
+    kind: needSaved(function(k){ A.kind = k; A.ed = edFrom(kr(k)); A.pick = null; A.prev.res = null; A.prev.err = ''; paint(); }),
+    addBranch: function(){ var d = A.ed.def; (d.branches = d.branches || []).push({ label:'', when:{ min_cents:50000 }, stages:[{ mode:'any', slots:[{ t:'role', role:'gm', scope:'all' }] }] }); touch(); paint(); },
+    bLabel: function(i, v){ A.ed.def.branches[i].label = String(v || '').slice(0, 60); touch(); paint(); },
+    bMove: function(i, dlt){ var b = A.ed.def.branches, j = i + dlt; if (j < 0 || j >= b.length) return; var x = b[i]; b[i] = b[j]; b[j] = x; A.pick = null; touch(); paint(); },
+    bDel: function(i){ if (!confirm(T('この条件を消しますか？','Delete this condition?'))) return; A.ed.def.branches.splice(i, 1); A.pick = null; touch(); paint(); },
+    bAmt: function(i, which, v){
+      var w = A.ed.def.branches[i].when = A.ed.def.branches[i].when || {}, k = which === 'min' ? 'min_cents' : 'max_cents', s = String(v || '').trim();
+      if (s === '') delete w[k]; else { var c = Math.round(parseFloat(s) * 100); if (!isFinite(c) || c < 0 || c > 1e12) { toast(T('金額を数字で入れてください','Enter an amount'), 'error'); paint(); return; } w[k] = c; }
+      touch(); paint();
+    },
+    bFlag: function(i, k, v){ var w = A.ed.def.branches[i].when = A.ed.def.branches[i].when || {}; if (v === '') delete w[k]; else w[k] = v === '1'; touch(); paint(); },
+    bStore: function(i, id, on){ var w = A.ed.def.branches[i].when = A.ed.def.branches[i].when || {}, s = w.stores || []; s = s.filter(function(x){ return x !== id; }); if (on) s.push(id); if (s.length) w.stores = s; else delete w.stores; touch(); paint(); },
+    block: function(on){ var d = A.ed.def; d['default'] = on ? { block:true } : { stages:[{ mode:'any', slots:[{ t:'role', role:'gm', scope:'all' }, { t:'role', role:'ceo', scope:'all' }] }] }; A.pick = null; touch(); paint(); },
+    sAdd: function(path){ var st = stagesAt(path); if (!st || st.length >= 5) return; st.push({ mode:'any', slots:[] }); touch(); A.pick = { path:path + ':' + (st.length - 1), t:'role', role:'gm', scope:'all', stores:[], each:false, emp:'', from:'submit' }; paint(); },
+    sDel: function(path, j){ var st = stagesAt(path); if (!st) return; st.splice(j, 1); A.pick = null; touch(); paint(); },
+    sMove: function(path, j, dlt){ var st = stagesAt(path), k = j + dlt; if (!st || k < 0 || k >= st.length) return; var x = st[j]; st[j] = st[k]; st[k] = x; A.pick = null; touch(); paint(); },
+    sMode: function(path, j, v){ var st = stagesAt(path); if (!st) return; st[j].mode = v === 'all' ? 'all' : 'any'; touch(); paint(); },
+    slotDel: function(path, j, q){ var st = stagesAt(path); if (!st) return; st[j].slots.splice(q, 1); touch(); paint(); },
+    vFrom: function(i, v){ A.ed.def.viewers[i].from = v; touch(); paint(); },
+    vDel: function(i){ A.ed.def.viewers.splice(i, 1); touch(); paint(); },
+    self: function(v){ A.ed.def.self = v; touch(); paint(); },
+    note: function(v){ A.ed.note = String(v || ''); },
+    pick: function(path){ A.pick = { path:String(path), t:'role', role:'gm', scope:'all', stores:[], each:false, emp:'', from:'submit' }; if (!A.roles && A.rload !== 'loading') loadRoles(); repaintPick(); },
+    pk: function(k, v){ if (!A.pick) return; A.pick[k] = v; A.pick.tried = false; repaintPick(); },
+    pkStore: function(id, on){ var p = A.pick; if (!p) return; p.stores = (p.stores || []).filter(function(x){ return x !== id; }); if (on) p.stores.push(id); repaintPick(); },
+    pkNo: function(){ var p = A.pick; A.pick = null; if (p && p.path.charAt(0) === 'x') paintEx(p.path.replace(/^xv?/, '')); else paint(); },
+    pkOk: function(){
+      var p = A.pick; if (!p) return;
+      var viewer = p.path === 'v' || p.path.slice(0, 2) === 'xv', s = pickSlot(), e = slotErr(s, viewer);
+      if (e) { p.tried = true; repaintPick(); return; }
+      if (p.path === 'v') { var d = A.ed.def; (d.viewers = d.viewers || []).push({ who:s, from:p.from || 'submit' }); touch(); A.pick = null; paint(); return; }
+      if (p.path.slice(0, 2) === 'xv') { var id = p.path.slice(2), ex = A.ex[id]; if (ex) { ex.who = s; ex.from = p.from || 'submit'; } A.pick = null; paintEx(id); return; }
+      if (p.path.charAt(0) === 'x') { var id2 = p.path.slice(1), ex2 = A.ex[id2]; if (ex2) ex2.slots.push(s); A.pick = null; paintEx(id2); return; }
+      var m = /^(b\d+|d):(\d+)$/.exec(p.path); if (!m) return;
+      var st = stagesAt(m[1]); if (st && st[+m[2]]) st[+m[2]].slots.push(s);
+      touch(); A.pick = null; paint();
+    },
+    revert: function(){ if (!confirm(T('保存していない変更を捨てますか？','Discard unsaved changes?'))) return; A.ed = edFrom(kr(A.ed.kind)); A.pick = null; paint(); },
+    save: function(){
+      var e = A.ed; if (!e || A.busy) return;
+      var errs = defErrors(e.def); if (errs.length) { toast(errs[0], 'error'); paint(); return; }
+      A.busy = 'save'; paint();
+      var k0 = A.k0, kind = e.kind;
+      api({ action:'ar_rule_save', kind:kind, def:cleanDef(e.def), expect_ver:e.from === 'draft' ? e.ver : 0, expect_rev:e.from === 'draft' ? e.rev : 0, base_ver:e.base, note:e.note || '' }, k0).then(function(j){
+        A.busy = ''; if (k0 !== A.k0) return;
+        var row = kr(kind); row.draft = j.draft; row.draft_check = j.check;
+        A.ed = edFrom(row); A.ed.note = e.note;
+        toast(T('下書きに保存しました（v','Saved the draft (v') + j.draft.ver + T('）',')'), 'success'); paint();
+      }, function(err){
+        A.busy = '';
+        if (err && err.code === 'conflict') { toast(T('ほかの人が先に変えました。読み直します（あなたの変更は画面に残っています）','Someone changed it first. Reloading (your edits stay on screen)'), 'warning'); keepAndReload(kind); return; }
+        toast(errMsg(err), 'error'); paint();
+      });
+    },
+    activate: function(){
+      var e = A.ed, k = kr(e.kind); if (!e || A.busy || !k.draft) return;
+      if (!String(e.note || '').trim()) { toast(T('メモ（理由）を入れてください','Enter a note'), 'error'); return; }
+      if (!confirm(T('この下書き（v','Activate this draft (v') + k.draft.ver + T('）を有効にしますか？これから出す申請に使います。',')? It applies to new requests.'))) return;
+      A.busy = 'act'; paint();
+      var k0 = A.k0, kind = e.kind;
+      api({ action:'ar_rule_activate', kind:kind, expect_ver:k.draft.ver, expect_rev:k.draft.rev, note:e.note }, k0).then(function(){
+        A.busy = ''; if (k0 !== A.k0) return; toast(T('有効にしました','Activated'), 'success'); A.ed = null; A.load = ''; paint();
+      }, function(err){ A.busy = ''; toast(err && err.code === 'rule_invalid' ? T('確かめで問題があります。下の赤い行を直してください','The check found problems. Fix the red lines') : err && err.code === 'conflict' ? T('ほかの人が先に変えました。読み直します','Someone changed it first. Reloading') : errMsg(err), 'error'); A.ed = null; A.load = ''; paint(); });
+    },
+    discard: function(){
+      var k = kr(A.ed.kind); if (!k.draft || A.busy) return;
+      if (!confirm(T('下書き（v','Delete the draft (v') + k.draft.ver + T('）を捨てますか？',')?'))) return;
+      A.busy = 'disc'; paint(); var k0 = A.k0;
+      api({ action:'ar_rule_discard', kind:k.kind, expect_ver:k.draft.ver, expect_rev:k.draft.rev }, k0).then(function(){ A.busy = ''; toast(T('下書きを捨てました','Draft deleted'), 'success'); A.ed = null; A.load = ''; paint(); },
+        function(err){ A.busy = ''; toast(errMsg(err), 'error'); A.ed = null; A.load = ''; paint(); });
+    },
+    pv: function(k, v){ A.prev[k] = String(v || ''); A.prev.res = null; },
+    preview: function(){
+      var p = A.prev, e = A.ed; if (!e || p.busy) return;
+      var errs = defErrors(e.def); if (errs.length) { p.err = errs[0]; paint(); return; }
+      var q = { action:'ar_rule_preview', kind:e.kind, def:cleanDef(e.def) };
+      if (p.store) q.store_id = p.store;
+      if (p.emp) q.requester = p.emp;
+      if (String(p.amt).trim() !== '') { var c = Math.round(parseFloat(p.amt) * 100); if (!isFinite(c) || c < 0) { p.err = T('金額を数字で','Enter an amount'); paint(); return; } q.amount_cents = c; }
+      p.busy = true; p.err = ''; paint(); var k0 = A.k0;
+      api(q, k0).then(function(j){ p.busy = false; p.res = j; paint(); }, function(err){ p.busy = false; p.err = errMsg(err); paint(); });
+    },
+    apOpen: function(){
+      var kind = A.ed.kind; A.ap = { kind:kind, load:'loading', sel:{}, note:'' }; paint(); var k0 = A.k0;
+      api({ action:'ar_apply_preview', kind:kind }, k0).then(function(j){ if (!A.ap || A.ap.kind !== kind) return; A.ap.load = 'done'; A.ap.ver = j.ver; A.ap.rows = j.rows || []; paint(); },
+        function(err){ if (!A.ap) return; A.ap.load = 'done'; A.ap.rows = []; A.ap.err = errMsg(err); paint(); });
+    },
+    apSel: function(id, on){ var ap = A.ap; if (!ap) return; var x = (ap.rows || []).find(function(r){ return r.id === id; }); if (on && x && !x.blocked) ap.sel[id] = x.rev; else delete ap.sel[id]; paint(); },
+    apNote: function(v){ if (A.ap) A.ap.note = String(v || ''); },
+    apClose: function(){ var done = A.ap && A.ap.res; A.ap = null; if (done) { A.load = ''; } paint(); },
+    apGo: function(){
+      var ap = A.ap; if (!ap || A.busy) return;
+      if (!String(ap.note || '').trim()) { toast(T('理由を入れてください','Enter a reason'), 'error'); return; }
+      var items = Object.keys(ap.sel).map(function(id){ return { id:id, rev:ap.sel[id] }; }); if (!items.length) return;
+      A.busy = 'apply'; paint(); var k0 = A.k0;
+      api({ action:'ar_apply', kind:ap.kind, ver:ap.ver, items:items, note:ap.note }, k0).then(function(j){ A.busy = ''; ap.res = j.results || []; paint(); },
+        function(err){ A.busy = ''; ap.err = err && err.code === 'conflict' ? T('有効な版が変わりました。閉じて開き直してください','The active version changed. Close and open again') : errMsg(err); paint(); });
+    },
+    rolesReload: function(){ A.roles = null; A.rload = ''; paint(); },
+    dNew: function(){ A.dform = { from:'', to:'', starts:today(), ends:today(), kinds:[], stores:[], note:'', err:'' }; if (!A.roles && A.rload !== 'loading') loadRoles(); paint(); },
+    dCancel: function(){ A.dform = null; paint(); },
+    df: function(k, v, quiet){ if (!A.dform) return; A.dform[k] = String(v || ''); if (!quiet) paint(); },
+    dfList: function(k, v, on){ var f = A.dform; if (!f) return; f[k] = f[k].filter(function(x){ return x !== v; }); if (on) f[k].push(v); paint(); },
+    dSave: function(){
+      var f = A.dform; if (!f || A.busy) return;
+      f.err = !f.from || !f.to ? T('2 人を選んでください','Choose both people') : f.from === f.to ? T('別の人を選んでください','Choose two different people') : !f.starts || !f.ends || f.ends < f.starts ? T('期間を確かめてください','Check the period')
+        : f.ends < today() ? T('終わりの日は今日より後に','The end must be today or later') : !String(f.note || '').trim() ? T('理由を入れてください','Enter a reason') : '';
+      if (f.err) { paint(); return; }
+      A.busy = 'dsave'; paint(); var k0 = A.k0;
+      api({ action:'ar_delegate_save', from:f.from, to:f.to, starts:f.starts, ends:f.ends, kinds:f.kinds, stores:f.stores, note:f.note }, k0).then(function(){
+        A.busy = ''; A.dform = null; toast(T('代理を決めました','Delegate saved'), 'success'); A.dload = ''; A.load = ''; paint();
+      }, function(err){ A.busy = ''; f.err = err && err.code === 'delegate_cycle' ? T('代理がぐるっと回ってしまいます（A → B → A）。期間か人を変えてください','The delegates would loop (A → B → A). Change the period or people') : err && err.code === 'bad_value' ? T('入れた内容を確かめてください（期間は 1 年まで・在籍の人だけ）','Check the entries (up to 1 year, active people only)') : errMsg(err); paint(); });
+    },
+    dEnd: function(id){ A.dend = { id:id, note:'' }; paint(); },
+    dEndNote: function(v){ if (A.dend) A.dend.note = String(v || ''); },
+    dEndGo: function(){
+      var d = A.dend; if (!d || A.busy) return;
+      if (!String(d.note || '').trim()) { toast(T('理由を入れてください','Enter a reason'), 'error'); return; }
+      A.busy = 'dend'; paint(); var k0 = A.k0;
+      api({ action:'ar_delegate_end', id:d.id, note:d.note }, k0).then(function(){ A.busy = ''; A.dend = null; toast(T('代理を終えました','Delegate ended'), 'success'); A.dload = ''; A.load = ''; paint(); },
+        function(err){ A.busy = ''; toast(err && err.code === 'conflict' ? T('もう終わっています','Already ended') : errMsg(err), 'error'); A.dend = null; A.dload = ''; paint(); });
+    },
+    stuckReload: function(){ A.sload = ''; A.stuck = null; paint(); },
+    liveNote: function(v){ A.live.note = String(v || ''); },
+    goLive: function(){
+      var st = A.st || {}; if (A.busy || st.live) return;
+      if (!confirm(T('共通ルールで動かしますか？承認待ちの申請にもルートを付けます。全部の端末が 1190 になっていることを確かめてください。','Go live? Routes are attached to pending requests too. Make sure every device is on 1190.'))) return;
+      A.busy = 'live'; paint(); var k0 = A.k0;
+      api({ action:'ar_go_live', expect_rev:st.rev || 1, note:A.live.note || '' }, k0).then(function(j){ A.busy = ''; A.live = { note:'', res:j }; setWrLive(true, j.rev); A.load = ''; toast(T('共通ルールで動かしました','Live'), 'success'); paint(); },
+        function(err){ A.busy = ''; toast(err && err.code === 'rules_missing' ? T('有効な版がない種類があります','Some kinds have no active version') : err && err.code === 'conflict' ? T('ほかの人が先に変えました。読み直します','Someone changed it first. Reloading') : errMsg(err), 'error'); A.load = ''; paint(); });
+    },
+    goOff: function(){
+      var st = A.st || {}; if (A.busy || !st.live) return;
+      if (!String(A.live.note || '').trim()) { toast(T('理由を入れてください','Enter a reason'), 'error'); return; }
+      if (!confirm(T('共通ルールを止めますか？承認待ち・差し戻しの申請からルートを外し、今までの決め方に戻します。','Stop the common rules? Routes are removed from pending and returned requests.'))) return;
+      A.busy = 'off'; paint(); var k0 = A.k0;
+      api({ action:'ar_go_off', expect_rev:st.rev || 1, note:A.live.note }, k0).then(function(j){ A.busy = ''; A.live = { note:'', res:j }; setWrLive(false, j.rev); A.load = ''; toast(T('止めました','Stopped'), 'success'); paint(); },
+        function(err){ A.busy = ''; toast(errMsg(err), 'error'); A.load = ''; paint(); });
+    },
+    exToggle: function(id, open){ if (!open) return; var s = W._wrState && W._wrState(), r = s && s.d; if (!r || r.id !== id) return; exState(r); paintEx(id); },
+    ex: function(k, v, quiet){
+      var s = W._wrState && W._wrState(), r = s && s.d; if (!r) return; var e = exState(r);
+      e[k] = v; if (k === 'op') { e.slots = []; e.who = null; e.err = ''; if (A.pick && A.pick.path.charAt(0) === 'x') A.pick = null; }
+      if (!quiet) paintEx(r.id);
+    },
+    exSlotDel: function(q){ var s = W._wrState && W._wrState(), r = s && s.d; if (!r) return; var e = exState(r); e.slots.splice(q, 1); paintEx(r.id); },
+    exGo: function(){
+      var s = W._wrState && W._wrState(), r = s && s.d; if (!r) return; var e = exState(r); if (e.busy) return;
+      e.err = '';
+      if (!String(e.note || '').trim()) e.err = T('理由を入れてください','Enter a reason');
+      var q = { action:'ar_exception', id:r.id, op:e.op, expect_rev:r.rev, note:e.note };
+      if (e.op === 'set_stage' || e.op === 'add_stage') {
+        var sd = { mode:e.mode === 'all' ? 'all' : 'any', slots:e.slots.map(cleanSlot) };
+        var o = []; stagesErr([sd], T('段','Step'), o); if (!e.err && o.length) e.err = o[0];
+        q.stage = e.stage; q.def = sd;
+      } else if (e.op === 'remove_stage') q.stage = e.stage;
+      else if (e.op === 'add_viewer') { if (!e.who && !e.err) e.err = T('閲覧者を選んでください','Choose a viewer'); q.who = e.who ? cleanSlot(e.who) : null; q.from = e.from || 'submit'; }
+      else { if (!(r.route.viewers || []).length && !e.err) e.err = T('閲覧者はいません','No viewers'); q.viewer = e.viewer || 1; }
+      if (e.err) { paintEx(r.id); return; }
+      e.busy = true; paintEx(r.id);
+      api(q, A.k0).then(function(){ delete A.ex[r.id]; A.pick = null; toast(T('この申請の承認のルートを変えました','Route changed for this request'), 'success'); try{ W.wrOpen(r.id); }catch(x){} if (A.st) A.load = ''; },
+        function(err){ e.busy = false; e.err = err && err.code === 'no_approver' ? T('その形では承認できる人がいなくなります（本人だけ・だれもいない段）','Nobody could approve with that (only the requester, or nobody)')
+          : err && err.code === 'conflict' ? T('この申請が先に変わりました。開き直してください','This request changed first. Open it again')
+          : err && err.code === 'forbidden' ? T('自分の申請の承認者は変えられません','You cannot change the approvers of your own request') : errMsg(err); paintEx(r.id); });
+    }
+  };
+  function keepAndReload(kind){
+    var mine = A.ed; A.load = 'loading'; var k0 = A.k0;
+    api({ action:'ar_state' }, k0).then(function(j){
+      if (k0 !== A.k0) return; A.st = j; A.load = 'done';
+      var fr = edFrom(kr(kind)); if (mine && mine.kind === kind) { fr.def = mine.def; fr.note = mine.note; fr.dirty = true; } A.ed = fr; paint();
+    }, function(e){ A.load = 'err'; A.err = errMsg(e); paint(); });
+  }
+
+  W.arRouteCard = routeCard;
+  W.arLabel = svL;
+  W.FUNERGY_AR = { render:render, h:h, _A:function(){ return A; }, _defErrors:defErrors, _cleanDef:cleanDef };
+})();
+/* ==== FUNERGY_AR end ==== */
 </script>
 <script>
 /* ==== FUNERGY_CHAT（v1156）：DM・グループ・申請の案件のチャット（UI案69・Moto さん 11/03「全部 A」・11/13「大きい作業も始めてください」）====
@@ -118793,7 +119742,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   var WIDE = { dashboard:1, mgmt_dash:1, budget:1, mid_review:1, meeting:1, purchase:1, monthly:1, store_power:1, menu:1, recipe:1, costsheet:1,
     purchase_detail:1, invoice:1, acct_review:1, office_mgr:1, office_export:1, error_center:1, inventory:1, tasks:1, labor:1, tip:1, attendance:1,
     acct_center:1, hr:1, hiring:1, onboarding:1, staff_master:1, ingredient_master:1, ing_transfer:1, vendor_master:1, leadership:1, office_career:1,
-    skill:1, growth_mgr:1, ojt_admin:1, approval:1, store_master:1, kpi_master:1, acct_export:1, growth_karte:1, diag_center:1, mileage:1 };
+    skill:1, growth_mgr:1, ojt_admin:1, approval:1, store_master:1, kpi_master:1, acct_export:1, growth_karte:1, diag_center:1, mileage:1, ar_settings:1 };
   var STD = { store_cmd:1, store_ops_settings:1, dailyops:1, lala:1, cc_plan:1, announce:1, totoya_docs:1, mypage:1, ojtmap:1, settings:1,
     company_msg_edit:1, vacation:1, expense:1 };
   L.layoutOf = function(page){
