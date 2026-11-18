@@ -64,6 +64,33 @@ function statementEnd(src, start) {
   throw new Error('statement without end at ' + start);
 }
 
+// { の位置から対応する } の次の位置まで（文字列・テンプレート・コメント・正規表現の中の括弧は数えない）
+function braceEnd(src, open) {
+  if (src[open] !== '{') throw new Error('no body at ' + open);
+  let depth = 0, i = open, prev = '';
+  const regexBefore = /[(,=:[!&|?{};+\-*%<>~^]$|(?:^|[^\w$])(?:return|typeof|case|in|of|void|delete|throw)$/;
+  while (i < src.length) {
+    const c = src[i], n = src[i + 1];
+    if (c === '/' && n === '*') { const e = src.indexOf('*/', i + 2); i = e + 2; continue; }
+    if (c === '/' && n === '/') { const e = src.indexOf('\n', i); i = e; continue; }
+    if (c === '/' && regexBefore.test(prev.trimEnd())) {
+      let j = i + 1, cls = false;
+      while (j < src.length && (cls || src[j] !== '/')) { if (src[j] === '\\') j++; else if (src[j] === '[') cls = true; else if (src[j] === ']') cls = false; else if (src[j] === '\n') throw new Error('regex without end at ' + i); j++; }
+      prev += src.slice(i, j + 1); i = j + 1; continue;
+    }
+    if (c === "'" || c === '"' || c === '`') {
+      let j = i + 1;
+      while (j < src.length && src[j] !== c) { if (src[j] === '\\') j++; else if (c === '`' && src[j] === '$' && src[j + 1] === '{') { j = braceEnd(src, j + 1) - 1; } j++; }
+      prev += '""'; i = j + 1; continue;
+    }
+    if (c === '{') depth++;
+    else if (c === '}') { depth--; if (depth === 0) return i + 1; }
+    prev += c; if (prev.length > 64) prev = prev.slice(-32);
+    i++;
+  }
+  throw new Error('function without end at ' + open);
+}
+
 export function analyze(raw) {
   const src = raw.replace(/\r\n/g, '\n');
   const fdecl = new Map();   // 名前 → 位置（一番外の function だけ。2 つあれば止める）
@@ -82,8 +109,11 @@ export function analyze(raw) {
     const le = src.indexOf('\n', s), first = src.slice(s, le);
     const f = stripCode(first);
     if (f.trimEnd().endsWith('}') && (f.match(/\{/g) || []).length === (f.match(/\}/g) || []).length) return first;
-    const e = src.indexOf('\n}', s);
-    return src.slice(s, e + 2);
+    // 本体の { から対応する } まで（文字列・コメント・正規表現を飛ばす）。行の頭の } で終わる関数は、前と同じ答えになることを確かめる
+    const e = braceEnd(src, src.indexOf('{', src.indexOf(')', s)));
+    const old = src.indexOf('\n}', s) + 2;
+    if (e !== old && !/\n(?:async )?function\s/.test(src.slice(e, old))) throw new Error('function end differs: ' + name);
+    return src.slice(s, e);
   };
   const stops = new Set(STOPS), seen = [], vars = new Set(), usedStops = new Set(), stack = [...ROOTS];
   while (stack.length) {

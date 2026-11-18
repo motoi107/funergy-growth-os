@@ -122,26 +122,6 @@ function tipLaborPut(labor, conf, key, add, r){
   }
   labor[key]=add; conf[key]=!!(r && r.conf);
 }
-function tipLaborPut(labor, conf, key, add, r){
-  var cur=labor[key];
-  if(cur && r && r.conf && conf[key]){
-    var names=(Array.isArray(cur.toastNames) && cur.toastNames.length ? cur.toastNames.slice() : [cur.toastName]).concat([add.toastName]);
-    var hasA=(cur.shifts||[]).length>0, hasB=(add.shifts||[]).length>0;
-    /* 片方だけ打刻の時刻があるときは時刻を持たない（読むときに時刻から Tip 時間を数え直すと、時刻の無い方の時間が落ちるため） */
-    var sh=(hasA && hasB) ? cur.shifts.concat(add.shifts).sort(function(x,y){ return String(x&&x.inDate||'').localeCompare(String(y&&y.inDate||'')); }) : [];
-    var out={ lunch:(+cur.lunch||0)+(+add.lunch||0), dinner:(+cur.dinner||0)+(+add.dinner||0), rawLunch:(+cur.rawLunch||0)+(+add.rawLunch||0), rawDinner:(+cur.rawDinner||0)+(+add.rawDinner||0),
-              shifts:sh, toastName:cur.toastName, toastNames:names };
-    var gs=(Array.isArray(cur.toastGuids) ? cur.toastGuids.slice() : (cur.toastGuid ? [cur.toastGuid] : []));   /* v1153：Toast のアカウント ID */
-    if(add.toastGuid && gs.indexOf(add.toastGuid)<0) gs.push(add.toastGuid);
-    if(gs.length){ out.toastGuid=gs[0]; out.toastGuids=gs; }
-    if(cur.overlap || _toastShiftsOverlap(cur.shifts, add.shifts)) out.overlap=true;
-    var op=(Array.isArray(cur.openShifts)?cur.openShifts:[]).concat(Array.isArray(add.openShifts)?add.openShifts:[]);   /* v1176 */
-    if(op.length) out.openShifts=op;
-    labor[key]=out;
-    return;
-  }
-  labor[key]=add; conf[key]=!!(r && r.conf);
-}
 function tipLaborBuildDay(storeId, _bdA, list, staff, _aidx){
   var labor = {}, _conf = {};
   list.forEach(emp=>{
