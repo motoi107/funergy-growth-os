@@ -760,10 +760,11 @@ function empWageAt(name, sid, date){ var w=pmCertWage(name, sid, date); return (
 //   人ごとの額は返さない（限界：店の合計と人ごとの時間から、1 人だけの日の時給は割り出せる。docs の「限界」）。
 
 
-export const LT_SETTINGS = ['m_titlewage', 'kpi_config', 'tip_window', 'tip_hours_basis', 'md_all_viewers'];
+// v1192（Codex 6986713362 の P2-1）：md_all_viewers は計算に使わないので読まない（全店で返すかは handler が app_state の md_all_viewers_gm で決める）
+export const LT_SETTINGS = ['m_titlewage', 'kpi_config', 'tip_window', 'tip_hours_basis'];
 export const LT_STATE = ['tip_hours_config', 'store_closures', 'prep_tables', 'prep_certs'];
 // 端末が取り込むときの合流（端末に何も無い所へ合流した形）：mergeMapByTime のキーは「オブジェクトなら浅い写し・そうでなければ {}」
-const LT_MAP_KEYS = ['prep_tables', 'prep_certs', 'md_all_viewers'];
+const LT_MAP_KEYS = ['prep_tables', 'prep_certs'];
 export const LT_MAX_ASKS = 40;
 const YM_RE = /^20\d\d-(0[1-9]|1[0-2])$/;
 const DATE_RE = /^20\d\d-\d\d-\d\d$/;
@@ -871,7 +872,7 @@ export function ltCompute(data, asks) {
       const list = row && row.data;
       if (!Array.isArray(list) || !list.length) continue;   // 端末も中身の無い日は書かない
       const bd = core.normalizeBusinessDate(row.business_date);
-      if (!bd || String(bd).slice(0, 7) !== j.ym) continue;
+      if (!bd || !DATE_RE.test(bd) || bd < j.from || bd > j.to) continue;
       for (const sid of j.sids) kv.set('tip_labor_' + sid + '_' + bd, JSON.stringify(core.tipLaborBuildDay(sid, bd, list, emps, aidx)));
     }
   }
@@ -919,13 +920,30 @@ function ymRange(ym) {
   const last = new Date(Date.UTC(y, m, 0)).getUTCDate();
   return [ym + '-01', ym + '-' + String(last).padStart(2, '0')];
 }
+function ymAdd(ym, d) { const [y, m] = ym.split('-').map(Number); const n = y * 12 + m - 1 + d; return Math.floor(n / 12) + '-' + String(n % 12 + 1).padStart(2, '0'); }
+// 端末の k2SysGuids（業務用アカウントの Toast ID）が見る勤怠の範囲：その月の 13 か月前の 1 日から、端末にあるいちばん新しい日まで
+export const LT_SYS_BACK = 13;
+export const LT_PAGE = 1000, LT_MAX_PAGES = 60;
+
+// v1192（Codex 6986713362 の確認）：limit を付けて 1 回で読むと、サーバーの上限（Supabase は既定で 1 回 1,000 行）で黙って切れる。
+// 並びを決めて 1,000 行ずつ、空のページが来るまで読む（上限が 1,000 より小さくても切れない）。読み切れなければ失敗（途中までで合計を出さない）
+export async function ltReadAll(rest, path) {
+  const out = [];
+  for (let page = 0; page < LT_MAX_PAGES; page++) {
+    const rows = await rest(path + '&limit=' + LT_PAGE + '&offset=' + out.length);
+    if (!Array.isArray(rows)) { const e = new Error('db'); e.code = 'db'; throw e; }
+    if (!rows.length) return out;
+    for (const r of rows) out.push(r);
+  }
+  const e = new Error('db'); e.code = 'db'; e.detail = 'too_many_rows'; throw e;
+}
 
 // サーバーの鍵でデータを読む（rest＝handler の rest）。読めなければ失敗（途中までのデータで合計を出さない）
 export async function ltLoad(rest, asks, today) {
   const [storeRows, empRows, privRows, setRows, stRows] = await Promise.all([
-    rest('stores?select=id,data&order=id.asc&limit=1000'),
-    rest('employees?select=id,data&order=id.asc&limit=5000'),
-    rest('employees_private?select=emp_id,wage,monthly_salary&limit=5000'),
+    ltReadAll(rest, 'stores?select=id,data&order=id.asc'),
+    ltReadAll(rest, 'employees?select=id,data&order=id.asc'),
+    ltReadAll(rest, 'employees_private?select=emp_id,wage,monthly_salary&order=emp_id.asc'),
     rest('app_settings?select=key,value&key=in.(' + LT_SETTINGS.map(enc).join(',') + ')'),
     rest('app_state?select=key,value&key=in.(' + [...LT_STATE, ...[...new Set(asks.map(a => 'att_fix_' + a.s + '_' + a.m))]].map(enc).join(',') + ')'),
   ]);
@@ -933,22 +951,25 @@ export async function ltLoad(rest, asks, today) {
   const stores = ltStores(storeRows), employees = ltEmployees(empRows, privRows);
   const kv = new Map();
   for (const r of [...setRows, ...stRows]) { if (r && typeof r.key === 'string') { const s = ltKvString(r.key, r.value); if (s != null) kv.set(r.key, s); } }
-  // 勤怠（店の Toast の GUID・月ごと）。同じ GUID・月は 1 回だけ読む
+  // 勤怠（店の Toast の GUID ごとに 1 回）。v1192（Codex 6986713362 の P2）：前は頼まれた月だけを読んだので、業務用アカウントの
+  // Toast ID（k2SysGuids・その月の 13 か月前から）が頼む月の組み合わせで変わり、L/D の合計も変わった（11 月だけ／10・11 月で違う）。
+  // いまは頼みによらず、いちばん前の月の 13 か月前の 1 日から、今月（頼まれた月があとならその月）の終わりまでを読む
+  const ymsAsked = asks.map(a => a.m).sort();
+  const todayYm = String(today).slice(0, 7);
+  const lastYm = ymsAsked[ymsAsked.length - 1] > todayYm ? ymsAsked[ymsAsked.length - 1] : todayYm;
+  const from = ymAdd(ymsAsked[0], -LT_SYS_BACK) + '-01', to = ymRange(lastYm)[1];
   const byStore = new Map(stores.map(s => [s.id, s]));
   const jobs = new Map();
   for (const a of asks) {
     const st = byStore.get(a.s); const guid = st && st.toastGuid;
     if (!guid) continue;
-    const k = guid + '|' + a.m;
-    if (!jobs.has(k)) jobs.set(k, { guid, ym: a.m, sids: new Set() });
-    jobs.get(k).sids.add(a.s);
+    if (!jobs.has(guid)) jobs.set(guid, { guid, from, to, sids: new Set() });
+    jobs.get(guid).sids.add(a.s);
   }
   const list = [...jobs.values()];
   for (let i = 0; i < list.length; i += 8) {
     await Promise.all(list.slice(i, i + 8).map(async j => {
-      const [from, to] = ymRange(j.ym);
-      j.rows = await rest('tip_labor?select=business_date,data&restaurant_guid=eq.' + enc(j.guid) + '&business_date=gte.' + from + '&business_date=lte.' + to + '&order=business_date.asc&limit=1000');
-      if (!Array.isArray(j.rows)) { const e = new Error('db'); e.code = 'db'; throw e; }
+      j.rows = await ltReadAll(rest, 'tip_labor?select=business_date,data&restaurant_guid=eq.' + enc(j.guid) + '&business_date=gte.' + from + '&business_date=lte.' + to + '&order=business_date.asc');
     }));
   }
   return { stores, employees, kv, today, jobs: list };
@@ -1053,8 +1074,13 @@ export const SW2_KEYS = ['cs_criteria', 'bonus_coef', 'bonus_coef_rng', 'bonus_t
 //   賞与の日割り（区間ごとのグレード）にアプリが使う。公開の鍵で書けると、確定日・グレード・確定した評価を書き換えられた。
 //   形は v1143 の 8 つと同じ「キー（社員 ID）→ 記録（オブジェクトか null）」の地図。前の関数（v1144 以前）は「知らないキー」と断るだけで何も書かない
 export const GH_KEYS = ['grade_hist'];
+// v1192（Codex 6986713362 の P2-1）：ダッシュボードで全店を見る AM（GM・CEO が「管轄の割り当て」で決める）の、GM・CEO だけが書ける写し。
+//   人件費の合計（labor）を全店で返すかは、これだけで決める。前は app_settings の md_all_viewers（公開の鍵で書ける）で決めていたので、
+//   AM が自分の行を書き足すと、担当外の店の人件費の合計まで受け取れた。形は grade_hist と同じ「社員 ID → 記録（オブジェクトか null）」の地図。
+//   公開の鍵で書けなくするのは SQL 20261210090000（ss_guard_key に足す・今の md_all_viewers を 1 回だけ写す）
+export const LV_KEYS = ['md_all_viewers_gm'];
 export const SW_WRITE = { mileage_config: ['ceo', 'gm', 'office'], career_cfg: ['ceo', 'gm'], ...Object.fromEntries(SW2_KEYS.map(k => [k, ['ceo', 'gm']])),
-  ...Object.fromEntries(GH_KEYS.map(k => [k, ['ceo', 'gm']])) };
+  ...Object.fromEntries(GH_KEYS.map(k => [k, ['ceo', 'gm']])), ...Object.fromEntries(LV_KEYS.map(k => [k, ['ceo', 'gm']])) };
 export function swIsKey(k) { return typeof k === 'string' && Object.prototype.hasOwnProperty.call(SW_WRITE, k); }
 // 値の形（決めた人が書くときに確かめる：おかしな単価で、ガソリン代の申請が全部止まらないように）
 //   mileage_config：アプリが書く形（包まない）だけ。包んだ形（{__st:…}）は断る（wr_mileage_rate は中身を読み、アプリの画面は外を読むので、
@@ -1065,7 +1091,7 @@ export function swIsKey(k) { return typeof k === 'string' && Object.prototype.ha
 export function swCgEntryOk(k, x, max = 100) { return typeof k === 'string' && k.length <= max && (x === null || (typeof x === 'object' && !Array.isArray(x))); }
 export function swCgBadKeys(value, max = 100) { return (value && typeof value === 'object' && !Array.isArray(value)) ? Object.keys(value).filter(k => !swCgEntryOk(k, value[k], max)) : []; }
 const swMapMax = key => (key === 'career_cfg' ? 100 : 200);
-const swMapKey = key => key === 'career_cfg' || SW2_KEYS.includes(key) || GH_KEYS.includes(key);
+const swMapKey = key => key === 'career_cfg' || SW2_KEYS.includes(key) || GH_KEYS.includes(key) || LV_KEYS.includes(key);
 export function swShapeOk(key, value, cloud) {
   let s;
   try { s = JSON.stringify(value === undefined ? null : value); } catch { return false; }
@@ -3094,7 +3120,9 @@ export function createHandler(deps) {
     } else if (a.role === 'am' && a.emp) {
       if (!(await empOk())) throw err('forbidden', 403);
       for (const x of [...a.am, ...a.stores]) if (typeof x === 'string' && x) S.add(x);
-      const rows = await rest('app_settings?select=value&key=eq.md_all_viewers');
+      // 全店で返すのは、GM・CEO だけが書ける写し（app_state の md_all_viewers_gm・上の LV_KEYS）で ON の人だけ。
+      // app_settings の md_all_viewers（ダッシュボードの表示に使う・公開の鍵で書ける）は見ない（Codex 6986713362 の P2-1：AM の自分での書き足し）
+      const rows = await rest('app_state?select=value&key=eq.' + LV_KEYS[0]);
       const v = Array.isArray(rows) && rows[0] && obj(rows[0].value) ? rows[0].value[a.emp] : null;
       if (obj(v) && v.on === true && !v._deleted) all = true;
     } else throw err('forbidden', 403);

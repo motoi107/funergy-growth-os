@@ -108,9 +108,11 @@ function makeCloud(over = {}) {
   const C = {
     emps: over.emps || EMP_ROWS, priv: over.priv || PRIV_ROWS, settings: { ...SETTINGS, ...(over.settings || {}) }, state: { ...STATE, ...(over.state || {}) },
     mgr: { [UID.office]: { role: 'office', emp_id: 'e12' }, [UID.ceo]: { role: 'ceo', emp_id: null }, [UID.crew]: { role: 'office_crew', emp_id: 'e1' }, [UID.gone]: { role: 'office', emp_id: 'e13' }, ...(over.mgr || {}) },
-    pins: over.pins || {}, failTipLabor: !!over.failTipLabor, log: [],
+    pins: over.pins || {}, failTipLabor: !!over.failTipLabor, labor: over.labor || LABOR, pageCap: over.pageCap || 1000, log: [],
   };
   const res = (v, s = 200) => new Response(JSON.stringify(v), { status: s, headers: { 'content-type': 'application/json' } });
+  // PostgREST と同じく limit・offset で切る。サーバーの 1 回の上限（pageCap・Supabase の既定は 1,000 行）を超える分は黙って返さない
+  const pageOf = (q, arr) => { const off = Number(q.get('offset')) || 0; const lim = Math.min(q.has('limit') ? Number(q.get('limit')) : Infinity, C.pageCap); return arr.slice(off, off + lim); };
   C.fetch = async (u, opt = {}) => {
     const url = new URL(u), m = (opt.method || 'GET').toUpperCase();
     if (u.startsWith(WR)) {
@@ -133,21 +135,24 @@ function makeCloud(over = {}) {
     if (table === 'employees') {
       const id = eq('id');
       if (id) { const r = C.emps.find(x => x.id === id); return res(r ? [{ id: r.id, role: r.data.role, status: r.data.status, name: r.data.name, data: r.data }] : []); }
-      return res(C.emps.map(r => ({ id: r.id, data: r.data })));
+      return res(pageOf(q, C.emps.map(r => ({ id: r.id, data: r.data }))));
     }
-    if (table === 'employees_private') return res(C.priv);
-    if (table === 'stores') return res(STORE_ROWS);
+    if (table === 'employees_private') return res(pageOf(q, C.priv));
+    if (table === 'stores') return res(pageOf(q, STORE_ROWS));
     if (table === 'app_settings') {
       const one = eq('key'), list = inList('key');
       const keys = one ? [one] : list;
       return res(keys.filter(k => k in C.settings).map(k => (q.get('select') === 'value' ? { value: C.settings[k] } : { key: k, value: C.settings[k] })));
     }
-    if (table === 'app_state') return res(inList('key').filter(k => k in C.state).map(k => ({ key: k, value: C.state[k] })));
+    if (table === 'app_state') {
+      const one = eq('key'), keys = one ? [one] : (inList('key') || []);
+      return res(keys.filter(k => k in C.state).map(k => (q.get('select') === 'value' ? { value: C.state[k] } : { key: k, value: C.state[k] })));
+    }
     if (table === 'tip_labor') {
       if (C.failTipLabor) return new Response('boom', { status: 500 });
       const g = eq('restaurant_guid'), [from, to] = q.getAll('business_date').map(s => s.slice(4));
       const sid = Object.keys(GUID).find(s => GUID[s].toLowerCase() === g);
-      return res((LABOR[sid] || []).filter(r => r.business_date >= from && r.business_date <= to));
+      return res(pageOf(q, (C.labor[sid] || []).filter(r => r.business_date >= from && r.business_date <= to)));
     }
     throw new Error('unexpected table ' + table);
   };
@@ -192,7 +197,7 @@ test('ltKvString makes the same text the device keeps', () => {
   const v = { b: 1, a: { c: 2 } };
   assert.equal(ltKvString('prep_tables', v), JSON.stringify(v));
   assert.equal(ltKvString('prep_certs', 'x'), '{}');
-  assert.equal(ltKvString('md_all_viewers', null), '{}');
+  assert.equal(ltKvString('prep_certs', null), '{}');
   assert.equal(ltKvString('att_fix_F01_2026-11', [1]), '{}');
   assert.equal(ltKvString('att_fix_F01_2026-11', { '2026-11-07': { data: {} } }), '{"2026-11-07":{"data":{}}}');
   assert.equal(ltKvString('m_titlewage', { Crew: { wage: 16.5 } }), '{"Crew":{"wage":16.5}}');
@@ -235,19 +240,33 @@ test('CEO, GM and accounting read every store; the answer has no names, ids or p
   }
 });
 
-test('an AM reads assigned and support stores only; "all stores" in md_all_viewers opens every store', async () => {
+// v1192（Codex 6986713362 の P2-1）：全店で返すのは、GM・CEO だけが書ける写し（app_state の md_all_viewers_gm）で ON の人だけ。
+// app_settings の md_all_viewers（公開の鍵で書ける）に AM が自分の行を書き足しても、担当外の店は返さない
+test('an AM reads assigned and support stores only; only the GM/CEO copy (md_all_viewers_gm) opens every store, not md_all_viewers', async () => {
   const C = makeCloud({ pins: { 'pin-am': AM_ME } });
   const r = await C.call({ pin: 'pin-am' }, { action: 'labor', asks: ASKS, to: TODAY });
   assert.ok(r.ok);
   assert.deepEqual(Object.keys(r.j.r).sort(), ['F02|2026-11', 'F04-K|2026-10', 'F04-K|2026-11']);
   assert.deepEqual(r.j.no.sort(), ['F01|2026-10', 'F01|2026-11']);
   assert.ok(!C.log.some(l => l.startsWith('tip_labor') && l.includes(GUID.F01.toLowerCase())), 'the attendance of a store outside the scope is not read');
-  const C2 = makeCloud({ pins: { 'pin-am': AM_ME }, settings: { md_all_viewers: { e10: { on: true } } } });
+  // AM が自分で md_all_viewers（app_settings・公開の鍵で書ける）に書き足した：担当外の店は返さない（Codex の再現そのもの）
+  const C1 = makeCloud({ pins: { 'pin-am': AM_ME }, settings: { md_all_viewers: { e10: { on: true, name: 'Kai Am', _at: 9 } } } });
+  const r1 = await C1.call({ pin: 'pin-am' }, { action: 'labor', asks: ASKS, to: TODAY });
+  assert.ok(r1.ok);
+  assert.deepEqual(r1.j.no.sort(), ['F01|2026-10', 'F01|2026-11'], 'the publicly writable settings row does not open every store');
+  assert.ok(!C1.log.some(l => l.startsWith('app_settings') && l.includes('md_all_viewers')), 'the server does not even read md_all_viewers');
+  assert.ok(!C1.log.some(l => l.startsWith('tip_labor') && l.includes(GUID.F01.toLowerCase())));
+  // GM・CEO が決めた写し（md_all_viewers_gm）で ON：全店
+  const C2 = makeCloud({ pins: { 'pin-am': AM_ME }, state: { md_all_viewers_gm: { e10: { on: true, _at: 9 } } } });
   const r2 = await C2.call({ pin: 'pin-am' }, { action: 'labor', asks: ASKS, to: TODAY });
   assert.deepEqual(r2.j.no, []); assert.equal(Object.keys(r2.j.r).length, 5);
-  const C3 = makeCloud({ pins: { 'pin-am': AM_ME }, settings: { md_all_viewers: { e10: { on: true, _deleted: true } } } });
-  const r3 = await C3.call({ pin: 'pin-am' }, { action: 'labor', asks: ASKS, to: TODAY });
-  assert.deepEqual(r3.j.no.sort(), ['F01|2026-10', 'F01|2026-11']);
+  assert.ok(C2.log.some(l => l.startsWith('app_state') && l.includes('key=eq.md_all_viewers_gm')));
+  // 写しで外した（_deleted）・OFF・ほかの人の行・形の違う値：担当と応援の店だけ
+  for (const gm of [{ e10: { on: true, _deleted: true } }, { e10: { on: false } }, { e99: { on: true } }, { e10: { on: 'true' } }, { e10: true }, [{ on: true }], 'on']) {
+    const C3 = makeCloud({ pins: { 'pin-am': AM_ME }, state: { md_all_viewers_gm: gm }, settings: { md_all_viewers: { e10: { on: true } } } });
+    const r3 = await C3.call({ pin: 'pin-am' }, { action: 'labor', asks: ASKS, to: TODAY });
+    assert.deepEqual(r3.j.no.sort(), ['F01|2026-10', 'F01|2026-11'], JSON.stringify(gm));
+  }
   const C4 = makeCloud({ pins: { 'pin-am': AM_ME } });
   const r4 = await C4.call({ pin: 'pin-am' }, { action: 'labor', asks: [{ s: 'F01', m: '2026-11' }], to: TODAY });
   assert.deepEqual([r4.j.r, r4.j.no], [{}, ['F01|2026-11']]);
@@ -284,7 +303,7 @@ const DEV_SRC = DEV.constants.map(c => c.replace(/^const /, 'var ')).join('\n') 
 const escapeHtml = s => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 const DAILY = { F01: { '2026-10-06': { actual: 4100 }, '2026-11-02': { actual: 3200 }, '2026-11-09': { actual: 2800, labor: 400 }, '2026-11-08': { labor: 250 } }, F02: { '2026-11-10': { actual: 5100 } } };
 
-function makeDevice({ role, emps, kvRows, call, storeLogin = false, userName = 'Oki Office' }) {
+function makeDevice({ role, emps, kvRows, call, storeLogin = false, userName = 'Oki Office', labor = LABOR }) {
   const kv = new Map();
   const timers = [];
   let memo = {};
@@ -310,7 +329,7 @@ function makeDevice({ role, emps, kvRows, call, storeLogin = false, userName = '
   for (const [k, v] of kvRows) kv.set(k, v);
   // 勤怠は端末が取り込むときと同じ関数（tipLaborBuildDay）・この端末の従業員で
   const aidx = ctx.toastAliasIndex(emps);
-  for (const sid of Object.keys(LABOR)) for (const row of LABOR[sid]) {
+  for (const sid of Object.keys(labor)) for (const row of labor[sid]) {
     if (!Array.isArray(row.data) || !row.data.length) continue;
     kv.set('tip_labor_' + sid + '_' + row.business_date, JSON.stringify(ctx.tipLaborBuildDay(sid, row.business_date, row.data, emps, aidx)));
   }
@@ -354,17 +373,17 @@ const cannedCall = ans => async p => {
 };
 async function flushAll(D) { for (let i = 0; i < 5 && Object.keys(D.ctx._LT.need).length; i++) await D.ctx.ltFlush(true); }
 
-async function equivalenceIn(tz, ans) {
+async function equivalenceIn(tz, ans, labor = LABOR) {
   const prev = process.env.TZ;
   process.env.TZ = tz;
   try {
     const kvRows = kvRowsOf(SETTINGS, STATE);
-    const ceo = makeDevice({ role: 'ceo', emps: ceoEmps(), kvRows, call: null, userName: 'CEO' });
+    const ceo = makeDevice({ role: 'ceo', emps: ceoEmps(), kvRows, call: null, userName: 'CEO', labor });
     const ceoSnap = snapshot(ceo, ceo.ctx.getEmployees());
     assert.equal(ceo.calls.length, 0, tz + ': the CEO device computes by itself (it has every wage)');
-    let office = makeDevice({ role: 'office', emps: [], kvRows, call: cannedCall(ans) });
+    let office = makeDevice({ role: 'office', emps: [], kvRows, call: cannedCall(ans), labor });
     const oe = officeEmps(office.ctx);
-    office = makeDevice({ role: 'office', emps: oe, kvRows, call: cannedCall(ans) });
+    office = makeDevice({ role: 'office', emps: oe, kvRows, call: cannedCall(ans), labor });
     // makeDevice は emps を作ってから中身を入れるので、印は作り直した文脈の _empSrvMs で付け直す
     const oe2 = officeEmps(office.ctx); oe.splice(0, oe.length, ...oe2);
     assert.ok(oe.some(e => e._srvMs === true) && !JSON.stringify(oe).includes('_srvMs'), 'the monthly mark is there but is never saved');
@@ -407,6 +426,55 @@ test('the accounting device with the server totals equals the CEO device (UTC, J
   assert.notEqual(before.hourly, nov.month.hourly, 'hourly differs before the answer');
   assert.notEqual(before.salary, nov.month.salary, 'salary differs before the answer');
   assert.notEqual(before.leave, nov.month.leave, 'leave differs before the answer');
+});
+
+// v1192（Codex 6986713362 の P2-2）：業務用アカウントの Toast ID（端末の k2SysGuids）は 13 か月前からの勤怠で決まる。
+// 前の関数は頼まれた月の勤怠だけを読んだので、同じ店・月の合計が、一緒に頼む月で変わった（11 月だけ＝その人を数える／10・11 月＝数えない）
+function laborWithSysGuid() {
+  const L = J(LABOR);
+  const oct = L.F01.find(r => r.business_date === '2026-10-15');
+  oct.data.push({ name: 'Toast Generic Login', guid: 'gsys-1', lunchHours: 2, dinnerHours: 0 });
+  const nov = L.F01.find(r => r.business_date === '2026-11-03');
+  nov.data.find(x => x.name === 'Aki Tanaka').guid = 'gsys-1';   // Toast の業務用アカウントの ID で打刻した日（店の業務用アカウントの一覧は無い＝名前で探す前の道）
+  return L;
+}
+test('the same store and month has the same totals whatever other months are asked with it, and equals the CEO device (Codex 6986713362 P2-2)', async () => {
+  const prev = process.env.TZ;
+  process.env.TZ = 'UTC';
+  try {
+    const labor = laborWithSysGuid();
+    const only = await makeCloud({ labor }).call(OFFICE, { action: 'labor', asks: [{ s: 'F01', m: '2026-11' }], to: TODAY });
+    const both = await makeCloud({ labor }).call(OFFICE, { action: 'labor', asks: [{ s: 'F01', m: '2026-10' }, { s: 'F01', m: '2026-11' }], to: TODAY });
+    const all = await makeCloud({ labor }).call(OFFICE, { action: 'labor', asks: ASKS, to: TODAY });
+    assert.ok(only.ok && both.ok && all.ok, JSON.stringify([only, both, all]));
+    assert.deepEqual(J(only.j.r['F01|2026-11']), J(both.j.r['F01|2026-11']), 'November alone and October with November give the same November');
+    assert.deepEqual(J(only.j.r['F01|2026-11']), J(all.j.r['F01|2026-11']), 'and the same as every asked store and month');
+    // 10 月だけを頼んでも、端末と同じく 11 月（今月）の勤怠まで見る（端末の k2SysGuids は後ろに切らない）
+    const octOnly = await makeCloud({ labor }).call(OFFICE, { action: 'labor', asks: [{ s: 'F01', m: '2026-10' }], to: TODAY });
+    assert.deepEqual(J(octOnly.j.r['F01|2026-10']), J(all.j.r['F01|2026-10']), 'October alone gives the same October');
+    // 合成データが業務用アカウントの道を通っていること：Toast ID の無い元のデータとは 11 月の数が違う
+    const plain = await makeCloud().call(OFFICE, { action: 'labor', asks: [{ s: 'F01', m: '2026-11' }], to: TODAY });
+    assert.notDeepEqual(J(plain.j.r['F01|2026-11']), J(only.j.r['F01|2026-11']), 'the system account id changes November (the test data takes that path)');
+    // 両方の月の勤怠を持つ CEO の端末と、1 セントまで同じ
+    await equivalenceIn('UTC', all, labor);
+  } finally { if (prev === undefined) delete process.env.TZ; else process.env.TZ = prev; }
+});
+test('every table is read page by page until an empty page; too many pages fail with no partial totals', async () => {
+  const prev = process.env.TZ;
+  process.env.TZ = 'UTC';
+  try {
+    const full = await makeCloud().call(OFFICE, { action: 'labor', asks: ASKS, to: TODAY });
+    const C = makeCloud({ pageCap: 3 });   // サーバーの上限が小さくても（Supabase は既定で 1 回 1,000 行）、空のページまで読む
+    const small = await C.call(OFFICE, { action: 'labor', asks: ASKS, to: TODAY });
+    assert.deepEqual(J(small.j), J(full.j), 'the same answer when the server returns 3 rows a request');
+    for (const t of ['stores?', 'employees?', 'employees_private?', 'tip_labor?'])
+      assert.ok(C.log.filter(l => l.startsWith(t) && /offset=\d/.test(l)).length > 1, t + ' is read in pages');
+    // 上限（60 ページ）を超える行は読み切れない＝失敗（途中までで合計を出さない）
+    const L = J(LABOR);
+    for (let i = 0; i < 70; i++) L.F01.push({ business_date: '2025-' + String(10 + Math.floor(i / 28)).padStart(2, '0') + '-' + String(i % 28 + 1).padStart(2, '0'), data: [] });
+    const big = await makeCloud({ labor: L, pageCap: 1 }).call(OFFICE, { action: 'labor', asks: [{ s: 'F01', m: '2026-11' }], to: TODAY });
+    assert.deepEqual(big, { status: 500, error: 'error' }, 'too many pages is a failure');
+  } finally { if (prev === undefined) delete process.env.TZ; else process.env.TZ = prev; }
 });
 
 // ---------- 4. 端末の受け取り方 ----------

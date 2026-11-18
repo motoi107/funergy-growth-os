@@ -97,8 +97,13 @@ export const SW2_KEYS = ['cs_criteria', 'bonus_coef', 'bonus_coef_rng', 'bonus_t
 //   賞与の日割り（区間ごとのグレード）にアプリが使う。公開の鍵で書けると、確定日・グレード・確定した評価を書き換えられた。
 //   形は v1143 の 8 つと同じ「キー（社員 ID）→ 記録（オブジェクトか null）」の地図。前の関数（v1144 以前）は「知らないキー」と断るだけで何も書かない
 export const GH_KEYS = ['grade_hist'];
+// v1192（Codex 6986713362 の P2-1）：ダッシュボードで全店を見る AM（GM・CEO が「管轄の割り当て」で決める）の、GM・CEO だけが書ける写し。
+//   人件費の合計（labor）を全店で返すかは、これだけで決める。前は app_settings の md_all_viewers（公開の鍵で書ける）で決めていたので、
+//   AM が自分の行を書き足すと、担当外の店の人件費の合計まで受け取れた。形は grade_hist と同じ「社員 ID → 記録（オブジェクトか null）」の地図。
+//   公開の鍵で書けなくするのは SQL 20261210090000（ss_guard_key に足す・今の md_all_viewers を 1 回だけ写す）
+export const LV_KEYS = ['md_all_viewers_gm'];
 export const SW_WRITE = { mileage_config: ['ceo', 'gm', 'office'], career_cfg: ['ceo', 'gm'], ...Object.fromEntries(SW2_KEYS.map(k => [k, ['ceo', 'gm']])),
-  ...Object.fromEntries(GH_KEYS.map(k => [k, ['ceo', 'gm']])) };
+  ...Object.fromEntries(GH_KEYS.map(k => [k, ['ceo', 'gm']])), ...Object.fromEntries(LV_KEYS.map(k => [k, ['ceo', 'gm']])) };
 export function swIsKey(k) { return typeof k === 'string' && Object.prototype.hasOwnProperty.call(SW_WRITE, k); }
 // 値の形（決めた人が書くときに確かめる：おかしな単価で、ガソリン代の申請が全部止まらないように）
 //   mileage_config：アプリが書く形（包まない）だけ。包んだ形（{__st:…}）は断る（wr_mileage_rate は中身を読み、アプリの画面は外を読むので、
@@ -109,7 +114,7 @@ export function swIsKey(k) { return typeof k === 'string' && Object.prototype.ha
 export function swCgEntryOk(k, x, max = 100) { return typeof k === 'string' && k.length <= max && (x === null || (typeof x === 'object' && !Array.isArray(x))); }
 export function swCgBadKeys(value, max = 100) { return (value && typeof value === 'object' && !Array.isArray(value)) ? Object.keys(value).filter(k => !swCgEntryOk(k, value[k], max)) : []; }
 const swMapMax = key => (key === 'career_cfg' ? 100 : 200);
-const swMapKey = key => key === 'career_cfg' || SW2_KEYS.includes(key) || GH_KEYS.includes(key);
+const swMapKey = key => key === 'career_cfg' || SW2_KEYS.includes(key) || GH_KEYS.includes(key) || LV_KEYS.includes(key);
 export function swShapeOk(key, value, cloud) {
   let s;
   try { s = JSON.stringify(value === undefined ? null : value); } catch { return false; }
@@ -2138,7 +2143,9 @@ export function createHandler(deps) {
     } else if (a.role === 'am' && a.emp) {
       if (!(await empOk())) throw err('forbidden', 403);
       for (const x of [...a.am, ...a.stores]) if (typeof x === 'string' && x) S.add(x);
-      const rows = await rest('app_settings?select=value&key=eq.md_all_viewers');
+      // 全店で返すのは、GM・CEO だけが書ける写し（app_state の md_all_viewers_gm・上の LV_KEYS）で ON の人だけ。
+      // app_settings の md_all_viewers（ダッシュボードの表示に使う・公開の鍵で書ける）は見ない（Codex 6986713362 の P2-1：AM の自分での書き足し）
+      const rows = await rest('app_state?select=value&key=eq.' + LV_KEYS[0]);
       const v = Array.isArray(rows) && rows[0] && obj(rows[0].value) ? rows[0].value[a.emp] : null;
       if (obj(v) && v.on === true && !v._deleted) all = true;
     } else throw err('forbidden', 403);

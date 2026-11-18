@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
 import { PGlite } from './runtime/node_modules/@electric-sql/pglite/dist/index.js';
-import { swIsKey, tpIsKey, SW2_KEYS, GH_KEYS, TP_KEYS } from '../supabase/functions/secure-state/handler.mjs';
+import { swIsKey, tpIsKey, SW2_KEYS, GH_KEYS, TP_KEYS, LV_KEYS } from '../supabase/functions/secure-state/handler.mjs';
 
 const rd = p => fs.readFileSync(new URL('../' + p, import.meta.url), 'utf8');
 const MIG39 = rd('supabase/migrations/20261108090000_secure_state_rls.sql');
@@ -163,16 +163,16 @@ test('the SQL rule, the function rule and the app rule agree on every key (Tip R
   const html = rd('index.html');
   const pick = re => { const m = html.match(re); assert.ok(m, String(re)); return m[0]; };
   const ctx = {}; vm.createContext(ctx);
-  vm.runInContext([pick(/var SW_KEYS = \{[^}]*\};/), pick(/var SW2_KEYS = \{[^}]*\};/), pick(/function sw2IsKey\(k\)\{[^\n]*\}/), pick(/var GH_KEYS = \{[^}]*\};/), pick(/function ghIsKey\(k\)\{[^\n]*\}/),
+  vm.runInContext([pick(/var SW_KEYS = \{[^}]*\};/), pick(/var SW2_KEYS = \{[^}]*\};/), pick(/function sw2IsKey\(k\)\{[^\n]*\}/), pick(/var GH_KEYS = \{[^}]*\};/), pick(/function ghIsKey\(k\)\{[^\n]*\}/), pick(/var LV_KEYS = \{[^}]*\};/), pick(/function lvIsKey\(k\)\{[^\n]*\}/),
     pick(/function swIsKey\(k\)\{[^\n]*\}/), pick(/var TP_KEYS = \{[^}]*\};/), pick(/var TP_TIP_PRE = '[^']*';/), pick(/function tpIsKey\(k\)\{[^\n]*\}/), pick(/function gwIsKey\(k\)\{[^\n]*\}/),
     'this.appIs = gwIsKey; this.appTp = tpIsKey;'].join('\n'), ctx);
   const fnIs = k => swIsKey(k) || tpIsKey(k);
-  const keys = [...GUARD, ...OTHER, 'spl_tip_requests_', 'spl_tip_requests_ ', TIPK('x'.repeat(183)), TIPK('x'.repeat(184)), TIPK('x'.repeat(3000)), 'Spl_tip_requests_x', ' spl_tip_requests_x',
+  const keys = [...GUARD, ...OTHER, ...LV_KEYS, 'spl_tip_requests_', 'spl_tip_requests_ ', TIPK('x'.repeat(183)), TIPK('x'.repeat(184)), TIPK('x'.repeat(3000)), 'Spl_tip_requests_x', ' spl_tip_requests_x',
     'spl_tip_request_x', 'tip_requests ', 'prep_tables\n', 'prep', 'tip', 'toString', '__proto__', 'constructor', '', TIPK('日本語の名前'), TIPK("O'Neil")];
   for (let i = 0; i < 400; i++) keys.push(['spl_tip_requests_', 'spl_tip_', 'prep_', 'tip_', 'grade', ''][i % 6] + Math.random().toString(36).slice(2, 2 + (i % 9)));
   for (const k of keys) {
     const s = (await db.query('select public.ss_guard_key($1) s', [k])).rows[0].s;
-    assert.equal(s, fnIs(k), 'sql vs function ' + JSON.stringify(k.slice(0, 40)));
+    assert.equal(s, fnIs(k) && !LV_KEYS.includes(k), 'sql (v1146: no v1192 copy yet) vs function ' + JSON.stringify(k.slice(0, 40)));
     assert.equal(ctx.appIs(k), fnIs(k), 'app vs function ' + JSON.stringify(k.slice(0, 40)));
     assert.equal(ctx.appTp(k), tpIsKey(k), 'app Tip/prep list vs function ' + JSON.stringify(k.slice(0, 40)));
   }

@@ -1,5 +1,5 @@
 // secure-state を Supabase の編集画面に 1 回で貼れる 1 ファイルにする（v1192 から：handler.mjs が labor.mjs・labor-core.gen.mjs を読むため）。
-//   node scripts/build-secure-state-one.mjs            → deploy/labor-totals-v1192/1_関数_secure-state_index.ts を書く
+//   node scripts/build-secure-state-one.mjs            → deploy/labor-totals-v1192/4_関数_secure-state_index.ts を書く
 //   node scripts/build-secure-state-one.mjs --check    → 今のソースから作ったものとファイルが同じか（違えば 1 で終わる）
 // つなぎ方：labor-core.gen.mjs → labor.mjs → handler.mjs の順に、相対の import の行だけを外して並べ、最後に起動の行（index.ts と同じ）。
 // 3 つのファイルの一番外の名前が重なれば止める（重なると Deno で読めない）：起動の行を外したものを node --check で確かめる
@@ -13,7 +13,7 @@ import { fileURLToPath } from 'node:url';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const DIR = 'supabase/functions/secure-state/';
 export const PARTS = ['labor-core.gen.mjs', 'labor.mjs', 'handler.mjs'];
-export const OUT = 'deploy/labor-totals-v1192/1_関数_secure-state_index.ts';
+export const OUT = 'deploy/labor-totals-v1192/4_関数_secure-state_index.ts';
 export const TAIL = '\n// ---- 起動（supabase/functions/secure-state/index.ts と同じ）\nDeno.serve(createHandler({ env: (key: string) => Deno.env.get(key) }));\n';
 const IMPORT_RE = /^import \{[^}]*\} from '\.\/[a-z0-9.-]+\.mjs';\n/gm;
 

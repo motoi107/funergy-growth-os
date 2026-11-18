@@ -10,10 +10,11 @@
 
 import { laborCore } from './labor-core.gen.mjs';
 
-export const LT_SETTINGS = ['m_titlewage', 'kpi_config', 'tip_window', 'tip_hours_basis', 'md_all_viewers'];
+// v1192（Codex 6986713362 の P2-1）：md_all_viewers は計算に使わないので読まない（全店で返すかは handler が app_state の md_all_viewers_gm で決める）
+export const LT_SETTINGS = ['m_titlewage', 'kpi_config', 'tip_window', 'tip_hours_basis'];
 export const LT_STATE = ['tip_hours_config', 'store_closures', 'prep_tables', 'prep_certs'];
 // 端末が取り込むときの合流（端末に何も無い所へ合流した形）：mergeMapByTime のキーは「オブジェクトなら浅い写し・そうでなければ {}」
-const LT_MAP_KEYS = ['prep_tables', 'prep_certs', 'md_all_viewers'];
+const LT_MAP_KEYS = ['prep_tables', 'prep_certs'];
 export const LT_MAX_ASKS = 40;
 const YM_RE = /^20\d\d-(0[1-9]|1[0-2])$/;
 const DATE_RE = /^20\d\d-\d\d-\d\d$/;
@@ -121,7 +122,7 @@ export function ltCompute(data, asks) {
       const list = row && row.data;
       if (!Array.isArray(list) || !list.length) continue;   // 端末も中身の無い日は書かない
       const bd = core.normalizeBusinessDate(row.business_date);
-      if (!bd || String(bd).slice(0, 7) !== j.ym) continue;
+      if (!bd || !DATE_RE.test(bd) || bd < j.from || bd > j.to) continue;
       for (const sid of j.sids) kv.set('tip_labor_' + sid + '_' + bd, JSON.stringify(core.tipLaborBuildDay(sid, bd, list, emps, aidx)));
     }
   }
@@ -169,13 +170,30 @@ function ymRange(ym) {
   const last = new Date(Date.UTC(y, m, 0)).getUTCDate();
   return [ym + '-01', ym + '-' + String(last).padStart(2, '0')];
 }
+function ymAdd(ym, d) { const [y, m] = ym.split('-').map(Number); const n = y * 12 + m - 1 + d; return Math.floor(n / 12) + '-' + String(n % 12 + 1).padStart(2, '0'); }
+// 端末の k2SysGuids（業務用アカウントの Toast ID）が見る勤怠の範囲：その月の 13 か月前の 1 日から、端末にあるいちばん新しい日まで
+export const LT_SYS_BACK = 13;
+export const LT_PAGE = 1000, LT_MAX_PAGES = 60;
+
+// v1192（Codex 6986713362 の確認）：limit を付けて 1 回で読むと、サーバーの上限（Supabase は既定で 1 回 1,000 行）で黙って切れる。
+// 並びを決めて 1,000 行ずつ、空のページが来るまで読む（上限が 1,000 より小さくても切れない）。読み切れなければ失敗（途中までで合計を出さない）
+export async function ltReadAll(rest, path) {
+  const out = [];
+  for (let page = 0; page < LT_MAX_PAGES; page++) {
+    const rows = await rest(path + '&limit=' + LT_PAGE + '&offset=' + out.length);
+    if (!Array.isArray(rows)) { const e = new Error('db'); e.code = 'db'; throw e; }
+    if (!rows.length) return out;
+    for (const r of rows) out.push(r);
+  }
+  const e = new Error('db'); e.code = 'db'; e.detail = 'too_many_rows'; throw e;
+}
 
 // サーバーの鍵でデータを読む（rest＝handler の rest）。読めなければ失敗（途中までのデータで合計を出さない）
 export async function ltLoad(rest, asks, today) {
   const [storeRows, empRows, privRows, setRows, stRows] = await Promise.all([
-    rest('stores?select=id,data&order=id.asc&limit=1000'),
-    rest('employees?select=id,data&order=id.asc&limit=5000'),
-    rest('employees_private?select=emp_id,wage,monthly_salary&limit=5000'),
+    ltReadAll(rest, 'stores?select=id,data&order=id.asc'),
+    ltReadAll(rest, 'employees?select=id,data&order=id.asc'),
+    ltReadAll(rest, 'employees_private?select=emp_id,wage,monthly_salary&order=emp_id.asc'),
     rest('app_settings?select=key,value&key=in.(' + LT_SETTINGS.map(enc).join(',') + ')'),
     rest('app_state?select=key,value&key=in.(' + [...LT_STATE, ...[...new Set(asks.map(a => 'att_fix_' + a.s + '_' + a.m))]].map(enc).join(',') + ')'),
   ]);
@@ -183,22 +201,25 @@ export async function ltLoad(rest, asks, today) {
   const stores = ltStores(storeRows), employees = ltEmployees(empRows, privRows);
   const kv = new Map();
   for (const r of [...setRows, ...stRows]) { if (r && typeof r.key === 'string') { const s = ltKvString(r.key, r.value); if (s != null) kv.set(r.key, s); } }
-  // 勤怠（店の Toast の GUID・月ごと）。同じ GUID・月は 1 回だけ読む
+  // 勤怠（店の Toast の GUID ごとに 1 回）。v1192（Codex 6986713362 の P2）：前は頼まれた月だけを読んだので、業務用アカウントの
+  // Toast ID（k2SysGuids・その月の 13 か月前から）が頼む月の組み合わせで変わり、L/D の合計も変わった（11 月だけ／10・11 月で違う）。
+  // いまは頼みによらず、いちばん前の月の 13 か月前の 1 日から、今月（頼まれた月があとならその月）の終わりまでを読む
+  const ymsAsked = asks.map(a => a.m).sort();
+  const todayYm = String(today).slice(0, 7);
+  const lastYm = ymsAsked[ymsAsked.length - 1] > todayYm ? ymsAsked[ymsAsked.length - 1] : todayYm;
+  const from = ymAdd(ymsAsked[0], -LT_SYS_BACK) + '-01', to = ymRange(lastYm)[1];
   const byStore = new Map(stores.map(s => [s.id, s]));
   const jobs = new Map();
   for (const a of asks) {
     const st = byStore.get(a.s); const guid = st && st.toastGuid;
     if (!guid) continue;
-    const k = guid + '|' + a.m;
-    if (!jobs.has(k)) jobs.set(k, { guid, ym: a.m, sids: new Set() });
-    jobs.get(k).sids.add(a.s);
+    if (!jobs.has(guid)) jobs.set(guid, { guid, from, to, sids: new Set() });
+    jobs.get(guid).sids.add(a.s);
   }
   const list = [...jobs.values()];
   for (let i = 0; i < list.length; i += 8) {
     await Promise.all(list.slice(i, i + 8).map(async j => {
-      const [from, to] = ymRange(j.ym);
-      j.rows = await rest('tip_labor?select=business_date,data&restaurant_guid=eq.' + enc(j.guid) + '&business_date=gte.' + from + '&business_date=lte.' + to + '&order=business_date.asc&limit=1000');
-      if (!Array.isArray(j.rows)) { const e = new Error('db'); e.code = 'db'; throw e; }
+      j.rows = await ltReadAll(rest, 'tip_labor?select=business_date,data&restaurant_guid=eq.' + enc(j.guid) + '&business_date=gte.' + from + '&business_date=lte.' + to + '&order=business_date.asc');
     }));
   }
   return { stores, employees, kv, today, jobs: list };
