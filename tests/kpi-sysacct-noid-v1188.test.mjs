@@ -181,9 +181,9 @@ test('UI案91：一覧の無い店は ID のある日も名前で決めている
   assert.match(run(c, `k2HoursDetailHtml(['F06'],'2026-10')`), /名前で（一覧がまだ無い店）/);
 });
 
-/* 前の版（v1187＝main 52fa275）の関数。そのコミットが無いとき（浅い clone）は理由を出して落ちる（CI は取ってくる） */
+/* 前の版（v1187＝main 893554b。#189 の記録のコミット 52fa275 と index.html・sw.js は同じ）の関数。そのコミットが無いとき（浅い clone）は理由を出して落ちる（CI は取ってくる） */
 import { execSync } from 'node:child_process';
-const BASE_V1187 = '52fa275da00341d25a2d2a8f7514f01ee6fc6c69';
+const BASE_V1187 = '893554bbd3463a9aa285e3780b1f5d47fa672bd2';
 function oldSrc() {
   try { return execSync('git show ' + BASE_V1187 + ':index.html', { cwd: new URL('..', import.meta.url), maxBuffer: 64 << 20 }).toString('utf8').replace(/\r\n/g, '\n'); }
   catch (e) { throw new Error('needs the v1187 commit (git fetch origin ' + BASE_V1187 + '): ' + e.message); }
