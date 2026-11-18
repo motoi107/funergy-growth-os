@@ -4,9 +4,10 @@
 
 - 作ったもの（`docs/APPROVAL_RULES_JA.md` の 7）：設定 › 承認・閲覧設定（`FUNERGY_AR`・CEO・GM だけ・ルール／役割の人／代理／承認者がいない／使い始め・試す・形の確かめはサーバーの `rule_invalid` と同じ・先に保存されたら自分の変更を残して読み直す・進行中の申請に当てる前の確かめ）・申請の明細の「承認のルート」（段・今の段の承認者の名前・承認した人と印・閲覧者・あなたが承認すると）と例外（CEO・GM・ほかの人の承認待ちの申請・理由・版）・共通ルールで動いているときの GM のまとめて承認（`bulk_approve` を 1 回・番号は押す前・答えが届かなければ同じ番号で送り直す・結果は 1 件ずつ）・英語の画面ではサーバーの役割の名前を置き換える。SQL・関数は変えていない（#191 のまま）。
 - 試験（合成データ）：`tests/approval-rules-ui-v1190.test.mjs` 7（VM・本物の handler と SQL・CI に足した）・`tests/e2e-wr/approval-rules-ui-v1190.mjs` 22/22（本物の Chrome・PC 1440px／スマホ 390px・日英・pageerror 0・横のはみ出し 0）・関連 387/387・`tests/chat-app-v1156.test.mjs` のメニューの確かめに `ar_settings` を足した・static release pass/1190。e2e で見つけて直した：承認した人の横に「本人」（英語で self）がふつうの承認にも出ていた・英語の画面に日本語の役割の名前とかっこ。
-- 全体の試験：重い 2 つ以外を 4 並列で（結果は下の行）。
+- 全体の試験（重い 2 つ以外・3 並列・`767aac0`）：3,302 件のうち 34 件が落ちる。どれも前からの失敗と同じファイル（bot-center 2・bot-database 2・cooking-sake 4・cs-card-icons 1・cs-grade-view 1・cs-strengths 1・ingredient-transfers 1・meeting-budget 14・meeting-sales 4・next-v1090 1・perf-v1098 1・specialist-career 2）。承認ルールのファイルは 0 件。
 - 独立レビュー・Codex のレビューはまだ。実機（iPhone）は未確認。
-- 次：PR（base main・#191 を含む）→ Codex（#191 の最新の head と一緒に）→ #191 → この PR の順にマージ → 全部の端末を 1190 に → CEO・GM が設定で下書きを確かめて有効にする → 「共通ルールで動かす」。そのあと 8B（UI 案から）。
+- PR #192（base main・#191 を含む）。
+- 次：Codex（#191 の最新の head と一緒に）→ #191 → この PR の順にマージ → 全部の端末を 1190 に → CEO・GM が設定で下書きを確かめて有効にする → 「共通ルールで動かす」。そのあと 8B（UI 案から）。
 
 ## 2026-11-17 夜：v1190 は本番に入った・PR #191 のレビューの P2 5 つを直した（Claude・ブランチ `claude/approval-rules-1190`）
 
