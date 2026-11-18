@@ -494,7 +494,7 @@ test('the app keeps chat off the device and is wired into the navigation, logout
   assert.equal(html.split("case 'chat':         el.innerHTML = (typeof renderChatPage==='function') ? renderChatPage() : ''; break;").length - 1, 2, 'both renderPage copies');
   assert.equal(html.split("if(typeof chatReset==='function') chatReset();").length - 1, 2, 'both logout copies');
   assert.match(html, /if\(typeof chatStart==='function'\) chatStart\(\); \}, 3000\)/);
-  assert.match(html, /'acct_center','lost_receipt','expense','diag_center','chat'\]/);
+  assert.match(html, /'acct_center','lost_receipt','expense','diag_center','chat'(,'ar_settings')?\]/);   // v1190：承認・閲覧設定が後ろに足された
   assert.match(html, /if \(workTab==='chat'\) return bar \+ \(\(typeof chatWorkTab==='function'\) \? chatWorkTab\(\) : ''\);/);
   assert.match(html, /if \(typeof W\.chatCaseButton === 'function'\) h \+= W\.chatCaseButton\(r\);/);
   assert.match(html, /if \(pid==='chat'\) return \(typeof chatUnread==='function'\) \? chatUnread\(\) : 0;/);

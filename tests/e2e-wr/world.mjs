@@ -21,7 +21,8 @@ export const WR_MIGS = ['20261104090000_work_requests', '20261105090000_work_req
   .concat(process.env.WR_UI79 === '1' ? ['20261127090000_chat_ui79'] : [])   // v1167：チャットの UI案79（WR_UI79=1 のときだけ。前の e2e は前のまま）
   .concat(process.env.WR_UI79 === '1' && process.env.WR_GUARD === '1' ? ['20261128090000_chat_guard'] : [])   // v1168：チャットの守り（WR_GUARD=1 のときだけ）
   .concat(process.env.WR_UI79 === '1' && process.env.WR_GUARD === '1' && process.env.WR_V1169 !== '0' ? ['20261129090000_fixes_v1169'] : [])   // v1169：直し（守りのあと。WR_V1169=0 で前のまま）
-  .concat(process.env.WR_V1184 === '1' ? ['20261204090000_wr_exp_grants'] : []);   // v1184：経費の申請の権限（WR_V1184=1 のときだけ）
+  .concat(process.env.WR_V1184 === '1' ? ['20261204090000_wr_exp_grants'] : [])   // v1184：経費の申請の権限（WR_V1184=1 のときだけ）
+  .concat(process.env.WR_V1184 === '1' && process.env.WR_V1190 === '1' ? ['20261209090000_approval_rules'] : []);   // v1190：承認・閲覧の共通ルール（WR_V1190=1 のときだけ）
 
 export const TODAY = new Date().toISOString().slice(0, 10);
 const STORES = [['F01', 'Store A', 'Brand A', 'Ami Area'], ['F02', 'Store B', 'Brand B', '']].map(([id, name, brand, am]) => ({ id, name, brand, color: '#335577', am, toastGuid: '', hours: '11:00-22:00', days: '毎日', active: true }));
