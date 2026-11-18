@@ -617,6 +617,7 @@ function getTitleWageTable() {
 function empPayType(e){
   if (e && e.payTypeOverride) return e.payTypeOverride; // 個別上書き（例: 事務Crewは時給）
   if (e && e.monthlySalary!=null && e.monthlySalary!=='' && parseFloat(e.monthlySalary)>0) return 'monthly'; // 月給額が設定されていれば月給者（固定給を人件費に反映）
+  if (e && e._srvMs===true) return 'monthly';   /* v1192：経理・AM の端末。額は来ないが、月給の額が入っている人（emp-private の印） */
   return isMonthlyTitle(e.title) ? 'monthly' : 'hourly';
 }
 function empSiteWageOf(e) {

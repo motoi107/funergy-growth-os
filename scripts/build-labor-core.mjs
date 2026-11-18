@@ -91,7 +91,8 @@ function braceEnd(src, open) {
   throw new Error('function without end at ' + open);
 }
 
-export function analyze(raw) {
+// roots・stops を変えると、試験が同じ取り出し方で端末の関数（上書きの関数も）を取り出せる（tests/labor-totals-v1192.test.mjs）
+export function analyze(raw, roots = ROOTS, stopList = STOPS) {
   const src = raw.replace(/\r\n/g, '\n');
   const fdecl = new Map();   // 名前 → 位置（一番外の function だけ。2 つあれば止める）
   for (const m of src.matchAll(/\n(?:async )?function\s+([A-Za-z_$][\w$]*)\s*\(/g)) {
@@ -115,7 +116,7 @@ export function analyze(raw) {
     if (e !== old && !/\n(?:async )?function\s/.test(src.slice(e, old))) throw new Error('function end differs: ' + name);
     return src.slice(s, e);
   };
-  const stops = new Set(STOPS), seen = [], vars = new Set(), usedStops = new Set(), stack = [...ROOTS];
+  const stops = new Set(stopList), seen = [], vars = new Set(), usedStops = new Set(), free = new Set(), stack = [...roots];
   while (stack.length) {
     const n = stack.pop();
     if (seen.includes(n)) continue;
@@ -127,6 +128,7 @@ export function analyze(raw) {
       if (stops.has(r)) { usedStops.add(r); continue; }
       if (fdecl.has(r)) { if (!seen.includes(r)) stack.push(r); }
       else if (vdecl.has(r)) vars.add(r);
+      else free.add(r);
     }
   }
   // 定数の文（同じ文に入っている別の名前も一緒に）。中で使う関数があれば止める（定数の中の関数は取り出さない）
@@ -135,7 +137,7 @@ export function analyze(raw) {
     for (const m of stripCode(st).matchAll(/(?<![\w$.])([A-Za-z_$][\w$]*)\s*\(/g)) if (fdecl.has(m[1]) && !BUILTIN.has(m[1])) throw new Error('constant calls a function: ' + m[1]);
   }
   const order = [...seen].sort((a, b) => fdecl.get(a) - fdecl.get(b));
-  return { functions: order.map(n => ({ name: n, text: body(n) })), constants: stmts, usedStops: [...usedStops].sort() };
+  return { functions: order.map(n => ({ name: n, text: body(n) })), constants: stmts, usedStops: [...usedStops].sort(), free: [...free].sort() };
 }
 
 export function build(raw) {

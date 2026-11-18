@@ -48,9 +48,11 @@ function navApp(role, opts) {
 const run = (c, code) => vm.runInContext(code, c);
 const ALL_GROUP_ARRAYS = ['MENU_GROUPS', 'OFFICE_GROUPS', 'ACCT_GROUPS', 'CHEF_GROUPS', 'CREW_GROUPS', 'STORE_GROUPS'];
 
-test('release markers are 1191 in the page and the service worker', () => {
-  assert.match(src, /const APP_VERSION = '1191';/);
-  assert.match(sw, /const SW_BUILD = '1191';/);
+test('release markers are 1191 or later and the same in the page and the service worker', () => {
+  const a = src.match(/const APP_VERSION = '(\d+)';/), b = sw.match(/const SW_BUILD = '(\d+)';/);
+  assert.ok(a && b, 'both markers exist');
+  assert.ok(Number(a[1]) >= 1191, 'APP_VERSION ' + a[1]);
+  assert.equal(a[1], b[1]);
 });
 
 test('G1 (personal sign-in): accounting, store master, approval rules, settings, the karte and management pages do not open by a direct way in', () => {
