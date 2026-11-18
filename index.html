@@ -10391,7 +10391,8 @@ function canEditWages() { return curRole==='gm' || curRole==='ceo'; }
 /* v1191（Moto 11/18「はい」）：シフトリーダー手当の個人額・本部シフトインの個人額・採用の Payroll の段は給与。
    経理（office）・事務Crew（office_crew）には見せない・出力させない（CEO・GM だけ）。合計（店・日・期間・全店）は今のまま見せる。
    ★Tip の配分表は対象外（Moto 11/18 09:09 HST「TIPの配分表は今まで通り経理にも事務Crewにも全て見える、出力できる状態を維持」）：
-   人ごとの額・①〜④・No Tip の時間・Tip 対象外にする・CSV・経理出力の Tip 一覧は、経理・事務Crew にも今までどおり。payDetailHidden は Tip には使わない。
+   人ごとの額・①〜④・No Tip の時間・Tip 対象外にする・CSV・経理出力の Tip 一覧は、経理・事務Crew にも今までどおり。payDetailHidden は Tip の額には使わない。
+   ただし Tip の CSV に同じファイルで入っていたシフトリーダー手当の人ごとの部分は、経理・事務Crew の出力から外す（PR #194 の Codex 6989080060・payDetailCsvNote）。
    店の画面（店長・AM・G2 以上が自店のチップの配分・シフトリーダーを見る）は今のまま＝決めたのは経理への見せ方だけ。
    本部シフトインの個人額（本部の人の現場時給と額）は店の側が無いので canViewIndividualWage（CEO・GM）で決める。
    ★画面と出力の決まり。端末に届くデータ（Tip の確定・勤怠・時給）を絞るのは v1192（サーバーで合計を出す） */
@@ -10401,7 +10402,7 @@ function payDetailHidden() { return curRole==='office' || curRole==='office_crew
    Tip の配分表は 11/18 09:09 HST の Moto さんの指示で止めない（経理・事務Crew にも今までどおり） */
 function payDetailMsg(kind) {
   if (kind === 'hq') return t('本部シフトインの個人の額と給与のまとめは、CEO・GM だけが見て出力します（合計はこのまま見られます）','Individual HQ shift-in amounts and the payroll summary: only the CEO and GM see and export them (totals stay visible)');
-  if (kind === 'out') return t('シフトリーダー手当・本部シフトインの個人の額と経理まとめ（3 タブ）は、ここからは出力しません（CEO・GM が出力します。Tip の一覧は今までどおり出力できます）','Individual shift leader and HQ shift-in amounts and the 3-tab accounting book are not exported here (the CEO and GM export them; the tip lists export as before)');
+  if (kind === 'out') return t('シフトリーダー手当・本部シフトインの個人の額と経理まとめ（3 タブ）は、ここからは出力しません（CEO・GM が出力します。Tip の一覧は今までどおり出力できます。シフトリーダー手当の列は入りません）','Individual shift leader and HQ shift-in amounts and the 3-tab accounting book are not exported here (the CEO and GM export them; the tip lists export as before, without the shift leader columns)');
   return t('シフトリーダー手当の個人の額は給与のため、経理・事務Crew には出さず、出力もしません（店の画面と CEO・GM は今までどおり。合計はこのまま見られます）','Individual shift leader amounts are payroll: they are not shown to or exported by accounting and office crew (store screens and the CEO/GM are unchanged; totals stay visible)');
 }
 function payDetailBlocked(strict) {
@@ -10410,6 +10411,10 @@ function payDetailBlocked(strict) {
   try { showToast(payDetailMsg(strict ? 'hq' : 'sl'), 'warning'); } catch (e) {}
   return true;
 }
+/* PR #194 の Codex（4e7ae43・6989080060）：Tip の CSV（期間の日次 L/D 配分・店の Tip 一覧・全店の Tip 一覧）は経理・事務Crew にも今までどおり出すが、
+   同じファイルに入っていたシフトリーダー手当の人ごとの部分（回数・単価・手当・受取＋手当・SL だけの人・支給明細）は給与なので入れない。
+   その代わりに入れていないことをこの 1 行で書く（CSV は日本語だけ＝今までの見出しと同じ） */
+function payDetailCsvNote() { return 'シフトリーダー手当（回数・単価・手当・受取＋手当）は給与のため、この出力には入れていません（CEO・GM が出力します）'; }
 function payDetailNoteHtml(kind) { return '<div class="u-paynote" style="font-size:11.5px;color:var(--muted);line-height:1.6;padding:8px 2px"><i class="ti ti-lock"></i> ' + escapeHtml(payDetailMsg(kind)) + '</div>'; }
 /* 給与閲覧の対象店舗（AM=管轄, SM=自店, 全権=null=全店） */
 function wageScopeStores() {
@@ -46400,9 +46405,13 @@ async function exportTipPeriodCsv(){
      判定は slDayRecords() が正。条件をここで作り直さない。
      Store Leader（SL拠出・再分配）とは別物。 */
   /* v887: 回数の右に単価と支給額を足す（Motoさん依頼）。金額は slPayrollData() が正。 */
-  var _slp = slPayrollData(storeId, info.from, info.to);
-  var _slPay = _slp.rows||[];
-  if(_slPay.length){
+  /* PR #194 の Codex（6989080060）：経理・事務Crew の出力にはシフトリーダー手当の人ごとの部分を入れない（Tip の部分は今までどおり）。
+     手当のデータは読みもしない（payDetailCsvNote の 1 行だけ） */
+  var _slHide = payDetailHidden();
+  var _slp = _slHide ? null : slPayrollData(storeId, info.from, info.to);
+  var _slPay = _slp ? (_slp.rows||[]) : [];
+  if(_slHide){ rows.push([]); rows.push([payDetailCsvNote()]); }
+  else if(_slPay.length){
     rows.push([]);
     rows.push(['【シフトリーダー】','単価 $'+_slp.amount.toFixed(2)+' / 1回','対象は G1 のみ']);
     var _slHead=['従業員＼日付',''];
@@ -46429,7 +46438,8 @@ async function exportTipPeriodCsv(){
     rows.push(_slTot);
   }
   downloadCSV(rows, `Tip配分_${(store.name||storeId)}_${info.from}_${info.to}.csv`);
-  showToast('配分表（①〜④＋各スタッフ／Tip Rate／シフトリーダー支給額つき）をCSV出力しました','success');
+  showToast(_slHide ? '配分表（①〜④＋各スタッフ／Tip Rate）をCSV出力しました（シフトリーダー手当は入れていません）'
+                    : '配分表（①〜④＋各スタッフ／Tip Rate／シフトリーダー支給額つき）をCSV出力しました','success');
 }
 function tipMatrixToggleExcl(storeId, date, name, slot){ toggleTipExclude(storeId, date, name, slot); if(typeof renderPage==='function') renderPage('tip'); }
 /* 配分表のセル1つ（タップでTip対象外の切替） */
@@ -68959,20 +68969,26 @@ function tipCSVRows(storeId, anyDate) {
   /* v887: 回数だけでは支給できないので、単価・手当・受取＋手当まで出す（Motoさん依頼）。
      金額は slPayrollData()＝slPeriodSummary() が正。slCountsInRange() は数えるだけで
      単価を持たず、制度対象外の店も数えてしまうので、金額を出すこちらでは使わない。 */
-  var _slp = slPayrollData(storeId, range.from, range.to);
+  /* PR #194 の Codex（4e7ae43・6989080060）：経理・事務Crew（payDetailHidden）の Tip 一覧には、シフトリーダー手当の列（回数・単価・手当・受取＋手当）・
+     SL だけを務めた人の行・手当の合計・支給明細を入れない（手当のデータは読みもしない）。Tip の列・行は今までどおり。
+     CEO・GM（経理まとめの Tip タブも）・店の役職は今までどおり手当つき */
+  var _slHide = payDetailHidden();
+  var _slp = _slHide ? { enabled:false, rows:[], total:0, amount:0 } : slPayrollData(storeId, range.from, range.to);
   var _slc = {}; (_slp.rows||[]).forEach(function(x){ _slc[x.name]=x; });
   var _slRate = _slp.enabled ? _slp.amount.toFixed(2) : '';
-  rows.push(['氏名','区分','労働時間','日次配分計($)','SL拠出($)','再分配受取($)','最終受取($)',
+  var _tipHead = ['氏名','区分','労働時間','日次配分計($)','SL拠出($)','再分配受取($)','最終受取($)'];
+  rows.push(_slHide ? _tipHead : _tipHead.concat([
     'シフトリーダー ランチ(回)','シフトリーダー ディナー(回)','シフトリーダー 計(回)',
-    'シフトリーダー 単価($)','シフトリーダー 手当($)','受取＋手当($)']);
+    'シフトリーダー 単価($)','シフトリーダー 手当($)','受取＋手当($)']));
   settle.rows.forEach(r=>{
     var _c=_slc[r.name], _amt=_c?(_c.amount||0):0;
-    rows.push([r.name, r.isSL?'Store Leader':'スタッフ',
-      r.hours.toFixed(2), r.base.toFixed(2), r.contribution.toFixed(2), r.redistrib.toFixed(2), r.final.toFixed(2),
+    var _tipCols = [r.name, r.isSL?'Store Leader':'スタッフ',
+      r.hours.toFixed(2), r.base.toFixed(2), r.contribution.toFixed(2), r.redistrib.toFixed(2), r.final.toFixed(2)];
+    rows.push(_slHide ? _tipCols : _tipCols.concat([
       _c?_c.L:0, _c?_c.D:0, _c?_c.count:0,
-      _c?_slRate:'', _amt.toFixed(2), (r.final+_amt).toFixed(2)]);
+      _c?_slRate:'', _amt.toFixed(2), (r.final+_amt).toFixed(2)]));
   });
-  /* 精算表に出てこない人（配分ゼロでもSLを務めた人）を落とさない */
+  /* 精算表に出てこない人（配分ゼロでもSLを務めた人）を落とさない（手当を出す人のとき。経理・事務Crew は _slc が空） */
   Object.keys(_slc).forEach(function(nm){
     if(settle.rows.some(function(r){ return r.name===nm; })) return;
     var c=_slc[nm];
@@ -68980,10 +68996,12 @@ function tipCSVRows(storeId, anyDate) {
       _slRate, (c.amount||0).toFixed(2), (c.amount||0).toFixed(2)]);
   });
   var totalFinal = settle.rows.reduce((a,r)=>a+r.final,0);
-  rows.push(['合計','','','','','', totalFinal.toFixed(2), '','','','',
-    (_slp.total||0).toFixed(2), (totalFinal+(_slp.total||0)).toFixed(2)]);
+  rows.push(_slHide ? ['合計','','','','','', totalFinal.toFixed(2)]
+    : ['合計','','','','','', totalFinal.toFixed(2), '','','','',
+       (_slp.total||0).toFixed(2), (totalFinal+(_slp.total||0)).toFixed(2)]);
+  if(_slHide){ rows.push([]); rows.push([payDetailCsvNote()]); }
   /* 給与担当が1枚で完結できるよう、支給明細（該当日つき）も同じCSVに付ける。 */
-  if(_slp.enabled && (_slp.rows||[]).length){
+  else if(_slp.enabled && (_slp.rows||[]).length){
     rows.push([]);
     rows = rows.concat(slPayrollRows(storeId, range.from, range.to));
   }
