@@ -179,3 +179,36 @@ test('前の ②（352dbcc）の上に今の ② を流す：③ の 8 が NG �
   const rb = (await s.q(`select route is not null as has_route, status from wr_requests where id = $1`, [b.id]))[0];
   assert.deepEqual(rb, { has_route: true, status: 'returned' });
 });
+
+/* PR #192 のレビューの直し：本番に入っている（はずの）②（8b1ddec）の上に今の ② を流す。
+   ③ の 9 は前の ② では NG・今の ② で OK。表の状態の決まりが 4 つになり、捨てた下書きが残る。承認待ちはそのまま続く。2 回流しても同じ。
+   そのコミットが無いとき（浅い clone）は理由を出して落ちる（CI は取ってくる） */
+const PREV2_V1190 = '8b1ddeca02ebc91a64a4ef6da896ebce6bb94a0d';
+test('前の ②（8b1ddec）の上に今の ② を流す：③ の 9 が NG → OK・捨てた下書きが残る・承認待ちはそのまま', async () => {
+  let old;
+  try { old = execSync('git show ' + PREV2_V1190 + ':supabase/migrations/20261209090000_approval_rules.sql', { cwd: new URL('..', import.meta.url), maxBuffer: 16 << 20 }).toString('utf8'); }
+  catch { assert.fail('前の ②（' + PREV2_V1190 + '）が取れません（浅い clone）。CI のように git fetch してから流してください'); }
+  assert.ok(!/discarded/.test(old), 'the base commit deletes discarded drafts');
+  const s = await setup({ ar: false });
+  await s.pg.exec('reset role'); await s.pg.exec(old); await s.pg.exec('set role service_role');
+  await s.activate(); await s.live();
+  await s.setRule('plan', { default: { stages: [{ mode: 'all', slots: [{ t: 'role', role: 'gm', scope: 'all' }, { t: 'role', role: 'ceo', scope: 'all' }] }] } });
+  const a = await s.subOk('E8', 'plan', 'S1');
+  const before = await rows(s.pg, D('3_確認_読むだけ.sql'));
+  assert.match(res(before, '9.'), /^NG/); assert.equal(res(before, '8.'), 'OK');
+  await assert.rejects(s.q(`insert into ar_rules(kind, ver, status, def) values ('plan', 99, 'discarded', '{}')`), /check/, 'the old table does not know discarded');
+  for (let i = 0; i < 2; i++) { await s.pg.exec('reset role'); await s.pg.exec(D('2_SQL_承認ルール.sql')); await s.pg.exec('set role service_role'); }
+  const after = await rows(s.pg, D('3_確認_読むだけ.sql'));
+  assert.ok(!after.some(r => /NG/.test(r.result)), JSON.stringify(after));
+  assert.equal((await s.q(`select count(*)::int as n from pg_constraint where conrelid = 'public.ar_rules'::regclass and contype = 'c' and pg_get_constraintdef(oid) like '%status%'`))[0].n, 1, 'one status rule, not two');
+  // 捨てた下書きが残り、次の下書きは新しい番号
+  const st = await s.state(); const k = st.kinds.find(x => x.kind === 'hire');
+  const d = await s.ok('E2', { action: 'ar_rule_save', kind: 'hire', def: { default: { stages: [{ mode: 'any', slots: [{ t: 'role', role: 'ceo', scope: 'all' }] }] } }, expect_ver: 0, expect_rev: 0, base_ver: k.active.ver, note: 'x' });
+  await s.ok('E2', { action: 'ar_rule_discard', kind: 'hire', expect_ver: d.draft.ver, expect_rev: d.draft.rev });
+  const d2 = await s.ok('E2', { action: 'ar_rule_save', kind: 'hire', def: { default: { stages: [{ mode: 'any', slots: [{ t: 'role', role: 'ceo', scope: 'all' }] }] } }, expect_ver: 0, expect_rev: 0, base_ver: k.active.ver, note: 'y' });
+  assert.equal(d2.draft.ver, d.draft.ver + 1);
+  // 承認待ち（「全員」の段）：GM が承認しても段は進まず「待つ」・CEO で最終承認
+  assert.equal((await s.ok('E2', { action: 'get', id: a.id })).route.my.after, 'same');
+  assert.equal((await s.approve('E2', a)).body.status, 'pending');
+  assert.equal((await s.approve('E1', a)).body.status, 'approved');
+});

@@ -266,7 +266,7 @@ test('v1190 GM bulk approval: only the GM stage, per-case results, the same oper
   assert.equal((await s.call('E5', { action: 'bulk_approve', items, client_key: 'bulk-0001' })).status, 403, 'not an AM');
   const b = await s.ok('E2', { action: 'bulk_approve', items, client_key: 'bulk-0001' });
   assert.deepEqual(b.results.map(r => [r.outcome, r.reason || '']), [['skip', 'not_your_stage'], ['final', ''], ['final', ''], ['skip', 'stale'], ['skip', 'own'], ['final', '']]);
-  assert.deepEqual(b.counts, { final: 3, next: 0, skip: 3, failed: 0 });
+  assert.deepEqual(b.counts, { final: 3, next: 0, stage: 0, skip: 3, failed: 0 });
   assert.equal((await s.fresh(amStage)).route.cur, 1, 'the AM stage was not signed by the GM');
   assert.equal((await s.fresh(amStage)).status, 'pending');
   const again = await s.ok('E2', { action: 'bulk_approve', items, client_key: 'bulk-0001' });

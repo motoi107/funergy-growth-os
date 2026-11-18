@@ -31,6 +31,16 @@ union all select '8. PR #191 のレビューの直しが入っている（ルー
      and (select count(*) from pg_trigger where tgname = 'ar_role_cache_reset' and not tgisinternal)
        = (select count(*) from unnest(array['manager_auth','wr_people','employees','stores','wr_exp_grants']) t where to_regclass('public.' || t) is not null)
    then 'OK' else 'NG（② の今の版をもう一度流す）' end
+union all select '9. PR #192 のレビューの直しが入っている（捨てた下書きを残す・兼任の確かめ・「全員」の段の表示）',
+  case when exists (select 1 from pg_constraint c where c.conrelid = 'public.ar_rules'::regclass and c.contype = 'c' and pg_get_constraintdef(c.oid) like '%discarded%')
+     and (select count(*) from pg_proc p join pg_namespace s on s.oid = p.pronamespace where s.nspname = 'public'
+       and (p.proname in ('ar_sdr_ok','ar_open_ok')
+         or (p.proname = 'ar_rule_discard' and p.prosrc like '%discarded%' and p.prosrc not like '%delete from%')
+         or (p.proname = 'ar_rule_check' and p.prosrc like '%ar\_sdr\_ok%')
+         or (p.proname in ('ar_stuck','ar_can_approve') and p.prosrc like '%ar\_open\_ok%')
+         or (p.proname = 'ar_route_view' and p.prosrc like '%v\_after%')
+         or (p.proname = 'ar_bulk_counts' and p.prosrc like '%''stage''%'))) = 8
+   then 'OK' else 'NG（② の今の版をもう一度流す）' end
 union all select '（参考）共通ルールで動いているか（入れたばかりは false＝今までの決まりのまま）',
   (select live::text from public.ar_settings where id = 1)
 union all select '（参考）ルール：有効 / 下書き',

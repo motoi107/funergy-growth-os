@@ -44,7 +44,7 @@ insert into public.ar_settings(id) values (1) on conflict (id) do nothing;
 create table if not exists public.ar_rules (
   kind text not null,
   ver integer not null check (ver >= 1),
-  status text not null check (status in ('draft','active','old')),
+  status text not null check (status in ('draft','active','old','discarded')),
   def jsonb not null,
   note text,
   rev integer not null default 1,
@@ -53,6 +53,17 @@ create table if not exists public.ar_rules (
   activated_by text, activated_emp text, activated_at timestamptz,
   primary key (kind, ver)
 );
+-- 捨てた下書きは消さずに discarded で残す（版の番号を使い直さない＝古い画面の版と回数が新しい下書きに当たらない・PR #191／#192 の Codex の P2）。
+-- 前の ② で作った表は状態の決まりが 3 つだけなので、ここで 4 つに直す（2 回流しても同じ）
+do $$ declare v_con record; begin
+ if not exists (select 1 from pg_constraint c where c.conrelid = 'public.ar_rules'::regclass and c.contype = 'c' and pg_get_constraintdef(c.oid) like '%discarded%') then
+  for v_con in select x.conname from pg_constraint x where x.conrelid = 'public.ar_rules'::regclass and x.contype = 'c'
+     and pg_get_constraintdef(x.oid) like '%status%' and pg_get_constraintdef(x.oid) like '%''old''%' loop
+   execute format('alter table public.ar_rules drop constraint %I', v_con.conname);
+  end loop;
+  alter table public.ar_rules add constraint ar_rules_status_check check (status in ('draft','active','old','discarded'));
+ end if;
+end $$;
 create unique index if not exists ar_rules_one_active on public.ar_rules(kind) where status = 'active';
 create unique index if not exists ar_rules_one_draft on public.ar_rules(kind) where status = 'draft';
 create table if not exists public.ar_delegates (
@@ -407,10 +418,51 @@ language plpgsql immutable security invoker set search_path = public, pg_temp as
 begin return case when coalesce(st->>'mode', 'any') = 'all' then not exists (select 1 from public.ar_open_slots(st))
   else jsonb_array_length(coalesce(st->'signs', '[]'::jsonb)) > 0 end; end $$;
 
+-- 枠ごとの「埋められる人」の組（jsonb の配列の配列）から、すべての枠に別々の人を 1 人ずつ当てられるか（組み合わせ・増加路）。
+-- 空の枠があれば false。「全員」の段で、同じ人しか当てはまらない枠が 2 つあると false（兼任の 1 人は 1 段で 1 回だけ＝7B）
+create or replace function public.ar_sdr_ok(p_sets jsonb) returns boolean
+language plpgsql immutable security invoker set search_path = public, pg_temp as $$
+declare n integer := coalesce(jsonb_array_length(p_sets), 0); i integer; j integer; h integer; q integer[]; p text; v_end text; v_slot integer;
+ m jsonb := '{}'::jsonb; par jsonb; via jsonb;
+begin
+ if p_sets is null or jsonb_typeof(p_sets) <> 'array' then return false; end if;
+ for i in 0 .. n - 1 loop
+  par := '{}'::jsonb; via := '{}'::jsonb; q := array[i]; h := 1; v_end := null;
+  while h <= cardinality(q) and v_end is null loop
+   j := q[h]; h := h + 1;
+   for p in select distinct x from jsonb_array_elements_text(case when jsonb_typeof(p_sets->j) = 'array' then p_sets->j else '[]'::jsonb end) x loop
+    continue when par ? p;
+    par := par || jsonb_build_object(p, j);
+    if not (m ? p) then v_end := p; exit; end if;
+    v_slot := (m->>p)::int;
+    if not (via ? v_slot::text) then via := via || jsonb_build_object(v_slot::text, p); q := q || v_slot; end if;
+   end loop;
+  end loop;
+  if v_end is null then return false; end if;
+  p := v_end;
+  while p is not null loop
+   j := (par->>p)::int;
+   m := m || jsonb_build_object(p, j);
+   p := via->>(j::text);
+  end loop;
+ end loop;
+ return true;
+end $$;
+
+-- 「全員」の段で、まだ埋まっていない枠（p_skip の枠を除く）に、承認に使っていない人（p_used）を 1 人ずつ当てられるか
+create or replace function public.ar_open_ok(r public.wr_requests, st jsonb, p_used text[], p_skip text) returns boolean
+language plpgsql stable security invoker set search_path = public, pg_temp as $$
+begin
+ return public.ar_sdr_ok((select coalesce(jsonb_agg(to_jsonb(array(select y from unnest(public.ar_slot_elig(o, r, r.route->>'self')) y where not (y = any(p_used))))), '[]'::jsonb)
+   from public.ar_open_slots(st) o where (o->>'k') is distinct from p_skip));
+end $$;
+
 -- この人が今の段で承認できるか。できるなら {k（枠）, via（self／self_ceo／delegate）, for_emp, for_name}
+-- 当てはまる枠が 2 つ以上（兼任・「全員」の段）なら、残りの枠をほかの人で埋められる枠を先に（埋められない枠を取らない）。同じなら、ほかに埋められる人の少ない枠
 create or replace function public.ar_can_approve(a jsonb, r public.wr_requests) returns jsonb
 language plpgsql stable security invoker set search_path = public, pg_temp as $$
-declare rt jsonb := r.route; v_cur integer; st jsonb; s jsonb; v_used text[]; v_el text[]; f text; v_me text := a->>'emp'; v_best jsonb; v_n integer; v_bn integer;
+declare rt jsonb := r.route; v_cur integer; st jsonb; s jsonb; v_used text[]; v_el text[]; f text; v_me text := a->>'emp'; v_cand jsonb := '[]'::jsonb; c jsonb;
+ v_best jsonb; v_bn integer; v_bok boolean; v_ok boolean; v_all boolean; v_first jsonb;
 begin
  if rt is null or r.status <> 'pending' or v_me is null or (public.wr_is_mine(a, r) and not public.ar_self_ok(r, rt->>'self')) then return null; end if;
  v_cur := coalesce((rt->>'cur')::int, 0);
@@ -418,43 +470,50 @@ begin
  if st is null or public.ar_stage_done(st) then return null; end if;
  v_used := public.ar_stage_signed(st);
  if v_me = any(v_used) then return null; end if;
- -- 当てはまる枠が 2 つ以上（兼任）なら、ほかに埋められる人の少ない枠を先に（「全員」の段で、ほかの人が埋められる枠を取らない）
+ v_all := coalesce(st->>'mode', 'any') = 'all';
  for s in select x from public.ar_open_slots(st) x loop
   v_el := public.ar_slot_elig(s, r, rt->>'self');
   if v_me = any(v_el) then
-   v_n := cardinality(array(select x from unnest(v_el) x where x <> v_me and not (x = any(v_used))));
-   if v_best is null or v_n < v_bn then
-    v_best := jsonb_build_object('k', s->>'k', 'via', case when v_me = r.requester_emp then 'own' when v_me = any(public.ar_slot_people(s, r)) then 'self' else 'self_ceo' end); v_bn := v_n;
-   end if;
+   v_cand := v_cand || jsonb_build_array(jsonb_build_object('k', s->>'k',
+     'via', case when v_me = r.requester_emp then 'own' when v_me = any(public.ar_slot_people(s, r)) then 'self' else 'self_ceo' end,
+     'n', cardinality(array(select x from unnest(v_el) x where x <> v_me and not (x = any(v_used))))));
   end if;
  end loop;
- if v_best is not null then return v_best; end if;
+ if jsonb_array_length(v_cand) = 1 then return (v_cand->0) - 'n'; end if;
+ for c in select x from jsonb_array_elements(v_cand) x loop
+  v_ok := not v_all or public.ar_open_ok(r, st, v_used || v_me, c->>'k');
+  if v_best is null or (v_ok and not v_bok) or (v_ok = v_bok and (c->>'n')::int < v_bn) then v_best := c; v_bn := (c->>'n')::int; v_bok := v_ok; end if;
+ end loop;
+ if v_best is not null then return v_best - 'n'; end if;
  if not public.ar_has_delegate(v_me) then return null; end if;
  for s in select x from public.ar_open_slots(st) x loop
   foreach f in array public.ar_slot_elig(s, r, rt->>'self') loop
    if not (f = any(v_used)) and public.ar_delegate_ok(v_me, f, r) then
-    return jsonb_build_object('k', s->>'k', 'via', 'delegate', 'for_emp', f, 'for_name', public.ar_emp_name(f));
+    c := jsonb_build_object('k', s->>'k', 'via', 'delegate', 'for_emp', f, 'for_name', public.ar_emp_name(f));
+    if not v_all or public.ar_open_ok(r, st, v_used || f, s->>'k') then return c; end if;
+    if v_first is null then v_first := c; end if;
    end if;
   end loop;
  end loop;
- return null;
+ return v_first;
 end $$;
 
 -- 今の段で承認できる人がいない（止まっている）。自動では通さない。CEO・GM が代理か例外で直す
+-- 「全員」の段は、残りの枠に別々の人を 1 人ずつ当てられないときも止まっている（兼任の 1 人しかいない枠が 2 つ）
 create or replace function public.ar_stuck(r public.wr_requests) returns boolean
 language plpgsql stable security invoker set search_path = public, pg_temp as $$
-declare rt jsonb := r.route; st jsonb; s jsonb; v_used text[]; n_open integer := 0; n_ok integer := 0;
+declare rt jsonb := r.route; st jsonb; s jsonb; v_used text[];
 begin
  if rt is null or r.status <> 'pending' then return false; end if;
  st := rt->'stages'->coalesce((rt->>'cur')::int, 0);
  if st is null then return true; end if;
  if public.ar_stage_done(st) then return false; end if;
  v_used := public.ar_stage_signed(st);
+ if coalesce(st->>'mode', 'any') = 'all' then return not public.ar_open_ok(r, st, v_used, null); end if;
  for s in select x from public.ar_open_slots(st) x loop
-  n_open := n_open + 1;
-  if exists (select 1 from unnest(public.ar_slot_elig(s, r, rt->>'self')) x where not (x = any(v_used))) then n_ok := n_ok + 1; end if;
+  if exists (select 1 from unnest(public.ar_slot_elig(s, r, rt->>'self')) x where not (x = any(v_used))) then return false; end if;
  end loop;
- return case when coalesce(st->>'mode', 'any') = 'all' then n_ok < n_open else n_ok = 0 end;
+ return true;
 end $$;
 
 -- ---------------------------------------------------------------- ルール → 申請ごとの承認ルート
@@ -600,7 +659,7 @@ begin return case s->>'t'
 create or replace function public.ar_route_view(a jsonb, r public.wr_requests) returns jsonb
 language plpgsql stable security invoker set search_path = public, pg_temp as $$
 declare rt jsonb := r.route; v_used text[]; st jsonb; s jsonb; i integer := 0; v_cur integer; v_stages jsonb := '[]'::jsonb; v_slots jsonb; v_el text[];
- c jsonb; v_final boolean := false; st2 jsonb;
+ c jsonb; v_final boolean := false; st2 jsonb; v_after text; v_left integer;
 begin
  if rt is null then return null; end if;
  v_cur := coalesce((rt->>'cur')::int, 0);
@@ -620,17 +679,20 @@ begin
  end loop;
  c := public.ar_can_approve(a, r);
  if c is not null then
-  -- この人が承認すると最終承認になるか（一括承認の確かめの画面）
+  -- この人が承認すると最終承認になるか・次の段に進むか・同じ段でほかの人を待つか（一括承認の確かめの画面）
+  -- after：final（最終承認）／next（次の段へ）／same（この段のほかの枠を待つ＝「全員」の段）。left：承認したあと、この段に残る枠の数
   st2 := rt->'stages'->v_cur;
   st2 := jsonb_set(st2, '{signs}', coalesce(st2->'signs', '[]'::jsonb) || jsonb_build_array(jsonb_build_object('k', c->>'k')));
   v_final := public.ar_stage_done(st2) and v_cur + 1 >= jsonb_array_length(rt->'stages');
+  v_after := case when not public.ar_stage_done(st2) then 'same' when v_final then 'final' else 'next' end;
+  v_left := case when v_after = 'same' then (select count(*) from public.ar_open_slots(st2)) else 0 end;
  end if;
  return jsonb_strip_nulls(jsonb_build_object('rule', rt->'rule', 'label', rt->>'label', 'branch', rt->'branch', 'cur', v_cur + 1,
   'final', rt->'final', 'stuck', public.ar_stuck(r), 'stages', v_stages,
   'viewers', (select coalesce(jsonb_agg(jsonb_build_object('label', public.ar_slot_label(v->'who'), 'from', coalesce(v->>'from', 'submit'))), '[]'::jsonb)
      from jsonb_array_elements(coalesce(rt->'viewers', '[]'::jsonb)) v),
   'ex', case when jsonb_array_length(coalesce(rt->'ex', '[]'::jsonb)) > 0 then rt->'ex' end,
-  'my', case when c is not null then c || jsonb_build_object('final', v_final) end));
+  'my', case when c is not null then c || jsonb_build_object('final', v_final, 'after', v_after, 'left', v_left) end));
 end $$;
 
 -- ---------------------------------------------------------------- 包む（スイッチが切れている・ルートの無い申請は今までの関数そのまま）
@@ -796,6 +858,7 @@ end $$;
 create or replace function public.ar_bulk_counts(res jsonb) returns jsonb
 language sql immutable security invoker set search_path = public, pg_temp as $$
  select jsonb_build_object('final', count(*) filter (where x->>'outcome' = 'final'), 'next', count(*) filter (where x->>'outcome' = 'next'),
+  'stage', count(*) filter (where x->>'outcome' = 'stage'),
   'skip', count(*) filter (where x->>'outcome' = 'skip'), 'failed', count(*) filter (where x->>'outcome' = 'failed'))
   from jsonb_array_elements(coalesce(res, '[]'::jsonb)) x;
 $$;
@@ -803,7 +866,7 @@ $$;
 create or replace function public.ar_bulk(p jsonb) returns jsonb
 language plpgsql volatile security invoker set search_path = public, pg_temp as $$
 declare a jsonb := public.wr_actor(p); v_id text := p->>'client_key'; b public.ar_bulk; it jsonb; r public.wr_requests; v_res jsonb := '[]'::jsonb;
- v_out text; v_why text; v_key text; res jsonb; v_seen text[] := '{}'::text[]; v_items jsonb := p->'items'; v_base jsonb; v_now timestamptz := now();
+ v_out text; v_why text; v_key text; res jsonb; v_seen text[] := '{}'::text[]; v_items jsonb := p->'items'; v_base jsonb; v_now timestamptz := now(); v_pre integer;
 begin
  if (a->>'role') not in ('ceo','gm') then raise exception 'forbidden'; end if;
  if v_id is null or v_id !~ '^[A-Za-z0-9_-]{8,80}$' then raise exception 'bad_value'; end if;
@@ -832,10 +895,16 @@ begin
   end if;
   if v_out is null then
    v_key := 'bk-' || substr(md5(v_id || ':' || (it->>'id')), 1, 28);
+   v_pre := case when r.route is not null and public.ar_on(r) then coalesce((r.route->>'cur')::int, 0) end;
    begin
     res := public.wr_act(v_base || jsonb_build_object('id', it->>'id', 'action', 'approve', 'expect_rev', (it->>'rev')::int, 'client_key', v_key, 'bulk_id', v_id));
     update public.wr_events set bulk_id = v_id where client_key = v_key and bulk_id is null;
     v_out := case when res->>'status' = 'approved' then 'final' else 'next' end;
+    -- 「全員」の段で、まだほかの枠が残っている（段は進んでいない）＝ stage
+    if v_out = 'next' and v_pre is not null then
+     select * into r from public.wr_requests x where x.id = (it->>'id')::uuid;
+     if r.status = 'pending' and r.route is not null and coalesce((r.route->>'cur')::int, 0) = v_pre then v_out := 'stage'; end if;
+    end if;
    exception when others then
     v_why := case when sqlerrm in ('conflict','forbidden','not_found','bad_value') then sqlerrm else 'error' end;
     v_out := case when v_why in ('conflict','forbidden','not_found') then 'skip' else 'failed' end;
@@ -844,7 +913,7 @@ begin
    select * into r from public.wr_requests x where x.id = (it->>'id')::uuid;
   end if;
   v_res := v_res || jsonb_build_array(jsonb_strip_nulls(jsonb_build_object('id', it->>'id', 'code', r.code, 'kind', r.kind, 'outcome', v_out, 'reason', v_why,
-    'status', r.status, 'rev', r.rev, 'next', case when v_out = 'next' then public.wr_next(r) end)));
+    'status', r.status, 'rev', r.rev, 'next', case when v_out in ('next','stage') then public.wr_next(r) end)));
  end loop;
  insert into public.ar_bulk(id, by_emp, by_name, by_role, at, items, results) values (v_id, a->>'emp', a->>'name', a->>'role', v_now, v_items, v_res);
  return jsonb_build_object('bulk_id', v_id, 'at', v_now, 'results', v_res, 'counts', public.ar_bulk_counts(v_res));
@@ -1006,13 +1075,18 @@ begin
    if cardinality(v_bad) > 0 then
     errs := errs || jsonb_build_array(jsonb_build_object('code', 'no_approver', 'branch', v_lbl, 'stage', j + 1, 'stores', to_jsonb(v_bad)));
    end if;
-   -- 「全員」の段で、人の数が枠の数より少ない（兼任の 1 人が 2 枠を埋められない）
+   -- 「全員」の段で、枠に別々の人を 1 人ずつ当てられない（兼任の 1 人が 2 枠を埋められない）。
+   -- 「役割の全員」は出したときと同じく 1 人ずつの枠に分けてから数える（GM 全員の枠と GM 本人の名前の枠が同じ 1 人＝止まる）。だれもいない枠は no_approver で出す
    if st->>'mode' = 'all' then
     v_bad := '{}'::text[];
     foreach v_store in array v_st loop
      r := null; r.kind := p_kind; r.store_id := v_store; r.status := 'pending';
-     if cardinality(array(select distinct y from jsonb_array_elements(st->'slots') x, unnest(public.ar_slot_people(x - 'each', r)) y))
-        < (select count(*) from jsonb_array_elements(st->'slots') x where coalesce(x->>'each', '') <> 'true') then v_bad := v_bad || v_store; end if;
+     if not public.ar_sdr_ok((select coalesce(jsonb_agg(z.v), '[]'::jsonb) from (
+        select to_jsonb(array[y]) as v from jsonb_array_elements(st->'slots') x, unnest(public.ar_slot_people(x - 'each', r)) y
+         where coalesce(x->>'each', '') = 'true'
+        union all
+        select to_jsonb(public.ar_slot_people(x - 'each', r)) from jsonb_array_elements(st->'slots') x
+         where coalesce(x->>'each', '') <> 'true' and cardinality(public.ar_slot_people(x - 'each', r)) > 0) z)) then v_bad := v_bad || v_store; end if;
     end loop;
     if cardinality(v_bad) > 0 then
      errs := errs || jsonb_build_array(jsonb_build_object('code', 'same_person', 'branch', v_lbl, 'stage', j + 1, 'stores', to_jsonb(v_bad)));
@@ -1137,7 +1211,8 @@ begin
  perform pg_advisory_xact_lock(hashtext('ar_rule:' || v_kind));
  select * into g from public.ar_rules x where x.kind = v_kind and x.status = 'draft' for update;
  if g.kind is null or (p->>'expect_rev')::int <> g.rev or (p->>'expect_ver')::int <> g.ver then raise exception 'conflict'; end if;
- delete from public.ar_rules where kind = g.kind and ver = g.ver;
+ -- 消さずに discarded で残す（次の下書きは新しい版の番号＝古い画面の版と回数では当たらない）
+ update public.ar_rules set status = 'discarded', updated_by = a->>'name', updated_emp = a->>'emp', updated_at = now() where kind = g.kind and ver = g.ver;
  return jsonb_build_object('ok', true);
 end $$;
 

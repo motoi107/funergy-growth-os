@@ -1,11 +1,18 @@
 # Claude / Codex 共通記録
 
+## 2026-11-17 夜：PR #192 のレビュー（Codex 3 つ）を直した（Claude・ブランチ `claude/approval-rules-1190` と `claude/approval-rules-ui-1190`）
+
+- **訂正**：前に書いた「Codex のレビューはまだ」は誤り。Codex：#191（`8b1ddec`・6971689102）・#192（`767aac0`・6972640225）・#192（`66608b3`・Moto さん経由 22:51 HST・GitHub には投稿していない）とも blocked／manual。#192 の `767aac0` への Claude のルーティンの「P1・P2 なし」も誤り。
+- 直した（`docs/APPROVAL_RULES_JA.md` の 8）：1 捨てた下書きは消さずに `discarded` で残す（版を使い回さない＝古い画面は 409）／2 「全員」の段は空いている枠それぞれに別の人を当てられるかで確かめる（`ar_sdr_ok`・ルールの確かめ・止まった申請・枠の選び方・代理）／3 承認したあとを `my.after`・`my.left` で返す・まとめて承認の結果に `stage`・画面は「この段のほかの承認を待ちます（あと N 人）」。画面の P3（金額の上限・段を外すの止め・失敗でもメモを残す）。
+- 試験（合成データ）：承認ルール 35／35（pr192 3・deploy 8）・わざと壊す 13／13・static release pass。③ に 9。④（関数）は変わらない（`1d7067a264ba`）。
+- 次（Moto さん）：② をもう一度 → ③（8 と 9 が OK）。次（Codex）：#191・#192 の最新の head の再レビュー。
+
 ## 2026-11-17 夜：v1190 の画面（UI案93）（Claude・ブランチ `claude/approval-rules-ui-1190`・#191（`8b1ddec`）の上・アプリだけ・本番未反映）
 
 - 作ったもの（`docs/APPROVAL_RULES_JA.md` の 7）：設定 › 承認・閲覧設定（`FUNERGY_AR`・CEO・GM だけ・ルール／役割の人／代理／承認者がいない／使い始め・試す・形の確かめはサーバーの `rule_invalid` と同じ・先に保存されたら自分の変更を残して読み直す・進行中の申請に当てる前の確かめ）・申請の明細の「承認のルート」（段・今の段の承認者の名前・承認した人と印・閲覧者・あなたが承認すると）と例外（CEO・GM・ほかの人の承認待ちの申請・理由・版）・共通ルールで動いているときの GM のまとめて承認（`bulk_approve` を 1 回・番号は押す前・答えが届かなければ同じ番号で送り直す・結果は 1 件ずつ）・英語の画面ではサーバーの役割の名前を置き換える。SQL・関数は変えていない（#191 のまま）。
 - 試験（合成データ）：`tests/approval-rules-ui-v1190.test.mjs` 7（VM・本物の handler と SQL・CI に足した）・`tests/e2e-wr/approval-rules-ui-v1190.mjs` 22/22（本物の Chrome・PC 1440px／スマホ 390px・日英・pageerror 0・横のはみ出し 0）・関連 387/387・`tests/chat-app-v1156.test.mjs` のメニューの確かめに `ar_settings` を足した・static release pass/1190。e2e で見つけて直した：承認した人の横に「本人」（英語で self）がふつうの承認にも出ていた・英語の画面に日本語の役割の名前とかっこ。
 - 全体の試験（重い 2 つ以外・3 並列・`767aac0`）：3,302 件のうち 34 件が落ちる。どれも前からの失敗と同じファイル（bot-center 2・bot-database 2・cooking-sake 4・cs-card-icons 1・cs-grade-view 1・cs-strengths 1・ingredient-transfers 1・meeting-budget 14・meeting-sales 4・next-v1090 1・perf-v1098 1・specialist-career 2）。承認ルールのファイルは 0 件。
-- 独立レビュー・Codex のレビューはまだ。実機（iPhone）は未確認。
+- 独立レビュー（Claude の別エージェント）は無し。**訂正**：Codex のレビューはあった（6972640225・`767aac0`・blocked）→ 上の節で直した。実機（iPhone）は未確認。
 - PR #192（base main・#191 を含む）。
 - 次：Codex（#191 の最新の head と一緒に）→ #191 → この PR の順にマージ → 全部の端末を 1190 に → CEO・GM が設定で下書きを確かめて有効にする → 「共通ルールで動かす」。そのあと 8B（UI 案から）。
 
