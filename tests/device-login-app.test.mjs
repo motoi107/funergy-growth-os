@@ -134,10 +134,12 @@ test('本体への組み込み（ログアウト 2 か所・入口・起動・PI
   assert.match(HTML, /function bootLogin\(\) \{[\s\S]{0,2400}FUNERGY_DL\.paintEntry\(\)/);
   assert.match(HTML, /await _dlBootWhenReady\(\)/);
   assert.match(HTML, /function invInDefaultPin\(\)\{\n  if \(!invInLoginPerson\(\)\) return false;\n  if \(window\._dlSignedIn\) return false;/);
-  assert.match(HTML, /async function insertDiscountUse\(storeCode\)\{\n  if\(curUserName && !window\._sessionPin && window\.FUNERGY_DL && \(window\._dlSignedIn \|\| window\._mlSignedIn\)\)\{ await window\.FUNERGY_DL\.ensurePin\(\); \}/);   // v1185：メールとパスワードで入った人も
+  assert.match(HTML, /async function insertDiscountUse\(storeCode\)\{\n  if\(curUserName && !window\._sessionPin && window\.FUNERGY_DL && \(window\._dlSignedIn \|\| window\._mlSignedIn \|\| window\._pkSignedIn\)\)\{ await window\.FUNERGY_DL\.ensurePin\(\); \}/);   // v1185：メールとパスワードで入った人も。v1189：パスキー・メールのコードで入った人も
   assert.match(HTML, /FUNERGY_DL\.myCardHtml\(\)/);
   assert.match(HTML, /FUNERGY_DL\.payPin\(\)/);
-  assert.match(HTML, /canViewPins\(\)\?`<button class="btn btn-secondary btn-sm" onclick="FUNERGY_DL\.admin\(\)"/);
+  // v1189：「ログインの試し」はやめた（UI案92 の 7A）。PIN 一覧のボタンは GM だけの「ログインの方式」（FUNERGY_PK）
+  assert.doesNotMatch(HTML, /onclick="FUNERGY_DL\.admin\(\)"/);
+  assert.match(HTML, /\(curRole==='gm'\)\?`<button class="btn btn-secondary btn-sm" onclick="FUNERGY_PK\.admin\(\)"/);
   const av = Number((HTML.match(/const APP_VERSION = '(\d+)';/) || [])[1]), sv = Number((SW.match(/const SW_BUILD = '(\d+)';/) || [])[1]);
   assert.ok(av >= 1183 && av === sv, 'APP_VERSION と SW_BUILD は 1183 以上で同じ');
   // FUNERGY_DL が localStorage に書くのは端末の記録だけ

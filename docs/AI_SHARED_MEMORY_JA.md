@@ -1,5 +1,15 @@
 # Claude / Codex 共通記録
 
+## 2026-11-17 v1189：パスキーとメールのコードでログイン（UI案92 の答え・ログインの段階 3）（Claude・ブランチ `claude/passkey-login-1189`・#189（v1188）の上・SQL `20261208090000`・関数 device-login（handler・mail）・アプリ・本番未反映）
+
+- Moto さんの答え（11/17 12:38 HST）：1 A・2 A（ログインの方式とメールを変えるのは GM だけ）・3 送り手は GM の会社のメール（Gmail API。**アドレスはリポジトリ・GitHub に書かない**＝`dl_mail.from_addr` に Moto さんが `4_送り手_SQL.sql` で入れる）・4 A（招待 7 日）・5 B（自分の端末は 12 時間ログインしたまま）・6 A（GM・CEO・経理はメールとパスワードのまま）・7 A（v1183 の試しはやめる）・8 A（上に「パスキーでログイン」）・9 A（共有の端末は残さない・QR／メールのコード）・10 A（このあと (b) RLS の 1 段目）。仕様・流れ・限界：`docs/PASSKEY_LOGIN_V1189_JA.md`。入れる一式：`deploy/passkey-login-v1189/`（① → Supabase のパスキーの設定 → Google Cloud → 関数（非公開の 1 ファイル）→ ② → ③ → 送り手の SQL → マージ → 全部の端末を 1189 に → GM が送り手をつなぐ → 1 人で試す）。
+- サーバー：表 5（`dl_people`・`dl_pk_invites`・`dl_pk_codes`・`dl_pk_sessions`・`dl_mail`・サーバーの鍵だけ）。招待・コード・ログインのあいだの値は sha-256 だけ。メールを確かめた人だけ Supabase Auth の利用者（パスワードなし）。`dl_pin_blocked` がメール＋パスキーの人の PIN を止める（auth-pin v1186 の `use_email`）。`login_info` は `pk:true` と社員の ID だけ。v1183 の試しは SQL が止める。
+- アプリ v1189（`FUNERGY_PK`）：端末に残すのは `_pk_sess_v1`（自分の端末のときだけ）と `_pk_own_v1` だけ。入ると PIN のログインと同じ道。30 分ごとに取り替え・GM が止めたらログアウト。GM の「ログインの方式」（PIN の一覧）・マイページのパスキー。
+- 試験（合成データ）：server 12・app 14（わざと壊す 25/25）・deploy 5（本物のメールアドレスが無いこと）・本物の Chrome（仮想の認証器）38/38・v1185 36/36・v1186 19/19 を流し直し・static release pass/1189。e2e で見つけた前からの不具合（ログアウト直後に遅れた読み込みで `renderMypage` が落ちる）を直した。
+- 非公開の 1 ファイル `device-login_v1189_index.ts`：済（Moto さんが 11/17 16:05 HST に v1186 の 1 ファイル（`cf1ddd633901`）を添付 → Claude が作って直接渡した・sha256 先頭 `6a062ac39d27`）。中身＝`572ba5e` の handler.mjs・mail.mjs と使う invoice/gmail.mjs を esbuild で 1 つ（コメントは落ちる）＋v1186 の「印の部品」（1 文字も同じ）＋起動の行。リポジトリには置かない。非公開の試験（Claude の手元・配る 1 ファイルの型を外しただけのものを偽の Deno・偽の PostgREST／auth-pin で動かす）：server 4 ファイル 40/42（落ちる 2 は「印の部品が無い index.ts」の試験＝1 ファイルには当たらない）・本物の印 74 を HMAC と中身で確かめた・v1186 と同じ印（200 通り × 2）・Deno.serve のつなぎ方・Chrome の e2e 38/38・わざと壊す 4/4。handler・mail・gmail を直したら作り直す（そのときはこの 1 ファイルを添付してもらう）。
+- Claude が決めたこと（Moto さんに確かめる）：GM・CEO・経理はパスキーで入ってもログインしたままにしない・「自分の端末」の初めの値は電話＝自分／PC＝共有・メール＋パスキーの人も割引などでは前の PIN・上の「パスキーでログイン」は場所・名前を選ぶ段で・「メール＋パスキーにする」は GM だけ。
+- PR #190（base main・#189 の上）。独立レビュー・Codex のレビューはまだ。実機・本番は未確認。
+
 ## 2026-11-17 v1188：会計 PL の月別推移・取り込みの前の差分・要分類（UI案76）と業務用アカウントの ID の無い前の記録（UI案91）（Claude・ブランチ `claude/pl-trend-1188`・main `52fa275` の上・アプリだけ・本番未反映）
 
 - Moto さんの答え（11/17 12:27 HST）：UI案76「全部A」・UI案91「A」。仕様・試験・限界：`docs/PL_TREND_V1188_JA.md`。SQL・関数の変更なし。

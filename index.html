@@ -22305,7 +22305,8 @@ function bootLogin() {
   grid.innerHTML = officeCard + blankCard + ordered.map(s =>
     `<div class="store-btn" style="border-left:3px solid ${s.color}" onclick="loginPickLocation('${s.id}',this)">${s.name}</div>`
   ).join('');
-  try { if (window.FUNERGY_DL) window.FUNERGY_DL.paintEntry(); } catch(e) {}   /* v1183：この端末で登録した人の「この端末でログイン」・招待のリンク */
+  try { if (window.FUNERGY_DL) window.FUNERGY_DL.paintEntry(); } catch(e) {}   /* v1183（v1189 でやめた）：前の入口が残っていれば消す */
+  try { if (window.FUNERGY_PK) window.FUNERGY_PK.paintEntry(); } catch(e) {}   /* v1189：上に「パスキーでログイン」（UI案92 の 8A） */
 }
 function pickLang(lang) {
   setLang(lang);
@@ -22330,7 +22331,9 @@ function refreshLoginLabels() {
   var nameVis = document.getElementById('login-step-name').style.display!=='none';
   var pinVis = document.getElementById('login-step-pin').style.display!=='none';
   var _mlEl = document.getElementById('login-step-mail'), mailVis = !!(_mlEl && _mlEl.style.display!=='none');   /* v1185 */
-  if (mailVis) sub.textContent = t('メールとパスワードを入れてください','Enter your email and password');
+  var _pkEl = document.getElementById('login-step-pk'), pkVis = !!(_pkEl && _pkEl.style.display!=='none');   /* v1189 */
+  if (pkVis) sub.textContent = t('パスキーかメールのコードでログイン','Log in with a passkey or an email code');
+  else if (mailVis) sub.textContent = t('メールとパスワードを入れてください','Enter your email and password');
   else if (pinVis) sub.textContent = t('PINを入力してください','Enter your PIN');
   else if (nameVis) sub.textContent = t('名前を選択してください','Select your name');
   else sub.textContent = t('所属を選択してください','Select your location');
@@ -22341,6 +22344,7 @@ function refreshLoginLabels() {
     if (b.dataset.to==='location') b.innerHTML='<i class="ti ti-arrow-left"></i> '+t('所属選択へ戻る','Back to location');
     if (b.dataset.to==='name') b.innerHTML='<i class="ti ti-arrow-left"></i> '+t('名前選択へ戻る','Back to name');
   });
+  try{ if(window.FUNERGY_PK) FUNERGY_PK.paintEntry(); }catch(e){}   /* v1189：段によって「パスキーでログイン」を出す・隠す */
   // PIN初期説明・ボタン
   var pinHint=document.getElementById('login-pin-hint'); if(pinHint) pinHint.innerHTML=t('初期PINは <b>0000</b> です','Default PIN is <b>0000</b>');
   var pinBtn=document.getElementById('login-pin-btn'); if(pinBtn) pinBtn.textContent=t('ログイン','Log in');
@@ -22348,6 +22352,7 @@ function refreshLoginLabels() {
   var pinTitle=document.getElementById('login-pin-title'); if(pinTitle) pinTitle.textContent=t('ログイン','Log in as');
   var pinInput=document.getElementById('login-pin-input'); if(pinInput) pinInput.placeholder='PIN';
   try{ if(window.FUNERGY_ML) FUNERGY_ML.relabel(); }catch(e){}   /* v1185：メールとパスワードの段・PIN の段の「メールとパスワードでログイン」 */
+  try{ if(window.FUNERGY_PK) FUNERGY_PK.relabel(); }catch(e){}   /* v1189：パスキーの入口・パスキーとメールのコードの段 */
 }
 
 /* STEP1: 所属選択（OFFICE or 店舗）→ 名前リスト表示 */
@@ -22404,6 +22409,7 @@ function loginPickLocation(loc, el) {
   document.getElementById('login-step-name').style.display='block';
   document.getElementById('login-step-pin').style.display='none';
   try{ if(window.FUNERGY_ML) FUNERGY_ML.hideStep(); }catch(e){}   /* v1185 */
+  try{ if(window.FUNERGY_PK) FUNERGY_PK.hideStep(); }catch(e){}   /* v1189 */
   refreshLoginLabels();
 }
 /* 役職ラベルの英日 */
@@ -22420,6 +22426,7 @@ function loginPickPerson(empId, el) {
   loginPerson = emp;
   loginStoreMode = false;
   try{ if(window.FUNERGY_ML && FUNERGY_ML.route(emp)) return; }catch(e){}   /* v1185：GM・CEO・経理はメールとパスワード（UI案90 の 1A・7B） */
+  try{ if(window.FUNERGY_PK && FUNERGY_PK.route(emp)) return; }catch(e){}   /* v1189：メール＋パスキーの人は PIN の段を出さない（UI案92） */
   document.getElementById('login-pin-name').textContent = emp.name;
   var roleLabel = (loginLocation==='OFFICE') ? roleLabelI18n(emp.role) : (empGrade(emp) || roleLabelI18n(emp.role));
   var locLabel = loginLocation==='OFFICE'?t('Office','Office'):(STORES.find(s=>s.id===loginLocation)||{name:loginLocation}).name;
@@ -22454,10 +22461,12 @@ function loginBackToLocation() {
   document.getElementById('login-step-name').style.display='none';
   document.getElementById('login-step-pin').style.display='none';
   try{ if(window.FUNERGY_ML) FUNERGY_ML.hideStep(true); }catch(e){}   /* v1185 */
+  try{ if(window.FUNERGY_PK) FUNERGY_PK.hideStep(); }catch(e){}   /* v1189 */
   refreshLoginLabels();
 }
 function loginBackToName() {
   try{ if(window.FUNERGY_ML) FUNERGY_ML.hideStep(true); }catch(e){}   /* v1185：メールとパスワードの段からも戻る（PIN を選んだのも忘れる） */
+  try{ if(window.FUNERGY_PK) FUNERGY_PK.hideStep(); }catch(e){}   /* v1189：パスキーとメールのコードの段からも戻る */
   if (_loginRosterDirty && loginLocation) { _loginRosterDirty = false; try { bootLogin(); loginPickLocation(loginLocation); return; } catch(e){} }   /* v1098: PIN の段にいるあいだに名簿が新しくなっていたら、所属と名前の並びを描き直す */
   _loginRosterDirty = false;
   document.getElementById('login-step-name').style.display='block';
@@ -22571,8 +22580,8 @@ function doStaffLogin() {
     if (!loginPerson) { if(btn){ btn.disabled=false; if(btn.dataset._t) btn.textContent=btn.dataset._t; } window._uxLoginBusy = false; return; }
     var pin2 = (document.getElementById('login-pin-input').value||'').trim();
     if (typeof empBlocked === 'function' && empBlocked(loginPerson)) { fail({ inactive:true }); return; }   /* v1085: 名簿で退職・停止 */
-    /* v1186：GM・CEO・経理は PIN でログインしない（止めたとき）。メールとパスワードの段にする */
-    function toMail(server){ try{ if(window.FUNERGY_ML && FUNERGY_ML.pinBlocked(loginPerson, server)){ var pi = document.getElementById('login-pin-input'); if(pi) pi.value=''; if(btn){ btn.disabled=false; if(btn.dataset._t) btn.textContent=btn.dataset._t; } window._uxLoginBusy = false; return true; } }catch(e){} return false; }
+    /* v1186：GM・CEO・経理は PIN でログインしない（止めたとき）。メールとパスワードの段にする。v1189：メール＋パスキーの人はパスキーとメールのコードの段 */
+    function toMail(server){ try{ if((window.FUNERGY_PK && FUNERGY_PK.pinBlocked(loginPerson, server)) || (window.FUNERGY_ML && FUNERGY_ML.pinBlocked(loginPerson, server))){ var pi = document.getElementById('login-pin-input'); if(pi) pi.value=''; if(btn){ btn.disabled=false; if(btn.dataset._t) btn.textContent=btn.dataset._t; } window._uxLoginBusy = false; return true; } }catch(e){} return false; }
     if (toMail(false)) return;
     var rP = await authPinCheck('staff', loginPerson.name, pin2, loginPerson.id);
     if (rP.ok && rP.useEmail) { window._hwSession = null; if (toMail(true)) return; fail({ useEmail:true }); return; }   /* auth-pin が止めた（印を出していない）：PIN では入らない */
@@ -22861,6 +22870,7 @@ if(typeof window.FUNERGY_WEB_OFFICE_NAVIGATE==='function')return window.FUNERGY_
   if (!window._forceLogout && typeof mrUnsaved === 'function' && mrUnsaved() && !confirm(t('中間レビューに保存されていない入力があります。ログアウトしますか？（入力は消えます）','The mid-month review has unsaved input. Log out anyway? (it will be lost)'))) return;   /* v1066 */
   try{ if(window.FUNERGY_DL) FUNERGY_DL.onLogout(); }catch(e){}   /* v1183：登録した端末は次に PIN が要る状態に（印を取り替えるタイマーも止める） */
   try{ if(window.FUNERGY_ML) FUNERGY_ML.onLogout(); }catch(e){}   /* v1185：メールのログインを閉じる（サーバー側も・タイマーも止める） */
+  try{ if(window.FUNERGY_PK) FUNERGY_PK.onLogout(); }catch(e){}   /* v1189：パスキー・メールのコードのログインのあいだを終える（サーバー側も・タイマーも止める） */
   try{ notifRealtimeStop(); }catch(e){}
   try{ if(typeof lalaRealtimeStop==='function') lalaRealtimeStop(); }catch(e){}   /* v1098：LaLa の見張りも止める（次の人が開いたときに始め直す） */
   try{ if(typeof mdState!=='undefined' && mdState) mdState.store=''; if(typeof mdLaborMarksClear==='function') mdLaborMarksClear(); }catch(e){}   /* v1090: 次にログインする人に前の人の選んだ店・勤怠の印を残さない */
@@ -22890,6 +22900,7 @@ if(typeof window.FUNERGY_WEB_OFFICE_NAVIGATE==='function')return window.FUNERGY_
   if (!window._forceLogout && typeof mrUnsaved === 'function' && mrUnsaved() && !confirm(t('中間レビューに保存されていない入力があります。ログアウトしますか？（入力は消えます）','The mid-month review has unsaved input. Log out anyway? (it will be lost)'))) return;   /* v1066 */
   try{ if(window.FUNERGY_DL) FUNERGY_DL.onLogout(); }catch(e){}   /* v1183：登録した端末は次に PIN が要る状態に（印を取り替えるタイマーも止める） */
   try{ if(window.FUNERGY_ML) FUNERGY_ML.onLogout(); }catch(e){}   /* v1185：メールのログインを閉じる（サーバー側も・タイマーも止める） */
+  try{ if(window.FUNERGY_PK) FUNERGY_PK.onLogout(); }catch(e){}   /* v1189：パスキー・メールのコードのログインのあいだを終える（サーバー側も・タイマーも止める） */
   try{ notifRealtimeStop(); }catch(e){}
   try{ if(typeof lalaRealtimeStop==='function') lalaRealtimeStop(); }catch(e){}   /* v1098：LaLa の見張りも止める（次の人が開いたときに始め直す） */
   try{ if(typeof mdState!=='undefined' && mdState) mdState.store=''; if(typeof mdLaborMarksClear==='function') mdLaborMarksClear(); }catch(e){}   /* v1090: 次にログインする人に前の人の選んだ店・勤怠の印を残さない */
@@ -49314,7 +49325,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1188';
+const APP_VERSION = '1189';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -63367,7 +63378,7 @@ function renderStaffMaster() {
     <div><div class="section-title">従業員マスター</div><div class="section-sub">在籍 ${active.length}名 / 退職 ${resigned.length}名${empStoreFilter!=='all'||empSearchQ?' · 該当 '+list.length+'名':''}</div></div>
     <div style="display:flex;gap:6px">
       ${canViewPins()?`<button class="btn btn-secondary btn-sm" onclick="openPinListModal()"><i class="ti ti-lock"></i> PIN一覧</button>`:''}
-      ${canViewPins()?`<button class="btn btn-secondary btn-sm" onclick="FUNERGY_DL.admin()"><i class="ti ti-device-mobile-check"></i> ${t('ログインの試し','Login trial')}</button>`:''}
+      ${(curRole==='gm')?`<button class="btn btn-secondary btn-sm" onclick="FUNERGY_PK.admin()"><i class="ti ti-fingerprint"></i> ${t('ログインの方式','Login method')}</button>`:''}
       ${wageScopeStores()===null?`<button class="btn btn-secondary btn-sm" onclick="openTitleWageModal()"><i class="ti ti-table-options"></i> 役職給与表</button>`:''}
       ${['ceo','gm'].includes(curRole)?`<button class="btn btn-secondary btn-sm" onclick="openEvalLevelsModal()"><i class="ti ti-stairs-up"></i> ${t('Level基準','Level criteria')}</button>`:''}
       <button class="btn btn-primary btn-sm" onclick="openEmpModal()"><i class="ti ti-user-plus"></i> 登録</button>
@@ -90148,7 +90159,7 @@ function surveyUrl(storeCode, homeStore, isHomeOverride){
    行の中身（staff_id / grade / 所属店 / used_at）はサーバーがマスターから組み立てるので、
    ここでは本人確認の材料（氏名＋セッションPIN）と店舗コードだけを渡す。 */
 async function insertDiscountUse(storeCode){
-  if(curUserName && !window._sessionPin && window.FUNERGY_DL && (window._dlSignedIn || window._mlSignedIn)){ await window.FUNERGY_DL.ensurePin(); }   /* v1183：PIN なしで入った端末は、ここで 1 回だけ PIN を聞く（v1185：メールとパスワードで入った人も） */
+  if(curUserName && !window._sessionPin && window.FUNERGY_DL && (window._dlSignedIn || window._mlSignedIn || window._pkSignedIn)){ await window.FUNERGY_DL.ensurePin(); }   /* v1183：PIN なしで入った端末は、ここで 1 回だけ PIN を聞く（v1185：メールとパスワードで入った人も） */
   if(!curUserName || !window._sessionPin){
     throw new Error(t('本人確認ができません。一度ログアウトして入り直してください。','We could not verify who you are. Please log out and log in again.'));
   }
@@ -92503,6 +92514,7 @@ function u11Tyg2Open(ri){
 function renderMypage() {
   try{ if(typeof tipLivePullSoon==='function') tipLivePullSoon(); }catch(e){}   /* v1091: 自分の Tip Rate */
   var rc = ROLE_CONFIG[curRole];
+  if (!rc) return '';   /* v1189：ログアウトのあとに遅れて届いた読み込みが描き直しても落ちない（前から・e2e で見つけた） */
   var isCrewView = (curRole==='crew' || curRole==='sl');
   var storeId = curStore === 'ALL' ? STORES[0].id : curStore;
   var store = STORES.find(s=>s.id===storeId) || STORES[0];
@@ -92628,6 +92640,7 @@ function renderMypage() {
   </div>`;
   try { if (window.FUNERGY_DL) html += FUNERGY_DL.myCardHtml(); } catch(e) {}   /* v1183：この端末のログイン（登録した端末で入ったときだけ） */
   try { if (window.FUNERGY_ML) html += FUNERGY_ML.myCardHtml(); } catch(e) {}   /* v1185：メールとパスワードのログイン（管理者セキュアページ・すべての端末からログアウト） */
+  try { if (window.FUNERGY_PK) html += FUNERGY_PK.myCardHtml(); } catch(e) {}   /* v1189：パスキー（ログインしたまま・パスキーを足す・保存したパスキー） */
 
   html += _mp('g',45);
   html += (typeof ocsMyCardHtml==='function') ? ocsMyCardHtml() : '';   /* v1050: オフィス用 Career Score（本人・正式運用後・担当設定が有効なときだけ） */
@@ -92886,7 +92899,7 @@ function renderMypage() {
   html += _mp('w',30);
   if (salaryVisibleToMe()) html += `<div class="card"><div class="card-title"><i class="ti ti-cash"></i>${t('給与予定','Estimated Pay')}<span style="font-size:12px;font-weight:700;color:var(--yellow);background:var(--surface2);border:1px solid var(--yellow);border-radius:6px;padding:2px 9px;margin-left:8px">${t('未確定','Estimate')}</span><span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">${cycLabel}</span></div>
     <div style="font-size:11px;color:var(--muted);margin-bottom:6px">${cycSub}${ch.days?' · '+(curLang==='en'?(ch.days+' days'):(ch.days+'日')):''}${mixNote}</div>
-    ${((window._dlSignedIn || window._mlSignedIn) && !window._sessionPin && !window._empPrivate) ? `<button class="btn btn-secondary btn-sm" style="margin-bottom:8px;width:100%" onclick="FUNERGY_DL.payPin()"><i class="ti ti-key"></i> ${t('時給を読むには PIN を 1 回入れてください（PIN なしでログインしたため）','Enter your PIN once to load your wage (you logged in without it)')}</button>` : ''}
+    ${((window._dlSignedIn || window._mlSignedIn || window._pkSignedIn) && !window._sessionPin && !window._empPrivate) ? `<button class="btn btn-secondary btn-sm" style="margin-bottom:8px;width:100%" onclick="FUNERGY_DL.payPin()"><i class="ti ti-key"></i> ${t('時給を読むには PIN を 1 回入れてください（PIN なしでログインしたため）','Enter your PIN once to load your wage (you logged in without it)')}</button>` : ''}
     <div class="kpi-grid">
       ${kpi(t('期間勤務','Cycle hours'), fmtH(cycHours)+'h', t('実勤怠+予定','Actual+Sched'), 'var(--tm)')}
       ${kpi('Regular', fmtH(regularH)+'h', t('通常','Regular'), 'var(--tm)')}
@@ -109733,9 +109746,13 @@ _idbBootP.then(function(){ try{ if(typeof piiPurgeLocal==='function') piiPurgeLo
 } } catch(e) { console.error('bootLogin', e); try { bootLogin(); } catch(_){} } })();
 /* v1183：FUNERGY_DL は本体の最後の <script> にあるので、読み終えてから呼ぶ */
 function _dlBootWhenReady(){
-  if (window.FUNERGY_DL) return window.FUNERGY_DL.boot();
-  return new Promise(function(r){ if (document.readyState !== 'loading') r(); else document.addEventListener('DOMContentLoaded', r, { once:true }); })
-    .then(function(){ return window.FUNERGY_DL ? window.FUNERGY_DL.boot() : false; });
+  /* v1189：前の「ログインの試し」（FUNERGY_DL）は残っていれば片づけるだけ。そのあと FUNERGY_PK（招待のリンク ?pk=・ログインしたまま・送り手をつないだ結果） */
+  function go(){
+    var p = window.FUNERGY_DL ? Promise.resolve().then(function(){ return window.FUNERGY_DL.boot(); }).catch(function(e){ console.warn('FUNERGY_DL.boot', e); return false; }) : Promise.resolve(false);
+    return p.then(function(){ return window.FUNERGY_PK ? window.FUNERGY_PK.boot() : false; });
+  }
+  if (window.FUNERGY_PK) return go();
+  return new Promise(function(r){ if (document.readyState !== 'loading') r(); else document.addEventListener('DOMContentLoaded', r, { once:true }); }).then(go);
 }
 setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('checkDriveOAuthReturn', e); } }); }, 1200);   /* v1138：IndexedDB を読み終えてから */
 /* ============================================================
@@ -119411,14 +119428,8 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   function afterLogout() { paintEntry(); }
 
   /* ---------- ログイン画面の入口（名前を先に出す・招待のリンクを貼る） ---------- */
-  function paintEntry() {
-    css();
-    var card = D.querySelector('#login-screen .login-card'), ver = $('login-version'); if (!card || !ver) return;
-    var el = $('dl-entry'); if (!el) { el = D.createElement('div'); el.id = 'dl-entry'; el.className = 'dl-entry'; card.insertBefore(el, ver); }
-    var r = rec();
-    el.innerHTML = (r ? '<button class="login-btn dl-me" onclick="FUNERGY_DL.start()"><i class="ti ti-device-mobile-check"></i> ' + esc(T(r.name + ' さん：この端末でログイン', 'Log in on this device as ' + r.name)) + '</button>' : '')
-      + '<button type="button" class="dl-link" onclick="FUNERGY_DL.paste()"><i class="ti ti-link"></i> ' + esc(T('招待のリンクで登録', 'Register with an invite link')) + '</button>';
-  }
+  /* v1189：「ログインの試し」はやめた（UI案92 の 7A）。前の版の入口が残っていれば消す */
+  function paintEntry() { try { var el = $('dl-entry'); if (el && el.parentNode) el.parentNode.removeChild(el); } catch (e) {} }
   async function paste() {
     var v = (typeof askInput === 'function') ? await askInput({ title: T('招待のリンクで登録', 'Register with an invite link'), label: T('届いたリンクを貼ってください', 'Paste the link you received'), multiline: false, required: true, okLabel: T('次へ', 'Next') }) : prompt(T('届いたリンクを貼ってください', 'Paste the link you received'));
     if (v == null) return;
@@ -119426,19 +119437,20 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     if (!tk) { alert(inviteMsg('unknown')); return; }
     showInvite(tk);
   }
+  /* v1189：前の招待のリンク（?dl=）と、この端末に登録した鍵を片づけるだけ（サーバーの SQL が登録をすべて取り消した） */
   async function boot() {
     try { paintEntry(); } catch (e) {}
-    var tk = '';
-    try { tk = tokenFrom(new URL(location.href).searchParams.get('dl') || ''); if (!tk && new URL(location.href).searchParams.has('dl')) { dropUrl(); loginNote(inviteMsg('unknown')); return false; } } catch (e) {}
-    if (tk) { showInvite(tk); return true; }
-    if (rec()) return start(false);
+    var had = false;
+    try { if (new URL(location.href).searchParams.has('dl')) { dropUrl(); had = true; } } catch (e) {}
+    if (rec()) { had = true; recSet(null); try { if (W.indexedDB) indexedDB.deleteDatabase(IDB); } catch (e) {} }
+    if (had) loginNote(T('「ログインの試し」は終わりました。所属と名前を選んで、PIN（またはパスキー・メールのコード）で入ってください。', 'The login trial has ended. Choose your location and name, and log in with your PIN (or a passkey / email code).'));
     return false;
   }
 
   /* ---------- PIN が要る機能（従業員割引の記録・給与の見込み）：PIN なしで入った人に 1 回だけ聞く ---------- */
   async function ensurePin(why) {
     if (W._sessionPin) return true;
-    if (!(W._dlSignedIn || W._mlSignedIn) || !loginPerson) return false;   /* v1185：メールとパスワードで入った人も */
+    if (!(W._dlSignedIn || W._mlSignedIn || W._pkSignedIn) || !loginPerson) return false;   /* v1185：メールとパスワードで入った人も。v1189：パスキー・メールのコードで入った人も */
     var v = (typeof askInput === 'function') ? await askInput({ title: T('PIN の確認', 'Confirm your PIN'), hint: esc(why || T('この機能では、ご自分のログイン PIN が要ります（PIN なしでログインしたため）。', 'This feature needs your login PIN (you logged in without it).')), label: 'PIN', type: 'password', maxlength: 8, required: true, pattern: /^\d{4,8}$/, patternMsg: T('PIN は数字です', 'PIN is digits'), okLabel: T('確かめる', 'Confirm') }) : null;
     if (v == null) return false;
     var prevMark = W._hwSession;
@@ -119455,14 +119467,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   }
 
   /* ---------- マイページ：この端末のログイン ---------- */
-  function myCardHtml() {
-    var r = rec(); if (!W._dlSignedIn || !r) return '';
-    return '<div class="card" style="padding:12px"><div style="display:flex;align-items:center;gap:10px">'
-      + '<div style="width:36px;height:36px;border-radius:10px;background:var(--accent)1a;color:var(--accent);display:flex;align-items:center;justify-content:center;flex-shrink:0"><i class="ti ti-device-mobile-check" style="font-size:18px"></i></div>'
-      + '<div style="flex:1;min-width:0"><div style="font-weight:600;font-size:13px">' + esc(T('この端末のログイン（試し）', 'This device’s login (trial)')) + '</div>'
-      + '<div style="font-size:11px;color:var(--muted)">' + esc(r.dname || '') + esc(T(' · 開くだけで入れます', ' · opens without a PIN')) + '</div></div>'
-      + '<button class="btn btn-secondary btn-sm" onclick="FUNERGY_DL.devices()"><i class="ti ti-devices"></i> ' + esc(T('端末と設定', 'Devices & settings')) + '</button></div></div>';
-  }
+  function myCardHtml() { return ''; }   /* v1189：「ログインの試し」はやめた */
   async function devices() {
     if (typeof openModal !== 'function') return;
     openModal('<div class="modal-title"><i class="ti ti-devices"></i> ' + esc(T('ログインの端末', 'Login devices')) + ' <button class="modal-close" onclick="closeModalDirect()">×</button></div><div class="dl-spin" aria-hidden="true"></div>');
@@ -119873,6 +119878,34 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     }
   }
 
+  /* v1189：パスキー（FUNERGY_PK）で確かめた Supabase のログイン（GM・CEO・経理）を、メールとパスワードのあとと同じ道で続ける。
+     j＝Supabase の答え（access_token・refresh_token・expires_in・user）。入れなければ Supabase のログインは閉じる。答え：{ok} か {error, text} */
+  async function withSession(j, emp) {
+    if (!j || !j.access_token || !emp) return { error: 'server', text: msg('server') };
+    if (S.busy) { closeAuth(j.access_token); return { error: 'busy', text: '' }; }
+    if (typeof empBlocked === 'function' && empBlocked(emp)) { closeAuth(j.access_token); return { error: 'inactive', text: msg('inactive') }; }
+    S.busy = true; W._uxLoginBusy = true;
+    var g = ++S.gen, done = false;
+    try {
+      var k = await fn(j.access_token, { action: 'email_login', emp_id: String(emp.id), device_id: devId(), device_name: deviceName(), mode: 'start' });
+      if (g !== S.gen) return { error: 'cancelled', text: '' };
+      if (!k.ok || typeof k.token !== 'string' || !k.token) return { error: k.error || 'server', text: msg(k.error, emp.name) };
+      if (String(k.emp_id) !== String(emp.id)) return { error: 'wrong_person', text: msg('wrong_person', emp.name) };
+      var email = (j.user && typeof j.user.email === 'string') ? j.user.email : '';
+      W._authSession = { access_token: j.access_token, refresh_token: j.refresh_token, email: email, emp_id: k.emp_id, role: k.role, via: 'passkey', exp: Date.now() + (Number(j.expires_in) > 0 ? Number(j.expires_in) : 3600) * 1000 };
+      W._hwSession = k.token; W._hwSessionWarned = false; W._sessionPin = null; W._mlSignedIn = true;
+      S.last = Date.now(); S.askedPin = false; schedule(); done = true;
+      S.busy = false;
+      loginPerson = emp; if (typeof loginStoreMode !== 'undefined') loginStoreMode = false;
+      if (typeof loginLocation !== 'undefined' && !loginLocation) loginLocation = 'OFFICE';
+      try { var m = $('login-step-mail'); if (m) m.style.display = 'none'; } catch (e) {}
+      finishStaffLogin();
+      return { ok: true };
+    } finally {
+      if (!done) { if (g === S.gen) { S.busy = false; W._uxLoginBusy = false; } closeAuth(j.access_token); }
+    }
+  }
+
   /* ---------- 入ったあと：鍵と印の取り替え・ログアウト ---------- */
   function schedule() { if (S.timer) clearInterval(S.timer); S.timer = setInterval(function () { refresh(false); }, REFRESH_MS); }
   function forceOut(m) {
@@ -120006,10 +120039,892 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   }
 
   W.FUNERGY_ML = {
-    route: route, hideStep: hideStep, relabel: relabel, usePin: usePin, fromPin: fromPin, forgot: forgot, login: login, info: info, pinOff: pinOff, pinBlocked: pinBlocked,
+    route: route, hideStep: hideStep, relabel: relabel, usePin: usePin, fromPin: fromPin, forgot: forgot, login: login, withSession: withSession, info: info, pinOff: pinOff, pinBlocked: pinBlocked,
     onLogout: onLogout, afterEnter: afterEnter, pinNow: pinNow, refresh: refresh, myCardHtml: myCardHtml, logoutAll: logoutAll,
     openSecure: openSecure, backToApp: backToApp, secureLogout: secureLogout,
     _t: { S: S, devId: devId, deviceName: deviceName, msg: msg }
+  };
+})(window, document);
+</script>
+<script>
+/* ==== FUNERGY_PK（v1189）：パスキーとメールのコードでログイン（ログインの段階 3・UI案92）====
+   Moto さんの答え（11/17 12:38 HST）：1A Supabase のパスキー（ベータ）／2A ログインの方式を変えるのは GM だけ／3 送り手は GM の会社のメール（Gmail）／
+   4A 招待は 7 日／5B 本人の端末は 12 時間ログインしたまま（開くたびにパスキーを聞かない）／6A GM・CEO・経理のメールとパスワードは残す（パスキーも足せる）／
+   7A v1183 の「ログインの試し」はやめる／8A ログインの画面の上に「パスキーでログイン」／9A 共有の端末はパスキーを残さない（自分の電話の QR・メールのコード）／
+   10A ログインが先（そのあと RLS の 1 段目）。仕様：docs/PASSKEY_LOGIN_V1189_JA.md。サーバーは関数 device-login（pk_*）と SQL 20261208090000。
+   ・パスキーは Supabase Auth。スタッフの Supabase のログインは、確かめたらすぐ閉じる（このサーバーの「ログインのあいだ」だけを使う）。
+   ・GM・CEO・経理はパスキーで確かめたあと、メールとパスワードのあと（FUNERGY_ML）と同じ道。この端末には覚えない（v1185 の 3）。
+   ・自分だけが使う端末：ログインのあいだ（12 時間）の値を localStorage「_pk_sess_v1」に置く（サーバーには sha-256 だけ）。
+     共有の端末：メモリだけ（閉じたら終わり）・パスキーを保存しない。端末の選び方は「_pk_own_v1」（ログインには使わない）。
+   ・入ったあとは PIN のログインと同じ（finishStaffLogin）。印は 30 分ごとと画面に戻ったときに取り替える。断られたらログアウト。 */
+(function (W, D) {
+  'use strict';
+  var SESS = '_pk_sess_v1', OWN = '_pk_own_v1', REFRESH_MS = 30 * 60 * 1000, INFO_MS = 5 * 60 * 1000, TOP = ['ceo', 'gm', 'office'];
+  var S = { ok: null, set: {}, infoAt: 0, infoP: null, timer: null, last: 0, gen: 0, busy: false, mem: null, refreshing: false,
+    emp: null, inv: null, cool: 0, coolT: null, mailNote: '' };
+  var T = function (ja, en) { return (typeof t === 'function') ? t(ja, en) : ja; };
+  var esc = function (s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;'); };
+  var $ = function (id) { return D.getElementById(id); };
+  var toast = function (m, k) { try { if (typeof showToast === 'function') showToast(m, k || 'warning'); } catch (e) {} };
+  var SESS_RE = /^[A-Za-z0-9_-]{43}$/;
+
+  /* ---------- この端末に残すもの ---------- */
+  function phoneLike() { var ua = (W.navigator && navigator.userAgent) || ''; return /iPhone|iPod/.test(ua) || (/Android/.test(ua) && /Mobile/.test(ua)); }
+  function own() { try { var v = W.localStorage.getItem(OWN); if (v === '1') return true; if (v === '0') return false; } catch (e) {} return phoneLike(); }
+  function ownSet(on) { try { W.localStorage.setItem(OWN, on ? '1' : '0'); } catch (e) {} }
+  function sessGet() {
+    if (S.mem) { if (Date.parse(S.mem.exp) > Date.now()) return S.mem; S.mem = null; }
+    try {
+      var v = JSON.parse(W.localStorage.getItem(SESS) || 'null');
+      if (v && v.v === 1 && SESS_RE.test(v.s || '') && Date.parse(v.exp) > Date.now()) return v;
+      if (v) W.localStorage.removeItem(SESS);
+    } catch (e) {}
+    return null;
+  }
+  /* keep＝自分だけの端末（端末に置く）。置けなければメモリだけ（閉じたら終わり） */
+  function sessPut(v, keep) {
+    sessDrop();
+    if (!v) return;
+    if (keep) { try { W.localStorage.setItem(SESS, JSON.stringify(v)); return; } catch (e) {} }
+    S.mem = v;
+  }
+  function sessDrop() { S.mem = null; try { W.localStorage.removeItem(SESS); } catch (e) {} }
+  function deviceName() {
+    var ua = (W.navigator && navigator.userAgent) || '', d;
+    if (/iPhone/.test(ua)) d = 'iPhone'; else if (/iPad/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1)) d = 'iPad';
+    else if (/Android/.test(ua)) d = /Mobile/.test(ua) ? 'Android' : 'Android tablet'; else if (/Windows/.test(ua)) d = 'Windows PC'; else if (/Macintosh/.test(ua)) d = 'Mac'; else d = T('端末', 'Device');
+    return d;
+  }
+  function webauthn() { return !!(W.PublicKeyCredential && W.navigator && navigator.credentials && typeof navigator.credentials.get === 'function' && W.isSecureContext !== false); }
+
+  /* ---------- 関数 device-login・Supabase Auth ---------- */
+  async function call(body, token) {
+    var r, j = null;
+    try {
+      var ac = (typeof AbortController !== 'undefined') ? new AbortController() : null, tm = ac ? setTimeout(function () { try { ac.abort(); } catch (e) {} }, 20000) : null;
+      try { r = await fetch(SUPABASE_URL + '/functions/v1/device-login', { method: 'POST', headers: { apikey: SUPABASE_ANON, Authorization: 'Bearer ' + (token || SUPABASE_ANON), 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: ac ? ac.signal : undefined }); }
+      finally { if (tm) clearTimeout(tm); }
+    } catch (e) { return { error: 'network' }; }
+    try { j = await r.json(); } catch (e) { j = null; }
+    if (!j || typeof j !== 'object' || Array.isArray(j)) return { error: r.status === 404 ? 'not_installed' : 'server' };
+    if (!r.ok && !j.error) j.error = r.status === 404 ? 'not_installed' : 'server';
+    if (j.error === 'bad_value' && r.status === 400 && /^pk_/.test(body.action || '')) j.error = 'not_installed';   /* v1188 までの関数は pk_* を知らない */
+    return j;
+  }
+  async function sb(path, body, token) {
+    var r, j = null;
+    try {
+      var h = { apikey: SUPABASE_ANON, 'Content-Type': 'application/json' }; if (token) h.Authorization = 'Bearer ' + token;
+      r = await fetch(SUPABASE_URL + path, { method: 'POST', headers: h, body: JSON.stringify(body || {}) });
+    } catch (e) { return { ok: false, status: 0, j: null }; }
+    try { j = await r.json(); } catch (e) { j = null; }
+    return { ok: r.ok, status: r.status, j: j };
+  }
+  function closeAuth(token) {
+    if (!token) return;
+    try { fetch(SUPABASE_URL + '/auth/v1/logout?scope=local', { method: 'POST', headers: { apikey: SUPABASE_ANON, Authorization: 'Bearer ' + token } }).catch(function () {}); } catch (e) {}
+  }
+  /* login_info：パスキーのログインが入っているか（pk）・メール＋パスキーの人（社員の ID）。5 分は覚える */
+  function info(force) {
+    if (!force && S.ok !== null && Date.now() - S.infoAt < INFO_MS) return Promise.resolve(S.ok);
+    if (S.infoP) return S.infoP;
+    S.infoP = (async function () {
+      var j = await call({ action: 'login_info' });
+      if (j && typeof j.top_pin_off === 'boolean') {
+        S.ok = j.pk === true; S.set = {};
+        (Array.isArray(j.pk_emps) ? j.pk_emps : []).forEach(function (x) { if (typeof x === 'string') S.set[x] = 1; });
+        S.infoAt = Date.now();
+      } else if (j && j.error === 'not_installed') { S.ok = false; S.set = {}; S.infoAt = Date.now(); }
+      return S.ok;
+    })();
+    S.infoP.then(function () { S.infoP = null; try { paintEntry(); } catch (e) {} }, function () { S.infoP = null; });
+    return S.infoP;
+  }
+  function isTop(emp) { return !!(emp && TOP.indexOf(emp.role) >= 0); }
+  function isPk(emp) { return !!(emp && S.set[String(emp.id)]); }
+
+  /* ---------- パスキー（WebAuthn）：Supabase の答え（JSON・base64url）と端末の値を行き来する ---------- */
+  function b64uBuf(s) { s = String(s || '').replace(/-/g, '+').replace(/_/g, '/'); while (s.length % 4) s += '='; var b = atob(s), u = new Uint8Array(b.length); for (var i = 0; i < b.length; i++) u[i] = b.charCodeAt(i); return u.buffer; }
+  function bufB64u(buf) { if (!buf) return null; var b = new Uint8Array(buf), s = ''; for (var i = 0; i < b.length; i++) s += String.fromCharCode(b[i]); return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); }
+  function pkOf(o) { return (o && o.publicKey && typeof o.publicKey === 'object') ? o.publicKey : o; }
+  function getOpts(o) {
+    var p = pkOf(o);
+    try { if (W.PublicKeyCredential && typeof PublicKeyCredential.parseRequestOptionsFromJSON === 'function') return PublicKeyCredential.parseRequestOptionsFromJSON(p); } catch (e) {}
+    var x = Object.assign({}, p); x.challenge = b64uBuf(p.challenge);
+    if (Array.isArray(p.allowCredentials)) x.allowCredentials = p.allowCredentials.map(function (c) { return Object.assign({}, c, { id: b64uBuf(c.id) }); });
+    return x;
+  }
+  function makeOpts(o) {
+    var p = pkOf(o);
+    try { if (W.PublicKeyCredential && typeof PublicKeyCredential.parseCreationOptionsFromJSON === 'function') return PublicKeyCredential.parseCreationOptionsFromJSON(p); } catch (e) {}
+    var x = Object.assign({}, p); x.challenge = b64uBuf(p.challenge);
+    if (p.user) x.user = Object.assign({}, p.user, { id: b64uBuf(p.user.id) });
+    if (Array.isArray(p.excludeCredentials)) x.excludeCredentials = p.excludeCredentials.map(function (c) { return Object.assign({}, c, { id: b64uBuf(c.id) }); });
+    return x;
+  }
+  function credOut(c) {
+    try { if (typeof c.toJSON === 'function') return c.toJSON(); } catch (e) {}
+    var r = c.response || {}, out = { id: c.id, rawId: bufB64u(c.rawId), type: c.type || 'public-key', authenticatorAttachment: c.authenticatorAttachment || null,
+      clientExtensionResults: (typeof c.getClientExtensionResults === 'function') ? c.getClientExtensionResults() : {}, response: { clientDataJSON: bufB64u(r.clientDataJSON) } };
+    if (r.attestationObject) { out.response.attestationObject = bufB64u(r.attestationObject); try { if (typeof r.getTransports === 'function') out.response.transports = r.getTransports(); } catch (e) {} }
+    else { out.response.authenticatorData = bufB64u(r.authenticatorData); out.response.signature = bufB64u(r.signature); out.response.userHandle = r.userHandle ? bufB64u(r.userHandle) : null; }
+    return out;
+  }
+  function sessionOfAnswer(j) { if (j && typeof j.access_token === 'string') return j; if (j && j.session && typeof j.session.access_token === 'string') return j.session; return null; }
+  /* パスキーで確かめる（どの人かはパスキーが決める）。答え：{j：Supabase のログイン} か {error} */
+  async function passkeyAuth() {
+    var o = await sb('/auth/v1/passkeys/authentication/options', {});
+    if (!o.ok || !o.j || !o.j.challenge_id || !o.j.options) return { error: !o.status ? 'network' : (o.status === 404 ? 'pk_not_ready' : 'server') };
+    var cred;
+    try { cred = await navigator.credentials.get({ publicKey: getOpts(o.j.options) }); }
+    catch (e) { return { error: e && (e.name === 'NotAllowedError' || e.name === 'AbortError') ? 'cancelled' : 'webauthn' }; }
+    if (!cred) return { error: 'cancelled' };
+    var v = await sb('/auth/v1/passkeys/authentication/verify', { challenge_id: o.j.challenge_id, credential: credOut(cred) });
+    var s = v.ok ? sessionOfAnswer(v.j) : null;
+    if (!s) return { error: !v.status ? 'network' : (v.status >= 400 && v.status < 500 ? 'pk_unknown' : 'server') };
+    return { j: s };
+  }
+  /* この端末にパスキーを保存（Supabase のログイン token で）。close＝保存したら Supabase のログインを閉じる（スタッフ） */
+  async function savePasskey(token, close) {
+    try {
+      var o = await sb('/auth/v1/passkeys/registration/options', {}, token);
+      if (!o.ok || !o.j || !o.j.challenge_id || !o.j.options) return { error: !o.status ? 'network' : (o.status === 404 ? 'pk_not_ready' : 'server') };
+      var c;
+      try { c = await navigator.credentials.create({ publicKey: makeOpts(o.j.options) }); }
+      catch (e) { return { error: e && e.name === 'InvalidStateError' ? 'already_here' : (e && (e.name === 'NotAllowedError' || e.name === 'AbortError') ? 'cancelled' : 'webauthn') }; }
+      if (!c) return { error: 'cancelled' };
+      var v = await sb('/auth/v1/passkeys/registration/verify', { challenge_id: o.j.challenge_id, credential: credOut(c) }, token);
+      if (!v.ok) return { error: !v.status ? 'network' : 'server' };
+      if (close) { try { await call({ action: 'pk_keys_added' }, token); } catch (e) {} }
+      return { ok: true };
+    } finally { if (close) closeAuth(token); }
+  }
+
+  /* ---------- 言葉 ---------- */
+  function msg(e, j) {
+    if (e === 'network') return T('つながりません。電波を確かめて、もう一度お試しください。', 'Cannot connect. Check your connection and try again.');
+    if (e === 'not_installed' || e === 'sign_missing' || e === 'pk_not_ready') return T('このログインは、まだサーバーで使えるようになっていません。しばらくしてからお試しください。続くときは GM に知らせてください。', 'This login is not ready on the server yet. Try again later; if it continues, tell the GM.');
+    if (e === 'inactive') return T('このアカウントは使えません（退職・停止中）。', 'This account is stopped (resigned).');
+    if (e === 'cancelled') return T('パスキーの確かめをやめました（または時間切れ）。もう一度押すか、メールのコードで入ってください。', 'The passkey check was cancelled (or timed out). Try again, or use the email code.');
+    if (e === 'webauthn') return T('この端末ではパスキーを使えませんでした。ご自分の電話で QR を読み取るか、メールのコードで入ってください。', 'Could not use a passkey on this device. Scan the QR code with your own phone, or use the email code.');
+    if (e === 'no_webauthn') return T('このブラウザはパスキーを使えません。メールのコードで入ってください（名前を選ぶと出ます）。', 'This browser cannot use passkeys. Use the email code (choose your name first).');
+    if (e === 'pk_unknown' || e === 'not_linked') return T('このパスキーではログインできません（取り消された・この人のパスキーではない）。メールのコードで入って、パスキーを保存し直してください。', 'This passkey cannot log in (it was removed or does not belong to a staff login). Use the email code, then save a new passkey.');
+    if (e === 'session_gone' || e === 'session_end') return T('ログインのあいだ（12 時間）が終わったか、GM がログインを止めました。もう一度ログインしてください。', 'Your login period (12 hours) ended, or the GM stopped it. Please log in again.');
+    if (e === 'changed') return T('ログインの方式が変わりました。もう一度ログインしてください。', 'Your login method changed. Please log in again.');
+    if (e === 'code_wrong') return T('コードが違います', 'Incorrect code') + (j && j.left != null ? T('（あと ' + j.left + ' 回）', ' (' + j.left + ' more tries)') : '');
+    if (e === 'code_format') return T('メールに届いた 6 桁の数字を入れてください。', 'Enter the 6-digit code from the email.');
+    if (e === 'code_gone') return T('このコードは使えません（10 分たった・送り直した・5 回まちがえた）。「もう一度送る」を押してください。', 'This code no longer works (10 minutes passed, a new one was sent, or 5 wrong tries). Press “Send again”.');
+    if (e === 'too_many') return T('続けて頼みすぎました。少し待ってから、もう一度お試しください。', 'Too many attempts. Wait a while and try again.');
+    if (e === 'mail_failed') return (j && (j.reason === 'mail_not_connected' || j.reason === 'not_configured'))
+      ? T('いまメールを送れません（送り手のメールがつながっていません）。GM に知らせてください。', 'Email cannot be sent right now (the sender is not connected). Tell the GM.')
+      : T('メールを送れませんでした。しばらくしてから「もう一度送る」を押してください。', 'Could not send the email. Press “Send again” in a little while.');
+    if (e === 'invite_gone') return T('この招待は使えません。GM に送り直してもらってください。', 'This invitation no longer works. Ask the GM to send a new one.');
+    if (e === 'other_person') return T('このパスキーは ' + ((j && j.name) || '') + ' さんのものです。ご自分のパスキー（またはメールのコード）で入ってください。', 'This passkey belongs to ' + ((j && j.name) || '') + '. Use your own passkey (or the email code).');
+    if (e === 'no_emp') return T('名簿にこの人が見つかりませんでした。しばらくしてから、もう一度お試しください。', 'Could not find you in the staff list. Try again in a little while.');
+    return T('サーバーで確かめられませんでした。しばらくしてから、もう一度お試しください。', 'The server could not check this. Try again in a little while.');
+  }
+  function inviteMsg(state) {
+    if (state === 'expired') return T('この招待は期限（7 日）が切れています。GM に送り直してもらってください。', 'This invitation has expired (7 days). Ask the GM to send a new one.');
+    if (state === 'used') return T('この招待はもう使われています。ログインの画面で名前を選び、パスキーかメールのコードで入ってください。', 'This invitation was already used. Choose your name on the login screen and use your passkey or the email code.');
+    if (state === 'revoked') return T('この招待は取り消されています（送り直した・GM が止めた）。新しいメールのリンクを開いてください。', 'This invitation was cancelled (a new one was sent, or the GM stopped it). Open the newest email link.');
+    return T('リンクが正しくありません。メールのリンクをそのまま開いてください。', 'This link is not valid. Open the link exactly as it is in the email.');
+  }
+
+  /* ---------- 見た目 ---------- */
+  function css() {
+    if ($('pk-style')) return;
+    var st = D.createElement('style'); st.id = 'pk-style';
+    st.textContent = '.pk-entry{margin:6px 0 12px;text-align:center}.pk-entry .login-btn{margin:0}'
+      + '.pk-own{display:flex;gap:8px;align-items:flex-start;justify-content:center;text-align:left;font-size:12px;color:var(--muted);margin:8px auto 0;max-width:360px;line-height:1.5;cursor:pointer}'
+      + '.pk-own input{width:18px;height:18px;flex-shrink:0;margin-top:1px}'
+      + '.pk-or{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:11.5px;margin:12px 0 6px}.pk-or:before,.pk-or:after{content:"";flex:1;border-top:1px solid var(--border)}'
+      + '.pk-link{background:none;border:none;color:var(--accent);font-size:13px;cursor:pointer;min-height:42px;padding:6px 10px}.pk-link:disabled{color:var(--muted);cursor:default}'
+      + '.pk-in{width:100%;min-height:46px;padding:10px 12px;font-size:20px;letter-spacing:6px;text-align:center;background:var(--surface);border:1px solid var(--border);border-radius:8px;color:var(--tm)}'
+      + '.pk-note{margin:8px 0;padding:9px 11px;border-radius:8px;background:var(--surface2);font-size:12px;line-height:1.6;color:var(--tm)}'
+      + '.pk-err{display:none;margin:8px 0;padding:9px 11px;border-radius:8px;background:#fdecec;color:#b42318;font-size:12.5px;line-height:1.6;font-weight:600}'
+      + '.pk-scr{position:fixed;inset:0;z-index:70;background:var(--bg);overflow:auto;-webkit-overflow-scrolling:touch}'
+      + '.pk-wrap{max-width:520px;margin:0 auto;padding:24px 18px 60px}'
+      + '.pk-card{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:18px;margin-top:14px}'
+      + '.pk-who{font-size:22px;font-weight:800;margin:4px 0 2px;word-break:break-word}.pk-sub{font-size:13px;color:var(--muted);line-height:1.7}'
+      + '.pk-steps{display:flex;gap:6px;list-style:none;padding:0;margin:16px 0 0}.pk-steps li{flex:1;text-align:center;font-size:12px;padding:8px 4px;border-radius:8px;background:var(--surface2);color:var(--muted)}'
+      + '.pk-steps li.on{background:var(--accent);color:#fff;font-weight:700}.pk-steps li.done{color:var(--green);font-weight:600}'
+      + '.pk-row{display:flex;gap:10px;align-items:center;padding:10px 12px;border:1px solid var(--border);border-radius:10px;margin-top:8px}'
+      + '.pk-badge{display:inline-block;font-size:10.5px;font-weight:700;padding:1px 7px;border-radius:999px;background:var(--surface2);color:var(--muted)}'
+      + '.pk-badge.pk{background:var(--accent);color:#fff}.pk-badge.warn{background:#fff4e5;color:#b54708}'
+      + '.pk-spin{width:28px;height:28px;border:3px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:splSpin .8s linear infinite;margin:16px auto}'
+      + '@keyframes splSpin{to{transform:rotate(360deg)}}';
+    D.head.appendChild(st);
+  }
+  function fmt(iso) { var d = new Date(iso); if (!iso || isNaN(d)) return ''; return (d.getMonth() + 1) + '/' + d.getDate() + ' ' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); }
+  function note(text) {
+    try {
+      var el = $('pk-login-note'), sub = $('login-step-sub');
+      if (!el && sub && sub.parentNode) { el = D.createElement('div'); el.id = 'pk-login-note'; el.setAttribute('role', 'status'); el.className = 'pk-note'; el.style.textAlign = 'center'; sub.parentNode.insertBefore(el, sub.nextSibling); }
+      if (el) { el.textContent = text || ''; el.style.display = text ? 'block' : 'none'; }
+    } catch (e) {}
+  }
+  function btnBusy(id, on, label) {
+    var b = $(id); if (!b) return;
+    if (on) { if (!b.dataset.t) b.dataset.t = b.innerHTML; b.disabled = true; b.innerHTML = '<span class="ux-spin" aria-hidden="true"></span> ' + esc(label || T('確認中…', 'Checking…')); }
+    else { b.disabled = false; if (b.dataset.t) { b.innerHTML = b.dataset.t; delete b.dataset.t; } }
+  }
+  function ownBox(id, on) {
+    return '<label class="pk-own"><input type="checkbox" id="' + id + '"' + (on ? ' checked' : '') + ' onchange="FUNERGY_PK.ownChanged(this)"><span>'
+      + esc(T('自分だけが使う端末（12 時間ログインしたまま）。店の共有の端末では外してください（パスキーも保存しません）。', 'My own device (stay logged in for 12 hours). Untick on a shared store device (no passkey is saved there either).')) + '</span></label>';
+  }
+
+  /* ---------- ログインの画面の上：「パスキーでログイン」（8A）・この端末でログインしたまま ---------- */
+  function paintEntry() {
+    css();
+    var sub = $('login-step-sub'); if (!sub || !sub.parentNode) return;
+    var el = $('pk-entry');
+    if (!el) { el = D.createElement('div'); el.id = 'pk-entry'; el.className = 'pk-entry'; sub.parentNode.insertBefore(el, sub.nextSibling); }
+    var m = $('login-step-mail'), p = $('login-step-pk'), pin = $('login-step-pin');
+    var vis = function (x) { return !!(x && x.style.display !== 'none'); };
+    var hidden = !S.ok || W._pkSignedIn || W._mlSignedIn || vis(m) || vis(p) || vis(pin);
+    if (hidden) { el.innerHTML = ''; el.style.display = 'none'; return; }
+    var x = sessGet();
+    el.style.display = 'block';
+    el.innerHTML = (x ? '<button class="login-btn" id="pk-resume" style="margin-bottom:8px" onclick="FUNERGY_PK.resume()"><i class="ti ti-login"></i> ' + esc(T((x.name || '') + ' さん：続ける（ログインしたまま）', 'Continue as ' + (x.name || '') + ' (still logged in)')) + '</button>'
+        + '<button type="button" class="pk-link" onclick="FUNERGY_PK.forgetHere()">' + esc(T('ほかの人でログイン（この端末のログインを終える）', 'Log in as someone else (end the login on this device)')) + '</button><div class="pk-or">' + esc(T('または', 'or')) + '</div>' : '')
+      + '<button class="login-btn" id="pk-top" onclick="FUNERGY_PK.passkey(false)"><i class="ti ti-fingerprint"></i> ' + esc(T('パスキーでログイン', 'Log in with a passkey')) + '</button>'
+      + ownBox('pk-own-top', own())
+      + '<div style="font-size:11.5px;color:var(--muted);margin-top:6px;line-height:1.6">' + esc(T('パスキーの無い端末では、ご自分の電話で QR を読み取れます。PIN の人・初めての人は、下で所属と名前を選んでください。', 'On a device without your passkey, you can scan the QR code with your own phone. PIN users and first-timers: choose your location and name below.')) + '</div>'
+      + (S.mailNote ? '<div class="pk-note">' + esc(S.mailNote) + '</div>' : '')
+      + '<div class="pk-or">' + esc(T('PIN・メールとパスワード', 'PIN · email and password')) + '</div>';
+  }
+  function ownChanged(el) { ownSet(!!el.checked); var a = $('pk-own-top'), b = $('pk-own-step'); if (a && a !== el) a.checked = !!el.checked; if (b && b !== el) b.checked = !!el.checked; paintSave(); }
+  function relabel() { try { paintEntry(); } catch (e) {} try { if (S.emp && $('login-step-pk') && $('login-step-pk').style.display !== 'none') stepPaint(); } catch (e) {} }
+
+  /* ---------- 名前を選んだあと（メール＋パスキーの人） ---------- */
+  function stepEl() {
+    var el = $('login-step-pk'); if (el) return el;
+    var mail = $('login-step-mail'), ver = $('login-version'), card = D.querySelector('#login-screen .login-card');
+    el = D.createElement('div'); el.id = 'login-step-pk'; el.style.display = 'none';
+    if (mail && mail.parentNode) mail.parentNode.insertBefore(el, mail.nextSibling); else if (card && ver) card.insertBefore(el, ver); else D.body.appendChild(el);
+    return el;
+  }
+  function roleText(emp) {
+    var r = ''; try { r = (typeof roleLabelI18n === 'function') ? roleLabelI18n(emp.role) : emp.role; } catch (e) { r = emp.role || ''; }
+    var loc = (typeof loginLocation !== 'undefined') ? loginLocation : '', ln = 'Office';
+    if (loc && loc !== 'OFFICE') { try { var st = (typeof STORES !== 'undefined' ? STORES : []).find(function (x) { return x.id === loc; }); ln = st ? st.name : loc; } catch (e) { ln = loc; } }
+    return r + ' · ' + ln;
+  }
+  function stepPaint() {
+    var emp = S.emp; if (!emp) return;
+    var el = stepEl(), wa = webauthn(), on = own();
+    el.innerHTML = '<button class="login-back" data-to="name" onclick="loginBackToName()" style="background:none;border:none;color:var(--accent);font-size:13px;cursor:pointer;margin-bottom:8px"><i class="ti ti-arrow-left"></i> ' + esc(T('名前選択へ戻る', 'Back to names')) + '</button>'
+      + '<div style="text-align:center;margin-bottom:10px"><div style="font-size:13px;color:var(--muted)">' + esc(T('パスキーかメールのコードでログイン', 'Log in with a passkey or an email code')) + '</div>'
+      + '<div style="font-size:18px;font-weight:700">' + esc(emp.name || '') + '</div><div style="font-size:12px;color:var(--muted)">' + esc(roleText(emp)) + '</div></div>'
+      + (wa ? '<button class="login-btn" id="pk-go" onclick="FUNERGY_PK.passkey(true)"><i class="ti ti-fingerprint"></i> ' + esc(T('パスキーでログイン', 'Log in with a passkey')) + '</button>' : '<div class="pk-note">' + esc(msg('no_webauthn')) + '</div>')
+      + ownBox('pk-own-step', on)
+      + '<div class="pk-or">' + esc(T('または', 'or')) + '</div>'
+      + '<div style="text-align:center"><button type="button" class="pk-link" id="pk-send" onclick="FUNERGY_PK.sendCode()"><i class="ti ti-mail"></i> ' + esc(T('登録したメールにコードを送る', 'Send a code to my registered email')) + '</button></div>'
+      + '<div id="pk-code-box" style="display:' + (S.sent ? 'block' : 'none') + '"><div class="pk-note" id="pk-sent-note">' + esc(S.sent || '') + '</div>'
+      + '<label for="pk-code" style="display:block;font-size:12px;font-weight:700;margin:8px 0 6px">' + esc(T('メールに届いた 6 桁のコード', '6-digit code from the email')) + '</label>'
+      + '<input class="pk-in" id="pk-code" inputmode="numeric" autocomplete="one-time-code" maxlength="8" placeholder="000000" onkeydown="if(event.key===\'Enter\'&&!event.isComposing)FUNERGY_PK.verify()">'
+      + '<div id="pk-save-row"></div>'
+      + '<button class="login-btn" id="pk-code-btn" style="margin-top:10px" onclick="FUNERGY_PK.verify()">' + esc(T('ログイン', 'Log in')) + '</button></div>'
+      + '<div class="pk-err" id="pk-err" role="alert"></div>'
+      + '<div style="font-size:11.5px;color:var(--muted);margin-top:10px;line-height:1.6;text-align:center">' + esc(T('初めての人は、メールで届いた招待のリンクから入ってください。PIN が要るところ（割引の記録など）では、今までの PIN を聞くことがあります。', 'First time? Open the invitation link in your email. Features that need a PIN (such as the discount log) may still ask for your usual PIN.')) + '</div>';
+    paintSave();
+  }
+  /* 「この端末にパスキーを保存」は自分だけが使う端末で・パスキーを使えるときだけ（9A） */
+  function paintSave() {
+    var el = $('pk-save-row'); if (!el) return;
+    var ownEl = S.inv ? $('pk-own-inv') : $('pk-own-step'), on = ownEl ? !!ownEl.checked : own();
+    /* はじめは：招待のリンク（自分の端末で始める）なら保存する・名前を選んでコードで入るときは保存しない */
+    var prev = $('pk-save'), was = prev ? prev.checked : !!S.inv;
+    el.innerHTML = (on && webauthn()) ? '<label class="pk-own" style="justify-content:flex-start;margin:10px 0 0"><input type="checkbox" id="pk-save"' + (was ? ' checked' : '') + '><span>' + esc(T('この端末にパスキーを保存する（次からパスキーで入れます）', 'Save a passkey on this device (log in with it next time)')) + '</span></label>' : '';
+  }
+  function err(text, j) { var e = $('pk-err'); if (!e) return; e.textContent = text || ''; e.style.display = text ? 'block' : 'none'; }
+  function show(emp) {
+    if (!S.emp || String(S.emp.id) !== String(emp.id)) { S.sent = ''; S.cool = 0; }
+    S.emp = emp;
+    var nm = $('login-step-name'), pin = $('login-step-pin'), m = $('login-step-mail'), loc = $('login-step-location');
+    if (nm) nm.style.display = 'none'; if (pin) pin.style.display = 'none'; if (m) m.style.display = 'none'; if (loc) loc.style.display = 'none';
+    var el = stepEl(); stepPaint(); el.style.display = 'block';
+    note(''); try { if (typeof refreshLoginLabels === 'function') refreshLoginLabels(); else paintEntry(); } catch (e) {}
+    if (S.cool > Date.now()) coolTick();
+  }
+  function hideStep() {
+    S.emp = null; S.gen++; S.sent = '';
+    if (S.busy) { S.busy = false; W._uxLoginBusy = false; }
+    var el = $('login-step-pk'); if (el) { el.style.display = 'none'; el.innerHTML = ''; }
+    try { paintEntry(); } catch (e) {}
+  }
+  /* loginPickPerson から：メール＋パスキーの人（GM・CEO・経理は FUNERGY_ML） */
+  function route(emp) {
+    if (!emp || isTop(emp) || (typeof loginStoreMode !== 'undefined' && loginStoreMode)) return false;
+    if (!isPk(emp)) { info(false); return false; }
+    show(emp); return true;
+  }
+  /* PIN の段から（doStaffLogin）：auth-pin が「PIN では入れない」と答えた（server）・名簿でメール＋パスキーと分かっている */
+  function pinBlocked(emp, server) {
+    if (!emp || isTop(emp) || (typeof loginStoreMode !== 'undefined' && loginStoreMode)) return false;
+    if (!isPk(emp) && !(server && S.ok !== false)) return false;
+    if (server) { S.set[String(emp.id)] = 1; info(true); }
+    var pi = $('login-pin-input'); if (pi) pi.value = '';
+    show(emp);
+    err(T('この人は PIN ではなく、パスキーかメールのコードでログインします。', 'This person logs in with a passkey or an email code, not a PIN.'));
+    return true;
+  }
+
+  /* ---------- パスキーでログイン ---------- */
+  function ownNow(id) { var el = $(id); var v = el ? !!el.checked : own(); ownSet(v); return v; }
+  async function passkey(fromStep) {
+    if (S.busy || W._uxLoginBusy) return;
+    var emp = fromStep ? S.emp : null, bid = fromStep ? 'pk-go' : 'pk-top';
+    var keep = ownNow(fromStep ? 'pk-own-step' : 'pk-own-top');
+    var say = function (m) { if (fromStep) err(m); else note(m); };
+    if (!webauthn()) { say(msg('no_webauthn')); return; }
+    S.busy = true; W._uxLoginBusy = true; btnBusy(bid, true); say('');
+    var g = ++S.gen, sj = null, done = false;
+    try {
+      var a = await passkeyAuth();
+      if (a.j) sj = a.j;
+      if (g !== S.gen) return;
+      if (!a.j) { say(msg(a.error)); return; }
+      var r = await call({ action: 'pk_login', keep: keep, device_name: deviceName() }, sj.access_token);
+      if (g !== S.gen) { if (r && r.session) call({ action: 'pk_logout', session: r.session }); return; }
+      if (r.kind === 'manager') {
+        var me = await empFind(r.emp_id);
+        if (g !== S.gen) return;
+        if (!me) { say(msg('no_emp')); return; }
+        if (fromStep && emp && String(emp.id) !== String(me.id)) { say(msg('other_person', { name: me.name })); return; }
+        if (!W.FUNERGY_ML || typeof W.FUNERGY_ML.withSession !== 'function') { say(msg('server')); return; }
+        S.busy = false; btnBusy(bid, false); W._uxLoginBusy = false;
+        var s2 = sj; sj = null;   /* ここからは FUNERGY_ML が持つ（入れなければ閉じる） */
+        var x = await W.FUNERGY_ML.withSession(s2, me);
+        done = !!x.ok;
+        if (!x.ok && x.text) say(x.text);
+        return;
+      }
+      if (r.kind !== 'staff' || !r.session || !r.token) { say(msg(r.error)); return; }
+      if (fromStep && emp && String(emp.id) !== String(r.emp_id)) { call({ action: 'pk_logout', session: r.session }); say(msg('other_person', { name: r.name })); return; }
+      done = await enter(r, keep, !!fromStep);
+    } finally {
+      if (sj) closeAuth(sj.access_token);   /* スタッフの Supabase のログインは使い終わったら閉じる */
+      if (!done && g === S.gen) { S.busy = false; W._uxLoginBusy = false; btnBusy(bid, false); }
+    }
+  }
+  async function empFind(id) {
+    var f = function () { try { return getEmployees().find(function (e) { return String(e.id) === String(id); }) || null; } catch (e) { return null; } };
+    var emp = f();
+    if (!emp) { try { await loginBootstrapPull(); } catch (e) {} emp = f(); }
+    return emp;
+  }
+  /* 入る：PIN のログインと同じ（finishStaffLogin）。keepLoc＝ログインの画面で選んだ所属のまま */
+  async function enter(r, keep, keepLoc) {
+    var emp = await empFind(r.emp_id);
+    if (!emp) { call({ action: 'pk_logout', session: r.session }); note(msg('no_emp')); return false; }
+    if (typeof empBlocked === 'function' && empBlocked(emp)) { call({ action: 'pk_logout', session: r.session }); note(msg('inactive')); return false; }
+    sessPut({ v: 1, s: r.session, emp: String(r.emp_id), name: r.name || emp.name, exp: r.session_exp, keep: !!keep }, !!keep);
+    loginPerson = emp; loginStoreMode = false;
+    if (!keepLoc || !loginLocation) loginLocation = (['ceo', 'gm', 'am', 'office', 'chef', 'office_crew'].indexOf(emp.role) >= 0 || !emp.store || emp.store === 'OFFICE' || emp.store === 'ALL') ? 'OFFICE' : emp.store;
+    W._hwSession = r.token; W._hwSessionWarned = false; W._sessionPin = null; W._pkSignedIn = true;
+    S.last = Date.now(); S.gen++; S.busy = false; S.emp = null; schedule();
+    var el = $('login-step-pk'); if (el) { el.style.display = 'none'; el.innerHTML = ''; }
+    hideScreen(); note('');
+    finishStaffLogin();
+    return true;
+  }
+
+  /* ---------- メールのコード ---------- */
+  function coolTick() {
+    if (S.coolT) clearTimeout(S.coolT);
+    var b = $('pk-send'), left = Math.ceil((S.cool - Date.now()) / 1000);
+    if (!b) return;
+    if (left > 0) { b.disabled = true; b.innerHTML = '<i class="ti ti-mail"></i> ' + esc(T('もう一度送る（' + left + ' 秒後）', 'Send again (in ' + left + 's)')); S.coolT = setTimeout(coolTick, 1000); }
+    else { b.disabled = false; b.innerHTML = '<i class="ti ti-mail"></i> ' + esc(T('もう一度送る', 'Send again')); }
+  }
+  async function sendCode() {
+    if (S.busy) return;
+    var ref = S.inv ? { token: S.inv.token } : (S.emp ? { emp_id: String(S.emp.id) } : null); if (!ref) return;
+    var b = $('pk-send'); if (b) b.disabled = true; err('');
+    var r = await call(Object.assign({ action: 'pk_code_send' }, ref));
+    if (r.state === 'sent' || r.state === 'wait') {
+      S.cool = Date.now() + (r.state === 'wait' ? Math.max(1, Number(r.retry_after) || 60) : 60) * 1000; coolTick();
+      var box = $('pk-code-box'); if (box) box.style.display = 'block';
+      var n = $('pk-sent-note');
+      S.sent = r.state === 'wait' ? T('少し前にコードを送りました。届いたメールのコードを入れてください（10 分まで）。', 'A code was sent a moment ago. Enter the code from that email (valid 10 minutes).')
+        : (S.inv ? T((S.inv.masked || '') + ' に 6 桁のコードを送りました（10 分まで）。届かないときは迷惑メールも見てください。', 'Sent a 6-digit code to ' + (S.inv.masked || '') + ' (valid 10 minutes). Check spam if it does not arrive.')
+          : T('登録したメールに 6 桁のコードを送りました（10 分まで）。届かないときは迷惑メールも見てください。メールが登録されていない人には届きません。', 'Sent a 6-digit code to your registered email (valid 10 minutes). Check spam if it does not arrive. It is not sent if no email is registered.'));
+      if (n) n.textContent = S.sent;
+      paintSave();
+      setTimeout(function () { var c = $('pk-code'); if (c) c.focus(); }, 60);
+      return;
+    }
+    if (b) b.disabled = false;
+    err(msg(r.error, r));
+  }
+  async function verify() {
+    if (S.busy || W._uxLoginBusy) return;
+    var ref = S.inv ? { token: S.inv.token } : (S.emp ? { emp_id: String(S.emp.id) } : null); if (!ref) return;
+    var ce = $('pk-code'), code = String((ce && ce.value) || '').normalize('NFKC').replace(/\s+/g, '');
+    if (!/^\d{6}$/.test(code)) { err(msg('code_format')); return; }
+    var keep = ownNow(S.inv ? 'pk-own-inv' : 'pk-own-step'), sv = $('pk-save'), save = !!(keep && webauthn() && sv && sv.checked);
+    S.busy = true; W._uxLoginBusy = true; btnBusy('pk-code-btn', true); err('');
+    var g = ++S.gen, done = false, inv = S.inv;
+    try {
+      var r = await call(Object.assign({ action: 'pk_code_verify', code: code, keep: keep, passkey: save, device_name: deviceName() }, ref));
+      if (g !== S.gen) { if (r && r.session) call({ action: 'pk_logout', session: r.session }); if (r && r.supabase) closeAuth(r.supabase.access_token); return; }
+      if (!r.ok || !r.session || !r.token) {
+        err(msg(r.error, r));
+        if (r.error === 'code_wrong' && ce) { ce.value = ''; ce.focus(); }
+        if (r.error === 'invite_gone' && inv) { showInvite(inv.token); }
+        return;
+      }
+      if (save) {
+        btnBusy('pk-code-btn', false); btnBusy('pk-code-btn', true, T('パスキーを保存しています…', 'Saving the passkey…'));
+        var k = (r.supabase && r.supabase.access_token) ? await savePasskey(r.supabase.access_token, true) : { error: r.passkey_error || 'server' };
+        if (g !== S.gen) { call({ action: 'pk_logout', session: r.session }); return; }
+        if (k.ok) toast(T('この端末にパスキーを保存しました。次からパスキーで入れます。', 'Passkey saved on this device. Use it next time.'), 'success');
+        else toast(keyMsg(k.error), 'warning');
+      }
+      if (inv) dropUrl();
+      done = await enter(r, keep, !inv);
+    } finally {
+      if (!done && g === S.gen) { S.busy = false; W._uxLoginBusy = false; btnBusy('pk-code-btn', false); }
+    }
+  }
+  function keyMsg(e) {
+    if (e === 'cancelled') return T('パスキーは保存しませんでした（やめた・時間切れ）。ログインはできています。マイページの「パスキーを足す」からあとで保存できます。', 'The passkey was not saved (cancelled or timed out). You are logged in; you can save one later from My page.');
+    if (e === 'already_here') return T('この端末にはもうパスキーがあります。', 'This device already has a passkey.');
+    if (e === 'email_taken') return T('このメールはほかのログイン（管理者など）で使われているため、パスキーを保存できません。GM に知らせてください（メールのコードでは入れます）。', 'This email is used by another login (such as an admin), so a passkey cannot be saved. Tell the GM (the email code still works).');
+    return T('パスキーを保存できませんでした。ログインはできています。マイページの「パスキーを足す」からもう一度お試しください。', 'Could not save the passkey. You are logged in; try again from My page.');
+  }
+
+  /* ---------- 招待のリンク（?pk=…）：確かめる → コード → 完了 ---------- */
+  function tokenFrom(s) { s = String(s || '').trim(); var m = s.match(/[?&]pk=([A-Za-z0-9_-]{43})(?![A-Za-z0-9_-])/); if (m) return m[1]; return SESS_RE.test(s) ? s : ''; }
+  function dropUrl() { try { var u = new URL(location.href); var had = u.searchParams.has('pk') || u.searchParams.has('pkmail'); u.searchParams.delete('pk'); u.searchParams.delete('pkmail'); if (had) history.replaceState(null, '', u.pathname + (u.search || '') + u.hash); } catch (e) {} }
+  function screenEl() {
+    css();
+    var el = $('pk-screen');
+    if (!el) { el = D.createElement('div'); el.id = 'pk-screen'; el.className = 'pk-scr'; el.setAttribute('role', 'dialog'); el.setAttribute('aria-modal', 'true'); D.body.appendChild(el); }
+    el.hidden = false; return el;
+  }
+  function hideScreen() { var el = $('pk-screen'); if (el) { el.hidden = true; el.innerHTML = ''; } }
+  function screen(step, body) {
+    var steps = [T('確かめる', 'Check'), T('メールのコード', 'Email code'), T('完了', 'Done')];
+    screenEl().innerHTML = '<div class="pk-wrap"><div style="display:flex;align-items:center;gap:10px;font-size:20px;font-weight:800"><div class="login-logo" style="margin:0;width:38px;height:38px"><i class="ti ti-flame" style="font-size:20px;color:#fff"></i></div>Funergy<span style="color:var(--accent)">+</span></div>'
+      + '<ol class="pk-steps">' + steps.map(function (s, i) { return '<li class="' + (i === step ? 'on' : (i < step ? 'done' : '')) + '"' + (i === step ? ' aria-current="step"' : '') + '>' + (i < step ? '✓ ' : (i + 1) + '. ') + esc(s) + '</li>'; }).join('') + '</ol>'
+      + '<div class="pk-card">' + body + '</div></div>';
+  }
+  async function showInvite(token) {
+    S.inv = { token: token, masked: '', name: '' }; S.emp = null;
+    screen(0, '<div class="pk-sub">' + esc(T('招待を確かめています…', 'Checking the invitation…')) + '</div><div class="pk-spin" aria-hidden="true"></div>');
+    var g = await call({ action: 'pk_invite_peek', token: token });
+    if (g.state !== 'ok') {
+      var m = g.state ? inviteMsg(g.state) : msg(g.error);
+      screen(0, '<div style="font-size:30px;color:var(--muted)"><i class="ti ti-link-off"></i></div><div class="pk-who" style="font-size:19px">' + esc(T('この招待では入れません', 'This invitation cannot be used')) + '</div><div class="pk-sub">' + esc(m) + '</div>'
+        + '<button class="login-btn" style="margin-top:14px" onclick="FUNERGY_PK.toLogin()">' + esc(T('ログインの画面へ', 'Go to the login screen')) + '</button>'
+        + (g.error === 'network' || g.error === 'server' ? '<div style="text-align:center"><button class="pk-link" onclick="FUNERGY_PK.invite(\'' + esc(token) + '\')">' + esc(T('もう一度', 'Try again')) + '</button></div>' : ''));
+      return;
+    }
+    S.inv.masked = g.email_masked || ''; S.inv.name = g.name || '';
+    var change = g.purpose === 'email_change';
+    screen(1, '<div class="pk-sub">' + esc(change ? T('新しいメールを確かめます', 'Confirm your new email') : T('Funergy+ のログインを始めます', 'Set up your Funergy+ login')) + '</div>'
+      + '<div class="pk-who">' + esc(g.name || '') + ' ' + esc(T('さん', '')) + '</div>'
+      + '<div class="pk-sub">' + esc(T('ご本人でなければ、ここで閉じてください。招待の期限：', 'If this is not you, close this page. Invitation expires: ')) + esc(fmt(g.expires_at)) + '</div>'
+      + '<div class="pk-note">' + esc(T('メール（' + S.inv.masked + '）に 6 桁のコードを送ります。届いたコードを入れるとログインできます。', 'We will send a 6-digit code to ' + S.inv.masked + '. Enter it to log in.')) + '</div>'
+      + '<div style="text-align:center"><button type="button" class="login-btn" id="pk-send" onclick="FUNERGY_PK.sendCode()"><i class="ti ti-mail"></i> ' + esc(T('コードを送る', 'Send the code')) + '</button></div>'
+      + '<div id="pk-code-box" style="display:none"><div class="pk-note" id="pk-sent-note"></div>'
+      + '<label for="pk-code" style="display:block;font-size:12px;font-weight:700;margin:8px 0 6px">' + esc(T('メールに届いた 6 桁のコード', '6-digit code from the email')) + '</label>'
+      + '<input class="pk-in" id="pk-code" inputmode="numeric" autocomplete="one-time-code" maxlength="8" placeholder="000000" onkeydown="if(event.key===\'Enter\'&&!event.isComposing)FUNERGY_PK.verify()">'
+      + ownBox('pk-own-inv', own()) + '<div id="pk-save-row"></div>'
+      + '<button class="login-btn" id="pk-code-btn" style="margin-top:12px" onclick="FUNERGY_PK.verify()"><i class="ti ti-login"></i> ' + esc(T('ログイン', 'Log in')) + '</button></div>'
+      + '<div class="pk-err" id="pk-err" role="alert"></div>'
+      + '<ul style="margin:12px 0 0;padding-left:18px;font-size:12px;line-height:1.8;color:var(--muted)">'
+      + '<li>' + esc(T('自分だけが使う端末なら、パスキーを保存すると、次からはパスキーで入れます（12 時間はログインしたまま）。', 'On your own device, save a passkey to log in with it next time (you stay logged in for 12 hours).')) + '</li>'
+      + '<li>' + esc(T('ホーム画面のアプリで使う人は、このあとアプリを開いて「パスキーでログイン」を押してください（同じ端末のパスキーが使えます）。', 'If you use the home-screen app, open it afterwards and press “Log in with a passkey” (the passkey on this device works there).')) + '</li>'
+      + '<li>' + esc(T('このあとは PIN でログインしません（PIN が要るところでは今までの PIN を聞くことがあります）。', 'From now on you do not log in with a PIN (features that need a PIN may still ask for it).')) + '</li></ul>'
+      + '<div style="text-align:center;margin-top:8px"><button class="pk-link" onclick="FUNERGY_PK.toLogin()">' + esc(T('いまは入らない（ログインの画面へ）', 'Not now (go to the login screen)')) + '</button></div>');
+  }
+
+  /* ---------- 開いたとき：ログインしたまま（12 時間）・招待のリンク・送り手をつないだ結果 ---------- */
+  async function resume() {
+    if (S.busy || W._uxLoginBusy || W._pkSignedIn) return false;
+    var x = sessGet(); if (!x) { paintEntry(); return false; }
+    S.busy = true; btnBusy('pk-resume', true, T('ログインしています…', 'Logging in…'));
+    var g = ++S.gen, done = false;
+    try {
+      var r = await call({ action: 'pk_resume', session: x.s, mode: 'start' });
+      if (g !== S.gen) return false;
+      if (r.ok && r.token && String(r.emp_id) === String(x.emp)) { done = await enter(Object.assign({}, r, { session: x.s, session_exp: r.session_exp || x.exp }), x.keep !== false, false); return done; }
+      if (r.ok || r.error === 'session_gone' || r.error === 'inactive' || r.error === 'not_installed') { sessDrop(); note(msg(r.error === 'inactive' ? 'inactive' : 'session_end')); return false; }
+      note(msg(r.error));   /* つながらない・サーバーの失敗：この端末のログインは残す（「続ける」でもう一度） */
+      return false;
+    } finally { if (!done && g === S.gen) { S.busy = false; btnBusy('pk-resume', false); try { paintEntry(); } catch (e) {} } }
+  }
+  function forgetHere() {
+    var x = sessGet(); sessDrop();
+    if (x) call({ action: 'pk_logout', session: x.s });
+    note(T('この端末のログインを終えました。', 'Ended the login on this device.')); paintEntry();
+  }
+  var MAIL_RES = function (c) {
+    if (c === 'ok') return T('送り手のメールをつなぎました。GM の「ログインの方式」で確かめられます。', 'The sender email is connected. Check it in the GM’s “Login method” screen.');
+    if (c === 'wrong_account') return T('つないだ Google のアカウントが、決めた送り手のメールと違いました。送り手のメールの Google でつなぎ直してください。', 'The Google account did not match the chosen sender email. Connect again with that account.');
+    if (c === 'denied') return T('Google でつなぐのをやめました。', 'Connecting with Google was cancelled.');
+    if (c === 'scope_missing') return T('メールを送る許可が足りませんでした。許可のチェックをすべて入れて、つなぎ直してください。', 'The permission to send email was not granted. Tick every permission and connect again.');
+    if (c === 'from_not_set') return T('送り手のメールが、まだサーバーで決まっていません（手順の SQL）。', 'The sender email is not set on the server yet (setup SQL).');
+    if (c === 'not_configured') return T('Google のつなぎ方（クライアント）がサーバーに入っていません（手順の Secrets）。', 'The Google client is not set on the server (setup Secrets).');
+    return T('送り手のメールをつなげませんでした（' + c + '）。もう一度お試しください。', 'Could not connect the sender email (' + c + '). Try again.');
+  };
+  async function boot() {
+    try { paintEntry(); } catch (e) {}
+    var u = null; try { u = new URL(location.href); } catch (e) {}
+    if (u && u.searchParams.has('pkmail')) { var c = String(u.searchParams.get('pkmail') || '').replace(/[^a-z_]/g, '').slice(0, 30); S.mailNote = MAIL_RES(c); dropUrl(); }
+    var tk = u ? tokenFrom(u.searchParams.get('pk') || '') : '';
+    if (u && !tk && u.searchParams.has('pk')) { dropUrl(); note(inviteMsg('unknown')); }
+    var ok = await info(true);
+    try { paintEntry(); } catch (e) {}
+    if (tk) { await showInvite(tk); return true; }
+    if (ok && sessGet()) return resume();
+    return false;
+  }
+
+  /* ---------- 入ったあと：印の取り替え・ログアウト ---------- */
+  function schedule() { if (S.timer) clearInterval(S.timer); S.timer = setInterval(function () { refresh(false); }, REFRESH_MS); }
+  function forceOut(m) {
+    W._forceLogout = true; try { if (typeof doLogout === 'function') doLogout(); } catch (e) {} W._forceLogout = false;
+    note(m); toast(m, 'warning');
+  }
+  async function refresh(force) {
+    if (!W._pkSignedIn || S.refreshing) return;
+    if (!force && Date.now() - S.last < REFRESH_MS - 60000) return;
+    var x = sessGet();
+    if (!x) { forceOut(msg('session_end')); return; }
+    var g = S.gen, who = (typeof curUserName !== 'undefined') ? curUserName : null;
+    S.refreshing = true; S.last = Date.now();
+    try {
+      var r = await call({ action: 'pk_resume', session: x.s, mode: 'refresh' });
+      if (g !== S.gen || !W._pkSignedIn || (typeof curUserName !== 'undefined' && curUserName !== who)) return;
+      if (r.ok && r.token) { if (String(r.emp_id) !== String(x.emp)) { forceOut(msg('changed')); return; } W._hwSession = r.token; W._hwSessionWarned = false; return; }
+      if (r.error === 'session_gone' || r.error === 'inactive') { sessDrop(); forceOut(msg(r.error === 'inactive' ? 'inactive' : 'session_end')); return; }
+      S.last = 0;   /* つながらない：次に画面に戻ったとき・次の回にもう一度 */
+    } finally { S.refreshing = false; }
+  }
+  D.addEventListener('visibilitychange', function () { if (D.visibilityState === 'visible') refresh(false); });
+  /* doLogout から（前の人の印を消す前に呼ぶ）。ログアウトはこの端末のログインのあいだも終える（12 時間を待たない） */
+  function onLogout() {
+    var was = !!W._pkSignedIn, x = sessGet();
+    W._pkSignedIn = false; S.gen++; S.busy = false; S.emp = null; S.inv = null;
+    if (S.timer) { clearInterval(S.timer); S.timer = null; }
+    if (was) { sessDrop(); if (x) call({ action: 'pk_logout', session: x.s }); }
+    setTimeout(function () { try { paintEntry(); } catch (e) {} }, 0);
+  }
+
+  /* ---------- マイページ ---------- */
+  function myCardHtml() {
+    if (W._pkSignedIn) {
+      var x = sessGet() || {};
+      return '<div class="card" style="padding:12px"><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">'
+        + '<div style="width:36px;height:36px;border-radius:10px;background:var(--accent)1a;color:var(--accent);display:flex;align-items:center;justify-content:center;flex-shrink:0"><i class="ti ti-fingerprint" style="font-size:18px"></i></div>'
+        + '<div style="flex:1;min-width:180px"><div style="font-weight:600;font-size:13px">' + esc(T('パスキー・メールのコードでログイン中', 'Logged in with a passkey / email code')) + '</div>'
+        + '<div style="font-size:11px;color:var(--muted)">' + esc(x.keep ? T('この端末でログインしたまま（' + fmt(x.exp) + ' まで）', 'Stays logged in on this device (until ' + fmt(x.exp) + ')') : T('この端末を閉じるとログアウト（共有の端末）', 'Logs out when closed (shared device)')) + '</div></div></div>'
+        + '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">'
+        + (x.keep && webauthn() ? '<button class="btn btn-primary btn-sm" onclick="FUNERGY_PK.addKey()"><i class="ti ti-fingerprint"></i> ' + esc(T('この端末にパスキーを足す', 'Add a passkey on this device')) + '</button>' : '')
+        + '<button class="btn btn-secondary btn-sm" onclick="FUNERGY_PK.keys()"><i class="ti ti-key"></i> ' + esc(T('保存したパスキー', 'Saved passkeys')) + '</button>'
+        + '<button class="btn btn-secondary btn-sm" onclick="FUNERGY_PK.keepToggle()">' + esc(x.keep ? T('この端末でログインしたままにしない', 'Do not stay logged in here') : T('この端末でログインしたままにする（自分だけの端末）', 'Stay logged in here (my own device)')) + '</button></div></div>';
+    }
+    if (W._mlSignedIn && webauthn() && S.ok) {
+      return '<div class="card" style="padding:12px"><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">'
+        + '<div style="width:36px;height:36px;border-radius:10px;background:var(--accent)1a;color:var(--accent);display:flex;align-items:center;justify-content:center;flex-shrink:0"><i class="ti ti-fingerprint" style="font-size:18px"></i></div>'
+        + '<div style="flex:1;min-width:180px"><div style="font-weight:600;font-size:13px">' + esc(T('パスキー（メールとパスワードの代わりに）', 'Passkey (instead of email and password)')) + '</div>'
+        + '<div style="font-size:11px;color:var(--muted)">' + esc(T('ご自分の端末に保存すると、ログインの画面の「パスキーでログイン」で入れます。メールとパスワードも使えます。', 'Save one on your own device to use “Log in with a passkey”. Email and password still work.')) + '</div></div></div>'
+        + '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px"><button class="btn btn-primary btn-sm" onclick="FUNERGY_PK.addKey()"><i class="ti ti-fingerprint"></i> ' + esc(T('この端末にパスキーを足す', 'Add a passkey on this device')) + '</button>'
+        + '<button class="btn btn-secondary btn-sm" onclick="FUNERGY_PK.keys()"><i class="ti ti-key"></i> ' + esc(T('保存したパスキー', 'Saved passkeys')) + '</button></div></div>';
+    }
+    return '';
+  }
+  /* パスキーを足す。GM・CEO・経理：いまのメールのログインで。スタッフ：メールのコードを確かめてから（Supabase のログインはそのときだけ） */
+  async function addKey() {
+    if (!webauthn()) { alert(msg('no_webauthn')); return; }
+    if (W._mlSignedIn && W._authSession && W._authSession.access_token) {
+      var k0 = await savePasskey(W._authSession.access_token, false);
+      if (k0.ok) toast(T('この端末にパスキーを保存しました。ログインの画面の「パスキーでログイン」で入れます。', 'Passkey saved. Use “Log in with a passkey” on the login screen.'), 'success'); else alert(keyMsg(k0.error));
+      return;
+    }
+    var x = sessGet(); if (!W._pkSignedIn || !x || !loginPerson) return;
+    if (!confirm(T('登録したメールに 6 桁のコードを送ります。届いたコードを入れると、この端末にパスキーを保存できます。', 'A 6-digit code will be sent to your registered email. Enter it to save a passkey on this device.'))) return;
+    var s = await call({ action: 'pk_code_send', emp_id: String(x.emp) });
+    if (s.state !== 'sent' && s.state !== 'wait') { alert(msg(s.error, s)); return; }
+    var code = (typeof askInput === 'function') ? await askInput({ title: T('メールのコード', 'Email code'), label: T('メールに届いた 6 桁のコード', '6-digit code from the email'), multiline: false, required: true, pattern: /^\s*\d{6}\s*$/, patternMsg: msg('code_format'), okLabel: T('パスキーを保存', 'Save passkey') }) : prompt(T('メールに届いた 6 桁のコード', '6-digit code from the email'));
+    if (code == null) return;
+    var g = S.gen;
+    var r = await call({ action: 'pk_code_verify', emp_id: String(x.emp), code: String(code).trim(), keep: true, passkey: true, device_name: deviceName() });
+    if (g !== S.gen || !W._pkSignedIn) { if (r && r.session) call({ action: 'pk_logout', session: r.session }); if (r && r.supabase) closeAuth(r.supabase.access_token); return; }
+    if (!r.ok || !r.session) { alert(msg(r.error, r)); return; }
+    /* 新しいログインのあいだに入れ替える（前のは終える） */
+    sessPut({ v: 1, s: r.session, emp: String(r.emp_id), name: r.name || x.name, exp: r.session_exp, keep: true }, true);
+    call({ action: 'pk_logout', session: x.s });
+    W._hwSession = r.token; W._hwSessionWarned = false; S.last = Date.now();
+    var k = (r.supabase && r.supabase.access_token) ? await savePasskey(r.supabase.access_token, true) : { error: r.passkey_error || 'server' };
+    if (k.ok) toast(T('この端末にパスキーを保存しました。', 'Passkey saved on this device.'), 'success'); else alert(keyMsg(k.error));
+    try { if (typeof renderPage === 'function') renderPage(curPage); } catch (e) {}
+  }
+  async function keys() {
+    if (typeof openModal !== 'function') return;
+    var head = '<div class="modal-title"><i class="ti ti-key"></i> ' + esc(T('保存したパスキー', 'Saved passkeys')) + ' <button class="modal-close" onclick="closeModalDirect()">×</button></div>';
+    openModal(head + '<div class="pk-spin" aria-hidden="true"></div>');
+    var mgr = !!(W._mlSignedIn && W._authSession), x = sessGet();
+    var r = mgr ? await call({ action: 'pk_mgr_keys' }, W._authSession.access_token) : (x ? await call({ action: 'pk_my_keys', session: x.s }) : { error: 'session_gone' });
+    if (!Array.isArray(r.keys)) { openModal(head + '<div class="pk-err" style="display:block">' + esc(msg(r.error)) + '</div>'); return; }
+    openModal(head + '<div style="font-size:12px;color:var(--muted);line-height:1.7;margin-bottom:8px">' + esc(T('覚えのないパスキーがあれば「消す」を押して、GM に知らせてください。消したパスキーではもう入れません。', 'If you see a passkey you do not recognise, delete it and tell the GM. A deleted passkey can no longer log in.')) + '</div>'
+      + (r.keys.map(function (k) {
+        return '<div class="pk-row"><i class="ti ti-fingerprint" style="font-size:20px;color:var(--muted)"></i><div style="flex:1;min-width:0"><b>' + esc(k.name || T('パスキー', 'Passkey')) + '</b><div style="font-size:11.5px;color:var(--muted)">'
+          + esc(T('保存 ', 'saved ')) + esc(fmt(k.created_at)) + (k.last_used_at ? ' · ' + esc(T('最後に使った日 ', 'last used ')) + esc(fmt(k.last_used_at)) : '') + '</div></div>'
+          + '<button class="btn btn-secondary btn-sm" onclick="FUNERGY_PK.keyDel(\'' + esc(k.id) + '\')">' + esc(T('消す', 'Delete')) + '</button></div>';
+      }).join('') || '<div style="font-size:12.5px;color:var(--muted)">' + esc(T('保存したパスキーはありません', 'No saved passkeys')) + '</div>')
+      + '<div class="btn-row" style="margin-top:14px"><button class="btn btn-primary" onclick="closeModalDirect()">' + esc(T('閉じる', 'Close')) + '</button></div>');
+  }
+  async function keyDel(id) {
+    if (!confirm(T('このパスキーを消しますか？（そのパスキーではもう入れません）', 'Delete this passkey? (it can no longer log in)'))) return;
+    var mgr = !!(W._mlSignedIn && W._authSession), x = sessGet();
+    var r = mgr ? await call({ action: 'pk_mgr_key_delete', id: id }, W._authSession.access_token) : (x ? await call({ action: 'pk_my_key_delete', session: x.s, id: id }) : { error: 'session_gone' });
+    if (!r.ok) { alert(msg(r.error)); return; }
+    keys();
+  }
+  async function keepToggle() {
+    var x = sessGet(); if (!W._pkSignedIn || !x) return;
+    var on = !x.keep;
+    if (on && !confirm(T('この端末を自分だけが使う端末にしますか？（12 時間までログインしたまま。店の共有の端末ではしないでください）', 'Make this your own device? (stay logged in up to 12 hours; do not do this on a shared store device)'))) return;
+    var r = await call({ action: 'pk_keep', session: x.s, keep: on });
+    if (!r.ok) { alert(msg(r.error)); return; }
+    x.keep = on; sessPut(x, on); ownSet(on);
+    try { if (typeof renderPage === 'function') renderPage(curPage); } catch (e) {}
+  }
+
+  /* ---------- GM：ログインの方式（メールで入った GM だけ・2A） ---------- */
+  var A = { list: null, mail: null, q: '', f: 'all', det: null };
+  function isGm() { return (typeof curRole !== 'undefined' && curRole === 'gm'); }
+  async function adminCall(payload, fresh, again) {
+    var title = T('ログインの方式', 'Login method');
+    if (!(await secAuthEnsure())) { secAuthLoginModal(title, again); return null; }
+    var j; try { j = await secAuthCall('device-login', payload); } catch (e) { alert(msg('network')); return null; }
+    if (secAuthNeedLogin(j, fresh, title, again, 'pin')) return null;
+    if (j && (j.error === 'bad_response' || j.error === 'db_unavailable')) { alert(T('サーバーの関数（device-login）が見つからないか、つながりません。手順のとおり入れてあるか確かめてください。', 'The server function (device-login) is missing or unreachable. Check it was installed as in the steps.')); return null; }
+    if (j && j.error === 'bad_value' && /^pk_/.test(payload.action)) j.error = 'not_installed';
+    return j;
+  }
+  function adminErr(j) {
+    var e = j && j.error;
+    if (e === 'forbidden') return T('「ログインの方式」を変えられるのは GM だけです（メールとパスワードで入った GM）。', 'Only the GM (logged in with email and password) can change login methods.');
+    if (e === 'top_not_allowed') return T('GM・CEO・経理はメールとパスワードのままです（パスキーは本人がマイページで足せます）。', 'GMs, CEOs and accounting keep email and password (they can add a passkey from My page).');
+    if (e === 'email_taken') return T('このメールは、ほかの人のログインで使っています。', 'This email is already used by another person’s login.');
+    if (e === 'bad_email') return T('メールアドレスの形が正しくありません。', 'The email address is not valid.');
+    if (e === 'already') return T('この人は、もうメール＋パスキーです。', 'This person already uses email + passkey.');
+    if (e === 'not_passkey') return T('この人はメール＋パスキーではありません（先に一覧を更新してください）。', 'This person does not use email + passkey (refresh the list first).');
+    if (e === 'inactive') return T('退職・停止中の人は変えられません。', 'A resigned / stopped person cannot be changed.');
+    if (e === 'not_found') return T('サーバーの名簿にこの人がいません。', 'The server has no row for this person.');
+    if (e === 'not_configured') return T('Google のつなぎ方（クライアント）がサーバーに入っていません（手順の Secrets）。', 'The Google client is not set on the server (setup Secrets).');
+    if (e === 'from_not_set') return T('送り手のメールが、まだ決まっていません（手順の SQL）。', 'The sender email is not set yet (setup SQL).');
+    return msg(e, j);
+  }
+  function mailErrText(m) {
+    if (!m || m.sent) return '';
+    return (m.error === 'mail_not_connected' || m.error === 'not_configured')
+      ? T('招待は作りましたが、メールを送れませんでした（送り手のメールがつながっていません）。上で送り手をつないでから「招待を送り直す」を押してください。', 'The invitation was created, but the email could not be sent (the sender is not connected). Connect the sender above, then press “Resend invitation”.')
+      : T('招待は作りましたが、メールを送れませんでした。しばらくしてから「招待を送り直す」を押してください。', 'The invitation was created, but the email could not be sent. Press “Resend invitation” in a little while.');
+  }
+  async function admin(fresh) {
+    if (!isGm()) return;
+    var j = await adminCall({ action: 'pk_admin_list' }, fresh, function () { admin(true); });
+    if (!j) return;
+    if (!Array.isArray(j.people)) { alert(adminErr(j)); return; }
+    A.list = j.people; A.mail = j.mail || null; paintAdmin();
+  }
+  function methodBadge(p) {
+    if (p.method === 'email') return '<span class="pk-badge">' + esc(T('メールとパスワード', 'Email & password')) + '</span>';
+    if (p.method === 'passkey') return '<span class="pk-badge pk">' + esc(T('メール＋パスキー', 'Email + passkey')) + '</span>';
+    return '<span class="pk-badge">PIN</span>';
+  }
+  function needText(p) {
+    if (p.out) return T('退職・停止中', 'Resigned / stopped');
+    if (p.need === 'send_failed') return T('招待のメールを送れませんでした', 'The invitation email could not be sent');
+    if (p.need === 'invite_expired') return T('招待の期限切れ（まだ確かめていません）', 'Invitation expired (not confirmed yet)');
+    if (p.need === 'email_change_expired') return T('新しいメールの招待が期限切れ', 'New-email invitation expired');
+    if (p.need === 'no_login') return T('ログインのあいだもパスキーもありません（メールのコードで入れます）', 'No active login or passkey (the email code still works)');
+    return '';
+  }
+  function stateText(p) {
+    if (p.method !== 'passkey') return '';
+    var i = p.invite, out = [];
+    if (!p.confirmed_at) out.push(i && i.state === 'pending' ? T('招待中（' + fmt(i.expires_at) + ' まで）', 'Invited (until ' + fmt(i.expires_at) + ')') : T('まだ確かめていません', 'Not confirmed yet'));
+    else out.push(T('確かめ済み', 'Confirmed') + (p.keys_at ? T(' · パスキーあり', ' · has a passkey') : ''));
+    if (p.email_new) out.push(T('新しいメールの確かめ待ち', 'Waiting for the new email to be confirmed'));
+    if (p.sessions) out.push(T('ログイン中 ' + p.sessions, p.sessions + ' active'));
+    if (p.last_login) out.push(T('最後 ', 'last ') + fmt(p.last_login));
+    return out.join(' · ');
+  }
+  function paintAdmin() {
+    if (typeof openModal !== 'function') return;
+    css();
+    var q = A.q.toLowerCase(), f = A.f, mail = A.mail || {};
+    var list = (A.list || []).filter(function (p) {
+      if (p.missing) return false;
+      if (f === 'pk' && p.method !== 'passkey') return false;
+      if (f === 'need' && !(p.need || (p.method === 'passkey' && p.out))) return false;
+      if (q && String(p.name || '').toLowerCase().indexOf(q) < 0 && String(p.email || '').toLowerCase().indexOf(q) < 0 && String(p.store || '').toLowerCase().indexOf(q) < 0) return false;
+      return true;
+    }).sort(function (a, b) { var ra = a.method === 'passkey' ? 0 : a.method === 'pin' ? 1 : 2, rb = b.method === 'passkey' ? 0 : b.method === 'pin' ? 1 : 2; return ra - rb || String(a.name).localeCompare(String(b.name)); });
+    var n = { pk: 0, need: 0 }; (A.list || []).forEach(function (p) { if (p.method === 'passkey') n.pk++; if (p.need) n.need++; });
+    var mailState = mail.state === 'ok' ? '<span style="color:var(--green);font-weight:700">' + esc(T('つながっています', 'Connected')) + '</span>'
+      : mail.state === 'expired' ? '<span style="color:var(--red);font-weight:700">' + esc(T('つながりが切れました（つなぎ直してください）', 'Disconnected (connect again)')) + '</span>'
+      : '<span style="color:var(--yellow);font-weight:700">' + esc(T('まだつないでいません', 'Not connected yet')) + '</span>';
+    var rows = list.map(function (p) {
+      var id = esc(p.emp_id), nt = needText(p), st = stateText(p);
+      return '<div class="pk-row" style="align-items:flex-start;flex-wrap:wrap"><div style="flex:1;min-width:200px"><b>' + esc(p.name || p.emp_id) + '</b> <span style="font-size:11px;color:var(--muted)">' + esc(p.store || '') + '</span> ' + methodBadge(p)
+        + (p.email ? '<div style="font-size:11.5px;color:var(--muted);word-break:break-all">' + esc(p.email) + (p.email_new ? ' → ' + esc(p.email_new) : '') + '</div>' : '')
+        + (st ? '<div style="font-size:11.5px;margin-top:2px">' + esc(st) + '</div>' : '')
+        + (nt ? '<div style="margin-top:3px"><span class="pk-badge warn">' + esc(nt) + '</span></div>' : '') + '</div>'
+        + '<div style="display:flex;gap:6px;flex-wrap:wrap">'
+        + (p.method === 'pin' && !p.out ? '<button class="btn btn-primary btn-sm" onclick="FUNERGY_PK.aSet(\'' + id + '\')"><i class="ti ti-mail"></i> ' + esc(T('メール＋パスキーにする', 'Switch to email + passkey')) + '</button>' : '')
+        + (p.method === 'passkey' ? '<button class="btn btn-secondary btn-sm" onclick="FUNERGY_PK.aDetail(\'' + id + '\')">' + esc(T('くわしく・変える', 'Details · change')) + '</button>' : '') + '</div></div>';
+    }).join('') || '<div style="font-size:12.5px;color:var(--muted);padding:10px 0">' + esc(T('当てはまる人はいません', 'No one matches')) + '</div>';
+    openModal('<div class="modal-title"><i class="ti ti-fingerprint"></i> ' + esc(T('ログインの方式', 'Login method')) + ' <button class="modal-close" onclick="FUNERGY_PK.aClose()">×</button></div>'
+      + '<div style="font-size:12px;color:var(--muted);line-height:1.7;margin-bottom:10px">' + esc(T('スタッフを 1 人ずつ「メール＋パスキー」にできます（GM だけ）。招待のメール（7 日）で本人がメールを確かめると、その人は PIN ではなく、パスキーかメールのコードでログインします。GM・CEO・経理はメールとパスワードのままです。', 'Switch staff one by one to “email + passkey” (GM only). When the person confirms their email from the invitation (7 days), they log in with a passkey or an email code instead of a PIN. GMs, CEOs and accounting keep email and password.')) + '</div>'
+      + '<div class="pk-row" style="flex-wrap:wrap"><i class="ti ti-mail-cog" style="font-size:20px;color:var(--muted)"></i><div style="flex:1;min-width:200px"><b>' + esc(T('送り手のメール', 'Sender email')) + '</b> ' + mailState
+      + '<div style="font-size:11.5px;color:var(--muted);word-break:break-all">' + esc(mail.from || T('（まだ決まっていません：手順の SQL）', '(not set yet: setup SQL)')) + (mail.last_ok_at ? ' · ' + esc(T('最後に送れた ', 'last sent ')) + esc(fmt(mail.last_ok_at)) : '') + '</div>'
+      + (mail.last_error && mail.state !== 'ok' ? '<div style="font-size:11.5px;color:var(--red)">' + esc(String(mail.last_error).slice(0, 120)) + '</div>' : '') + '</div>'
+      + '<div style="display:flex;gap:6px;flex-wrap:wrap">' + (mail.from_set ? '<button class="btn btn-primary btn-sm" onclick="FUNERGY_PK.aMail()">' + esc(mail.state === 'ok' ? T('つなぎ直す', 'Reconnect') : T('Google でつなぐ', 'Connect with Google')) + '</button>' : '')
+      + '<button class="btn btn-secondary btn-sm" onclick="FUNERGY_PK.admin(true)">' + esc(T('更新', 'Refresh')) + '</button></div></div>'
+      + '<div style="display:flex;gap:6px;margin:12px 0 4px;flex-wrap:wrap"><input class="form-input" style="flex:1;min-width:160px;min-height:40px" placeholder="' + esc(T('名前・メール・店で探す', 'Search name, email, store')) + '" value="' + esc(A.q) + '" oninput="FUNERGY_PK.aFind(this.value)">'
+      + '<select class="form-input" style="min-height:40px;width:auto" onchange="FUNERGY_PK.aFilter(this.value)">'
+      + '<option value="all"' + (f === 'all' ? ' selected' : '') + '>' + esc(T('すべて', 'Everyone')) + '</option>'
+      + '<option value="pk"' + (f === 'pk' ? ' selected' : '') + '>' + esc(T('メール＋パスキー（' + n.pk + '）', 'Email + passkey (' + n.pk + ')')) + '</option>'
+      + '<option value="need"' + (f === 'need' ? ' selected' : '') + '>' + esc(T('対応が要る（' + n.need + '）', 'Needs action (' + n.need + ')')) + '</option></select></div>'
+      + '<div id="pk-a-rows" style="max-height:52vh;overflow-y:auto">' + rows + '</div>'
+      + '<div class="btn-row" style="margin-top:14px"><button class="btn btn-primary" onclick="FUNERGY_PK.aClose()">' + esc(T('閉じる', 'Close')) + '</button></div>');
+  }
+  var findT = null;
+  function aFind(v) { A.q = String(v || ''); if (findT) clearTimeout(findT); findT = setTimeout(function () { var el = D.activeElement, pos = el && el.selectionStart; paintAdmin(); try { var i = D.querySelector('.modal input.form-input'); if (i) { i.focus(); if (pos != null) i.setSelectionRange(pos, pos); } } catch (e) {} }, 250); }
+  function aFilter(v) { A.f = v === 'pk' || v === 'need' ? v : 'all'; paintAdmin(); }
+  function aClose() { A.list = null; A.det = null; A.q = ''; try { closeModalDirect(); } catch (e) {} }
+  function person(id) { return (A.list || []).find(function (p) { return p.emp_id === id; }) || null; }
+  function putPerson(p) { if (!p || !p.emp_id) return; var hit = false; A.list = (A.list || []).map(function (x) { if (x.emp_id === p.emp_id) { hit = true; return p; } return x; }); if (!hit) A.list.push(p); }
+  function aSet(id) {
+    var p = person(id); if (!p) return;
+    openModal('<div class="modal-title"><i class="ti ti-mail"></i> ' + esc(T(p.name + ' さんをメール＋パスキーにする', 'Switch ' + p.name + ' to email + passkey')) + ' <button class="modal-close" onclick="FUNERGY_PK.admin(true)">×</button></div>'
+      + '<div style="font-size:12.5px;line-height:1.7">' + esc(T('このメールに招待（7 日）を送ります。本人がメールのコードで確かめると、パスキーかメールのコードで入れるようになります。', 'An invitation (7 days) is sent to this email. Once confirmed with the email code, they log in with a passkey or an email code.')) + '</div>'
+      + '<div class="pk-note">' + esc(T('いまから、この人は PIN ではログインできません（招待のメールから入ります）。PIN が要るところ（割引の記録など）は今までの PIN のままです。', 'From now on, this person cannot log in with a PIN (they enter through the invitation email). Features that need a PIN (such as the discount log) keep their current PIN.')) + '</div>'
+      + '<label class="form-label" for="pk-a-email" style="margin-top:10px">' + esc(T('本人のメールアドレス', 'Their email address')) + '</label>'
+      + '<input class="form-input" id="pk-a-email" type="email" autocomplete="off" inputmode="email" maxlength="254" placeholder="name@example.com">'
+      + '<label class="pk-own" style="justify-content:flex-start;margin:12px 0 0;color:var(--tm)"><input type="checkbox" id="pk-a-told"><span>' + esc(T('本人に伝えた（このあと PIN では入れなくなること・招待のメールが届くこと）', 'I told them (they can no longer log in with a PIN, and an invitation email is coming)')) + '</span></label>'
+      + '<div class="pk-err" id="pk-a-err" role="alert"></div>'
+      + '<div class="btn-row" style="margin-top:14px"><button class="btn btn-secondary" onclick="FUNERGY_PK.admin(true)">' + esc(T('戻る', 'Back')) + '</button><button class="btn btn-primary" id="pk-a-go" onclick="FUNERGY_PK.aSetGo(\'' + esc(id) + '\')">' + esc(T('招待を送る', 'Send invitation')) + '</button></div>');
+    setTimeout(function () { var e = $('pk-a-email'); if (e) e.focus(); }, 60);
+  }
+  function aErr(text) { var e = $('pk-a-err'); if (e) { e.textContent = text || ''; e.style.display = text ? 'block' : 'none'; } }
+  async function aSetGo(id) {
+    var email = String(($('pk-a-email') || {}).value || '').trim(), told = !!($('pk-a-told') || {}).checked;
+    if (!/^[^@\s]+@[^@\s]+\.[A-Za-z]{2,}$/.test(email)) { aErr(adminErr({ error: 'bad_email' })); return; }
+    if (!told) { aErr(T('本人に伝えたら、チェックを入れてください。', 'Tick the box once you have told them.')); return; }
+    btnBusy('pk-a-go', true, T('送っています…', 'Sending…'));
+    var j = await adminCall({ action: 'pk_admin_set', emp_id: id, email: email, told: true }, false, function () { admin(true); });
+    btnBusy('pk-a-go', false);
+    if (!j) return;
+    if (!j.ok) { aErr(adminErr(j)); return; }
+    if (j.person) putPerson(j.person);
+    var me = mailErrText(j.mail);
+    if (me) alert(me); else toast(T(j.name + ' さんに招待のメールを送りました（7 日）。', 'Sent the invitation to ' + j.name + ' (7 days).'), 'success');
+    S.set[String(id)] = 1;
+    paintAdmin();
+  }
+  async function aDetail(id) {
+    var j = await adminCall({ action: 'pk_admin_detail', emp_id: id }, false, function () { admin(true); });
+    if (!j) return; if (!j.ok || !j.person) { alert(adminErr(j)); return; }
+    A.det = j; putPerson(j.person);
+    var p = j.person, i = p.invite || {};
+    var keysHtml = j.keys == null ? '<div style="font-size:12px;color:var(--red)">' + esc(T('パスキーの一覧を読めませんでした', 'Could not read the passkeys')) + '</div>'
+      : (j.keys.map(function (k) { return '<div style="font-size:12px">· ' + esc(k.name || T('パスキー', 'Passkey')) + ' — ' + esc(T('保存 ', 'saved ')) + esc(fmt(k.created_at)) + (k.last_used_at ? ' · ' + esc(T('最後 ', 'last ')) + esc(fmt(k.last_used_at)) : '') + '</div>'; }).join('') || '<div style="font-size:12px;color:var(--muted)">' + esc(T('なし', 'None')) + '</div>');
+    var sessHtml = (j.sessions || []).map(function (s) {
+      return '<div style="font-size:12px">· ' + esc(s.device_name || T('端末', 'Device')) + ' — ' + esc(s.via === 'passkey' ? T('パスキー', 'passkey') : s.via === 'invite' ? T('招待', 'invitation') : T('メールのコード', 'email code')) + ' · '
+        + esc(s.keep ? T('ログインしたまま', 'stays logged in') : T('共有の端末', 'shared device')) + ' · ' + esc(T('最後 ', 'last ')) + esc(fmt(s.last_used_at || s.created_at)) + ' · ' + esc(T(fmt(s.expires_at) + ' まで', 'until ' + fmt(s.expires_at))) + '</div>';
+    }).join('') || '<div style="font-size:12px;color:var(--muted)">' + esc(T('なし', 'None')) + '</div>';
+    var logHtml = (j.log || []).slice(0, 15).map(function (l) { return '<div style="font-size:11.5px;color:var(--muted)">' + esc(fmt(l.at)) + ' · ' + esc(l.kind) + ' · ' + esc(l.result) + (l.reason ? ' · ' + esc(l.reason) : '') + ' · ' + esc(l.by || '') + '</div>'; }).join('');
+    var id2 = esc(id);
+    openModal('<div class="modal-title"><i class="ti ti-fingerprint"></i> ' + esc(p.name || id) + ' <button class="modal-close" onclick="FUNERGY_PK.admin(true)">×</button></div>'
+      + '<div style="font-size:12.5px;line-height:1.8"><b>' + esc(T('メール', 'Email')) + '</b>：' + esc(p.email || '') + (p.email_new ? ' → ' + esc(p.email_new) + ' ' + esc(T('（確かめ待ち）', '(waiting)')) : '') + '<br>'
+      + '<b>' + esc(T('確かめた日', 'Confirmed')) + '</b>：' + esc(p.confirmed_at ? fmt(p.confirmed_at) : T('まだ', 'not yet')) + '<br>'
+      + '<b>' + esc(T('招待', 'Invitation')) + '</b>：' + esc(i.state ? ({ pending: T('有効（' + fmt(i.expires_at) + ' まで）', 'valid (until ' + fmt(i.expires_at) + ')'), used: T('使われた', 'used'), revoked: T('取り消し', 'cancelled'), expired: T('期限切れ', 'expired') })[i.state] || i.state : T('なし', 'none'))
+      + (i.state === 'pending' ? ' · ' + esc(i.send_state === 'sent' ? T('送った ', 'sent ') + fmt(i.sent_at) : i.send_state === 'failed' ? T('送れなかった', 'not sent') : T('送っている途中', 'sending')) : '') + '</div>'
+      + (needText(p) ? '<div style="margin-top:4px"><span class="pk-badge warn">' + esc(needText(p)) + '</span></div>' : '')
+      + '<div style="font-weight:700;font-size:12.5px;margin-top:10px">' + esc(T('保存したパスキー', 'Saved passkeys')) + '</div>' + keysHtml
+      + '<div style="font-weight:700;font-size:12.5px;margin-top:10px">' + esc(T('ログインのあいだ（12 時間）', 'Active logins (12 hours)')) + '</div>' + sessHtml
+      + (logHtml ? '<details style="margin-top:10px"><summary style="font-size:12.5px;cursor:pointer">' + esc(T('記録（新しい順）', 'Log (newest first)')) + '</summary>' + logHtml + '</details>' : '')
+      + '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:14px">'
+      + '<button class="btn btn-primary btn-sm" onclick="FUNERGY_PK.aInvite(\'' + id2 + '\')"><i class="ti ti-send"></i> ' + esc(T('招待を送り直す', 'Resend invitation')) + '</button>'
+      + (i.state === 'pending' ? '<button class="btn btn-secondary btn-sm" onclick="FUNERGY_PK.aCancel(\'' + id2 + '\')">' + esc(T('招待を取り消す', 'Cancel invitation')) + '</button>' : '')
+      + '<button class="btn btn-secondary btn-sm" onclick="FUNERGY_PK.aEmail(\'' + id2 + '\')">' + esc(T('メールを変える', 'Change email')) + '</button>'
+      + '<button class="btn btn-secondary btn-sm" onclick="FUNERGY_PK.aRevoke(\'' + id2 + '\')">' + esc(T('ログインとパスキーを止める（端末をなくした）', 'Stop logins and passkeys (lost device)')) + '</button>'
+      + '<button class="btn btn-secondary btn-sm" onclick="FUNERGY_PK.aPin(\'' + id2 + '\')">' + esc(T('PIN に戻す', 'Back to PIN')) + '</button></div>'
+      + '<div class="btn-row" style="margin-top:14px"><button class="btn btn-primary" onclick="FUNERGY_PK.admin(true)">' + esc(T('一覧へ', 'Back to the list')) + '</button></div>');
+  }
+  async function aInvite(id) {
+    var p = person(id) || {};
+    if (p.invite && p.invite.state === 'pending' && !confirm(T('前の招待は使えなくなります。送り直しますか？', 'The previous invitation will stop working. Resend?'))) return;
+    var j = await adminCall({ action: 'pk_admin_invite', emp_id: id }, false, function () { admin(true); });
+    if (!j) return; if (!j.ok) { alert(adminErr(j)); return; }
+    if (j.person) putPerson(j.person);
+    var me = mailErrText(j.mail); if (me) alert(me); else toast(T('招待を送り直しました（7 日）。', 'Invitation resent (7 days).'), 'success');
+    aDetail(id);
+  }
+  async function aCancel(id) {
+    if (!confirm(T('招待を取り消しますか？（リンクとコードが使えなくなります）', 'Cancel the invitation? (the link and codes stop working)'))) return;
+    var j = await adminCall({ action: 'pk_admin_invite_revoke', emp_id: id }, false, function () { admin(true); });
+    if (!j) return; if (!j.ok) { alert(adminErr(j)); return; }
+    if (j.person) putPerson(j.person); aDetail(id);
+  }
+  async function aEmail(id) {
+    var p = person(id) || {};
+    var v = (typeof askInput === 'function') ? await askInput({ title: T(p.name + ' さんのメールを変える', 'Change ' + p.name + '’s email'), hint: esc(p.confirmed_at ? T('新しいメールに招待（7 日）を送ります。本人が新しいメールで確かめるまでは、前のメールのままです。前のメールにも知らせます。', 'An invitation (7 days) is sent to the new email. The old email stays until they confirm the new one. The old email is notified too.') : T('まだ確かめていないので、すぐ変えて、新しいメールに招待を送り直します。', 'Not confirmed yet, so it changes now and a new invitation is sent.')), label: T('新しいメールアドレス', 'New email address'), multiline: false, required: true, okLabel: T('変える', 'Change') }) : prompt(T('新しいメールアドレス', 'New email address'));
+    if (v == null) return;
+    var j = await adminCall({ action: 'pk_admin_email', emp_id: id, email: String(v).trim() }, false, function () { admin(true); });
+    if (!j) return; if (!j.ok) { alert(adminErr(j)); return; }
+    if (j.person) putPerson(j.person);
+    var me = j.mail ? mailErrText(j.mail) : ''; if (me) alert(me); else toast(j.mail ? T('新しいメールに招待を送りました。', 'Sent the invitation to the new email.') : T('前のメールに戻しました。', 'Kept the current email.'), 'success');
+    aDetail(id);
+  }
+  async function aRevoke(id) {
+    var p = person(id) || {};
+    if (!confirm(T(p.name + ' さんのログイン（すべての端末）と保存したパスキーを止めますか？\n本人はログインの画面で名前を選び、メールのコードで入り直してから、パスキーを保存し直します。', 'Stop all of ' + p.name + '’s logins (every device) and saved passkeys?\nThey log in again with the email code, then save a new passkey.'))) return;
+    var j = await adminCall({ action: 'pk_admin_revoke', emp_id: id }, false, function () { admin(true); });
+    if (!j) return; if (!j.ok) { alert(adminErr(j)); return; }
+    if (j.person) putPerson(j.person);
+    toast(T('ログインとパスキーを止めました。', 'Stopped the logins and passkeys.'), 'success'); aDetail(id);
+  }
+  async function aPin(id) {
+    var p = person(id) || {};
+    var np = (typeof askInput === 'function') ? await askInput({ title: T(p.name + ' さんを PIN に戻す', 'Switch ' + p.name + ' back to PIN'), hint: esc(T('新しい PIN（4 桁）を決めて、本人に伝えてください。ログインのあいだと保存したパスキーは止まります。メールは記録に残ります。', 'Choose a new 4-digit PIN and tell them. Active logins and saved passkeys stop. The email stays in the record.')), label: T('新しい PIN（4 桁）', 'New PIN (4 digits)'), type: 'password', required: true, pattern: /^\d{4}$/, patternMsg: T('PIN は 4 桁の数字です', 'PIN is 4 digits'), okLabel: T('PIN に戻す', 'Back to PIN') }) : null;
+    if (np == null) return;
+    var j0;
+    try { j0 = await secAuthCall('auth-pin', { action: 'reset', scope: 'staff', target: p.name, newPin: np }); } catch (e) { alert(msg('network')); return; }
+    if (secAuthNeedLogin(j0, false, T('ログインの方式', 'Login method'), function () { admin(true); }, 'pin')) return;
+    if (!j0 || !j0.ok) { alert(secAuthErrText(j0, 'pin')); return; }
+    var j = await adminCall({ action: 'pk_admin_pin', emp_id: id, pin_set: true }, false, function () { admin(true); });
+    if (!j) return; if (!j.ok) { alert(adminErr(j)); return; }
+    if (j.person) putPerson(j.person); delete S.set[String(id)];
+    toast(T(p.name + ' さんを PIN に戻しました。新しい PIN を本人に伝えてください。', 'Switched ' + p.name + ' back to PIN. Tell them the new PIN.'), 'success');
+    admin(true);
+  }
+  async function aMail() {
+    var j = await adminCall({ action: 'pk_mail_connect' }, false, function () { admin(true); });
+    if (!j) return; if (!j.url) { alert(adminErr(j)); return; }
+    alert(T('Google のページを開きます。送り手のメール（' + ((A.mail && A.mail.from) || '') + '）の Google アカウントで入り、許可をすべてチェックしてください。終わったら、この画面の「更新」を押してください。', 'Opening Google. Sign in with the sender account (' + ((A.mail && A.mail.from) || '') + ') and tick every permission. When done, press “Refresh” here.'));
+    var w = null; try { w = W.open(j.url, '_blank', 'noopener'); } catch (e) { w = null; }
+    if (!w) location.href = j.url;
+  }
+
+  W.FUNERGY_PK = {
+    boot: boot, info: info, paintEntry: paintEntry, relabel: relabel, route: route, pinBlocked: pinBlocked, hideStep: hideStep, ownChanged: ownChanged,
+    passkey: passkey, sendCode: sendCode, verify: verify, invite: showInvite, resume: resume, forgetHere: forgetHere,
+    toLogin: function () { S.inv = null; dropUrl(); hideScreen(); try { var ls = $('login-screen'); if (ls) ls.style.display = 'flex'; } catch (e) {} paintEntry(); },
+    onLogout: onLogout, refresh: refresh, myCardHtml: myCardHtml, addKey: addKey, keys: keys, keyDel: keyDel, keepToggle: keepToggle,
+    admin: admin, aFind: aFind, aFilter: aFilter, aClose: aClose, aSet: aSet, aSetGo: aSetGo, aDetail: aDetail, aInvite: aInvite, aCancel: aCancel, aEmail: aEmail,
+    aRevoke: aRevoke, aPin: aPin, aMail: aMail, isGm: isGm,
+    _t: { S: S, A: A, sessGet: sessGet, sessPut: sessPut, own: own, getOpts: getOpts, makeOpts: makeOpts, credOut: credOut, tokenFrom: tokenFrom, msg: msg }
   };
 })(window, document);
 </script>
