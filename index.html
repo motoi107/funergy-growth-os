@@ -8071,7 +8071,8 @@ function navPageAllowed(id){
 }
 /* v1084: その人のホーム（ログインした直後に開くページと同じ決め方） */
 function navHomePage(){
-  if (curStoreLogin) return 'store_cmd';
+  /* v1197（6B）：店のタブレットで「画面の表示」が店舗オペレーションを隠したときは、タブレットの木の最初の画面 */
+  if (curStoreLogin) { if (navGuardAllows('store_cmd')) return 'store_cmd'; var _tg = groupsForRole(); return _tg[0] ? firstAllowedChild(_tg[0]) : 'store_cmd'; }
   if (curRole === 'crew') return 'mypage';
   if (typeof navAcctLanding === 'function' && navAcctLanding()) return 'acct_center';   /* v1196（UI案96 の 4A）。関数を 1 つずつ切り出す試験でも動くように typeof */
   var gs = groupsForRole(); return gs[0] ? firstAllowedChild(gs[0]) : 'mypage';
@@ -23810,7 +23811,7 @@ function initApp() {
   buildNav();
   // Default page
   var groups = groupsForRole();
-  if (curStoreLogin) curPage = 'store_cmd';            // 店舗共有ログインは店舗オペレーション中心
+  if (curStoreLogin) curPage = (typeof navHomePage==='function') ? navHomePage() : 'store_cmd';   // 店舗共有ログインは店舗オペレーション中心（v1197：画面の表示で隠したときはタブレットの最初の画面）
   else curPage = (curRole==='crew') ? 'mypage' : (groups[0] ? firstAllowedChild(groups[0]) : 'mypage');
   /* v1196（UI案96 の 4A）：確かめた本部所属の経理・事務Crew は経理センターから（ワークセンターの「要対応」より先） */
   var _land4a = false; try{ if(!curStoreLogin && typeof navAcctLanding==='function' && navAcctLanding()){ curPage='acct_center'; _land4a=true; } }catch(e){}
@@ -50100,7 +50101,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1196';
+const APP_VERSION = '1197';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -116648,7 +116649,13 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   var CACHE_KEY = '_pv_cache_v1';
   var EDIT_COLS = ['g2','g3','g4','g5','g6','am','chef','acct'];
   var COL_L = { g1:['G1','G1'], g2:['G2','G2'], g3:['G3','G3'], g4:['G4','G4'], g5:['G5','G5'], g6:['G6','G6'],
-    am:['AM','AM'], chef:['Head Chef','Head Chef'], acct:['経理・事務','Accounting & office'] };
+    am:['AM','AM'], chef:['Head Chef','Head Chef'], acct:['経理・事務','Accounting & office'], tab:['店のタブレット','Store tablet'] };
+  /* v1197（UI案96 の 6B）：店のタブレット（店舗の PIN の共有ログイン）の列。関数が v1197（pv_full の tabok:1）のときだけ出す・保存に入れる。
+     出せる画面は、人ごとのデータ（給与・評価・相談・申請・人事）を出さない店の仕事の画面だけ（Claude が決めた・Moto さんに確かめる）。
+     初めは今の 4 画面（店舗オペレーション・シフト・棚卸し・休暇承認）。足した画面は見るだけ（ほかの列と同じ）。人の例外・指定スタッフ限定は無い */
+  var TAB_OK = ['store_cmd','shift_admin','inventory','vacation','required','menu','recipe','ingredient_master','ing_transfer','purchase_detail','invoice',
+    'totoya_docs','crew_handbook','budget','meeting','purchase'];
+  var TAB_CACHE = '_pv_tab_cache_v1';
   function colL(c){ var x = COL_L[c]; return x ? T(x[0], x[1]) : String(c || ''); }
   /* 固定（いつもの決まりで出す・中身に入れない）。マイページ・中間レビュー（担当の決まり）・承認センター（v1165 で外した）・承認・閲覧設定・成長カルテ */
   var FIXED = { mypage:1, mid_review:1, approval:1, ar_settings:1, growth_karte:1 };
@@ -116658,11 +116665,12 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   var CARDS = [['times','FUNERGY TIMES','FUNERGY TIMES'], ['exp','経費の申請（マイページ）','Expense requests (My Page)']];
   /* どの木にも同じ大タブが無い画面の置き場所（MENU_GROUPS に無い画面） */
   var OTHER = { id:'g_other', label:'そのほか', icon:'ti-dots', children:['cc_plan','notifications','biz_guide','acct_export','monthly','expense','office_export'] };
-  var COL_ROLES = { g2:['sl'], g3:['sl'], g4:['am'], g5:['am'], g6:['am'], am:['am'], chef:['chef'], acct:['office','office_crew'] };
+  var COL_ROLES = { g2:['sl'], g3:['sl'], g4:['am'], g5:['am'], g6:['am'], am:['am'], chef:['chef'], acct:['office','office_crew'], tab:['sl'] };
   var PROF = {
     g2:{ tree:'menu', role:'sl', gk:'G2', gnum:2 }, g3:{ tree:'menu', role:'sl', gk:'G3', gnum:3 },
     g4:{ tree:'menu', role:'am', gk:'G4', gnum:4, fin:1 }, g5:{ tree:'menu', role:'am', gk:'G5', gnum:5, fin:1 }, g6:{ tree:'menu', role:'am', gk:'G6', gnum:6, fin:1 },
-    am:{ tree:'menu', role:'am', gk:'G5', gnum:5, fin:1 }, chef:{ tree:'chef', role:'chef', gk:null, gnum:4, fin:1 }, acct:{ tree:'acct', role:'office', gk:null, gnum:1, fin:1 }
+    am:{ tree:'menu', role:'am', gk:'G5', gnum:5, fin:1 }, chef:{ tree:'chef', role:'chef', gk:null, gnum:4, fin:1 }, acct:{ tree:'acct', role:'office', gk:null, gnum:1, fin:1 },
+    tab:{ tree:'store', role:'sl', gk:null, gnum:3 }
   };
   var EMP_RE = /^[A-Za-z0-9_.:-]{1,64}$/;
 
@@ -116689,7 +116697,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     return true;
   }
   function canOpen(col, role, pid){ return guardOk(role, pid) && screenOk(col, role, pid); }
-  function colRoleOk(col, pid){ return (COL_ROLES[col] || []).some(function(r){ return canOpen(col, r, pid); }); }
+  function colRoleOk(col, pid){ if (col === 'tab' && TAB_OK.indexOf(pid) < 0) return false; return (COL_ROLES[col] || []).some(function(r){ return canOpen(col, r, pid); }); }
   function navRoleOk(role, pid){ try{ var it = NAV_ITEMS.find(function(n){ return n.id === pid; }); return !it || !it.roles || it.roles.indexOf(role) >= 0; }catch(e){ return true; } }
   function crewGroupOf(pid){ var g = crewGroups().find(function(x){ return (x.children || []).indexOf(pid) >= 0; }); return g ? g.id : ''; }
 
@@ -116708,6 +116716,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   function roleTree(col, role){
     var p = PROF[col] || {};
     if (p.tree === 'chef') { try{ return CHEF_GROUPS; }catch(e){ return []; } }
+    if (p.tree === 'store') { try{ return STORE_GROUPS; }catch(e){ return []; } }   /* v1197：店のタブレット */
     if (p.tree === 'acct') {
       var a = []; try{ a = ACCT_GROUPS.slice(); }catch(e){ a = []; }
       if (role === 'office') a = a.concat(menuGroups().filter(function(g){ return (g.roles || []).indexOf('office') >= 0; }));
@@ -116729,11 +116738,11 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   /* 初めの値：今の決まりのとおり（Grade別の非表示ページも）＋ 5A の 16 画面 ＋ カードは全部出す */
   function initialDoc(){
     var doc = { v:1, off:false, cols:{}, people:{}, only:{} }, pages = treePages();
-    EDIT_COLS.forEach(function(col){
+    editCols().forEach(function(col){
       var m = {};
       pages.forEach(function(pid){ if (colRoleOk(col, pid)) m['p:' + pid] = profToday(col, pid) ? 's' : 'h'; });
       if (col === 'acct') { ACCT_NEW.concat(['kpi_master']).forEach(function(pid){ if (colRoleOk('acct', pid)) m['p:' + pid] = 's'; }); }
-      CARDS.forEach(function(c){ m['c:' + c[0]] = 's'; });
+      if (col !== 'tab') CARDS.forEach(function(c){ m['c:' + c[0]] = 's'; });   /* 店のタブレットにマイページは無い */
       doc.cols[col] = m;
     });
     var g1 = {}, gh = []; try{ gh = gradeHideFor('G1'); }catch(e){ gh = []; }
@@ -116803,8 +116812,59 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       return null;
     }catch(e){ return null; }
   }
+  /* ---------------------------------------------------------------- v1197：店のタブレット（店舗の PIN の共有ログイン）の列
+     関数の pv_tab（ログインを確かめない・列だけ）を読む。今の 4 画面（STORE_GROUPS）は 表示／非表示 のとおり（隠したら行き先も止める）。
+     足した画面（表示）はナビに出し、見るだけ。足していない画面の行き先は今のまま（店のタブレットの直接の行き先の決まりは段階 2 の残り） */
+  var TB = { key:'', col:null, state:'', gen:0 };
+  function isTab(){ try{ return typeof curStoreLogin !== 'undefined' && !!curStoreLogin; }catch(e){ return false; } }
+  function tabKey(){ try{ return isTab() ? 'tab|' + String(curStore || '') : ''; }catch(e){ return ''; } }
+  function tabActive(){ return !!(TB.col && TB.key && TB.key === tabKey()); }
+  function storePages(){ var o = []; try{ STORE_GROUPS.forEach(function(g){ (g.children || []).forEach(function(c){ o.push(c); }); }); }catch(e){} return o; }
+  function tabDecide(pid){
+    if (!tabActive() || !pid || FIXED[pid]) return null;
+    if (typeof pageRoleAllowed === 'function' && !pageRoleAllowed(pid)) return { show:false, src:'fixed' };
+    if (TAB_OK.indexOf(pid) < 0) return null;
+    var v = TB.col['p:' + pid];
+    if (v === 's') return { show:true, src:'col' };
+    if (v === 'h' && storePages().indexOf(pid) >= 0) return { show:false, src:'col' };   /* 今の 4 画面を隠した */
+    return null;   /* 今の 4 画面にない画面の「非表示」はナビに出さないだけ（行き先は今のまま） */
+  }
+  function tabCacheGet(){ try{ var o = JSON.parse(localStorage.getItem(TAB_CACHE) || 'null'); return (o && typeof o === 'object' && o.col && typeof o.col === 'object') ? o : null; }catch(e){ return null; } }
+  function tabCacheSet(o){ try{ if (o) localStorage.setItem(TAB_CACHE, JSON.stringify(o)); else localStorage.removeItem(TAB_CACHE); }catch(e){} }
+  function goodTabCol(c){
+    if (!c || typeof c !== 'object' || Array.isArray(c)) return null;
+    var o = {}; Object.keys(c).forEach(function(k){ if (/^p:[a-z][a-z0-9_]{0,48}$/.test(k) && (c[k] === 's' || c[k] === 'h')) o[k] = c[k]; });
+    return o;
+  }
+  async function tabLoad(){
+    var key = tabKey(); if (!key) return;
+    var g = ++TB.gen, before = JSON.stringify([TB.key, TB.col, TB.state]);
+    if (!TB.col || TB.key !== key) { var c0 = tabCacheGet(); if (c0) { TB.key = key; TB.col = c0.col; TB.state = 'cache'; } }
+    var j = null, ok = false, net = false;
+    try{
+      if (typeof SUPABASE_URL === 'undefined' || typeof SS_FN === 'undefined' || typeof fetch !== 'function') throw new Error('no');
+      var ctl = null, tm = null; try{ ctl = new AbortController(); tm = setTimeout(function(){ try{ ctl.abort(); }catch(e){} }, 15000); }catch(e){ ctl = null; }
+      try{
+        var r = await fetch(SUPABASE_URL + SS_FN, { method:'POST', headers:{ apikey:SUPABASE_ANON, Authorization:'Bearer ' + SUPABASE_ANON, 'Content-Type':'application/json' },
+          body:JSON.stringify({ action:'pv_tab' }), signal:ctl ? ctl.signal : undefined });
+        try{ j = await r.json(); }catch(e){ j = null; }
+        ok = !!r.ok; if (!r.ok && r.status >= 500) net = true;
+      } finally { if (tm) clearTimeout(tm); }
+    }catch(e){ net = true; }
+    if (g !== TB.gen || key !== tabKey()) return;   /* 読んでいるあいだにログインが変わった */
+    if (ok && j && j.pvfn === 1) {
+      var col = (j.pv && j.pv.col) ? goodTabCol(j.pv.col) : null;
+      if (col) { TB.key = key; TB.col = col; TB.state = 'on'; tabCacheSet({ col:col, at:Date.now() }); }
+      else { TB.key = key; TB.col = null; TB.state = j.off ? 'off' : (j.nosql ? 'nosql' : 'none'); tabCacheSet(null); }
+    } else if (net || (j && j.fn !== 1)) {
+      /* 読めなかった：写しがあれば写しのまま（無ければ今の 4 画面） */
+    } else { TB.key = key; TB.col = null; TB.state = 'old'; tabCacheSet(null); }   /* 前の版の関数（pv_tab を知らない）：今の 4 画面 */
+    if (JSON.stringify([TB.key, TB.col, TB.state]) !== before) onChange();
+  }
+
   /* その画面をこの人に出すか。null＝「画面の表示」では決めていない（今の決まり） */
   function decide(pid){
+    if (isTab()) return tabDecide(pid);   /* v1197 */
     if (!active() || !pid || FIXED[pid]) return null;
     var col = myCol(); if (!col) return null;
     var pv = P.pv, mine = pv.mine || {}, cols = pv.cols || {};
@@ -116823,6 +116883,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   function g1Val(gid){ var pv = P.pv || {}, k = 'g1:' + gid; return (pv.mine || {})[k] || ((pv.cols || {}).g1 || {})[k] || ''; }
   /* ナビの木にかける：隠す画面は外し、出す画面で木に無いものは大タブの入口だけ足す（ほかの中タブは出さない） */
   function applyGroups(groups){
+    if (isTab()) return tabApplyGroups(groups);   /* v1197 */
     var col = myCol(); if (!col || !active()) return groups;
     if (col === 'g1') return groups.filter(function(g){ return g.id === 'g_mypage' || g1Val(g.id) !== 'h'; });
     var out = groups.map(function(g){ return Object.assign({}, g, { children:(g.children || []).filter(function(c){ var d = decide(c); return d ? d.show : true; }) }); });
@@ -116831,6 +116892,21 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       if (have[pid]) return;
       var d = decide(pid); if (!d || !d.show) return;
       place(out, pid); have[pid] = 1;
+    });
+    return out.filter(function(g){ return g.children && g.children.length; });
+  }
+  /* v1197：店のタブレットの木（今の 4 画面）に当てる。隠した画面は外し、足した画面は予実・食材管理などの元の大タブの名前で足す */
+  function tabApplyGroups(groups){
+    if (!tabActive()) return groups;
+    var out = groups.map(function(g){ return Object.assign({}, g, { children:(g.children || []).filter(function(c){ var d = tabDecide(c); return d ? d.show : true; }) }); });
+    var have = {}; out.forEach(function(g){ g.children.forEach(function(c){ have[c] = 1; }); });
+    treePages().filter(function(pid){ return TAB_OK.indexOf(pid) >= 0; }).forEach(function(pid){   /* 並びは GM の木（予実 → 食材管理 …）のとおり */
+      if (have[pid]) return;
+      var d = tabDecide(pid); if (!d || !d.show) return;
+      var mg = menuGroups().find(function(g){ return (g.children || []).indexOf(pid) >= 0; }) || OTHER;
+      var nid = 'pvt_' + mg.id, ng = out.find(function(g){ return g.id === nid; });
+      if (ng) ng.children.push(pid); else out.push({ id:nid, label:mg.label, icon:mg.icon, children:[pid] });
+      have[pid] = 1;
     });
     return out.filter(function(g){ return g.children && g.children.length; });
   }
@@ -116862,6 +116938,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   }
   /* 見るだけ：「画面の表示」で出しているが、今の役割の決まりでは出ない画面（G1 は広げないので無い） */
   function ro(pid){
+    if (isTab()) { var dt = tabDecide(pid); return !!(dt && dt.show) && !todayAllowed(pid); }   /* v1197：店のタブレットに足した画面は見るだけ */
     if (!active() || !pid) return false;
     if (myCol() === 'g1') return false;
     var d = decide(pid); if (!d || !d.show) return false;
@@ -116884,6 +116961,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     }catch(e){}
   }
   function cardShown(card){
+    if (isTab()) return true;
     if (!active()) return true;
     var col = myCol(); if (!col) return true;
     var k = 'c:' + card, pv = P.pv, mv = (pv.mine || {})[k], cv = ((pv.cols || {})[col] || {})[k];
@@ -116991,6 +117069,13 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   function goodPv(pv){ return !!(pv && typeof pv === 'object' && pv.cols && typeof pv.cols === 'object'); }
   function afterLogin(){
     P.gen++; P.who = ''; P.pv = null; P.state = ''; P.at = 0;
+    TB.gen++; TB.key = ''; TB.col = null; TB.state = '';
+    if (isTab()) {   /* v1197：店のタブレットは列だけを読む（ログインを確かめない pv_tab） */
+      var c0 = tabCacheGet(); if (c0) { TB.key = tabKey(); TB.col = c0.col; TB.state = 'cache'; }
+      tabLoad();
+      if (!P.timer) { try{ P.timer = setInterval(function(){ if (document.visibilityState !== 'hidden') load(true); }, 600000); }catch(e){} }
+      return;
+    }
     var who = tid(); if (!who) return;
     var c = cacheGet();
     if (c && c.who === who && goodPv(c.pv)) { P.who = who; P.pv = c.pv; P.state = 'cache'; }
@@ -117000,6 +117085,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       try{ document.addEventListener('visibilitychange', P.vis); }catch(e){} }
   }
   async function load(bg){
+    if (isTab()) return tabLoad();   /* v1197 */
     var who = tid(); if (!who || typeof ssCall !== 'function') return;
     var gen = P.gen, before = sig(P);
     var r = null; try{ r = await ssCall({ action:'pv_get', ms:15000 }); }catch(e){ r = { net:true }; }
@@ -117031,6 +117117,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   }
   function onLogout(){
     P.gen++; P.who = ''; P.pv = null; P.state = ''; P.at = 0; _meMemo = { k:'', at:0, v:null };
+    TB.gen++; TB.key = ''; TB.col = null; TB.state = '';   /* v1197（写しの列は店のタブレットの次のログインのために残す：秘密ではない） */
     if (P.timer) { try{ clearInterval(P.timer); }catch(e){} P.timer = null; }
     try{ var b = document.getElementById('pv-ro-band'); if (b) b.remove(); }catch(e){}
     E = freshE();
@@ -117061,8 +117148,10 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
 
   /* ---------------------------------------------------------------- 編集の画面（承認・閲覧設定 › 画面の表示・CEO・GM） */
   function freshE(){ return { k:'', load:'', err:'', code:'', base:null, ver:0, at:'', by:'', broken:false, draft:null, first:false,
-    init:null, sub:'grade', reason:'', busy:false, band:'', page:'', emp:'', addEmp:'', addVal:'h', logs:null, lload:'', lmore:false, det:null }; }
+    init:null, sub:'grade', reason:'', busy:false, band:'', page:'', emp:'', addEmp:'', addVal:'h', logs:null, lload:'', lmore:false, det:null, tabok:false }; }
   var E = freshE();
+  /* v1197：編集で出す列。店のタブレットの列は、関数が受け取れるとき（pv_full の tabok:1）だけ（前の版の関数に送ると形が合わずに断られるため） */
+  function editCols(){ return (E && E.tabok) ? EDIT_COLS.concat(['tab']) : EDIT_COLS.slice(); }
   function phone(){ try{ return W.matchMedia && W.matchMedia('(max-width: 767px)').matches; }catch(e){ return false; } }
   function eSync(){ var k = tid() || ''; if (E.k !== k) { E = freshE(); E.k = k; } }
   function onPage(){ return typeof curPage !== 'undefined' && curPage === 'ar_settings'; }
@@ -117146,6 +117235,12 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   }
   function problems(d){
     var o = [];
+    /* v1197：店のタブレットに出す画面が 1 つも無いと、タブレットで何も開けない */
+    if (editCols().indexOf('tab') >= 0) {
+      var tc = (d.cols || {}).tab || {};
+      var any = TAB_OK.some(function(pid){ if (!colRoleOk('tab', pid)) return false; var v = tc['p:' + pid]; return v ? v === 's' : profToday('tab', pid); });
+      if (!any) o.push(T('店のタブレットに出す画面が 1 つもありません','The store tablet would show no screens'));
+    }
     Object.keys(d.only || {}).forEach(function(k){ if (!(d.only[k] || []).length) o.push(nodeL(k) + T('：指定スタッフ限定に 1 人も入っていません',': no one is in the selected staff list')); });
     if (JSON.stringify(d).length > 390000) o.push(T('設定が大きすぎます','The settings are too large'));
     return o;
@@ -117164,7 +117259,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       var j = r.j;
       if (j.nosql) { E.load = 'err'; E.code = 'nosql'; }
       else {
-        E.load = 'ok'; E.ver = Number(j.ver) || 0; E.broken = !!j.broken;
+        E.load = 'ok'; E.ver = Number(j.ver) || 0; E.broken = !!j.broken; E.tabok = j.tabok === 1;   /* v1197 */
         if (j.pv && j.pv.doc) { E.base = normDoc(j.pv.doc); E.at = j.pv.at || ''; E.by = j.pv.by_name || ''; E.draft = clone(E.base); E.first = false; }
         else { E.base = null; E.at = ''; E.by = ''; E.init = initialDoc(); E.draft = clone(E.init); E.first = true; }
       }
@@ -117214,8 +117309,9 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   }
   function headRow(first){
     var cc = colCount();
-    return '<tr><th class="nm">' + esc(first) + '</th><th title="CEO・GM">CEO・GM</th>' + EDIT_COLS.map(function(c){
-      return '<th>' + esc(colL(c)) + '<div style="font-weight:400;font-size:10.5px;color:var(--muted)">' + (cc[c] || 0) + T(' 人',' ppl') + '</div></th>'; }).join('') + '</tr>';
+    var ns = 0; try{ ns = (activeStores() || []).length; }catch(e){ ns = 0; }
+    return '<tr><th class="nm">' + esc(first) + '</th><th title="CEO・GM">CEO・GM</th>' + editCols().map(function(c){
+      return '<th>' + esc(colL(c)) + '<div style="font-weight:400;font-size:10.5px;color:var(--muted)">' + (c === 'tab' ? ns + T(' 店',' stores') : (cc[c] || 0) + T(' 人',' ppl')) + '</div></th>'; }).join('') + '</tr>';
   }
   function gradeTab(){
     var h = '<div style="font-size:12px;color:var(--muted);margin:6px 0 8px;line-height:1.6">'
@@ -117223,21 +117319,21 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       + '</div>';
     h += '<div class="pv-wrap"><table class="pv-tbl"><thead>' + headRow(T('大タブ › 中タブ','Group › tab')) + '</thead><tbody>';
     tree().forEach(function(g){
-      h += '<tr class="grp"><td class="nm" colspan="' + (EDIT_COLS.length + 2) + '"><i class="ti ' + esc(g.icon) + '"></i> ' + esc(navLbl(g.label)) + '</td></tr>';
+      h += '<tr class="grp"><td class="nm" colspan="' + (editCols().length + 2) + '"><i class="ti ' + esc(g.icon) + '"></i> ' + esc(navLbl(g.label)) + '</td></tr>';
       g.children.forEach(function(pid){
         var it = navItem(pid);
         h += '<tr><td class="nm"><i class="ti ' + esc(it.icon) + '" style="font-size:12px;color:var(--muted);margin-right:4px"></i>' + esc(navLbl(it.label))
           + ' <a href="javascript:void(0)" style="font-size:11px" onclick="FUNERGY_PV.h.openPage(\'' + pid + '\')">' + T('タブから','by tab') + '</a></td>'
           + '<td><span style="color:var(--muted);font-size:11.5px">' + T('固定','Fixed') + '</span></td>'
-          + EDIT_COLS.map(function(c){ return gradeCell(c, pid); }).join('') + '</tr>';
+          + editCols().map(function(c){ return gradeCell(c, pid); }).join('') + '</tr>';
       });
     });
-    h += '<tr class="grp"><td class="nm" colspan="' + (EDIT_COLS.length + 2) + '"><i class="ti ti-id-badge-2"></i> ' + T('マイページのカード','My Page cards') + '</td></tr>';
+    h += '<tr class="grp"><td class="nm" colspan="' + (editCols().length + 2) + '"><i class="ti ti-id-badge-2"></i> ' + T('マイページのカード','My Page cards') + '</td></tr>';
     CARDS.forEach(function(c){
       h += '<tr><td class="nm">' + esc(T(c[1], c[2])) + '</td><td><span style="color:var(--muted);font-size:11.5px">' + T('固定','Fixed') + '</span></td>'
-        + EDIT_COLS.map(function(col){ var node = 'c:' + c[0], v = cellVal(col, node) || 's'; return '<td>' + cellBtn(col, node, v, { base:baseVal(col, node) || 's' }) + '</td>'; }).join('') + '</tr>';
+        + editCols().map(function(col){ if (col === 'tab') return '<td style="color:var(--muted)">—</td>'; var node = 'c:' + c[0], v = cellVal(col, node) || 's'; return '<td>' + cellBtn(col, node, v, { base:baseVal(col, node) || 's' }) + '</td>'; }).join('') + '</tr>';
     });
-    h += '<tr><td class="nm">' + T('セキュアページ（機密）','Secure page (confidential)') + '</td><td colspan="' + (EDIT_COLS.length + 1) + '" style="text-align:left;color:var(--muted);font-size:11.5px">'
+    h += '<tr><td class="nm">' + T('セキュアページ（機密）','Secure page (confidential)') + '</td><td colspan="' + (editCols().length + 1) + '" style="text-align:left;color:var(--muted);font-size:11.5px">'
       + T('固定：CEO・GM だけ','Fixed: CEO and GM only') + '</td></tr>';
     h += '</tbody></table></div>';
     /* G1 の木（出す・隠すだけ・8A） */
@@ -117272,7 +117368,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     if (!pid) return h + '<div style="color:var(--muted);font-size:12.5px">' + T('画面を選ぶと、列ごとの値・指定スタッフ限定・個人の例外を変えられます','Choose a screen to change its value per column, its selected-staff list and person exceptions') + '</div>';
     var node = 'p:' + pid, ro0 = phone() || E.busy;
     h += '<div class="pv-wrap" style="max-height:none"><table class="pv-tbl"><thead>' + headRow(T('画面','Screen')) + '</thead><tbody><tr><td class="nm">' + esc(navLbl(navItem(pid).label)) + '</td>'
-      + '<td><span style="color:var(--muted);font-size:11.5px">' + T('固定','Fixed') + '</span></td>' + EDIT_COLS.map(function(c){ return gradeCell(c, pid); }).join('') + '</tr></tbody></table></div>';
+      + '<td><span style="color:var(--muted);font-size:11.5px">' + T('固定','Fixed') + '</span></td>' + editCols().map(function(c){ return gradeCell(c, pid); }).join('') + '</tr></tbody></table></div>';
     var list = own(E.draft.only, node) ? E.draft.only[node] : null;
     h += '<div class="card" style="margin-top:12px"><div class="card-title" style="font-size:14px"><i class="ti ti-user-check"></i> ' + T('指定スタッフ限定','Selected staff only') + '</div>'
       + '<label class="pv-row" style="font-size:12.5px"><input type="checkbox"' + (list ? ' checked' : '') + (ro0 ? ' disabled' : '') + ' onchange="FUNERGY_PV.h.only(this.checked)"> '
@@ -117439,6 +117535,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       try{ r2 = await ssCall({ action:'pv_full', ms:20000 }); }catch(e){ r2 = null; }
       if (k0 !== E.k) return;
       if (r2 && r2.ok && r2.j && !r2.j.nosql) {
+        E.tabok = r2.j.tabok === 1;
         var nb = (r2.j.pv && r2.j.pv.doc) ? normDoc(r2.j.pv.doc) : null;
         E.draft = rebase(oldBase, E.draft, nb); E.base = nb; E.init = nb ? null : (E.init || initialDoc()); E.ver = Number(r2.j.ver) || 0; E.broken = !!r2.j.broken; E.first = !nb;
         if (r2.j.pv) { E.at = r2.j.pv.at || ''; E.by = r2.j.pv.by_name || ''; }
@@ -117493,13 +117590,13 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   };
 
   W.FUNERGY_PV = {
-    on:function(){ return active(); }, decide:decide, applyGroups:applyGroups, ro:ro, band:band, cardShown:cardShown,
+    on:function(){ return active() || (isTab() && tabActive()); }, decide:decide, applyGroups:applyGroups, ro:ro, band:band, cardShown:cardShown,
     writeBlocked:writeBlocked, callBlocked:callBlocked, blocked:function(){ return BLK; }, afterLogin:afterLogin, onLogout:onLogout, load:load,
     settingsCard:settingsCard, openEditor:openEditor, editorHtml:editorHtml, h:h,
     /* 試験用 */
     _P:function(){ return P; }, _E:function(){ return E; }, _G:G, _RO_WRAP:RO_WRAP.slice(), _GESTURES:GESTURES.slice(), _initialDoc:initialDoc, _profToday:profToday, _pvColOf:pvColOf, _myCol:myCol,
     _core:core, _rebase:rebase, _flat:flat, _tree:tree, _explain:function(s, pid){ return explain(s, pid); }, _syncKey:syncKey, _todayAllowed:todayAllowed, _queryField:queryField,
-    ACCT_NEW:ACCT_NEW, EDIT_COLS:EDIT_COLS
+    ACCT_NEW:ACCT_NEW, EDIT_COLS:EDIT_COLS, TAB_OK:TAB_OK, _TB:function(){ return TB; }, _tabLoad:tabLoad, _editCols:function(){ return editCols(); }
   };
 })();
 /* ==== FUNERGY_PV end ==== */

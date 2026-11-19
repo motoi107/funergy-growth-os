@@ -34,7 +34,7 @@ test('pvCheck: a good document is kept as it is, off becomes a boolean, empty pe
   assert.equal(pvCheck({ ...DOC, off: true }).off, true);
   assert.deepEqual(pvCheck({ v: 1 }), { v: 1, off: false, cols: {}, people: {}, only: {} });
   assert.deepEqual(pvCheck({ v: 1, people: { 'E-1': {} } }).people, {});
-  assert.deepEqual(PV_COLS, ['g1', 'g2', 'g3', 'g4', 'g5', 'g6', 'am', 'chef', 'acct']);
+  assert.deepEqual(PV_COLS, ['g1', 'g2', 'g3', 'g4', 'g5', 'g6', 'am', 'chef', 'acct', 'tab']);   // v1197：店のタブレットの列（tests/pv-tab-server-v1197.test.mjs）
   for (const k of ['p:ar_settings', 'p:growth_karte', 'p:mid_review', 'p:approval', 'c:secure']) assert.ok(PV_NEVER.includes(k), k);
 });
 
