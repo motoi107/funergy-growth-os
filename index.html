@@ -116596,7 +116596,16 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   }
   function treePages(){ var o = []; tree().forEach(function(g){ g.children.forEach(function(c){ if (!FIXED[c]) o.push(c); }); }); return o; }
   function guardOk(role, pid){ try{ var g = PAGE_GUARD[pid]; return !g || g.indexOf(role) >= 0; }catch(e){ return true; } }
-  function colRoleOk(col, pid){ return (COL_ROLES[col] || []).some(function(r){ return guardOk(r, pid); }); }
+  /* 画面の中で開けるかを決めている画面（従業員マスター・KPI設定）。開けない人に出すと入口だけ出て「アクセス権限がありません」になる
+     （PR #197 のレビューの P3）ので、コードの守りと同じに扱う（表は「—」・経理・事務の列は「M・L」） */
+  function screenOk(col, role, pid){
+    var p = PROF[col] || {};
+    if (pid === 'staff_master') return ['gm','ceo','office','am','chef'].indexOf(role) >= 0;
+    if (pid === 'kpi_master') return ['ceo','gm','office','am','chef'].indexOf(role) >= 0 || (p.gnum || 0) >= 2;
+    return true;
+  }
+  function canOpen(col, role, pid){ return guardOk(role, pid) && screenOk(col, role, pid); }
+  function colRoleOk(col, pid){ return (COL_ROLES[col] || []).some(function(r){ return canOpen(col, r, pid); }); }
   function navRoleOk(role, pid){ try{ var it = NAV_ITEMS.find(function(n){ return n.id === pid; }); return !it || !it.roles || it.roles.indexOf(role) >= 0; }catch(e){ return true; } }
   function crewGroupOf(pid){ var g = crewGroups().find(function(x){ return (x.children || []).indexOf(pid) >= 0; }); return g ? g.id : ''; }
 
@@ -116628,9 +116637,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   function profCalc(col, r, pid, p){
     var inTree = roleTree(col, r).some(function(g){ return (g.children || []).indexOf(pid) >= 0; });
     if (!inTree) return false;
-    if (!guardOk(r, pid) || !navRoleOk(r, pid)) return false;
-    if (pid === 'staff_master' && ['gm','ceo','office','am','chef'].indexOf(r) < 0) return false;
-    if (pid === 'kpi_master' && !(['ceo','gm','office','am','chef'].indexOf(r) >= 0 || p.gnum >= 2)) return false;
+    if (!canOpen(col, r, pid) || !navRoleOk(r, pid)) return false;
     if (pid === 'dashboard') { var fin = false; try{ fin = !!(ROLE_CONFIG[r] || {}).financial; }catch(e){ fin = !!p.fin; } if (!fin && p.gnum < 2) return false; }
     if (p.gk && p.tree === 'menu') { try{ if (gradeHideFor(p.gk).indexOf(pid) >= 0) return false; }catch(e){} }
     return true;
@@ -116723,6 +116730,9 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       return v === 'h' ? { show:false, src:mine[k] ? 'person' : 'col' } : null;   /* G1 は出す・隠すだけ（今の木より広げない・8A） */
     }
     if (typeof pageRoleAllowed === 'function' && !pageRoleAllowed(pid)) return { show:false, src:'fixed' };
+    /* 画面の中で開けない人（従業員マスター・KPI設定）には出さない（入口だけ出て断られないように） */
+    if (pid === 'staff_master' && typeof canAccessStaffMaster === 'function' && !canAccessStaffMaster()) return { show:false, src:'fixed' };
+    if (pid === 'kpi_master' && typeof canAccessKpiMaster === 'function' && !canAccessKpiMaster()) return { show:false, src:'fixed' };
     var pk = 'p:' + pid, om = pv.only || {};
     return core(own(om, pk) ? !!om[pk] : undefined, mine[pk], (cols[col] || {})[pk]);
   }
@@ -116784,8 +116794,8 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       d.id = 'pv-ro-band'; d.className = 'alert alert-info'; d.setAttribute('role', 'note');
       d.style.cssText = 'font-size:12.5px;margin:0 0 10px;display:flex;gap:8px;align-items:flex-start';
       d.innerHTML = '<i class="ti ti-eye" style="font-size:16px;margin-top:1px"></i><div><b>' + T('見るだけ','View only') + '</b> · '
-        + T('この画面は「画面の表示」の設定で見られるようにした画面です。保存・確定・削除はできません',
-            'This screen is shown to you by the screen visibility settings. You cannot save, confirm or delete here') + '</div>';
+        + T('この画面は「画面の表示」の設定で見られるようにした画面です。見るだけの画面なので、保存・確定・削除はしないでください（押した操作はこの画面で止めます）',
+            'This screen is shown to you by the screen visibility settings. It is for viewing only: please do not save, confirm or delete here (pressed actions are stopped on this screen)') + '</div>';
       mc.insertBefore(d, mc.firstChild);
     }catch(e){}
   }
@@ -116797,20 +116807,36 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   }
 
   /* ---------------------------------------------------------------- 見るだけの画面で保存を止める（ベストエフォート） */
-  /* 人が押した操作だけを見る：押したその処理の中（live）と、そのあと 1.5 秒（入力のあとに少し遅れて保存する画面のため）。
-     裏の取り込み（Toast・同期）を止めないよう、長くは見ない */
+  /* 人が押した・打った操作だけを見る：その処理の中（live）と、そのあと 1.5 秒（入力のあとに少し遅れて保存する画面のため）。
+     裏の取り込み（Toast・同期）を止めないよう、長くは見ない。
+     PR #197 の Codex（6996221251）の P2-1：欄に打つ文字（Enter 以外のキー・input）・貼り付け・欄から離れる（blur・focusout）も操作として見る
+     （前は Enter だけ＝欄を選んで 1.5 秒たってから打つと、oninput で保存する欄（棚卸しの数）が保存された）。
+     打つたびに見直すので、欄にとどまって打ち続けても止まる */
   var GESTURE_MS = 1500;
-  var G = { at:0, page:'', inPage:false, live:false, tm:null };
+  var G = { at:0, page:'', inPage:false, live:false, tm:null, el:null };
+  var GESTURES = ['pointerdown','click','change','submit','keydown','beforeinput','input','paste','cut','drop','compositionend','blur','focusout'];   /* blur は伝わらないが document の capture で受けられる（onblur で保存する欄のため・focusout より先に来る） */
   function onGesture(ev){
     try{
-      if (ev.type === 'keydown' && ev.key !== 'Enter') return;
       var tg = ev.target, mc = document.getElementById('main-content'), mo = document.getElementById('modal-overlay');
       G.at = Date.now(); G.page = (typeof curPage !== 'undefined') ? curPage : '';
       G.inPage = !!(tg && tg.nodeType === 1 && ((mc && mc.contains(tg)) || (mo && mo.contains(tg))));
+      G.el = G.inPage ? tg : null;
       G.live = true; if (G.tm) clearTimeout(G.tm); G.tm = setTimeout(function(){ G.live = false; G.tm = null; }, 0);
     }catch(e){}
   }
-  try{ ['pointerdown','click','change','submit','keydown'].forEach(function(t0){ document.addEventListener(t0, onGesture, true); }); }catch(e){}
+  try{ GESTURES.forEach(function(t0){ document.addEventListener(t0, onGesture, true); }); }catch(e){}
+  /* 止めたとき、打った欄の値を画面に出したときの値に戻す（保存されていない数が残って見えないように）。検索の欄など書かない欄は触らない */
+  function revertField(){
+    try{
+      var el = G.el; if (!el || el.isConnected === false) return;
+      var tn = String(el.tagName || '').toUpperCase(), ty = String(el.type || '').toLowerCase();
+      if (tn === 'INPUT') {
+        if (ty === 'checkbox' || ty === 'radio') el.checked = !!el.defaultChecked;
+        else if (ty !== 'button' && ty !== 'submit' && ty !== 'reset' && ty !== 'file') el.value = (el.defaultValue == null ? '' : el.defaultValue);
+      } else if (tn === 'TEXTAREA') el.value = (el.defaultValue == null ? '' : el.defaultValue);
+      else if (tn === 'SELECT' && el.options) { for (var i = 0; i < el.options.length; i++) el.options[i].selected = !!el.options[i].defaultSelected; }
+    }catch(e){}
+  }
   function syncKey(key){
     var k = String(key || '');
     if (!k || k.charAt(0) === '_') return false;
@@ -116827,9 +116853,9 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     var cp = (typeof curPage !== 'undefined') ? curPage : '';
     return G.inPage && (G.live || Date.now() - G.at <= GESTURE_MS) && G.page === cp && ro(cp);
   }
-  function roToast(){ var now = Date.now(); if (now - P.toastAt > 2500) { P.toastAt = now; toast(T('この画面は見るだけです（保存・確定・削除はできません）','This screen is view only (you cannot save, confirm or delete)'), 'warning'); } }
+  function roToast(){ var now = Date.now(); if (now - P.toastAt > 2500) { P.toastAt = now; toast(T('この画面は見るだけです（保存しませんでした）','This screen is view only (not saved)'), 'warning'); } }
   function writeBlocked(key){
-    try{ if (!gestureOn() || !syncKey(key)) return false; roToast(); return true; }catch(e){ return false; }
+    try{ if (!gestureOn() || !syncKey(key)) return false; roToast(); revertField(); return true; }catch(e){ return false; }
   }
   function callBlocked(payload){
     try{
@@ -116837,16 +116863,19 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       if (['put','pii_op','hr_op','pin_set'].indexOf(a) < 0) return false;
       if (!gestureOn()) return false;
       if (a === 'put' && payload.key && !syncKey(payload.key)) return false;
-      roToast(); return true;
+      roToast(); revertField(); return true;
     }catch(e){ return false; }
   }
-  /* 売上・予算の保存（v1101 の守りを通る道）は lsSet の中身を通らないので、押して保存する関数の入口で止める */
+  /* 売上・予算の保存（v1101 の守りを通る道）は lsSet の中身を通らないので、押して保存する関数の入口で止める。
+     PR #197 のレビューの P2-1：v1101 の守りの関数（WRITERS）のうち人が押すものすべて（削除・承認・却下・開き直しも）。
+     自動の保存（AUTO_SOURCES：Toast・期間の取り込み・天気・予算の印の移し替え）は止めない */
   function roNow(){ try{ return gestureOn(); }catch(e){ return false; } }
-  ['saveDailyActual','saveDayMemo','bbSave','saveEvent','saveDow','saveSeg','saveDayBudget','saveBasis','submitBudget',
-   '_reviewBeforeSubmit','_saveRationaleDraft','_doSubmitBudget'].forEach(function(n){
+  var RO_WRAP = ['saveDailyActual','saveDayMemo','bbSave','saveEvent','deleteEvent','saveDow','saveSeg','saveDayBudget','saveBasis','deleteBasis',
+    'submitBudget','_reviewBeforeSubmit','_saveRationaleDraft','_doSubmitBudget','approveBudgetSeg','rejectBudgetSeg','reopenBudget'];
+  RO_WRAP.forEach(function(n){
     try{
       var o = W[n]; if (typeof o !== 'function') return;
-      W[n] = function(){ if (roNow()) { roToast(); return; } return o.apply(this, arguments); };
+      W[n] = function(){ if (roNow()) { roToast(); revertField(); return; } return o.apply(this, arguments); };
     }catch(e){}
   });
 
@@ -117072,9 +117101,9 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     if (FIXED[pid]) return '<td><span style="color:var(--muted);font-size:11.5px">' + T('固定','Fixed') + '</span></td>';
     if (!colRoleOk(col, pid)) return '<td style="color:var(--muted)" title="' + esc(T('コードの守りで出ない画面','Blocked by the code guard')) + '">—</td>';
     var node = 'p:' + pid, v = effCol(col, pid), bv = baseVal(col, node) || (profToday(col, pid) ? 's' : 'h');
-    var ml = (col === 'acct' && !guardOk('office_crew', pid) && guardOk('office', pid));
+    var ml = (col === 'acct' && !canOpen('acct', 'office_crew', pid) && canOpen('acct', 'office', pid));
     /* 新：その列のだれかが今の決まりでは開けない画面（その人は見るだけ）。経理・事務の列で事務Crew だけが新しいときは「事務Crew は見るだけ」 */
-    var lack = v === 's' ? (COL_ROLES[col] || []).filter(function(r){ return guardOk(r, pid) && !profRole(col, r, pid); }) : [];
+    var lack = v === 's' ? (COL_ROLES[col] || []).filter(function(r){ return canOpen(col, r, pid) && !profRole(col, r, pid); }) : [];
     var isNew = lack.length ? ((col === 'acct' && lack.length === 1 && lack[0] === 'office_crew') ? 'crew' : 'all') : '';
     return '<td>' + cellBtn(col, node, v, { base:bv, isNew:isNew, ml:ml }) + '</td>';
   }
@@ -117085,7 +117114,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   }
   function gradeTab(){
     var h = '<div style="font-size:12px;color:var(--muted);margin:6px 0 8px;line-height:1.6">'
-      + T('セルを押すと 表示／非表示 を切り替えます。「新・見るだけ」は今の役割の決まりより広げた画面で、その人は見るだけです（保存・確定・削除はできません）。CEO・GM はいつも全部です。','Tap a cell to switch Show / Hide. "New · view only" marks screens shown beyond the current role rules; those people can only view them. CEO and GM always see everything.')
+      + T('セルを押すと 表示／非表示 を切り替えます。「新・見るだけ」は今の役割の決まりより広げた画面で、その人は見るだけです（押した保存・確定・削除は画面の側で止めます。サーバーの権限は今のまま）。CEO・GM はいつも全部です。','Tap a cell to switch Show / Hide. "New · view only" marks screens shown beyond the current role rules; those people can only view them (pressed saves, confirms and deletes are stopped on the screen; server permissions stay as they are). CEO and GM always see everything.')
       + '</div>';
     h += '<div class="pv-wrap"><table class="pv-tbl"><thead>' + headRow(T('大タブ › 中タブ','Group › tab')) + '</thead><tbody>';
     tree().forEach(function(g){
@@ -117179,7 +117208,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     var r = core(own(d.only, node) ? (d.only[node] || []).indexOf(s.id) >= 0 : undefined, mine[node], (d.cols[col] || {})[node]);
     var role = String((s.e && s.e.role) || ''); if (role === 'g4') role = 'am'; else if (role === 'g2') role = 'sl';
     if ((COL_ROLES[col] || []).indexOf(role) < 0) role = (COL_ROLES[col] || [])[0];
-    if (!guardOk(role, pid)) return { show:false, src:T('コードの守り','Code guard') };
+    if (!canOpen(col, role, pid)) return { show:false, src:T('コードの守り','Code guard') };
     var show = r ? r.show : profRole(col, role, pid), src = r ? ({ only:T('指定スタッフ限定','Selected staff only'), person:T('個人','Person'), col:T('Grade・ロール','Grade / role') })[r.src] : T('今の決まり','Current rules');
     if (show && cg.indexOf(pid) >= 0) return { show:false, src:T('専門職の隠す画面（Score管理）','Specialist hidden screen (Score settings)') };
     return { show:show, src:src, ro:(show && !profRole(col, role, pid)) };
@@ -117363,7 +117392,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     writeBlocked:writeBlocked, callBlocked:callBlocked, afterLogin:afterLogin, onLogout:onLogout, load:load,
     settingsCard:settingsCard, openEditor:openEditor, editorHtml:editorHtml, h:h,
     /* 試験用 */
-    _P:function(){ return P; }, _E:function(){ return E; }, _G:G, _initialDoc:initialDoc, _profToday:profToday, _pvColOf:pvColOf, _myCol:myCol,
+    _P:function(){ return P; }, _E:function(){ return E; }, _G:G, _RO_WRAP:RO_WRAP.slice(), _GESTURES:GESTURES.slice(), _initialDoc:initialDoc, _profToday:profToday, _pvColOf:pvColOf, _myCol:myCol,
     _core:core, _rebase:rebase, _flat:flat, _tree:tree, _explain:function(s, pid){ return explain(s, pid); }, _syncKey:syncKey, _todayAllowed:todayAllowed,
     ACCT_NEW:ACCT_NEW, EDIT_COLS:EDIT_COLS
   };

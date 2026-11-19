@@ -177,9 +177,18 @@ test('office crew: the store master stays blocked by the code guard; accountants
   assert.deepEqual(JSON.parse(JSON.stringify(run(oc, "FUNERGY_PV.decide('store_master')"))), { show: false, src: 'fixed' });
   assert.equal(run(oc, "navGuardAllows('store_master')"), false);
   assert.equal(run(oc, "FUNERGY_PV.ro('dashboard')"), true);
-  assert.equal(run(oc, "FUNERGY_PV.ro('kpi_master')"), true, 'KPI settings is new for office crew (5A) and view only');
+  // PR #197 のレビューの P3：従業員マスター・KPI設定は画面の中で事務Crew を断るので、出さない（入口だけ出て断られない）
+  for (const pid of ['staff_master', 'kpi_master']) {
+    assert.deepEqual(JSON.parse(JSON.stringify(run(oc, `FUNERGY_PV.decide('${pid}')`))), { show: false, src: 'fixed' }, pid);
+    assert.equal(run(oc, `navChildAllowed('${pid}')`), false, pid + ' is not in the office crew nav');
+    assert.equal(run(oc, `FUNERGY_PV.ro('${pid}')`), false, pid);
+  }
+  assert.ok(!flatNav(oc).includes('staff_master') && !flatNav(oc).includes('kpi_master'));
+  assert.equal(run(oc, "FUNERGY_PV.ro('inventory')"), true, 'the other new pages stay view only for office crew');
   const ac = app('e9'); await withDoc(ac, doc, 'e9');
   assert.equal(run(ac, "navGuardAllows('store_master')"), true);
+  assert.ok(flatNav(ac).includes('staff_master') && flatNav(ac).includes('kpi_master'), 'accountants open both');
+  assert.equal(run(ac, "FUNERGY_PV.ro('staff_master')"), false);
   assert.equal(run(ac, "FUNERGY_PV.ro('dashboard')"), false, 'an accountant already opens it when a store is chosen');
   // new pages are placed together, under a group named like the menu group
   const groups = run(oc, 'groupsForRole()');
@@ -233,8 +242,8 @@ test('G1: groups can be hidden (never widened); hiding the store group closes st
 
 test('view only: synced writes and server saves pressed on the screen are refused; background and local writes are not', async () => {
   const doc = initialDoc(null);
-  const c = app('e10', { page: 'staff_master' }); await withDoc(c, doc, 'e10');
-  assert.equal(run(c, "FUNERGY_PV.ro('staff_master')"), true);
+  const c = app('e10', { page: 'inventory' }); await withDoc(c, doc, 'e10');
+  assert.equal(run(c, "FUNERGY_PV.ro('inventory')"), true);
   const press = () => run(c, "Object.assign(FUNERGY_PV._G, { at: Date.now(), page: curPage, inPage: true, live: true })");
   press();
   assert.equal(run(c, "FUNERGY_PV.writeBlocked('m_employees')"), true);
@@ -331,6 +340,14 @@ test('editor (CEO・GM): view-only badges per role, a conflicting save keeps my 
   assert.equal(cell('g3', 'budget'), '');
   assert.equal(cell('g2', 'store_master'), null, 'the code guard: no button');
   assert.ok(/h\.cell\('acct','p:store_master'\)">[^<]*<\/button><span class="pv-ml"/.test(html), 'store master: accounting managers and leads only (no view-only mark; office crew is blocked by the code guard)');
+  // the staff master and KPI settings refuse office crew inside the screen (PR #197 review P3-1): treated like the code guard
+  for (const pid of ['staff_master', 'kpi_master']) {
+    assert.ok(new RegExp("h\\.cell\\('acct','p:" + pid + "'\\)\">[^<]*</button><span class=\"pv-ml\"").test(html), pid + ': M・L (accounting managers and leads only)');
+    const ex = role => JSON.parse(JSON.stringify(run(g, `FUNERGY_PV._explain({ col:'acct', id:'x', e:{ role:'${role}' } }, '${pid}')`)));
+    assert.equal(ex('office_crew').show, false, pid + ': office crew — not shown');
+    assert.equal(ex('office_crew').src, 'コードの守り', pid + ': and the reason is the code guard');
+    assert.equal(ex('office').show, true, pid + ': accountants keep it');
+  }
   // change one cell, save with a reason; someone else saved first
   run(g, "FUNERGY_PV.h.cell('g3','p:labor')");
   run(g, "FUNERGY_PV.h.reason('G3 も人件費を見る')");
