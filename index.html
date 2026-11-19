@@ -25694,7 +25694,7 @@ if(typeof window.FUNERGY_WEB_OFFICE_RENDER==='function')return window.FUNERGY_WE
          ナビだけ新しくなって中身が古い画面に取り残される。経理センターへ回す。
          ページ自体は残すので、店舗側や直リンクからは今までどおり開ける。 */
       if (['ceo','gm','office','office_crew'].indexOf(curRole) >= 0) {
-        curPage = 'acct_center'; _acCat = 'dash'; _acSub = 'dash';
+        curPage = 'acct_center'; acFromOfficeTab();   /* v1199：前の画面のボタン（出勤中・承認待ち・今月 など）はその中タブへ */
         el.innerHTML = renderAcctCenter(); break;
       }
       el.innerHTML = renderOfficeMgr(); break;
@@ -25834,7 +25834,7 @@ case 'acct_center':
          ナビだけ新しくなって中身が古い画面に取り残される。経理センターへ回す。
          ページ自体は残すので、店舗側や直リンクからは今までどおり開ける。 */
       if (['ceo','gm','office','office_crew'].indexOf(curRole) >= 0) {
-        curPage = 'acct_center'; _acCat = 'dash'; _acSub = 'dash';
+        curPage = 'acct_center'; acFromOfficeTab();   /* v1199：前の画面のボタン（出勤中・承認待ち・今月 など）はその中タブへ */
         el.innerHTML = renderAcctCenter(); break;
       }
       el.innerHTML = renderOfficeMgr(); break;
@@ -50103,7 +50103,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1198';
+const APP_VERSION = '1199';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -55582,7 +55582,7 @@ var _botShared={view:'shared',data:null,busy:false,error:'',store:'',status:'',k
 var _botSession=null;
 var _botModalCase=null, _botModalVersion=null;
 function botResetShared(){_botSession=null;_botShared.data=null;_botShared.error='';}
-function botRender(){if(typeof curPage!=='undefined'&&curPage==='tasks'){renderPage('tasks');return;}if(window._secureMode&&window._secTab==='bot')_secRerender();else renderPage('acct_center');}
+function botRender(){if(typeof curPage!=='undefined'&&curPage==='tasks'){renderPage('tasks');return;}if(window._secureMode&&window._secTab==='bot')_secRerender();else if(typeof curPage!=='undefined'&&curPage==='acct_center')renderPage('acct_center');}   /* v1199：業務Bot は経理センターから外した（ワークセンター）。ほかの画面にいるときは描き直さない */
 async function botFetchSharedClock(){
   try{var r=await fetch(SUPABASE_URL+'/functions/v1/ops-bot?action=config',{cache:'no-store'});if(!r.ok)return;var j=await r.json();if(j.clock){window._botSharedClock=j.clock;lsSet('ce_config',j.clock);}}catch(e){}
 }
@@ -56740,7 +56740,7 @@ async function invInLogin(){
   finally { btn.disabled = false; }
 }
 /* ---- 読み込み：画面を開いたときに1回だけ。押したボタンのあとに読み直す ---- */
-function invInOnPage(){ return typeof curPage!=='undefined' && curPage==='acct_center' && _acCat==='drive'; }
+function invInOnPage(){ return typeof curPage!=='undefined' && curPage==='acct_center' && (_acCat==='drive' || (_acCat==='master' && _acSub==='dsettings')); }   /* v1199：設定は ⑦ マスター・設定 */
 function invInRerender(){ if (invInOnPage()) renderPage('acct_center'); else if (typeof ilkOnPage==='function' && ilkOnPage()) renderPage('ingredient_master'); }   /* v1093：紐づけの画面も（認証し直したあと） */
 function invInRefresh(){ _invIn.loaded = {}; _invIn.error = ''; _invIn.cand = {}; if (typeof ilkReset === 'function' && typeof _ilk !== 'undefined' && _ilk.loaded === 'err') ilkReset(); invInRerender(); }
 function invInLoad(key, fn){
@@ -59091,7 +59091,7 @@ function invInGmailReturn(){
     var msg = M[code] || t('Gmail をつなげませんでした（','Could not connect Gmail (')+code+t('）',')');
     setTimeout(function(){
       try { showToast(msg, /^ok/.test(code) ? 'success' : 'warning'); } catch(e){}
-      try { if (typeof _invIn!=='undefined') _invIn.loaded = {}; _acCat = 'drive'; _acSub = 'dsettings'; if (typeof go==='function') go('acct_center'); } catch(e){}
+      try { if (typeof _invIn!=='undefined') _invIn.loaded = {}; _acCat = 'master'; _acSub = 'dsettings'; if (typeof go==='function') go('acct_center');   /* v1199：設定は ⑦ */ } catch(e){}
     }, 600);
   } catch(e){}
 }
@@ -60382,65 +60382,123 @@ function ilkStoresHtml(){
 function ilkShowCode(code){ _ilk.view = 'items'; _ilk.vendor = ''; _ilk.q = ''; _ilk.code = String(code); _ilk.limit = 50; _ilk.sel = {}; ilkRerender(); }
 function ilkFindFor(code){ var c = ilkIngOf(code); _ilk.view = 'items'; _ilk.vendor = ''; _ilk.code = ''; _ilk.filter = 'none'; _ilk.q = ilkN(c.en || c.ja).toLowerCase().split(/\s+/)[0] || ''; _ilk.limit = 50; _ilk.sel = {}; ilkRerender(); }
 /* FUNERGY_ITEM_LINK_END */
+/* v1199（段階 3 の 1 歩目・UI案97・Moto さん 11/19 の答え「1 打刻はホームに残す／2 Tip＆シフトリーダーは独立して残す／3 A／4 A／5 本部タイムカードのみ残す／6 A」）：
+   経理センターの中タブを 8 → 7 に並べ替える。中身（描く関数・保存先・処理）は変えない＝入口の付け替えだけ。
+   ・① 経理ホーム（前の経理ダッシュボード。本日の打刻は残す＝1）。エラーセンター・業務Bot は外して件数と行き先（ワークセンター）だけ出す（5）
+   ・② 経理レビュー：業者マスターは ⑦ へ（7A）・エラーセンターはワークセンター › エラーへ（5）。ほかは今のまま（1 つの一覧は次の版＝段階 3 の 2 歩目）
+   ・③ インボイス取り込み：設定は ⑦ へ。明細（仕入明細）と前の経路の書類を ③ へ移すのは段階 3 の 3 歩目（件数と金額の照合の試験と一緒に）
+   ・④ Tip＆シフトリーダー（独立のまま＝2）・⑤ 本部タイムカード（残す＝5）
+   ・⑥ 履歴・帳票（前の出力センター。経理出力は事務Crew に出さない＝前から画面が断っていた・6A）・⑦ マスター・設定
+   ・人材（人材・育成・採用）・業務Bot・エラーセンターの中タブは外す（行き先：人材管理・ワークセンター。同じ画面がある＝5）
+   守ること（v886 のまま）：sub.id は _acPend() の 'invoice','check','lost','gas','exp','vac' と同じ・sub.list は _acRows() の名前だけ・
+   sub.fn / sub.more は window[名前]() で引数なしに呼ぶ。sub.roles があればその役割だけに出す。 */
 var AC_TABS = [
-  { id:'dash', label:'経理ダッシュボード', icon:'ti-layout-dashboard', subs:[
-      { id:'dash', label:'経理ダッシュボード', fn:'acDashBody' }
+  { id:'dash', label:'経理ホーム', labelEn:'Accounting home', icon:'ti-home', subs:[
+      { id:'dash', label:'経理ホーム', labelEn:'Accounting home', fn:'acDashBody' }
   ]},
-  { id:'bot', label:'業務Bot', labelEn:'Operations Bot', icon:'ti-robot', subs:[
-      { id:'bot', label:'業務Bot', fn:'renderBotCenter' }
+  { id:'review', label:'経理レビュー', labelEn:'Accounting review', icon:'ti-file-check', subs:[
+      { id:'invoice',  label:'Invoice', labelEn:'Invoices',       list:'invoice', more:'renderInvoice' },
+      { id:'receipt',  label:'レシート', labelEn:'Receipts',       list:'receipt' },
+      { id:'reimb',    label:'建て替え', labelEn:'Reimbursements',       list:'reimb',   more:'renderReimburseCard' },
+      { id:'check',    label:'チェック', labelEn:'Checks',       list:'check' },   /* v1030: 行を押すと openCheckReview */
+      { id:'lost',     label:'紛失届', labelEn:'Lost receipts',         list:'lost',    more:'renderLostReceipt' },
+      { id:'gas',      label:'ガソリン代', labelEn:'Mileage',     list:'gas',     more:'renderMileage' },
+      { id:'vac',      label:'休暇申請', labelEn:'Time off',       fn:'renderVacation' },
+      { id:'exp',      label:'事前経費', labelEn:'Pre-approved expenses',       fn:'renderExpense' },
+      { id:'purchase', label:'仕入明細', labelEn:'Purchase lines',       fn:'renderPurchaseDetail' },
+      { id:'acctrev',  label:'区分・承認', labelEn:'Classify & approve',     fn:'renderAcctReview' },
+      { id:'appr',     label:'報告・承認', labelEn:'Reports & approvals',     fn:'renderApproval' }   /* v1199：前の記録。② の「前の画面の記録」（段階 3 の 2 歩目）までは今のまま */
   ]},
   /* v1052: invoice の Google Drive 取込（UI案34）。中身は invin_v1052（invIn*）。サーバー側の権限は invoice-intake が決める */
-  { id:'drive', label:'Invoice取込', labelEn:'Invoice intake', icon:'ti-brand-google-drive', subs:[
-      { id:'dlist',     label:'一覧',     fn:'invInList' },
-      { id:'dreview',   label:'要確認',   fn:'invInReview' },
-      { id:'drecon',    label:'照合',     fn:'invInRecon' },
-      { id:'dhealth',   label:'取込状況', fn:'invInHealth' },
-      { id:'dsettings', label:'設定',     fn:'invInSettings' }
+  { id:'drive', label:'インボイス取り込み', labelEn:'Invoice intake', icon:'ti-brand-google-drive', subs:[
+      { id:'dlist',     label:'一覧', labelEn:'List',     fn:'invInList' },
+      { id:'dreview',   label:'要確認', labelEn:'Needs review',   fn:'invInReview' },
+      { id:'drecon',    label:'照合', labelEn:'Reconcile',     fn:'invInRecon' },
+      { id:'dhealth',   label:'取込状況', labelEn:'Intake status', fn:'invInHealth' }
   ]},
-  { id:'review', label:'経理レビュー', icon:'ti-file-check', subs:[
-      { id:'invoice',  label:'Invoice',       list:'invoice', more:'renderInvoice' },
-      { id:'receipt',  label:'レシート',       list:'receipt' },
-      { id:'reimb',    label:'建て替え',       list:'reimb',   more:'renderReimburseCard' },
-      { id:'check',    label:'チェック',       list:'check' },   /* v1030: 行を押すと openCheckReview */
-      { id:'lost',     label:'紛失届',         list:'lost',    more:'renderLostReceipt' },
-      { id:'gas',      label:'ガソリン代',     list:'gas',     more:'renderMileage' },
-      { id:'vac',      label:'休暇申請',       fn:'renderVacation' },
-      { id:'exp',      label:'事前経費',       fn:'renderExpense' },
-      { id:'purchase', label:'仕入明細',       fn:'renderPurchaseDetail' },
-      { id:'vendor',   label:'業者マスター',   fn:'renderVendorMaster' },
-      { id:'acctrev',  label:'区分・承認',     fn:'renderAcctReview' },
-      { id:'err',      label:'エラーセンター', fn:'acErrBody' },   /* v1088: タスクは廃止（UI案52 5A） */
-      { id:'appr',     label:'報告・承認',     fn:'renderApproval' }
+  { id:'tip', label:'Tip＆シフトリーダー', labelEn:'Tips & shift leaders', icon:'ti-coin', subs:[
+      { id:'tip',   label:'Tip管理', labelEn:'Tips',        fn:'renderTipMgmt' },
+      { id:'tipsl', label:'シフトリーダー', labelEn:'Shift leaders', fn:'renderTipShiftLeader' }
   ]},
-  { id:'tip', label:'Tip＆シフトリーダー', icon:'ti-coin', subs:[
-      { id:'tip',   label:'Tip管理',        fn:'renderTipMgmt' },
-      { id:'tipsl', label:'シフトリーダー', fn:'renderTipShiftLeader' }
+  { id:'attend', label:'本部タイムカード', labelEn:'HQ time card', icon:'ti-clock-hour-4', subs:[
+      { id:'attend', label:'本部タイムカード', labelEn:'HQ time card', fn:'renderOfficeAttend' }
   ]},
-  { id:'export', label:'出力センター', icon:'ti-file-export', subs:[
-      { id:'export', label:'棚卸・Tip', fn:'renderAcctExport' }
+  { id:'reports', label:'履歴・帳票', labelEn:'Records & reports', icon:'ti-file-export', subs:[
+      { id:'ohub',   label:'出力センター', labelEn:'Export center', fn:'renderOfficeExport' },
+      { id:'export', label:'経理出力', labelEn:'Accounting export',     fn:'renderAcctExport', roles:['ceo','gm','office'] }   /* 事務Crew は前から画面が断っていた（給与の出力があるため・PAGE_GUARD の acct_export と同じ） */
   ]},
-  { id:'attend', label:'勤怠', icon:'ti-clock-hour-4', subs:[
-      { id:'attend', label:'本部タイムカード', fn:'renderOfficeAttend' }
-  ]},
-  { id:'hr', label:'人材', icon:'ti-users', subs:[
-      { id:'hr',     label:'人材', fn:'renderHR' },
-      { id:'growth', label:'育成', fn:'renderGrowthHub' },
-      { id:'hiring', label:'採用', fn:'renderHiring' }
+  { id:'master', label:'マスター・設定', labelEn:'Masters & settings', icon:'ti-adjustments', subs:[
+      { id:'vendor',    label:'業者マスター', labelEn:'Vendor master',             fn:'renderVendorMaster' },   /* 7A：GM 承認の流れが無いので経理レビューに載せない */
+      { id:'dsettings', label:'Invoice 取り込みの設定', labelEn:'Invoice intake settings',   fn:'invInSettings' }
   ]}
 ];
+/* v1199：役割で出す中タブ（sub.roles） */
+function acSubsOf(c){ return ((c && c.subs) || []).filter(function(s){ return !s.roles || s.roles.indexOf(curRole) >= 0; }); }
+/* v1199：前の組み合わせ（_acCat と _acSub）を今の中タブへ。中タブが別の大タブへ移ったとき（例：'drive' と 'dsettings'）はその大タブへ。
+   無い大タブ・出せない中タブはその大タブの初め（大タブも無ければ経理ホーム） */
+function acResolve(){
+  var cat = AC_TABS.find(function(x){ return x.id===_acCat; });
+  if (cat && acSubsOf(cat).some(function(s){ return s.id===_acSub; })) return cat;
+  var home = AC_TABS.find(function(x){ return acSubsOf(x).some(function(s){ return s.id===_acSub; }); });
+  if (home) { _acCat = home.id; return home; }
+  if (!cat) cat = AC_TABS[0];
+  _acCat = cat.id; _acSub = (acSubsOf(cat)[0] || {}).id || '';
+  return cat;
+}
+/* v1199：中タブの id で開く（大タブは中タブから決まる） */
+function acOpenSub(id){
+  var home = AC_TABS.find(function(x){ return acSubsOf(x).some(function(s){ return s.id===id; }); });
+  if (!home) return false;
+  _acF = { store:'', ym:'', third:'', st:'' }; _acCat = home.id; _acSub = id;
+  if (typeof curPage !== 'undefined' && curPage === 'acct_center') renderPage('acct_center'); else go('acct_center');
+  return true;
+}
+/* v1199：Office管理の小タブ（前の画面のボタン：出勤中・承認待ち・今月・給与CSV（Office）・締めの「勤怠」）を経理センターの中タブへ。
+   前は経理センターの経理ダッシュボードへ戻るだけで、押しても何も変わらなかった */
+function acFromOfficeTab(){
+  var m = { attend:['attend','attend'], report:['review','acctrev'], export:['reports','ohub'] }[(typeof officeMgrTab !== 'undefined') ? officeMgrTab : ''] || ['dash','dash'];
+  try { officeMgrTab = 'dash'; } catch(e){}
+  _acCat = m[0]; _acSub = m[1];
+}
+/* v1199（5）：経理センターから外した入口（エラーセンター・業務Bot・人材）の件数と行き先。① 経理ホームに出す */
+function acWorkLinksHtml(){
+  var e = escapeHtml, n = 0, hi = 0;
+  try { var iss = ecOpenIssues(); n = iss.length; hi = iss.filter(function(x){ return x.sev==='high'; }).length; } catch(err){}
+  var row = function(icon, title, sub, where, act, badge){
+    return '<div class="ac-wl" onclick="'+act+'" style="display:flex;align-items:center;gap:10px;padding:9px 0;border-top:1px solid var(--border);cursor:pointer">'
+      + '<i class="ti '+icon+'" style="font-size:18px;color:var(--accent2)"></i>'
+      + '<div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:700">'+e(title)+(badge||'')+'</div>'
+      + (sub?'<div style="font-size:11px;color:var(--muted)">'+e(sub)+'</div>':'')+'</div>'
+      + '<span style="font-size:11.5px;color:var(--muted);white-space:nowrap">'+e(where)+' <i class="ti ti-chevron-right"></i></span></div>';
+  };
+  var h = '<div class="card ac-wlinks"><div class="card-title"><i class="ti ti-arrow-big-right-lines" style="color:var(--accent2)"></i>'
+    + t('ワークセンター・人材管理で見るもの','Open in Work Center / People') + '</div>'
+    + '<div style="font-size:11px;color:var(--muted);margin:-4px 0 4px">'+t('経理センターからは外した入口です（同じ画面がそちらにあります）','These moved out of the accounting center (the same screens are there)')+'</div>';
+  h += row('ti-alert-hexagon', t('エラーセンター','Error center'), t('打刻の時間が重なる・Email 未登録 など','Overlapping punches, missing email, etc.'),
+    t('ワークセンター › エラー','Work Center › Errors'), "acGoWork('error')",
+    n ? ' <span class="tag '+(hi?'tag-red':'tag-yellow')+'" style="margin-left:4px">'+n+'</span>' : ' <span class="tag tag-gray" style="margin-left:4px">0</span>');
+  if (typeof botCanView === 'function' && botCanView())
+    h += row('ti-robot', t('業務Bot','Operations Bot'), t('勤怠・Void・発注依頼の確認','Attendance, Void and order checks'), t('ワークセンター › 業務Bot','Work Center › Bot'), "acGoWork('bot')", '');
+  if (typeof navGuardAllows === 'function' && navGuardAllows('hr'))
+    h += row('ti-users', t('人材・育成・採用','People, growth, hiring'), '', t('人材管理','People'), "go('hr')", '');
+  return h + '</div>';
+}
+function acGoWork(tab){ try { workTab = tab; } catch(e){} go('tasks'); }
 function acSetCat(id){
   _acF = { store:'', ym:'', third:'', st:'' };
   _acCat = id;
   var c = AC_TABS.find(function(x){ return x.id===id; });
-  _acSub = (c && c.subs[0]) ? c.subs[0].id : '';
+  var _cs = acSubsOf(c);   /* v1199：役割で出す中タブだけ */
+  _acSub = _cs[0] ? _cs[0].id : '';
   /* v1095（UI案57 ③）：経理レビューは「区分・承認」（独立した経理レビューと同じ本体）から開く。タブの数・並び・名前は変えない */
   if(id==='review' && c && c.subs.some(function(s){ return s.id==='acctrev'; })) _acSub = 'acctrev';
   renderPage('acct_center');
 }
 function acSetSub(id){ _acSub = id; _acF = { store:'', ym:'', third:'', st:'' }; renderPage('acct_center'); }
 function renderAcctCenter(){
-  var cat = AC_TABS.find(function(x){ return x.id===_acCat; }) || AC_TABS[0];
-  var sub = cat.subs.find(function(x){ return x.id===_acSub; }) || cat.subs[0];
+  var cat = acResolve();   /* v1199：前の組み合わせ（'drive' と 'dsettings' など）は今の中タブへ */
+  var _subs = acSubsOf(cat);
+  var sub = _subs.find(function(x){ return x.id===_acSub; }) || _subs[0];
   /* v883: 帯を上に貼るので、見出しは高さを取らないよう1行にする。 */
   var h = '';
   /* v883: 大タブと中タブを1つの帯にまとめ、トップバーの直下に固定する。
@@ -60450,7 +60508,7 @@ function renderAcctCenter(){
   try{ (_acPend()||[]).forEach(function(x){ _pendBy[x.sub] = (_pendBy[x.sub]||0) + x.n; }); }catch(e){}
   try{ var _ivr = invInPendingReview(); if(_ivr) _pendBy.dreview = (_pendBy.dreview||0) + _ivr; }catch(e){}   /* v1052: Invoice取込の要確認（読み込んだあとだけ） */
   var _catN = function(c){
-    var n = 0; (c.subs||[]).forEach(function(s){ n += (_pendBy[s.id]||0); }); return n;
+    var n = 0; acSubsOf(c).forEach(function(s){ n += (_pendBy[s.id]||0); }); return n;
   };
   h += '<div class="ac-nav"><div class="ac-main">'
     + AC_TABS.map(function(c){
@@ -60459,12 +60517,12 @@ function renderAcctCenter(){
           + '<i class="ti '+c.icon+'"></i>' + escapeHtml(c.labelEn ? t(c.label,c.labelEn) : c.label)
           + (cn ? '<span class="ac-n">'+cn+'</span>' : '') + '</button>';
       }).join('') + '</div>';
-  if(cat.subs.length > 1){
+  if(_subs.length > 1){
     h += '<div class="mm-tabs ac-subs">'
-      + cat.subs.map(function(s){
+      + _subs.map(function(s){
           var sn = _pendBy[s.id]||0;
           return '<button class="mm-tab'+(s.id===sub.id?' active':'')+'" onclick="acSetSub(\''+s.id+'\')">'
-            + escapeHtml(s.label)
+            + escapeHtml(s.labelEn ? t(s.label, s.labelEn) : s.label)   /* v1199：英語の画面では英語 */
             + (sn ? ' <span style="color:var(--red);font-weight:800">'+sn+'</span>' : '')
             + '</button>';
         }).join('') + '</div>';
@@ -67807,7 +67865,7 @@ function renderOfficeMgr(bare){
   if(officeMgrTab==='attend') return html + renderOfficeAttend();
   if(officeMgrTab==='report') return html + renderOfficeReport();
   if(officeMgrTab==='member') return html + renderOfficeMember();
-  return html + renderOfficeDash();
+  return html + renderOfficeDash(!!bare);
 }
 
 /* ---------- ① ダッシュボード ---------- */
@@ -67842,7 +67900,7 @@ function officeClockCard(){
     +'<button class="btn '+(onBreak?'btn-primary':'btn-secondary')+' btn-sm" '+(onBreak?'':'disabled style="opacity:.45"')+' onclick="officeBreakEnd()"><i class="ti ti-coffee-off"></i> 休憩終了</button>'
     +'<button class="btn '+((inDone&&!outDone&&!onBreak)?'btn-primary':'btn-secondary')+' btn-sm" '+((!inDone||outDone)?'disabled style="opacity:.45"':'')+' onclick="officeClockOut()"><i class="ti ti-logout-2"></i> 退勤</button>'
     +'</div>'
-    +'<div style="font-size:10.5px;color:var(--muted);margin-top:8px"><i class="ti ti-info-circle"></i> 打刻・休憩は「勤怠」タブの月次タイムシートに自動反映されます（休憩は労働時間から控除）。</div></div>';
+    +'<div style="font-size:10.5px;color:var(--muted);margin-top:8px"><i class="ti ti-info-circle"></i> 打刻・休憩は'+((typeof curPage!=='undefined'&&curPage==='acct_center')?'「本部タイムカード」':'「勤怠」')+'タブの月次タイムシートに自動反映されます（休憩は労働時間から控除）。</div></div>';
 }
 function officeTodayBoard(){
   var today=officeTodayStr(); var mem=hqStaffMembers();   /* v775 */
@@ -67930,7 +67988,7 @@ function renderOfficeObStatus(){
   return h;
 }
 
-function renderOfficeDash(){
+function renderOfficeDash(inCenter){
   var mem=hqStaffMembers(), onduty=officeOnDutyCount(),   /* v775 */ appr=officePendingApprovals();   /* v1088: タスクは廃止 */
   var now=new Date(); var ym=now.getFullYear()+'年'+(now.getMonth()+1)+'月';
   function tile(label,val,sub,col,act){
@@ -67945,6 +68003,7 @@ function renderOfficeDash(){
     + tile('承認待ち', appr, '経理レビュー', appr>0?'var(--yellow)':'var(--muted)', "setOfficeMgrTab('report')")
     + tile('今月', ym, '締め・出力の対象月', 'var(--accent2)', "setOfficeMgrTab('export')")
     + '</div>';
+  if (inCenter && typeof acWorkLinksHtml === 'function') { try { html += acWorkLinksHtml(); } catch(e){} }   /* v1199（5）：外した入口の件数と行き先 */
   // 本日の出勤状況（Office全員）
   html+=officeTodayBoard();
   // クイックアクション
@@ -100565,7 +100624,7 @@ function rbNotifyRejectedPaid(){
 /* 通知を押したら、建て替え経費の「却下」の一覧（その月）を開く */
 /* v1094：QuickBooks の知らせは、Invoice取込の取込状況（Gmail の許可が切れたときは設定）を開く */
 function invQbApplyNotifFocus(n){
-  try{ if(n && (n.invTab==='dhealth' || n.invTab==='dsettings')){ _acCat='drive'; _acSub=n.invTab; if(typeof _invIn!=='undefined') _invIn.loaded={}; } }catch(e){}
+  try{ if(n && (n.invTab==='dhealth' || n.invTab==='dsettings')){ _acCat=(n.invTab==='dsettings'?'master':'drive'); _acSub=n.invTab;   /* v1199：設定は ⑦ */ if(typeof _invIn!=='undefined') _invIn.loaded={}; } }catch(e){}
 }
 function rbApplyNotifFocus(n){
   try{ if(n && n.rbFocus && typeof _rbView!=='undefined'){ _rbView.status=n.rbFocus.status||'rejected'; if(n.rbFocus.ym) _rbView.ym=n.rbFocus.ym;
