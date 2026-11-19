@@ -44313,7 +44313,7 @@ function setInvTop(storeId, field, val){
   o[field]=(val===''||isNaN(v))?'':v;
   if(!o._at || typeof o._at!=='object') o._at={};
   o._at[field]=Date.now();
-  lsSet('inv_top_'+storeId+'_'+_ym, o);
+  var _pv=invPvBlocks(); lsSet('inv_top_'+storeId+'_'+_ym, o); if(invPvBlocks()!==_pv){ invAutosaveShow(false); return; }   /* v1194：見るだけで止めたら、保存していない入力から原価率を出さない */
   var t=invComputeTotals(storeId), prev=invPrevStockYm(storeId,_ym);
   var purchase=parseFloat(o.purchase)||0;
   var moves=(typeof invMovesFor==='function')?invMovesFor(storeId,_ym).net:(parseFloat(o.moves)||0);  /* v618 */
@@ -44322,7 +44322,7 @@ function setInvTop(storeId, field, val){
   var cogs=prev+purchase+moves-t.grand; var rate=sales>0?(cogs/sales*100):null;
   var rc=document.getElementById('inv-costrate'); if(rc) rc.textContent=(rate!=null?rate.toFixed(1)+'%':'—');
   var cg=document.getElementById('inv-cogs'); if(cg) cg.textContent=invFmtMoney(cogs);
-  var st=document.getElementById('inv-autosave'); if(st) st.innerHTML='<i class="ti ti-device-floppy"></i> 自動保存 '+new Date().toLocaleTimeString('ja',{hour:'2-digit',minute:'2-digit'});
+  invAutosaveShow(true);
 }
 function invPrevStock(storeId){
   var ym=curYm();
@@ -44531,11 +44531,10 @@ function setInvSplit(storeId, code, part, val){
      読み取りは内訳を優先するので放置しても表示は合うが、
      ★内訳を全部消したときに古い数が復活してしまう。 */
   if(c[code]!==null && c[code]!==undefined){ c[code]=null; c._at[code]=Date.now(); }
-  lsSet('inv_count_'+storeId+'_'+_ym, c);
+  var _pv=invPvBlocks(); lsSet('inv_count_'+storeId+'_'+_ym, c); if(invPvBlocks()!==_pv){ invAutosaveShow(false); return; }
   invRefreshInputSection(storeId);
   var tp=document.getElementById('inv-toppage'); if(tp) tp.innerHTML=renderInvToppageInner(storeId);
-  var st=document.getElementById('inv-autosave');
-  if(st) st.innerHTML='<i class="ti ti-device-floppy"></i> 自動保存 '+new Date().toLocaleTimeString('ja',{hour:'2-digit',minute:'2-digit'});
+  invAutosaveShow(true);
 }
 function setInvCount(storeId, code, val){
   var _ym=invYm();
@@ -44545,11 +44544,19 @@ function setInvCount(storeId, code, val){
   if(val===''||isNaN(v)) c[code]=null; else c[code]=v;
   if(!c._at || typeof c._at!=='object') c._at={};
   c._at[code]=Date.now();
-  lsSet('inv_count_'+storeId+'_'+_ym, c);
+  var _pv=invPvBlocks(); lsSet('inv_count_'+storeId+'_'+_ym, c); if(invPvBlocks()!==_pv){ invAutosaveShow(false); return; }
   invRefreshInputSection(storeId);
   var tp=document.getElementById('inv-toppage'); if(tp) tp.innerHTML=renderInvToppageInner(storeId);
-  var st=document.getElementById('inv-autosave');
-  if(st) st.innerHTML='<i class="ti ti-device-floppy"></i> 自動保存 '+new Date().toLocaleTimeString('ja',{hour:'2-digit',minute:'2-digit'});
+  invAutosaveShow(true);
+}
+/* v1194（PR #197 の Codex（17509ee）の P3）：見るだけの画面（FUNERGY_PV）で保存を止めたのに、棚卸しの上に「自動保存 HH:MM」と出ていた。
+   lsSet の答え（false）だけでは「端末に書けなかったが送った」場合と見分けられないので、見るだけで止めた回数（FUNERGY_PV.blocked）で見る。
+   書くところは lsSet('inv_count_'+storeId+'_'+_ym, c) のまま（verify_v917 が setInvCount の中身を見ている） */
+function invPvBlocks(){ try{ var pv=window.FUNERGY_PV; return (pv && typeof pv.blocked==='function') ? pv.blocked() : 0; }catch(e){ return 0; } }
+function invAutosaveShow(saved){
+  var st=document.getElementById('inv-autosave'); if(!st) return;
+  if(saved===false){ st.innerHTML='<i class="ti ti-eye"></i> '+t('見るだけ（保存しませんでした）','View only (not saved)'); return; }
+  st.innerHTML='<i class="ti ti-device-floppy"></i> '+t('自動保存','Auto-saved')+' '+new Date().toLocaleTimeString('ja',{hour:'2-digit',minute:'2-digit'});
 }
 /* ============================================================
    v783: 棚卸の仕入価格を手入力できるようにする（当月のみ・Totoya3店）
@@ -44594,14 +44601,14 @@ function setInvPrice(storeId, code, val){
   var m=ls(key,null)||{}, s=String(val==null?'':val).trim(), v=parseFloat(s);
   if(s===''||isNaN(v)||v<0) m[code]={p:null,_at:Date.now()};
   else m[code]={p:v,_at:Date.now(),by:((ROLE_CONFIG[curRole]||{}).name||'')};
-  lsSet(key, m);
+  var _pv=invPvBlocks(); lsSet(key, m); if(invPvBlocks()!==_pv){ invAutosaveShow(false); return; }
   _invPriceRowSync(storeId, code);
 }
 function invResetPrice(storeId, code){
   if(!invPriceEditable(storeId)) return;
   var _ym=invYm(), key='inv_price_'+storeId+'_'+_ym, m=ls(key,null)||{};
   m[code]={p:null,_at:Date.now()};
-  lsSet(key, m);
+  var _pv=invPvBlocks(); lsSet(key, m); if(invPvBlocks()!==_pv){ invAutosaveShow(false); return; }   /* v1194：止めたら価格の欄を戻さない（保存は手入力のまま） */
   var i=getIngredients().find(function(x){return x.code===code;});
   var inp=document.getElementById('inv-price-'+code);
   if(inp&&i) inp.value=invBasePrice(i,storeId,_ym);
@@ -44614,8 +44621,7 @@ function _invPriceRowSync(storeId, code){
   if(tag){ var i=getIngredients().find(function(x){return x.code===code;}); if(i) tag.innerHTML=_invPriceTagHtml(i, storeId); }
   if(typeof invRefreshInputSection==='function') invRefreshInputSection(storeId);
   var tp=document.getElementById('inv-toppage'); if(tp) tp.innerHTML=renderInvToppageInner(storeId);
-  var st=document.getElementById('inv-autosave');
-  if(st) st.innerHTML='<i class="ti ti-device-floppy"></i> 自動保存 '+new Date().toLocaleTimeString('ja',{hour:'2-digit',minute:'2-digit'});
+  invAutosaveShow(true);
 }
 /* 価格欄の下の小さな注記。手入力なら印と「戻す」、内容量があれば割り算後の単価も出す。 */
 function _invPriceTagHtml(i, storeId, ym){
@@ -45223,7 +45229,9 @@ function updateInv(storeId, code, val) {
   var it = items.find(i=>i.code===parseInt(code));
   if (it) {
     it.count = val;
+    var _n0 = invPvBlocks();
     setInvItems(storeId, items);
+    if (invPvBlocks() !== _n0) { invAutosaveShow(false); return; }   /* v1194：見るだけで止めたら「自動保存済み」と出さない */
     // 前回使用（入力された食材）を記録
     if (val!=='' && val!=null) {
       var rec = ls('inv_recent_codes_'+storeId, []).filter(c=>c!==parseInt(code));
@@ -45233,7 +45241,7 @@ function updateInv(storeId, code, val) {
     // 自動保存ステータスを更新
     invAutosaveAt = new Date().toLocaleTimeString('ja',{hour:'2-digit',minute:'2-digit'});
     var el = document.getElementById('inv-autosave');
-    if (el) el.innerHTML = '<i class="ti ti-cloud-check" style="color:var(--green)"></i> 自動保存済み '+invAutosaveAt;
+    if (el) el.innerHTML = '<i class="ti ti-cloud-check" style="color:var(--green)"></i> '+t('自動保存済み','Auto-saved')+' '+invAutosaveAt;
     // 差異・状態の表示を更新（onchangeはblur時なのでフォーカス問題なし）
     renderPage('inventory');
   }
@@ -50026,7 +50034,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1193';
+const APP_VERSION = '1194';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -116815,6 +116823,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
      打つたびに見直すので、欄にとどまって打ち続けても止まる */
   var GESTURE_MS = 1500;
   var G = { at:0, page:'', inPage:false, live:false, tm:null, el:null };
+  var BLK = 0;   /* v1194：見るだけで止めた回数（棚卸しの「自動保存」の表示が、止めたかどうかを見分けるため） */
   var GESTURES = ['pointerdown','click','change','submit','keydown','beforeinput','input','paste','cut','drop','compositionend','blur','focusout'];   /* blur は伝わらないが document の capture で受けられる（onblur で保存する欄のため・focusout より先に来る） */
   function onGesture(ev){
     try{
@@ -116826,10 +116835,30 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     }catch(e){}
   }
   try{ GESTURES.forEach(function(t0){ document.addEventListener(t0, onGesture, true); }); }catch(e){}
-  /* 止めたとき、打った欄の値を画面に出したときの値に戻す（保存されていない数が残って見えないように）。検索の欄など書かない欄は触らない */
+  /* 止めたとき、打った欄の値を画面に出したときの値に戻す（保存されていない数が残って見えないように）。検索の欄など書かない欄は触らない。
+     v1194（PR #197 のルーティン 6996965658 の P3-1）：G.el は「最後に操作した欄」なので、検索・絞り込みの欄に打っているあいだ（1.5 秒）に
+     ほかの理由の保存が止められると、検索の文字が消えていた。→ 検索・絞り込みの欄（type=search・名前や説明が検索・絞り込み）は戻さない。
+     操作の処理の中（live）でないときは、自分で保存する欄（oninput・onchange・onblur などを持つ欄）だけを戻す */
+  function queryField(el){
+    try{
+      if (String(el.type || '').toLowerCase() === 'search') return true;
+      var ga = function(n){ try{ return (typeof el.getAttribute === 'function' ? el.getAttribute(n) : null) || el[n] || ''; }catch(e){ return ''; } };
+      var id = String(el.id || '') + ' ' + String(ga('name'));
+      if (/(^|[-_\s])(q|query)($|[-_\s])|search|filter|find/i.test(id)) return true;
+      var hint = String(ga('placeholder')) + ' ' + String(ga('aria-label'));
+      return /検索|絞り込|探す|search|filter|find/i.test(hint);
+    }catch(e){ return false; }
+  }
+  function ownSave(el){
+    var hs = ['oninput','onchange','onblur','onfocusout','onkeyup','onkeydown','onpaste'];
+    for (var i = 0; i < hs.length; i++) { try{ if (typeof el[hs[i]] === 'function') return true; }catch(e){} }
+    return false;
+  }
   function revertField(){
     try{
       var el = G.el; if (!el || el.isConnected === false) return;
+      if (queryField(el)) return;
+      if (!G.live && !ownSave(el)) return;
       var tn = String(el.tagName || '').toUpperCase(), ty = String(el.type || '').toLowerCase();
       if (tn === 'INPUT') {
         if (ty === 'checkbox' || ty === 'radio') el.checked = !!el.defaultChecked;
@@ -116856,7 +116885,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   }
   function roToast(){ var now = Date.now(); if (now - P.toastAt > 2500) { P.toastAt = now; toast(T('この画面は見るだけです（保存しませんでした）','This screen is view only (not saved)'), 'warning'); } }
   function writeBlocked(key){
-    try{ if (!gestureOn() || !syncKey(key)) return false; roToast(); revertField(); return true; }catch(e){ return false; }
+    try{ if (!gestureOn() || !syncKey(key)) return false; BLK++; roToast(); revertField(); return true; }catch(e){ return false; }
   }
   function callBlocked(payload){
     try{
@@ -116864,7 +116893,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       if (['put','pii_op','hr_op','pin_set'].indexOf(a) < 0) return false;
       if (!gestureOn()) return false;
       if (a === 'put' && payload.key && !syncKey(payload.key)) return false;
-      roToast(); revertField(); return true;
+      BLK++; roToast(); revertField(); return true;
     }catch(e){ return false; }
   }
   /* 売上・予算の保存（v1101 の守りを通る道）は lsSet の中身を通らないので、押して保存する関数の入口で止める。
@@ -116876,7 +116905,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   RO_WRAP.forEach(function(n){
     try{
       var o = W[n]; if (typeof o !== 'function') return;
-      W[n] = function(){ if (roNow()) { roToast(); revertField(); return; } return o.apply(this, arguments); };
+      W[n] = function(){ if (roNow()) { BLK++; roToast(); revertField(); return; } return o.apply(this, arguments); };
     }catch(e){}
   });
 
@@ -117390,11 +117419,11 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
 
   W.FUNERGY_PV = {
     on:function(){ return active(); }, decide:decide, applyGroups:applyGroups, ro:ro, band:band, cardShown:cardShown,
-    writeBlocked:writeBlocked, callBlocked:callBlocked, afterLogin:afterLogin, onLogout:onLogout, load:load,
+    writeBlocked:writeBlocked, callBlocked:callBlocked, blocked:function(){ return BLK; }, afterLogin:afterLogin, onLogout:onLogout, load:load,
     settingsCard:settingsCard, openEditor:openEditor, editorHtml:editorHtml, h:h,
     /* 試験用 */
     _P:function(){ return P; }, _E:function(){ return E; }, _G:G, _RO_WRAP:RO_WRAP.slice(), _GESTURES:GESTURES.slice(), _initialDoc:initialDoc, _profToday:profToday, _pvColOf:pvColOf, _myCol:myCol,
-    _core:core, _rebase:rebase, _flat:flat, _tree:tree, _explain:function(s, pid){ return explain(s, pid); }, _syncKey:syncKey, _todayAllowed:todayAllowed,
+    _core:core, _rebase:rebase, _flat:flat, _tree:tree, _explain:function(s, pid){ return explain(s, pid); }, _syncKey:syncKey, _todayAllowed:todayAllowed, _queryField:queryField,
     ACCT_NEW:ACCT_NEW, EDIT_COLS:EDIT_COLS
   };
 })();
