@@ -674,7 +674,8 @@ test('the page wires the server totals, the contacts-only save and release 1192'
   assert.match(RAW, /if \(typeof ltServerParts==='function'\) P = ltServerParts\(storeId, ym, opts, P\);/);
   assert.match(RAW, /ltAfterLogin\(\)/);
   assert.match(RAW, /ltOnLogout\(\)/);
-  assert.match(RAW, /const APP_VERSION = '1192';/);
-  assert.match(SW, /const SW_BUILD = '1192';/);
+  /* v1193 から版は上がる：1192 以上で、ページと SW が同じ */
+  const av = Number((RAW.match(/const APP_VERSION = '(\d+)';/) || [])[1]), sb = Number((SW.match(/const SW_BUILD = '(\d+)';/) || [])[1]);
+  assert.ok(av >= 1192 && av === sb, 'APP_VERSION ' + av + ' / SW_BUILD ' + sb);
   assert.deepEqual(DEV.free.filter(n => /^(lt|_LT)[A-Z]/.test(n)), [], 'every lt* name used by the device functions is declared');
 });

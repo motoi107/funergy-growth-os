@@ -35,6 +35,9 @@
 //   docs/SECURE_GRADE_BONUS_READ_V1148_JA.md）。答えにはいつも gbfn:1。
 // ・v1192：人件費の合計（labor）。経理・AM の端末には全員の時給が届かなくなる（emp-private v1192）ので、店・月ごとのお金の合計だけを
 //   この関数が出す（計算は index.html の関数そのもの＝labor-core.gen.mjs・labor.mjs。人ごとの額は返さない。docs/LABOR_TOTALS_V1192_JA.md）。答えにはいつも ltfn:1。
+// ・v1193（UI案95）：画面の表示の設定（どの役職・グレードの人にどの画面を出すか）。表 pv_doc の 1 行を、GM・CEO だけが書く（pv_full・pv_save・pv_log）。
+//   ログインした人には、自分の列（グレード・役職ごと）と自分の例外と「指定スタッフ限定」に自分が入っているかだけを返す（pv_get。ほかの人の例外は返さない）。
+//   画面の出し分けだけで、データを読める範囲は変えない（読める範囲は今までどおり、ほかの頼みが決める）。docs/PAGE_VIEW_V1193_JA.md。答えにはいつも pvfn:1。
 
 import { ltAsks, ltCompute, ltLoad, ltToday, LT_MAX_ASKS } from './labor.mjs';
 
@@ -653,6 +656,71 @@ export function ntVisible(n, c) {
     return roles.length ? rm() : true;
   }
   return roles.length ? rm() : false;
+}
+
+// ================================================================ v1193：画面の表示（UI案95・docs/PAGE_VIEW_V1193_JA.md）
+// 中身：{ v:1, off:bool, cols:{ <列>:{ <ノード>:'s'|'h' } }, people:{ <社員ID>:{ <ノード>:'s'|'h' } }, only:{ 'p:<画面>':[社員ID…] } }
+//   列：g1〜g6（店の人のグレード）・am・chef（Head Chef）・acct（経理・事務共通）。CEO・GM はいつも全部（固定）なので列が無い。
+//   ノード：p:<画面の ID>（中タブ）・c:<カードの ID>（マイページのカード）・g1:<グループの ID>（G1 の画面の大タブ。g1 の列と人の例外だけ）。
+//   固定のもの（承認・閲覧設定・成長カルテ・中間レビュー・承認センター・セキュアページのカード）は中身に入れられない（画面がいつもの決まりで出す）。
+export const PV_COLS = ['g1', 'g2', 'g3', 'g4', 'g5', 'g6', 'am', 'chef', 'acct'];
+export const PV_NEVER = ['p:ar_settings', 'p:growth_karte', 'p:mid_review', 'p:approval', 'c:secure'];
+export const PV_NODE_RE = /^(?:p|c|g1):[a-z][a-z0-9_]{0,48}$/;
+export const PV_EMP_RE = /^[A-Za-z0-9_.:-]{1,64}$/;
+export const PV_MAX = 400000;
+function pvNodes(m, allow) {
+  if (!obj(m)) return null;
+  const ks = Object.keys(m);
+  if (ks.length > 800) return null;
+  const o = {};
+  for (const k of ks) {
+    if (!PV_NODE_RE.test(k) || PV_NEVER.includes(k) || !allow(k.slice(0, k.indexOf(':')))) return null;
+    if (m[k] !== 's' && m[k] !== 'h') return null;
+    o[k] = m[k];
+  }
+  return o;
+}
+// 形を確かめて整える（合わなければ null）。off はいつも true／false で持つ（同じ中身を同じ文字にする）
+export function pvCheck(doc) {
+  if (!obj(doc)) return null;
+  if (Object.keys(doc).some(k => !['v', 'off', 'cols', 'people', 'only'].includes(k))) return null;
+  if (doc.v !== 1) return null;
+  if (doc.off !== undefined && typeof doc.off !== 'boolean') return null;
+  const cols = doc.cols === undefined ? {} : doc.cols, people = doc.people === undefined ? {} : doc.people, only = doc.only === undefined ? {} : doc.only;
+  if (!obj(cols) || !obj(people) || !obj(only)) return null;
+  const out = { v: 1, off: doc.off === true, cols: {}, people: {}, only: {} };
+  for (const c of Object.keys(cols)) {
+    if (!PV_COLS.includes(c)) return null;
+    const n = pvNodes(cols[c], c === 'g1' ? (t => t === 'g1' || t === 'c') : (t => t === 'p' || t === 'c'));
+    if (!n) return null;
+    out.cols[c] = n;
+  }
+  const pk = Object.keys(people);
+  if (pk.length > 3000) return null;
+  for (const e of pk) {
+    if (!PV_EMP_RE.test(e)) return null;
+    const n = pvNodes(people[e], () => true);
+    if (!n) return null;
+    if (Object.keys(n).length) out.people[e] = n;
+  }
+  const ok = Object.keys(only);
+  if (ok.length > 300) return null;
+  for (const k of ok) {
+    if (!PV_NODE_RE.test(k) || !k.startsWith('p:') || PV_NEVER.includes(k)) return null;
+    const l = only[k];
+    if (!Array.isArray(l) || l.length < 1 || l.length > 500) return null;
+    if (l.some(e => typeof e !== 'string' || !PV_EMP_RE.test(e)) || new Set(l).size !== l.length) return null;
+    out.only[k] = l.slice();
+  }
+  if (JSON.stringify(out).length > PV_MAX) return null;
+  return out;
+}
+// ログインした人に返す形：列は全部（どの画面をどの列に出すかは秘密ではない）・人の例外は自分の分だけ・指定スタッフ限定は自分が入っているかだけ
+export function pvProject(doc, emp) {
+  const mine = emp && obj(doc.people[emp]) ? doc.people[emp] : {};
+  const only = {};
+  for (const k of Object.keys(doc.only)) only[k] = !!(emp && doc.only[k].includes(emp));
+  return { cols: doc.cols, mine, only };
 }
 
 export function createHandler(deps) {
@@ -2161,8 +2229,77 @@ export function createHandler(deps) {
     return { r: ltCompute(data, ok), no, today, max: LT_MAX_ASKS };
   }
 
-  const ACTIONS = { pull, get, put, hist: csHist, pin_check: pinCheck, pin_set: pinSet, hr_get: hrGet, hr_op: hrOp, hr_match: hrMatch, pii_get: piiGet, pii_op: piiOp, card_match: cardMatch, tcf_status: tcfStatus, change_log: clGet, labor: ltGet };
-  const CODES = { forbidden: 403, bad_value: 400, conflict: 409, locked: 429, gone: 410, not_found: 404 };
+  // ---- v1193：画面の表示（UI案95）。pv_get＝ログインした人の分だけ・pv_full／pv_save／pv_log＝GM・CEO だけ
+  async function pvRead() {
+    let rows;
+    try { rows = await rest('pv_doc?id=eq.1&select=doc,ver,updated_at,by_name,by_role'); }
+    catch (e) { if (e && e.status === 404) return { nosql: true }; throw e; }   // 表が無い（SQL の前）
+    const r = Array.isArray(rows) && rows[0] ? rows[0] : null;
+    if (!r) return { row: null };
+    return { row: r, doc: pvCheck(r.doc) };
+  }
+  async function pvGet(a) {
+    const x = await pvRead();
+    if (x.nosql) return { pv: null, nosql: true };
+    if (!x.row) return { pv: null };
+    if (!x.doc) return { pv: null, broken: true };      // 形の合わない中身（SQL で手で直した など）：画面は今までの決まりで出す
+    if (x.doc.off) return { pv: null, off: true, ver: x.row.ver };
+    return { pv: { ver: x.row.ver, at: x.row.updated_at, ...pvProject(x.doc, a.emp || '') } };
+  }
+  async function pvMgr(a) {
+    if (levelOf(a) !== 'full') throw err('forbidden', 403);
+    if (a.emp) {
+      const es = await rest('employees?id=eq.' + encodeURIComponent(a.emp) + '&select=id,status,data');
+      const e0 = Array.isArray(es) ? es[0] : null;
+      if (!e0 || empOut(e0)) throw err('forbidden', 403);
+    }
+  }
+  async function pvFull(a) {
+    await pvMgr(a);
+    const x = await pvRead();
+    if (x.nosql) return { pv: null, nosql: true };
+    if (!x.row) return { pv: null, ver: 0 };
+    return { pv: x.doc ? { ver: x.row.ver, at: x.row.updated_at, by_name: x.row.by_name || '', by_role: x.row.by_role || '', doc: x.doc } : null,
+      ver: x.row.ver, broken: !x.doc };
+  }
+  async function pvSave(a, b) {
+    await pvMgr(a);
+    const doc = pvCheck(b.doc);
+    if (!doc) throw bad();
+    if (!Number.isSafeInteger(b.expect) || b.expect < 0) throw bad();
+    const reason = typeof b.reason === 'string' ? b.reason.trim() : '';
+    if (!reason || reason.length > 500) throw bad();
+    const sm = b.summary === undefined ? [] : b.summary;
+    if (!Array.isArray(sm) || sm.length > 300 || sm.some(t => typeof t !== 'string' || !t || t.length > 200)) throw bad();
+    let r;
+    try {
+      r = await rest('rpc/pv_save', { method: 'POST', headers: fpHdr(a), body: JSON.stringify({ p_doc: doc, p_expect: b.expect, p_reason: reason, p_summary: sm,
+        p_by_emp: a.emp || null, p_by_name: a.name || null, p_by_role: a.role || null }) });
+    } catch (e) { if (e && e.status === 404) throw err('not_installed', 503); throw e; }
+    if (!obj(r)) throw err('db', 500);
+    if (r.conflict === true) throw err('conflict', 409);
+    if (r.ok !== true || !Number.isSafeInteger(r.ver)) throw err('db', 500);
+    return { ok: true, ver: r.ver, at: r.at || null, same: r.same === true };
+  }
+  async function pvLog(a, b) {
+    await pvMgr(a);
+    const C = 'id,at,ver,by_name,by_role,via,reason,summary';
+    try {
+      if (b.id !== undefined && b.id !== null) {
+        if (!Number.isSafeInteger(b.id) || b.id < 1) throw bad();
+        const rows = await rest('pv_log?id=eq.' + b.id + '&select=' + C + ',before,after');
+        return { row: Array.isArray(rows) && rows[0] ? rows[0] : null };
+      }
+      let q = 'pv_log?select=' + C + '&order=id.desc&limit=20';
+      if (b.before !== undefined && b.before !== null) { if (!Number.isSafeInteger(b.before) || b.before < 1) throw bad(); q += '&id=lt.' + b.before; }
+      const rows = await rest(q);
+      const list = Array.isArray(rows) ? rows : [];
+      return { rows: list, more: list.length === 20 };
+    } catch (e) { if (e && e.status === 404) return { rows: [], nosql: true }; throw e; }
+  }
+
+  const ACTIONS = { pull, get, put, hist: csHist, pin_check: pinCheck, pin_set: pinSet, hr_get: hrGet, hr_op: hrOp, hr_match: hrMatch, pii_get: piiGet, pii_op: piiOp, card_match: cardMatch, tcf_status: tcfStatus, change_log: clGet, labor: ltGet, pv_get: pvGet, pv_full: pvFull, pv_save: pvSave, pv_log: pvLog };
+  const CODES = { forbidden: 403, bad_value: 400, conflict: 409, locked: 429, gone: 410, not_found: 404, not_installed: 503 };
 
   return async function handle(req) {
     const origin = req.headers.get('origin');
@@ -2182,7 +2319,8 @@ export function createHandler(deps) {
     // clfn:1＝変更の記録（v1151）を読める（change_log）・書き込みに確かめた人を付ける。アプリは clfn の無い答えを前の版とみなし、記録のタブで「関数を v1151 に」と出す
     // ntfn:1＝通知（v1152）を読み書きする（nt）。アプリは ntfn の無い答えを前の版とみなし、通知を今までどおり REST で読み書きする
     // ltfn:1＝人件費の合計（v1192・labor）を出す。アプリは ltfn の無い答え（unknown_action）を前の版とみなし、10 分は端末で数える
-    const json = (v, s = 200) => new Response(JSON.stringify({ ...v, fn: 1, csfn: 1, swfn: 1, hrfn: 1, sw2: 1, piifn: 1, ghfn: 1, tpfn: 1, scfn: 1, gbfn: 1, clfn: 1, ntfn: 1, ltfn: 1 }), { status: s, headers: { 'content-type': 'application/json', 'cache-control': 'no-store', ...cors } });
+    // pvfn:1＝画面の表示の設定（v1193・pv_get など）を扱う。アプリは pvfn の無い答え（unknown_action）を前の版とみなし、画面を今までの決まりで出す
+    const json = (v, s = 200) => new Response(JSON.stringify({ ...v, fn: 1, csfn: 1, swfn: 1, hrfn: 1, sw2: 1, piifn: 1, ghfn: 1, tpfn: 1, scfn: 1, gbfn: 1, clfn: 1, ntfn: 1, ltfn: 1, pvfn: 1 }), { status: s, headers: { 'content-type': 'application/json', 'cache-control': 'no-store', ...cors } });
     if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });
     if (req.method !== 'POST') return json({ error: 'method' }, 405);
     let body;
