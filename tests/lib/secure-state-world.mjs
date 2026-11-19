@@ -154,6 +154,7 @@ export function makeWorld(o = {}) {
       if (W.empsDown) return J({ message: 'down' }, 500);   // v1147：社員の表を読めない（見られる店を決められない）
       const sel = (q.get('select') || 'id,store').split(',');
       const full = e => ({ id: e.id, name: e.name, store: e.store, support: e.support || [], role: e.role || null, title: e.title || null, status: e.status || '', data: e.data || {} });
+      if (q.get('id') && q.get('id').startsWith('in.(')) { const ids = splitList(q.get('id').slice(4, -1)); return J(W.emps.filter(e => ids.includes(e.id)).map(e => Object.fromEntries(sel.map(c => [c, full(e)[c]])))); }   // v1195：aff_save が在籍を確かめる
       if (q.get('id')) return J(W.emps.filter(e => e.id === q.get('id').replace(/^eq\./, '')).map(e => Object.fromEntries(sel.map(c => [c, full(e)[c]]))));
       return J(W.emps.map(e => Object.fromEntries(sel.map(c => [c, full(e)[c]]))));
     }
