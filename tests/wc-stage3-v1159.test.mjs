@@ -235,7 +235,7 @@ test('the rest of the app: the menu drops 承認センター, old links go to th
   const ctx = { window: {}, NAV_ITEMS: [{ id: 'approval', roles: ['gm'] }, { id: 'tasks' }], curRole: 'gm' };
   vm.createContext(ctx);
   const gs = SRC.indexOf('var PAGE_GUARD = {');   /* v1191：ナビは守る画面の決まり（pageRoleAllowed）も見る */
-  vm.runInContext(SRC.slice(gs, SRC.indexOf('\n};', gs) + 3) + '\n' + fnSrc('pageRoleAllowed') + '\n' + fnSrc('_apClosed') + '\n' + fnSrc('navChildAllowed'), ctx);
+  vm.runInContext(SRC.slice(gs, SRC.indexOf('\n};', gs) + 3) + '\n' + fnSrc('pageRoleAllowed') + '\n' + fnSrc('_apClosed') + '\n' + fnSrc('_navChildAllowedToday') + '\n' + fnSrc('navChildAllowed'), ctx);   /* v1193：navChildAllowed は今の役割の決まり _navChildAllowedToday を呼ぶ */
   /* v1165（UI案77 の 2A・Moto さん 11/14）：段階 3 の前でもメニューから外す（前の承認待ちはワークセンター › 申請/承認から開く） */
   assert.equal(ctx.navChildAllowed('approval'), false, 'gone before stage 3 too (v1165)');
   ctx.window.wrS3Seen = () => true;
