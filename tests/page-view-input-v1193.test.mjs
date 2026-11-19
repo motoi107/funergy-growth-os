@@ -64,7 +64,10 @@ function app(empId, page, now) {
     var MAIN = { nodeType:1, id:'main-content', kids:new Set(), contains(x){ return x === this || this.kids.has(x); }, insertBefore(){}, firstChild:null };
     var OUT = { nodeType:1, id:'nav', kids:new Set(), contains(x){ return x === this || this.kids.has(x); } };
     var document = { visibilityState:'visible', addEventListener(t, f, cap){ (LISTEN[t] = LISTEN[t] || []).push(f); },
-      getElementById(id){ return id === 'main-content' ? MAIN : null; }, createElement(){ return {}; } };
+      getElementById(id){ return id === 'main-content' ? MAIN : (ELS[id] || null); }, createElement(){ return {}; } };
+    /* v1194：棚卸しの上の「自動保存」の表示・原価率・価格の欄（ほかの id は無い） */
+    var ELS = { 'inv-autosave': { innerHTML:'' }, 'inv-costrate': { textContent:'31.0%' }, 'inv-cogs': { textContent:'$310' },
+      'inv-price-101': { value:'9' } };
     /* the browser's order: capture listeners on document, then the element's own handler */
     function fire(type, target, extra){
       var ev = Object.assign({ type:type, target:target }, extra || {});
@@ -82,7 +85,7 @@ function app(empId, page, now) {
     function gradeOf(title){ var m = /^G(\\d)/.exec(String(title||'')); return m ? 'G' + m[1] : ''; }
     function gradeNum(g){ return g ? (parseInt(String(g).replace('G',''))||0) : 0; }
     function myGradeNum(){ return parseInt(String(myGradeKey()).slice(1), 10) || 1; }
-    function isOpSyncKey(k){ return /^(m_|spl_|inv_count_|daily_actuals_)/.test(k); }
+    function isOpSyncKey(k){ return /^(m_|spl_|inv_|daily_actuals_)/.test(k); }   /* the app syncs every inv_ key (OP_SYNC_PREFIX) */
     function lsIsDeviceLocal(k){ return k.charAt(0) === '_'; }
     function isLocalOnlyKey(k){ return false; }
     var _SPLIT_KEYS = {}, SUPA_MASTER_MAP = { m_employees:{} }, SUPA_SETTING_KEYS = [], SUPA_SETTING_PREFIX = [];
@@ -93,6 +96,13 @@ function app(empId, page, now) {
     function invYm(){ return '2026-11'; }
     function getInvCountsRaw(){ return {}; }
     function invRefreshInputSection(){} function renderInvToppageInner(){ return ''; }
+    /* v1194：the other inventory saves (inner screen helpers stubbed; the save and the label are the app's own) */
+    var invMonthOffset = 0;
+    function invComputeTotals(){ return { grand: 100 }; } function invPrevStockYm(){ return 0; } function invMovesFor(){ return { net: 0 }; }
+    function monthEventSalesYm(){ return { sales: 0 }; } function monthStats(){ return { sales: 1000 }; } function invFmtMoney(v){ return '$' + v; }
+    function getInvTopRaw(){ return {}; }
+    function invPriceEditable(){ return true; } function invBasePrice(){ return 5; } function getIngredients(){ return [{ code: 101 }]; }
+    function _invPriceTagHtml(){ return ''; }
     /* v1101 writers (stand-ins that only record that they ran) */
     ${['saveDailyActual', 'saveDayMemo', 'bbSave', 'saveEvent', 'deleteEvent', 'saveDow', 'saveSeg', 'saveDayBudget', 'saveBasis', 'deleteBasis',
     'submitBudget', '_reviewBeforeSubmit', '_saveRationaleDraft', '_doSubmitBudget', 'approveBudgetSeg', 'rejectBudgetSeg', 'reopenBudget',
@@ -106,6 +116,13 @@ function app(empId, page, now) {
     ${fnFrom('isKpiSM')}
     ${fnFrom('canSeeDashboard')}
     ${fnFrom('setInvCount')}
+    ${fnFrom('setInvSplit')}
+    ${fnFrom('setInvTop')}
+    ${fnFrom('setInvPrice')}
+    ${fnFrom('invResetPrice')}
+    ${fnFrom('_invPriceRowSync')}
+    ${fnFrom('invPvBlocks')}
+    ${fnFrom('invAutosaveShow')}
     ${PV_BLOCK}
   `, c);
   return c;
@@ -279,4 +296,168 @@ test('a stopped server save and a stopped v1101 writer also put the typed field 
   assert.equal(run(c, "saveDailyActual('F01')"), undefined, 'the daily input is stopped');
   assert.equal(f.value, '120', 'and the field shows its value again');
   assert.deepEqual(c.CALLED, []);
+});
+
+// ---- v1194 (PR #197 Codex 17509ee P3 and the Claude routine 6996965658 P3-1) ----
+const label = c => String(run(c, "ELS['inv-autosave'].innerHTML"));
+
+test('v1194 Codex P3: on the view-only inventory a stopped save does not say 「自動保存」, and the screen keeps the saved numbers', async () => {
+  const doc = initialDoc();
+  const c = app('e10', 'inventory', { t: 10_000_000 }); await withDoc(c, doc, 'e10');
+  assert.equal(run(c, "FUNERGY_PV.ro('inventory')"), true);
+  const before = run(c, 'FUNERGY_PV.blocked()');
+  // the count, the split count, the top numbers, the price and "戻す" of the price — each typed / pressed on the screen
+  const cases = [
+    ['setInvCount', "setInvCount('F01', 101, '7')"],
+    ['setInvSplit', "setInvSplit('F01', 101, 'f', '2')"],
+    ['setInvTop', "setInvTop('F01', 'purchase', '500')"],
+    ['setInvPrice', "setInvPrice('F01', 101, '6.5')"],
+  ];
+  for (const [name, call] of cases) {
+    await later(c, 60_000);
+    run(c, "ELS['inv-autosave'].innerHTML = ''");
+    const f = makeField(c, '3', function () {});
+    f.value = '9'; c.fire('input', f);
+    run(c, call);
+    assert.deepEqual(c.WRITES, [], name + ': not saved');
+    assert.doesNotMatch(label(c), /自動保存/, name + ': does not say auto-saved');
+    assert.match(label(c), /見るだけ（保存しませんでした）/, name + ': says view only (not saved)');
+  }
+  assert.equal(run(c, "ELS['inv-costrate'].textContent"), '31.0%', 'the cost rate is not worked out from the unsaved input');
+  assert.equal(run(c, "ELS['inv-cogs'].textContent"), '$310');
+  // 「戻す」 of the price (a link, not a field): the price field keeps the hand-entered price
+  await later(c, 60_000);
+  const a = el('A'); run(c, 'MAIN').kids.add(a);
+  c.fire('pointerdown', a); c.fire('click', a);
+  run(c, "invResetPrice('F01', 101)");
+  assert.deepEqual(c.WRITES, []);
+  assert.equal(run(c, "ELS['inv-price-101'].value"), '9', 'the price field is not set back to the master price');
+  assert.match(label(c), /見るだけ/);
+  assert.equal(run(c, 'FUNERGY_PV.blocked()') - before, 5, 'each stop is counted once');
+  // English
+  run(c, "curLang = 'en'");
+  await later(c, 60_000);
+  const g = makeField(c, '3', function () {}); g.value = '4'; c.fire('input', g);
+  run(c, "setInvCount('F01', 101, '4')");
+  assert.match(label(c), /View only \(not saved\)/);
+});
+
+test('v1194: where the inventory is editable the same saves still say 「自動保存」 (and a save that only failed on this device is not called view only)', async () => {
+  const doc = initialDoc();
+  const a = app('e9', 'inventory', { t: 11_000_000 }); await withDoc(a, doc, 'e9');
+  assert.equal(run(a, "FUNERGY_PV.ro('inventory')"), false);
+  for (const call of ["setInvCount('F01', 101, '7')", "setInvSplit('F01', 101, 'r', '2')", "setInvTop('F01', 'purchase', '500')", "setInvPrice('F01', 101, '6.5')", "invResetPrice('F01', 101)"]) {
+    run(a, "ELS['inv-autosave'].innerHTML = ''");
+    const f = makeField(a, '3', function () {}); f.value = '9'; a.fire('input', f);
+    run(a, call);
+    assert.match(label(a), /自動保存/, call);
+  }
+  assert.deepEqual(a.WRITES, ['inv_count_F01_2026-11', 'inv_count_F01_2026-11', 'inv_top_F01_2026-11', 'inv_price_F01_2026-11', 'inv_price_F01_2026-11']);
+  assert.equal(run(a, "ELS['inv-costrate'].textContent"), '40.0%', 'the cost rate is worked out after a save ((0 + 500 - 100) / 1000)');
+  assert.equal(run(a, "ELS['inv-price-101'].value"), 5, '「戻す」 puts the master price back');
+  // lsSet says false because this device could not keep it (it was still sent): that is not "view only"
+  run(a, "var _realLsSet = lsSet; lsSet = function(k){ WRITES.push(k); return false; }");
+  run(a, "ELS['inv-autosave'].innerHTML = ''");
+  run(a, "setInvCount('F01', 101, '8')");
+  assert.match(label(a), /自動保存/);
+  assert.doesNotMatch(label(a), /見るだけ/);
+});
+
+test('v1194 Claude routine P3-1: a search or filter box keeps what was typed when another save is stopped a moment later', async () => {
+  const doc = initialDoc();
+  const c = app('e10', 'inventory', { t: 12_000_000 }); await withDoc(c, doc, 'e10');
+  const boxes = [
+    el('INPUT', { type: 'search', value: '' }),
+    el('INPUT', { type: '', value: '', extra: { id: 'gr-q' } }),
+    el('INPUT', { type: 'text', value: '', extra: { placeholder: '名前で探す' } }),
+    el('INPUT', { type: 'text', value: '', extra: { placeholder: '商品名で絞り込み' } }),
+    el('INPUT', { type: 'text', value: '', extra: { id: 'emp-search', placeholder: '名前・従業員コード・Email・電話で検索' } }),
+    el('INPUT', { type: 'text', value: '', extra: { getAttribute(n) { return n === 'aria-label' ? 'Filter by name' : null; } } }),
+  ];
+  for (const b of boxes) {
+    await later(c, 60_000);
+    b.oninput = function () {};   // the box's own handler only narrows the list
+    run(c, 'MAIN').kids.add(b);
+    b.value = 'tuna'; c.fire('keydown', b, { key: 'a' }); c.fire('input', b);
+    // still inside the same press, and then 0.5 s later, something saves a synced key (for example a timer of the screen)
+    assert.equal(run(c, "lsSet('inv_count_F01_2026-11', {})"), false, 'the save itself is still stopped');
+    await later(c, 500);
+    assert.equal(run(c, "lsSet('spl_x', 1)"), false);
+    assert.equal(b.value, 'tuna', (b.id || b.placeholder || b.type) + ': the box keeps what was typed');
+  }
+  assert.deepEqual(c.WRITES, []);
+});
+
+test('v1194: a field that does not save by itself is not put back by a later stopped save; a field that saves by itself still is', async () => {
+  const doc = initialDoc();
+  const c = app('e10', 'inventory', { t: 13_000_000 }); await withDoc(c, doc, 'e10');
+  // a note that is saved with a button (no handler of its own)
+  const note = el('TEXTAREA', { value: 'old' }); run(c, 'MAIN').kids.add(note);
+  note.value = 'new words'; c.fire('input', note);
+  await later(c, 700);
+  assert.equal(run(c, "lsSet('spl_x', 1)"), false, 'a save 0.7 s later is still stopped');
+  assert.equal(note.value, 'new words', 'the note is not put back (it was not what saved)');
+  // the count field saves with a timer (its own oninput starts it): put back
+  await later(c, 60_000);
+  const f = makeField(c, '3', function () {});
+  f.value = '8'; c.fire('input', f);
+  await later(c, 700);
+  run(c, "setInvCount('F01', 104, '8')");
+  assert.equal(f.value, '3');
+  // stopped inside the press itself (live): a field without an inline handler is put back too (its save ran from that press)
+  await later(c, 60_000);
+  const h = el('INPUT', { type: 'number', value: '1' }); run(c, 'MAIN').kids.add(h);
+  h.value = '6'; c.fire('change', h);
+  run(c, "setInvCount('F01', 105, '6')");
+  assert.equal(h.value, '1');
+  assert.deepEqual(c.WRITES, []);
+});
+
+test('v1194: which boxes count as search or filter boxes (real ids and words of the screens)', () => {
+  const c = app('e10', 'inventory', { t: 14_000_000 });
+  const q = o => run(c, 'FUNERGY_PV._queryField')(Object.assign({ tagName: 'INPUT', type: 'text' }, o));
+  for (const id of ['gr-q', 'chat-q', 'ivm-q', 'tl-q', 'vmg-q', 'ilk-q', 'ilk-find', 'emp-search', 'recipe-search', 'ing-master-search', 'inv-link-q', 'ingpick-q', 'bowl-search'])
+    assert.equal(q({ id }), true, id);
+  for (const placeholder of ['名前で探す', '食材名・業者・コードで検索', '名前で絞り込み', 'Search by name', 'Filter by name or code'])
+    assert.equal(q({ placeholder }), true, placeholder);
+  assert.equal(q({ type: 'search' }), true);
+  for (const id of ['inv-price-101', 'eq-total', 'qty', 'inv-top-sales', ''])
+    assert.equal(q({ id }), false, id || '(no id)');
+  assert.equal(q({ placeholder: '数量' }), false);
+  // the real search boxes in index.html: every one is found by the rule
+  const boxes = [...src.matchAll(/<input[^>]*?(?:placeholder="[^"]*(?:探す|検索|絞り込|Search|Filter)[^"]*"|type="search")[^>]*>/g)].map(m => m[0]);
+  assert.ok(boxes.length >= 20, 'found the search boxes of the screens: ' + boxes.length);
+  const attr = (tag, n) => { const m = new RegExp('\\s' + n + '="([^"]*)"').exec(tag); return m ? m[1] : ''; };
+  for (const tag of boxes) assert.equal(q({ id: attr(tag, 'id'), type: attr(tag, 'type'), placeholder: attr(tag, 'placeholder') }), true, tag.slice(0, 120));
+});
+
+test('v1194: every 「自動保存」 label of the inventory goes through the stop check', () => {
+  const body = name => fnFrom(name);
+  for (const name of ['setInvTop', 'setInvSplit', 'setInvCount', 'setInvPrice', 'invResetPrice']) {
+    const b = body(name);
+    const i = b.indexOf('var _pv=invPvBlocks();'), j = b.indexOf('if(invPvBlocks()!==_pv){ invAutosaveShow(false); return; }');
+    assert.ok(i > 0 && j > i, name + ' checks whether the save was stopped');
+    assert.doesNotMatch(b, /自動保存/, name + ' does not write the label itself');
+  }
+  assert.ok(body('setInvCount').includes("lsSet('inv_count_'+storeId+'_'+_ym, c)"), 'setInvCount still writes with lsSet (verify_v917)');
+  const u = body('updateInv');
+  assert.ok(u.indexOf('invPvBlocks()') > 0 && u.indexOf("invAutosaveShow(false)") < u.indexOf('自動保存済み'), 'updateInv says auto-saved only after a save that was not stopped');
+  assert.equal((src.match(/getElementById\('inv-autosave'\)/g) || []).length, 2, 'only invAutosaveShow and updateInv write the label');
+});
+
+test('v1194: every stop (lsSet, a server save, a v1101 writer) is counted once, and nothing else is', async () => {
+  const doc = initialDoc();
+  const c = app('e10', 'dashboard', { t: 15_000_000 }); await withDoc(c, doc, 'e10');
+  const n = () => run(c, 'FUNERGY_PV.blocked()');
+  const f = makeField(c, '1', function () {});
+  f.value = '2'; c.fire('input', f);
+  const n0 = n();
+  assert.equal(run(c, "lsSet('spl_x', 1)"), false); assert.equal(n(), n0 + 1);
+  assert.equal(run(c, "FUNERGY_PV.callBlocked({ action:'put', key:'spl_x' })"), true); assert.equal(n(), n0 + 2);
+  assert.equal(run(c, "saveDailyActual('F01')"), undefined); assert.equal(n(), n0 + 3);
+  // not stopped: a key of this device only, a server call that is not a save, a write long after the press
+  run(c, "lsSet('_draft', 1)"); run(c, "FUNERGY_PV.callBlocked({ action:'get', key:'spl_x' })");
+  await later(c, 1600); run(c, "lsSet('spl_y', 1)");
+  assert.equal(n(), n0 + 3);
+  assert.deepEqual(c.WRITES, ['_draft', 'spl_y']);
 });
