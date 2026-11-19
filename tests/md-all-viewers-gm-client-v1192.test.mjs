@@ -46,6 +46,10 @@ const CODE = [
   ...['getMileageConfig', 'setMileageConfig', '_recAt', 'kevN', 'kevV1Has', '_kevPT'].map(oneLine),
   varLine(/^var KEV_EV_META = .*$/m),
   ...['mergeMapByTime', '_coversMapByTime', 'kevMergeEvRec', 'kevMergeVerRec', 'kevMergeMap', 'kevCoversMap'].map(fn),
+  // PR #197 の Codex P2-2：この端末で変えた人だけを送る（印・合流・確かめ・送れたら印を消す）と、本物の付け外し
+  varLine(/^var MDAV_DIRTY_KEY = .*$/m),
+  ...['mdavDirty', 'mdavDirtySave', 'mdavMark', '_mdavMap'].map(oneLine),
+  ...['_mdavPending', 'mdavMerge', 'mdavCovers', 'mdavSent', 'mdAllViewers', 'mdSetAllViewer'].map(fn),
   `var SUPABASE_URL=${JSON.stringify(URL0)}, SUPABASE_ANON=${JSON.stringify(ANON)};
    var _SPLIT_KEYS={}, SUPA_MASTER_MAP={}, SUPA_SETTING_KEYS=[], SUPA_SETTING_PREFIX=[];
    var _supaBooting=false, _lastSupaError=null, _opMergeChain={}, _opLastPushErr={}, _opLastPushWhy={}, _idbState='ready', _idbBootP=null;
@@ -64,6 +68,7 @@ const CODE = [
    function _outboxRemove(){}
    function invInSession(){ return window._authSession || null; } async function invInSessionRefresh(){ return null; }
    function showToast(m){ __toasts.push(m); } function alert(m){ __alerts.push(m); } function closeModalDirect(){} function renderPage(){}
+   function _actorName(){ return 'Gina M'; } function nowJP(){ return '2026/11/18 10:00'; }
    var document={ getElementById:function(){ return null; } };`,
 ].join('\n');
 
@@ -107,7 +112,12 @@ function tab(W, who) {
   return c;
 }
 const writesOf = (W, key) => W.log.filter(x => x[0] === 'write' && x[2] === key).map(x => x[1]);
-const push = async (c, k, v) => { c.__pushed.length = 0; c.lsSet(k, v); return Promise.all(c.__pushed); };
+// この端末で変えた人（LV0 と違う記録）に印を付けてから送る（本物の付け外し mdSetAllViewer と同じ。送るのは印のある記録だけ）
+const push = async (c, k, v) => {
+  c.__pushed.length = 0;
+  if (k === KEY) for (const id of Object.keys(v || {})) if (JSON.stringify(v[id]) !== JSON.stringify(LV0[id])) assert.equal(c.mdavMark(id, v[id]._at), true);
+  c.lsSet(k, v); return Promise.all(c.__pushed);
+};
 
 test('the app routes the copy to the function for writing (its own ltfn marker) and keeps reading it by REST; it writes only when the row read is unchanged (cas)', () => {
   const c = tab(world(), 'tGM');
@@ -176,4 +186,82 @@ test('the function is still before v1192 (no ltfn): the app writes the copy by R
   const c2 = tab(W2, 'tGM'); c2._ss.lvOld = { id: 'x', at: Date.now() };
   assert.deepEqual(await push(c2, KEY, lvMore('E-AM', true)), [true]);
   assert.deepEqual(writesOf(W2, KEY), ['service']);
+});
+
+// ---- PR #197 の Codex 6996221251 の P2-2：捨てた・外した許可が古い端末の写しから戻らない ----
+const STALE = { 'E-AM': { on: true, name: 'Amy Area', by: 'someone', at: '2026/11/10 10:00', _at: 99 } };
+const settle = async c => { await Promise.all(c.__pushed); c.__pushed.length = 0; };
+
+test('Codex P2-2: the cloud copy was emptied (1b) but a GM device still holds an old grant; turning on someone else does not bring the old grant back', async () => {
+  const W = world(); W.set(KEY, {}, T0);
+  const c = tab(W, 'tGM');
+  c.MEM.set(KEY, JSON.stringify(STALE));   // 前に読んだ古い写し（印なし）
+  c.__pushed.length = 0;
+  assert.equal(c.mdSetAllViewer('E-AM2', 'Other Am', true), true);
+  await settle(c);
+  const v = W.get(KEY);
+  assert.deepEqual(Object.keys(v), ['E-AM2'], 'only the person changed on this device');
+  assert.equal(v['E-AM2'].on, true);
+  assert.deepEqual(writesOf(W, KEY), ['service']);
+  assert.deepEqual(JSON.parse(JSON.stringify(c.mdavDirty())), {}, 'the mark is gone once the cloud has it');
+  // 前の合流（端末の写しを丸ごと）なら、古い許可が戻っていた（直す前の再現）
+  assert.equal(c.mergeMapByTime({}, JSON.parse(c.MEM.get(KEY)))['E-AM'].on, true);
+});
+
+test('Codex P2-2: reading the copy keeps only this device\'s unsent changes; old grants on the device are dropped', () => {
+  const c = tab(world(), 'tGM');
+  const local = { ...STALE, 'E-AM2': { on: true, name: 'Other Am', _at: 1763400000005 } };
+  assert.equal(c.mdavMark('E-AM2', 1763400000005), true);
+  const got = JSON.parse(JSON.stringify(c.mdavMerge({}, local)));
+  assert.deepEqual(Object.keys(got), ['E-AM2'], 'the unsent change stays, the old grant is dropped');
+  assert.deepEqual(JSON.parse(JSON.stringify(c.mdavMerge({ 'E-AM3': { on: true, _at: 5 } }, STALE))), { 'E-AM3': { on: true, _at: 5 } }, 'no mark: the cloud copy as it is');
+  // ほかの端末があとで同じ人を変えていたら、クラウドの新しい記録
+  const newer = { 'E-AM2': { on: false, name: 'Other Am', _at: 1763400000009 } };
+  assert.deepEqual(JSON.parse(JSON.stringify(c.mdavMerge(newer, local))), newer);
+  // 印の時刻と端末の記録の時刻が違う（その後に取り込んだ）なら、印は使わない
+  assert.deepEqual(JSON.parse(JSON.stringify(c.mdavMerge({}, { 'E-AM2': { on: true, _at: 7 } }))), {});
+  // 確かめ：印のある記録がクラウドにあれば済み。印の無い古い記録は見ない
+  assert.equal(c.mdavCovers({}, STALE), true);
+  assert.equal(c.mdavCovers({}, local), false);
+  assert.equal(c.mdavCovers({ 'E-AM2': { on: true, _at: 1763400000005 } }, local), true);
+});
+
+test('Codex P2-2: a device holding only an old grant does not write at all; a change that could not be sent is sent later, and once sent it does not come back after another emptying', async () => {
+  const W = world(); W.set(KEY, {}, T0);
+  const c = tab(W, 'tGM');
+  assert.deepEqual(await (async () => { c.__pushed.length = 0; c.lsSet(KEY, STALE); return Promise.all(c.__pushed); })(), [true], 'nothing to send: done');
+  assert.deepEqual(writesOf(W, KEY), [], 'no write');
+  assert.deepEqual(W.get(KEY), {}, 'the old grant did not come back');
+  // AM の端末が送ろうとして断られた変更は、印が残ったまま（GM の端末の写しには関係しない）
+  const a = tab(W, 'tAM');
+  a.__pushed.length = 0;
+  a.MEM.set(KEY, JSON.stringify({}));
+  assert.equal(a.mdavMark('E-AM', 1763400000100), true);
+  a.lsSet(KEY, { 'E-AM': { on: true, name: 'Amy Area', _at: 1763400000100 } });
+  assert.deepEqual(await Promise.all(a.__pushed), [false]);
+  assert.deepEqual(W.get(KEY), {}, 'refused');
+  assert.ok(a.mdavDirty()['E-AM'], 'the mark stays while it is not sent');
+  // GM が付けて送れたあと、もう一度空にされても（SQL 1b など）、GM の端末から戻らない
+  c.__pushed.length = 0;
+  assert.equal(c.mdSetAllViewer('E-AM2', 'Other Am', true), true);
+  await settle(c);
+  assert.equal(W.get(KEY)['E-AM2'].on, true);
+  W.set(KEY, {}, '2026-11-18T09:30:00.000000+00:00');
+  c.__pushed.length = 0; c.lsSet(KEY, JSON.parse(c.MEM.get(KEY)));
+  assert.deepEqual(await Promise.all(c.__pushed), [true]);
+  assert.deepEqual(W.get(KEY), {}, 'a sent change is not sent again');
+});
+
+
+test('Codex P2-2: a device that cannot keep the mark (storage refused) does not save the change and says so — no "saved" that never reaches the cloud', async () => {
+  const W = world(); W.set(KEY, {}, T0);
+  const c = tab(W, 'tGM');
+  c.localStorage.setItem = () => { throw new Error('QuotaExceededError'); };
+  c.__pushed.length = 0;
+  assert.equal(c.mdSetAllViewer('E-AM2', 'Other Am', true), false, 'not saved');
+  await settle(c);
+  assert.deepEqual(writesOf(W, KEY), [], 'no write');
+  assert.deepEqual(W.get(KEY), {}, 'the cloud copy is unchanged');
+  assert.ok(c.__toasts.some(m => /印を残せません/.test(m)), 'the device says it could not keep the mark');
+  assert.equal(c.MEM.has(KEY) ? JSON.parse(c.MEM.get(KEY))['E-AM2'] : undefined, undefined, 'this device does not show it as ON either');
 });

@@ -6160,6 +6160,42 @@ function mdPickedStore() {
   return (v && mdViewStores().indexOf(v) >= 0) ? v : '';
 }
 function mdSetStore(sid) { mdState.store = sid || ''; renderPage('dashboard'); try { window.scrollTo(0, 0); } catch (e) { } }
+/* v1192（PR #197 の Codex 6996221251 の P2-2）：全店を見る AM の写し（md_all_viewers_gm）は、この端末で GM・CEO が変えた人の記録だけを送る。
+   前は端末の写しを丸ごと合流して送ったので、SQL（1b）で捨てた許可や、ほかの端末で外した許可が、古い端末の写しから戻った（書く人が GM でも防げない）。
+   変えた人とその記録の時刻（_at）を、この端末だけの印（_mdav_dirty_v1・localStorage・同期しない）に残す。送るとき・取り込むときは、
+   クラウドの写しを正本にして、印のある記録（端末の記録の時刻が印と同じで、クラウドより新しい）だけを重ねる。印の無い端末の記録は使わない。
+   クラウドがその時刻以降の記録を持ったら（書けたあと・クラウドがもう持っていたとき）印を消す。その後に取り込んで端末の記録の時刻が変われば、印は使わない */
+var MDAV_DIRTY_KEY = '_mdav_dirty_v1';
+function mdavDirty() { try { var o = JSON.parse(localStorage.getItem(MDAV_DIRTY_KEY) || 'null'); return (o && typeof o === 'object' && !Array.isArray(o)) ? o : {}; } catch (e) { return {}; } }
+function mdavDirtySave(o) { try { if (Object.keys(o).length) localStorage.setItem(MDAV_DIRTY_KEY, JSON.stringify(o)); else localStorage.removeItem(MDAV_DIRTY_KEY); return true; } catch (e) { return false; } }
+function mdavMark(k, at) { var o = mdavDirty(); o[String(k)] = Number(at) || 0; return mdavDirtySave(o) && mdavDirty()[String(k)] === (Number(at) || 0); }
+function _mdavMap(v) { return (v && typeof v === 'object' && !Array.isArray(v)) ? v : {}; }
+/* 端末の写しのうち、この端末で変えてまだ送れていない記録 */
+function _mdavPending(local) {
+  var d = mdavDirty(), l = _mdavMap(local), out = {};
+  Object.keys(d).forEach(function (k) {
+    var r = l[k], at = Number(d[k]) || 0;
+    if (r && typeof r === 'object' && _recAt(r) === at && at > 0) out[k] = r;
+  });
+  return out;
+}
+function mdavMerge(cloud, local) {
+  var c = _mdavMap(cloud), out = {};
+  Object.keys(c).forEach(function (k) { out[k] = c[k]; });
+  var p = _mdavPending(local);
+  Object.keys(p).forEach(function (k) { if (!(c[k] && typeof c[k] === 'object') || _recAt(c[k]) < _recAt(p[k])) out[k] = p[k]; });
+  return out;
+}
+function mdavCovers(cloud, local) {
+  var c = _mdavMap(cloud), p = _mdavPending(local);
+  return Object.keys(p).every(function (k) { return !!(c[k] && typeof c[k] === 'object' && _recAt(c[k]) >= _recAt(p[k])); });
+}
+/* クラウドに書けた・クラウドがもう持っていた：その時刻以降の記録がクラウドにある人の印を消す */
+function mdavSent(v) {
+  var d = mdavDirty(), c = _mdavMap(v), ch = false;
+  Object.keys(d).forEach(function (k) { if (c[k] && typeof c[k] === 'object' && _recAt(c[k]) >= (Number(d[k]) || 0)) { delete d[k]; ch = true; } });
+  if (ch) mdavDirtySave(d);
+}
 /* 付け外し（GM・CEO だけ）。記録は従業員 ID ごと。外すときも記録を残して on:false にする（合流で古い「付ける」に負けない） */
 function mdSetAllViewer(empId, name, on) {
   if (['gm', 'ceo'].indexOf(curRole) < 0) { showToast('この設定は GM・CEO のみです', 'warning'); return false; }
@@ -6172,6 +6208,8 @@ function mdSetAllViewer(empId, name, on) {
               at: (typeof nowJP === 'function' ? nowJP() : new Date().toISOString()), _at: at };
   /* v1192：GM・CEO だけが書ける写し（関数で書く）と、前の版の端末が読む md_all_viewers の両方に同じ記録 */
   g[k] = rec; old[k] = Object.assign({}, rec);
+  /* PR #197 の Codex P2-2：送るのは、この端末で変えたこの人の記録だけ（印を先に残す。残せなければ保存しない） */
+  if (typeof mdavMark === 'function' && !mdavMark(k, at)) { showToast('保存できませんでした（この端末に印を残せません）', 'danger'); return false; }
   if (lsSet('md_all_viewers_gm', g) === false) { showToast('保存できませんでした', 'danger'); return false; }
   lsSet('md_all_viewers', old);
   return true;
@@ -18045,7 +18083,7 @@ var OP_MERGE = {
   karte_bonus_config: { merge: mergeStamped,   covers: _coversStamped },
   bonus_rules:        { merge: mergeMapByTime, covers: _coversMapByTime },   /* v1042: 原資率の表とメモ。片方の保存がもう片方を消さない */
   grade_hist:         { merge: mergeMapByTime, covers: _coversMapByTime, cas: true },   /* v1145：GM・CEO だけが関数で書く（読んだ行が変わっていないときだけ書く） */
-  md_all_viewers_gm:  { merge: mergeMapByTime, covers: _coversMapByTime, cas: true },   /* v1192：全店を見る AM の写し（GM・CEO だけが関数で書く・社員 ID ごとに新しいほう） */
+  md_all_viewers_gm:  { merge: mdavMerge, covers: mdavCovers, cas: true, sent: mdavSent },   /* v1192：全店を見る AM の写し（GM・CEO だけが関数で書く・クラウドが正本で、この端末で変えた人の記録だけを重ねる＝PR #197 の Codex P2-2） */
   cs_criteria:        { merge: mergeMapByTime, covers: _coversMapByTime, cas: true },   /* v1058: スコア基準。目標（G2・G3 の 3 職種・G4・G5）ごとに新しいほう */
   career_cfg:         { merge: mergeMapByTime, covers: _coversMapByTime, cas: true },   /* v1103: 専門職 × グレードの権限（'<部門>|<G>' ごとに新しいほう）。
                          v1141（Codex #135 の P1）：読んだ行が変わっていないときだけ書く（2 台が同じ古い行に足して書くと、先の変更・権限の取り消しが消えた） */
@@ -19287,10 +19325,11 @@ function opMergePush(key, localVal, table){
              合流で値の見た目だけが変わる（4 項目の設定・個人設定の hist の並びなど）と、GM・CEO でない端末の送り直しが「違う値」として断られ、送信待ちに残り続けるため */
           if(row.exists && typeof swIsKey==='function' && swIsKey(key) && def.covers(row.value, desired)){
             if(typeof swNote==='function') swNote(key, 'none');
+            try{ if(def.sent) def.sent(row.value); }catch(e){}   /* v1192（PR #197 Codex P2-2）：クラウドがもう持っている＝送れた */
             desired=cm; _ok=true; break;
           }
           var w = await _opCasWrite(key, cm, row);
-          if(w==='ok'){ desired=cm; _ok=true; break; }
+          if(w==='ok'){ try{ if(def.sent) def.sent(cm); }catch(e){} desired=cm; _ok=true; break; }
           if(w==='badts'){ _ok=false; _why='badts'; _err='クラウドの更新時刻の形を読めなかったので送っていません（未送信に残します）'; break; }
           if(w==='stale'){ _ok=false; _why='stale'; _err='書き込みましたが、クラウドの更新時刻が読んだ時刻より進んだのを確かめられなかったので、ほかの端末の保存と重なっていないか分かりません（未送信に残して送り直します）'; break; }
           if(w!=='conflict'){ _ok=false; _why='fail'; _err='クラウドへの書き込みに失敗しました'; break; }
@@ -19325,6 +19364,7 @@ function opMergePush(key, localVal, table){
           /* v1174（PR #172 Codex P2）：pullBack のキー（pl_public）は、クラウドが残したもの（ほかの端末が先に入れた確定の月など）を手元にも入れる。
              covers は「書きたいものがクラウドに残ったか」だけを見るので、クラウドのほうが強い値（確定）を持っていても通る。そのままだと手元は暫定のまま */
           if(def.pullBack && check && typeof check==='object'){ try{ merged = _opWriteBack(key, def, def.merge(check, merged)); }catch(e){} }
+          try{ if(def.sent && check && typeof check==='object') def.sent(check); }catch(e){}   /* v1192（PR #197 Codex P2-2）：クラウドで確かめられたときだけ */
           desired=merged; _ok=true; break;
         }
         desired = def.merge(check, merged); // 誰かに上書きされた→取り込んで再試行
