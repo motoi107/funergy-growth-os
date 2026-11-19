@@ -41,6 +41,12 @@ union all select '9. PR #192 のレビューの直しが入っている（捨て
          or (p.proname = 'ar_route_view' and p.prosrc like '%v\_after%')
          or (p.proname = 'ar_bulk_counts' and p.prosrc like '%''stage''%'))) = 8
    then 'OK' else 'NG（② の今の版をもう一度流す）' end
+union all select '10. 捨てた下書きのあとに作った下書きに、古い画面の版と回数が当たらない（下書きの回数は 1000001 から）',
+  case when exists (select 1 from pg_proc p join pg_namespace s on s.oid = p.pronamespace where s.nspname = 'public' and p.proname = 'ar_rule_rev_next')
+     and exists (select 1 from pg_proc p join pg_namespace s on s.oid = p.pronamespace where s.nspname = 'public' and p.proname = 'ar_rule_save'
+       and p.prosrc like '%ar\_rule\_rev\_next%')
+     and not exists (select 1 from public.ar_rules x where x.status = 'draft' and x.rev <= 1000000)
+   then 'OK' else 'NG（② の今の版をもう一度流す）' end
 union all select '（参考）共通ルールで動いているか（入れたばかりは false＝今までの決まりのまま）',
   (select live::text from public.ar_settings where id = 1)
 union all select '（参考）ルール：有効 / 下書き',

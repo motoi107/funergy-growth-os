@@ -50,21 +50,21 @@ test('v1190 fix 2: save, activate and discard check the draft version and its co
   const seen1 = v2.body.draft;                                                       // 画面 A が見た下書き（版 1）
   await s.ok('E2', { action: 'ar_rule_activate', kind: 'plan', expect_ver: seen1.ver, expect_rev: seen1.rev, note: '版 1' });
   const d2 = await s.ok('E1', { action: 'ar_rule_save', kind: 'plan', def: { default: { stages: [STAGE(C)] } }, expect_ver: 0, expect_rev: 0, base_ver: seen1.ver, note: 'CEO だけ' });
-  assert.equal(d2.draft.ver, 2); assert.equal(d2.draft.rev, 1);
-  await s.ok('E1', { action: 'ar_rule_activate', kind: 'plan', expect_ver: 2, expect_rev: 1, note: '版 2' });
+  assert.equal(d2.draft.ver, 2); assert.ok(d2.draft.rev > 1000000, 'a new draft count starts above 1000000 (the discard fix)');
+  await s.ok('E1', { action: 'ar_rule_activate', kind: 'plan', expect_ver: 2, expect_rev: d2.draft.rev, note: '版 2' });
   const d3 = await s.ok('E1', { action: 'ar_rule_save', kind: 'plan', def: { default: { stages: [STAGE(C), STAGE(G)] } }, expect_ver: 0, expect_rev: 0, base_ver: 2, note: '2 段' });
-  assert.equal(d3.draft.ver, 3); assert.equal(d3.draft.rev, 1, 'the count starts at 1 again for each version');
-  // 版 2 の下書き（回数 1）を見ていた古い画面：版 3 の下書き（回数 1）には当たらない
-  for (const op of ['ar_rule_activate', 'ar_rule_discard']) {
-    const x = await s.call('E2', { action: op, kind: 'plan', expect_ver: 2, expect_rev: 1, note: 'x' });
+  assert.equal(d3.draft.ver, 3); assert.equal(d3.draft.rev, d2.draft.rev + 1, 'a new draft takes the next count of the kind (never the count of an earlier draft)');
+  // 版 2 の下書きを見ていた古い画面：版 3 の下書きには当たらない（版も回数も違う）・回数だけ合わせても版で断る
+  for (const [op, rev] of [['ar_rule_activate', d2.draft.rev], ['ar_rule_discard', d2.draft.rev], ['ar_rule_activate', d3.draft.rev]]) {
+    const x = await s.call('E2', { action: op, kind: 'plan', expect_ver: 2, expect_rev: rev, note: 'x' });
     assert.equal(x.status, 409, op + ' ' + JSON.stringify(x.body));
   }
-  const sv = await s.call('E2', { action: 'ar_rule_save', kind: 'plan', def: { default: { stages: [STAGE(G)] } }, expect_ver: 2, expect_rev: 1, base_ver: 2, note: 'x' });
+  const sv = await s.call('E2', { action: 'ar_rule_save', kind: 'plan', def: { default: { stages: [STAGE(G)] } }, expect_ver: 2, expect_rev: d2.draft.rev, base_ver: 2, note: 'x' });
   assert.equal(sv.status, 409);
   let st = await s.state(); let k = st.kinds.find(x => x.kind === 'plan');
   assert.equal(k.active.ver, 2); assert.equal(k.draft.ver, 3); assert.deepEqual(k.draft.def.default.stages.map(x => x.slots[0].role), ['ceo', 'gm'], 'the draft is untouched');
   // 下書きが無い画面（有効は版 2 と見ていた）：あいだに版 3 が有効になったら、新しい下書きを作らない
-  await s.ok('E1', { action: 'ar_rule_activate', kind: 'plan', expect_ver: 3, expect_rev: 1, note: '版 3' });
+  await s.ok('E1', { action: 'ar_rule_activate', kind: 'plan', expect_ver: 3, expect_rev: d3.draft.rev, note: '版 3' });
   const nd = await s.call('E2', { action: 'ar_rule_save', kind: 'plan', def: { default: { stages: [STAGE(G)] } }, expect_ver: 0, expect_rev: 0, base_ver: 2, note: '古い画面' });
   assert.equal(nd.status, 409, 'a stale screen does not start a draft from an old active version');
   st = await s.state(); k = st.kinds.find(x => x.kind === 'plan'); assert.equal(k.draft, undefined); assert.equal(k.active.ver, 3);
@@ -75,7 +75,7 @@ test('v1190 fix 2: save, activate and discard check the draft version and its co
   // 正しい画面なら通る
   const ok = await s.ok('E2', { action: 'ar_rule_save', kind: 'plan', def: { default: { stages: [STAGE(G)] } }, expect_ver: 0, expect_rev: 0, base_ver: 3, note: '新しい画面' });
   assert.equal(ok.draft.ver, 4);
-  await s.ok('E2', { action: 'ar_rule_discard', kind: 'plan', expect_ver: 4, expect_rev: 1 });
+  await s.ok('E2', { action: 'ar_rule_discard', kind: 'plan', expect_ver: 4, expect_rev: ok.draft.rev });
 });
 
 test('v1190 fix 3: applying to pending requests uses only the version the confirmation screen showed', async () => {
