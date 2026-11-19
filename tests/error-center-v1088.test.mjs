@@ -54,7 +54,7 @@ const EC = ['cashTipValueOk', 'cashTipInvalid', 'ecLogCashTipUnset', '_ecYmd', '
   '_ecRowHtml', '_ecResRows', '_ecResView', 'ecOpenResolve', 'ecResolveGo', 'ecUndoResolve', 'ecSevMeta', 'setEcView', 'setEcRange', 'getEcLog',
   '_ecAttribute', 'ecSnapshot', '_ecOpenSig', 'ecMaybeAutoSnapshot', 'ecLogInRange', '_ecFalseSet', 'ecLogCounted', 'ecRenderLogView', 'renderErrorCenter',
   'mergeMapByTime', '_coversMapByTime', '_recAt', 'mergeEcLog', '_ecLogSig', '_coversEcLog', '_ecPartSig', '_ecLogParts', '_ecPartsUnion', 'ecLogSev', '_ecRid', '_ecResKey', '_ecResExpired', '_ecResMark', '_ecResGone', 'mergeEcRes', '_coversEcRes', '_canonForSig', '_logSig',
-  'ecCloseResolve', '_ecNaOk'];
+  'ecCloseResolve', '_ecNaOk', 'empOfficeStore', 'empAnyStore'];   // v1195：従業員の不備の店の印は本部（OFFICE）・全店を店にしない
 const VARS = ['EC_MIN_DATE', 'EC_RES_KEY', 'EC_WHY', '_ecPullAt', 'EC_SEV_ORDER', 'EC_CAT_ORDER', 'ecSort', '_ecShown', 'ecView', 'EC_DETECTORS', 'EC_RES_OFF_KEEP_MS', 'EC_NA_CATS'];
 const RID = (key, fp = '') => key + '\u241e' + fp;
 // v1118: the cash tip issue is an invalid value (missing counts as 0); its fingerprint is the value

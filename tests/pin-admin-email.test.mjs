@@ -41,7 +41,8 @@ function fnSrc(name) {
 
 const FNS = ['secAuthSession', 'secAuthEnsure', 'secAuthCall', 'secAuthNeedLogin', 'secAuthErrText', 'secAuthLoginModal', 'secAuthLogin',
   'pinLockLeft', 'pinLocksMap', 'pinLockLeftSec', '_loginLockedMsg', 'canViewPins', 'openPinListModal', '_staffPinView', 'renderPinListBody',
-  'resetStaffPin', 'editStorePin', 'openObSecret', 'runObMigrate', 'obImgSrc', 'authPin', 'authPinCheck', 'doStaffLogin', 'saveMyPin'];
+  'resetStaffPin', 'editStorePin', 'openObSecret', 'runObMigrate', 'obImgSrc', 'authPin', 'authPinCheck', 'doStaffLogin', 'saveMyPin',
+  'empOfficeStore', 'empAnyStore', 'empStoreLabel'];   // v1195：PIN の一覧の店の名前は本部（OFFICE）・全店を店として扱わない
 const esc = s => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 const IMG = 'data:image/jpeg;base64,QUJDRA==';
 const tick = () => new Promise(r => setImmediate(r));

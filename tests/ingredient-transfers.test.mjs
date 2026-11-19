@@ -58,6 +58,6 @@ test('transfer-only single-store output works; inaccessible store cannot be expo
   c.output=null;c.exportInventoryCSV('B',2026,8);assert.equal(c.output,null);
 });
 test('Japanese and English summaries and details use matching language',()=>{
-  const c=context();c.lang='ja';assert.ok(c.itMonthlySummaryHtml().includes('受入額'));assert.equal(c.itReportSheets('2026-09',c.visible)[0].name,'食材移動集計');
+  const c=context();c.rows=[row('A','B',12.34)];c.lang='ja';assert.ok(c.itMonthlySummaryHtml().includes('受入額'));   // 表（受入額・Received）は移動がある月だけ出るassert.equal(c.itReportSheets('2026-09',c.visible)[0].name,'食材移動集計');
   c.lang='en';assert.ok(c.itMonthlySummaryHtml().includes('Received'));assert.equal(c.itReportSheets('2026-09',c.visible)[0].name,'Transfer summary');
 });
