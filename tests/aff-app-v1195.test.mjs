@@ -90,6 +90,7 @@ const E = c => run(c, 'FUNERGY_AFF._t.E()');
 const emp = (c, id) => c.EMPS.find(e => e.id === id);
 const ROW = (emp_id, aff, store, support, ver) => ({ emp_id, aff, store, support, ver, updated_at: '2026-11-18T10:00:00Z', by_name: 'Gina M' });
 const full = (rows, log = []) => p => p.action === 'aff_full' ? { ok: true, j: { affn: 1, rows, log } } : { status: 400, error: 'unknown_action' };
+const full2 = rowsOf => p => p.action === 'aff_full' ? { ok: true, j: { affn: 1, rows: rowsOf(), log: [] } } : { status: 400, error: 'unknown_action' };
 
 test('release markers are 1195 or later and the same in the page and the service worker', () => {
   const a = src.match(/const APP_VERSION = '(\d+)';/), b = sw.match(/const SW_BUILD = '(\d+)';/);
@@ -299,6 +300,8 @@ test('before the SQL, an old function, a network error, refused or a shape error
     assert.equal(c.WRITES.length, 0, String(re));
     assert.deepEqual(Object.keys(E(c).draft), ['E-GM'], String(re));
     assert.ok(c.TOASTS.some(x => re.test(x[0])), String(re) + ' ' + JSON.stringify(c.TOASTS));
+    assert.equal(E(c).busy, false, String(re) + ': not left locked');
+    assert.equal(reviewDisabled(c), false, String(re) + ': the change can be saved again');
   }
 });
 
@@ -508,6 +511,147 @@ test('P3-3: a 409 where the server already has what was sent (an earlier save wh
   assert.ok(!d.TOASTS.some(x => /ほかの人が先に変えた/.test(x[0])));
   assert.ok(d.TOASTS.some(x => /同じ内容がもうサーバーに入っていた人がいます.*Gina M$/.test(x[0])), JSON.stringify(d.TOASTS));
   assert.equal(d.WRITES.length, 1);
+});
+
+// Codex 7008350412（`391ea67`）の P2：409 のあとの読み直しのあいだに変えた下書きが、復旧で消えた
+test('Codex P2 (409): while the reload after a 409 is pending, nothing can be changed (PC / phone × ja / en); afterwards editing works again', async () => {
+  for (const phone of [false, true]) for (const lang of ['ja', 'en']) {
+    const tag = (phone ? 'phone' : 'PC') + '/' + lang;
+    let rows = [ROW('E-1', 'store', 'S1', ['S2'], 1)], hold = null;
+    const c = app({ phone, lang, ss: p => {
+      if (p.action === 'aff_full') return hold ? new Promise(r => { const h = hold; hold = null; h.r = r; }) : { ok: true, j: { affn: 1, rows, log: [] } };
+      if (p.action === 'aff_save') { rows = [ROW('E-1', 'store', 'S2', [], 2)]; return { status: 409, error: 'conflict', ids: ['E-1'] }; }
+      return { status: 400 };
+    } });
+    run(c, 'FUNERGY_AFF.h.open()'); await settle();
+    run(c, "FUNERGY_AFF.h.tab('done')");   // E-1 already has a row that matches the master (the row exists: the list stays on screen while reloading)
+    const ix = () => E(c).ix.indexOf('E-1');
+    assert.ok(ix() >= 0, tag);
+    run(c, `FUNERGY_AFF.h.store(${ix()}, 'S2')`);
+    const sent = E(c).draft['E-1'];
+    assert.equal(sent.store, 'S2', tag);
+    const H = {}; hold = H;
+    run(c, 'FUNERGY_AFF.h.save()'); await settle();
+    assert.ok(H.r, tag + ': the reload after the 409 is pending');
+    assert.equal(E(c).busy, true, tag + ': still locked while the reload is pending');
+    assert.equal(E(c).load, 'loading', tag);
+    const fulls = c.CALLS.filter(p => p.action === 'aff_full').length;
+    // every control is ignored while locked
+    run(c, `FUNERGY_AFF.h.store(${ix()}, 'S3')`); run(c, `FUNERGY_AFF.h.aff(${ix()}, 'hq')`); run(c, `FUNERGY_AFF.h.supAdd(${ix()}, 'S3')`);
+    run(c, `FUNERGY_AFF.h.undo(${ix()})`); run(c, `FUNERGY_AFF.h.sugg(${ix()})`); run(c, 'FUNERGY_AFF.h.discard()'); run(c, 'FUNERGY_AFF.h.reload()');
+    assert.equal(E(c).draft['E-1'], sent, tag + ': the draft that was sent is untouched');
+    assert.equal(c.CALLS.filter(p => p.action === 'aff_full').length, fulls, tag + ': no second reload while locked');
+    assert.equal(reviewDisabled(c), true, tag + ': the review button is off while locked');
+    const shown = run(c, 'ELS["aff-root"].innerHTML');
+    assert.match(shown, /Kai One/, tag + ': the list is still on screen while reloading');
+    assert.match(shown, /<select class="aff-sel" disabled onchange="FUNERGY_AFF\.h\.store\(/, tag + ': the controls are drawn disabled');
+    // the reload returns: the server already has S2 (our lost save) → written, unlocked
+    H.r({ ok: true, j: { affn: 1, rows, log: [] } }); await settle();
+    assert.equal(E(c).busy, false, tag + ': unlocked after the recovery');
+    assert.equal(E(c).draft['E-1'], undefined, tag);
+    assert.equal(c.WRITES.length, 1, tag); assert.equal(c.WRITES[0][1].find(e => e.id === 'E-1').store, 'S2', tag);
+    assert.equal(E(c).band, '', tag);
+    run(c, `FUNERGY_AFF.h.store(${ix()}, 'S3')`);
+    assert.equal(E(c).draft['E-1'].store, 'S3', tag + ': editing works again');
+  }
+});
+
+test('Codex P2 (409): only the draft that was sent is dropped; a draft replaced afterwards is kept and told (409 and success paths)', async () => {
+  // 409: the server already has S2; the draft was replaced with S3 while the answer was on its way (another way in than the locked controls)
+  let rows = [ROW('E-1', 'store', 'S1', [], 1)], hold = null;
+  const c = app({ ss: p => {
+    if (p.action === 'aff_full') return hold ? new Promise(r => { const h = hold; hold = null; h.r = r; }) : { ok: true, j: { affn: 1, rows, log: [] } };
+    if (p.action === 'aff_save') { rows = [ROW('E-1', 'store', 'S2', [], 2)]; return { status: 409, error: 'conflict', ids: ['E-1'] }; }
+    return { status: 400 };
+  } });
+  run(c, 'FUNERGY_AFF.h.open()'); await settle();
+  E(c).draft['E-1'] = { aff: 'store', store: 'S2', support: [] };
+  const H = {}; hold = H;
+  run(c, 'FUNERGY_AFF.h.save()'); await settle();
+  E(c).draft['E-1'] = { aff: 'store', store: 'S3', support: [] };
+  H.r({ ok: true, j: { affn: 1, rows, log: [] } }); await settle();
+  assert.equal(E(c).draft['E-1'].store, 'S3', 'the newer draft is kept');
+  assert.equal(c.WRITES[0][1].find(e => e.id === 'E-1').store, 'S2', 'the master gets what the server has');
+  assert.ok(c.TOASTS.some(x => /同じ内容がもうサーバーに入っていた人がいます.*ほかの変更はまだ保存していません/.test(x[0])), JSON.stringify(c.TOASTS));
+  assert.equal(reviewDisabled(c), false, 'the kept change can be saved');
+  // success: the draft replaced while the save was on its way stays
+  let resolve;
+  const d = app({ ss: p => p.action === 'aff_full' ? { ok: true, j: { affn: 1, rows: [], log: [] } } : new Promise(r => { resolve = r; }) });
+  run(d, 'FUNERGY_AFF.h.open()'); await settle();
+  E(d).draft['E-GM'] = { aff: 'hq', store: '', support: [] };
+  E(d).draft['E-OF'] = { aff: 'hq', store: '', support: [] };
+  run(d, 'FUNERGY_AFF.h.save()'); await settle();
+  E(d).draft['E-OF'] = { aff: 'store', store: 'S1', support: [] };
+  resolve({ ok: true, j: { affn: 1, ok: true, rows: [], same: 0 } }); await settle();
+  assert.deepEqual(Object.keys(E(d).draft), ['E-OF']);
+  assert.equal(E(d).draft['E-OF'].store, 'S1');
+});
+
+test('Codex P2: the reload after a successful save keeps the lock until it returns', async () => {
+  let hold = null, saved = false;
+  const c = app({ ss: p => {
+    if (p.action === 'aff_full') return hold ? new Promise(r => { const h = hold; hold = null; h.r = r; }) : { ok: true, j: { affn: 1, rows: saved ? [ROW('E-GM', 'hq', '', [], 1)] : [], log: [] } };
+    if (p.action === 'aff_save') { saved = true; return { ok: true, j: { affn: 1, ok: true, same: 0 } }; }
+    return { status: 400 };
+  } });
+  run(c, 'FUNERGY_AFF.h.open()'); await settle();
+  const ix = id => E(c).ix.indexOf(id);
+  run(c, `FUNERGY_AFF.h.sugg(${ix('E-GM')})`);
+  const H = {}; hold = H;
+  run(c, 'FUNERGY_AFF.h.save()'); await settle();
+  assert.ok(H.r); assert.equal(E(c).busy, true, 'locked while the reload is pending');
+  run(c, `FUNERGY_AFF.h.sugg(${ix('E-OF')})`);
+  assert.deepEqual(Object.keys(E(c).draft), [], 'nothing can be changed meanwhile');
+  H.r({ ok: true, j: { affn: 1, rows: [ROW('E-GM', 'hq', '', [], 1)], log: [] } }); await settle();
+  assert.equal(E(c).busy, false, 'unlocked');
+  run(c, `FUNERGY_AFF.h.sugg(${ix('E-OF')})`);
+  assert.deepEqual(Object.keys(E(c).draft), ['E-OF']);
+  // a reload that fails or throws does not leave it locked (success and 409 paths)
+  for (const [kind, bad] of [['fails', () => ({ net: true })], ['throws', () => ({ ok: true, j: { get rows() { throw new Error('broken answer'); } } })]]) {
+    for (const path of ['ok', '409']) {
+      let after = false;
+      const d = app({ ss: p => p.action === 'aff_full' ? (after ? bad() : { ok: true, j: { affn: 1, rows: [], log: [] } })
+        : p.action === 'aff_save' ? (after = true, path === 'ok' ? { ok: true, j: { affn: 1, ok: true, same: 0 } } : { status: 409, error: 'conflict', ids: ['E-GM'] }) : { status: 400 } });
+      run(d, 'FUNERGY_AFF.h.open()'); await settle();
+      E(d).draft['E-GM'] = { aff: 'hq', store: '', support: [] };
+      run(d, 'FUNERGY_AFF.h.save()'); await settle();
+      assert.equal(E(d).busy, false, kind + '/' + path + ': not left locked when the reload ' + kind);
+    }
+  }
+});
+
+// Claude のルーティン 7008305851 の P3-1：読み直しで、下書きのある人のサーバーの版が変わっていたら黙って載せ替えない
+test('a reload that finds a newer server version under an open draft marks the person (not silently rebased); no change → no mark', async () => {
+  let rows = [ROW('E-1', 'store', 'S1', [], 1)];
+  const c = app({ ss: full2(() => rows) });
+  run(c, 'FUNERGY_AFF.h.open()'); await settle();
+  const ix = id => E(c).ix.indexOf(id);
+  run(c, `FUNERGY_AFF.h.store(${ix('E-1')}, 'S3')`);
+  run(c, `FUNERGY_AFF.h.sugg(${ix('E-GM')})`);
+  // nothing moved on the server: no mark
+  run(c, 'FUNERGY_AFF.h.reload()'); await settle();
+  assert.equal(E(c).band, ''); assert.deepEqual(Array.from(E(c).conflict), []);
+  // another GM changes E-1 (v2) and confirms E-GM for the first time (no row → v1)
+  rows = [ROW('E-1', 'store', 'S2', [], 2), ROW('E-GM', 'store', 'S1', [], 1)];
+  run(c, 'FUNERGY_AFF.h.reload()'); await settle();
+  assert.equal(E(c).band, 'changed');
+  assert.deepEqual(Array.from(E(c).conflict).sort(), ['E-1', 'E-GM']);
+  assert.equal(E(c).draft['E-1'].store, 'S3', 'the change is kept');
+  assert.match(run(c, 'ELS["aff-root"].innerHTML'), /読み直したら、ほかの人が先に変えていた人がいます（あなたの変更はまだ保存していません）：Kai One、Gina M|読み直したら、ほかの人が先に変えていた人がいます（あなたの変更はまだ保存していません）：Gina M、Kai One/);
+  assert.match(run(c, 'ELS["aff-root"].innerHTML'), /class="[^"]*cf/, 'the rows are highlighted');
+  // a draft that now equals the server is dropped, not marked
+  rows = [ROW('E-1', 'store', 'S3', [], 3), ROW('E-GM', 'store', 'S1', [], 1)];
+  run(c, 'FUNERGY_AFF.h.reload()'); await settle();
+  assert.equal(E(c).draft['E-1'], undefined);
+  // English
+  const d = app({ lang: 'en', ss: full2(() => rows) });
+  run(d, 'FUNERGY_AFF.h.open()'); await settle();
+  run(d, `FUNERGY_AFF.h.store(${E(d).ix.indexOf('E-1')}, 'S1')`);
+  rows = [ROW('E-1', 'store', 'S2', [], 4), ROW('E-GM', 'store', 'S1', [], 1)];
+  run(d, 'FUNERGY_AFF.h.reload()'); await settle();
+  assert.match(run(d, 'ELS["aff-root"].innerHTML'), /After reloading, someone else had already changed these people \(your changes are not saved yet\): Kai One/);
+  run(d, 'FUNERGY_AFF.h.discard()');
+  assert.equal(E(d).band, ''); assert.deepEqual(Array.from(E(d).conflict), []);
 });
 
 test('P2-3: a store role set to head office (OFFICE) who signs in at a support store keeps that store (PIN, passkey with the chosen place); OFFICE acts like ALL did', () => {

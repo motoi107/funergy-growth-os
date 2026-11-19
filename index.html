@@ -117470,7 +117470,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   var MAX_ITEMS = 200, MAX_SUP = 20;
 
   /* ---------------------------------------------------------------- 状態（メモリだけ） */
-  function fresh(){ return { k:'', load:'', code:'', rows:{}, log:[], draft:{}, tab:'need', q:'', busy:false, view:'list', reason:'', band:'', conflict:[], ix:[], open:false, mfail:[] }; }
+  function fresh(){ return { k:'', load:'', code:'', rows:{}, log:[], draft:{}, tab:'need', q:'', busy:false, view:'list', reason:'', band:'', conflict:[], ix:[], open:false, mfail:[], okOnce:false }; }
   var E = fresh();
   function who(){
     try{
@@ -117623,14 +117623,22 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     if (r && r.ok && r.j) {
       if (r.j.nosql) { E.load = 'err'; E.code = 'nosql'; }
       else {
-        E.load = 'ok'; E.rows = {};
+        var had = E.okOnce, oldRows = E.rows;
+        E.load = 'ok'; E.okOnce = true; E.rows = {};
         (Array.isArray(r.j.rows) ? r.j.rows : []).forEach(function(x){
           if (!x || x.emp_id == null || (x.aff !== 'hq' && x.aff !== 'store')) return;
           E.rows[String(x.emp_id)] = { aff:x.aff, store:x.aff === 'hq' ? '' : String(x.store || ''), support:uniq(Array.isArray(x.support) ? x.support : []),
             ver:Number(x.ver) || 0, at:String(x.updated_at || ''), by:String(x.by_name || '') };
         });
         E.log = Array.isArray(r.j.log) ? r.j.log : [];
-        Object.keys(E.draft).forEach(function(id){ var d = E.draft[id]; setDraft(id, d); });   /* 同じになった下書きは捨てる */
+        /* 同じになった下書きは捨てる。残った下書きのうち、読み直す前からサーバーの版が変わった人は「ほかの人が先に変えた」に入れる
+           （黙って新しい版に載せ替えて、次の保存でほかの人の変更を上書きしないように・Claude のルーティン 7008305851 の P3-1） */
+        var moved = [];
+        Object.keys(E.draft).forEach(function(id){
+          var d = E.draft[id]; setDraft(id, d);
+          if (had && E.draft[id] === d) { var o = oldRows[id], n = E.rows[id]; if ((o ? o.ver : 0) !== (n ? n.ver : 0)) moved.push(id); }
+        });
+        if (moved.length) { moved.forEach(function(id){ if (E.conflict.indexOf(id) < 0) E.conflict.push(id); }); if (E.band !== 'conflict') E.band = 'changed'; }
       }
     } else if (r && r.status === 403) { E.load = 'err'; E.code = 'forbidden'; }
     else if ((r && r.status === 400 && r.error === 'unknown_action') || (r && r.legacy)) { E.load = 'err'; E.code = 'old'; }
@@ -117744,6 +117752,12 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       return '<div class="alert alert-warning" style="font-size:12.5px;margin-bottom:8px"><i class="ti ti-alert-triangle"></i><div>'
         + esc(T('ほかの人が先に変えた人がいるので、何も保存していません：','Someone else changed these people first, so nothing was saved: ') + ns.join('、'))
         + '<br>' + esc(T('色の付いた行の今の値を確かめてから、もう一度保存してください（あなたの変更は残っています）','Check the highlighted rows, then save again (your changes are kept)')) + '</div></div>';
+    }
+    if (E.band === 'changed') {
+      var nc = E.conflict.map(function(id){ var e = empById(id); return e ? nm(e) : id; });
+      return '<div class="alert alert-warning" style="font-size:12.5px;margin-bottom:8px"><i class="ti ti-alert-triangle"></i><div>'
+        + esc(T('読み直したら、ほかの人が先に変えていた人がいます（あなたの変更はまだ保存していません）：','After reloading, someone else had already changed these people (your changes are not saved yet): ') + nc.join('、'))
+        + '<br>' + esc(T('色の付いた行の今の値を確かめてから、保存してください（あなたの変更は残っています）','Check the highlighted rows, then save (your changes are kept)')) + '</div></div>';
     }
     if (E.band === 'master') {
       return '<div class="alert alert-warning" style="font-size:12.5px;margin-bottom:8px"><i class="ti ti-alert-triangle"></i><div>'
@@ -117909,25 +117923,30 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     var its = itemsOf(); if (typeof its === 'string') { toast(its, 'warning'); E.view = 'list'; paint(); return; }
     if (!its.length) { toast(T('変える人がいません','Nobody to change'), 'info'); E.view = 'list'; paint(); return; }
     E.busy = true; paint();
+    /* 送った下書き（入れ物）。答えのあと消すのは、送ったときのままの下書きだけ（あとで変えた下書きは残す・Codex 7008350412） */
+    var sent = {}; its.forEach(function(it){ sent[it.emp] = E.draft[it.emp]; });
+    function dropSent(id){ if (sent[id] && E.draft[id] === sent[id]) delete E.draft[id]; }
     var t0 = tok(), r = null;
     try{ r = await ssCall({ action:'aff_save', items:its.map(function(it){ return { emp:it.emp, aff:it.aff, store:it.store, support:it.support, expect:it.expect }; }), reason:String(E.reason || '').trim().slice(0, 500), ms:20000 }); }catch(x){ r = { net:true }; }
     /* ログアウト・ログインし直しのあとに届いた答え：従業員マスターに書かない・知らせない（サーバーに書けていれば、次に開いたとき「合わない」に出る） */
     if (stale(t0)) { if (t0.e === E) E = fresh(); return; }
-    E.busy = false;
+    /* 保存のあとの読み直しが終わるまで E.busy のまま（そのあいだは打てない・押せない・Codex 7008350412 の P2） */
     if (r && r.ok && r.j && r.j.ok) {
       var fail = writeMaster(its);
-      its.forEach(function(it){ delete E.draft[it.emp]; });
+      its.forEach(function(it){ dropSent(it.emp); });
       E.reason = ''; E.view = 'list'; E.conflict = []; E.mfail = fail; E.band = fail.length ? 'master' : '';
       if (fail.length) toast(T('サーバーには保存しました。従業員マスターに書けなかった人がいます','Saved on the server; some staff master rows could not be written'), 'warning');
       else toast(r.j.same && r.j.same === its.length ? T('変わったところはありませんでした','Nothing changed') : T('保存しました（' + its.length + ' 人）','Saved (' + its.length + ')'), 'success');
       afterMaster();
-      await load(true);
+      try{ await load(true); }catch(x){}
+      if (stale(t0)) return;
+      E.busy = false; paintAll();
       return;
     }
     if (r && r.status === 409) {
       var cf = (r.ids || []).map(String);
       E.conflict = cf; E.band = 'conflict'; E.view = 'list';
-      var ok = await load(true);
+      var ok = false; try{ ok = await load(true); }catch(x){ ok = false; }
       if (stale(t0)) return;
       /* Claude のルーティン（7002642425）P3-3：サーバーの今の値が、この保存で送った値と同じ人は「先に入っていた」
          （前に押した保存の答えが届かなかったときなど）。版が古いので 409 になっても、ほかの人が変えたのではない。
@@ -117935,7 +117954,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       var got = ok ? its.filter(function(it){ var row = E.rows[it.emp]; return cf.indexOf(it.emp) >= 0 && row && sameVal(row, { aff:it.aff, store:it.store, support:it.support }); }) : [];
       if (got.length) {
         var gotIds = got.map(function(it){ return it.emp; });
-        got.forEach(function(it){ delete E.draft[it.emp]; });
+        got.forEach(function(it){ dropSent(it.emp); });
         E.conflict = E.conflict.filter(function(id){ return gotIds.indexOf(id) < 0; });
         var mf = writeMaster(got);
         if (mf.length) { E.mfail = mf; E.band = 'master'; }
@@ -117945,9 +117964,10 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
           + (Object.keys(E.draft).length ? T('。ほかの変更はまだ保存していません。もう一度「内容を確かめて保存」を押してください','. Your other changes are not saved yet. Press "Review and save" again') : ''), 'info');
       }
       if (E.conflict.length) toast(T('ほかの人が先に変えた人がいます。何も保存していません','Someone else changed some people first. Nothing was saved'), 'warning');
-      paintAll();
+      E.busy = false; paintAll();
       return;
     }
+    E.busy = false;
     E.view = 'list';
     if (r && r.status === 404) toast(T('在籍でない人（退職など）が入っています。名簿を読み直してから、もう一度保存してください','Someone is no longer active (resigned, etc.). Reload the roster and save again'), 'danger');
     else if (r && r.status === 503) toast(T('所属の確認の SQL がまだ入っていません','The affiliation SQL is not installed yet'), 'danger');
@@ -117965,7 +117985,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   var h = {
     open: open,
     close: function(){ E.open = false; try{ closeModalDirect(); }catch(x){} },
-    reload: function(){ E.load = ''; E.code = ''; paintAll(); load(true); },
+    reload: function(){ if (E.busy) return; E.load = ''; E.code = ''; paintAll(); load(true); },   /* 保存のあとの読み直しのあいだは押さない */
     tab: function(x){ E.tab = x === 'done' ? 'done' : 'need'; paint(); },
     q: function(v){ E.q = String(v || '').slice(0, 60); paintList(); },
     aff: function(i, a){
@@ -117994,7 +118014,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       else { if (E.band === 'master') { E.band = ''; E.mfail = []; } toast(T('従業員マスターを確かめた所属にしました','Staff master updated to the confirmed value'), 'success'); }
       afterMaster(); paint(); paintCard();
     },
-    discard: function(){ if (E.busy) return; E.draft = {}; E.conflict = []; if (E.band === 'conflict') E.band = ''; paint(); },
+    discard: function(){ if (E.busy) return; E.draft = {}; E.conflict = []; if (E.band === 'conflict' || E.band === 'changed') E.band = ''; paint(); },
     review: function(){
       var its = itemsOf(); if (typeof its === 'string') { toast(its, 'warning'); paint(); return; }
       if (!its.length) { toast(T('変える人がいません','Nobody to change'), 'info'); return; }
