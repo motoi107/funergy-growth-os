@@ -237,7 +237,7 @@ test('2A: no 承認 tab; the old waiting approvals are opened from 申請/承認
   assert.match(wc, /if \(workTab==='approval'\) return bar \+ [^\n]*申請\/承認に戻る[^\n]*renderApproval\(\);/);
   const ctx = { workTab: 'wr', NAV_RETIRED: {}, _apClosed: () => false };
   vm.createContext(ctx);
-  vm.runInContext(fnSrc('navResolvePage'), ctx);
+  vm.runInContext(fnSrc('navResolvePage') + '\nfunction navGuardPage(p){ return p; }', ctx);   /* v1191：行き先の守りは tests/unified-ui-v1191 で確かめる */
   assert.equal(ctx.navResolvePage('approval'), 'tasks'); assert.equal(ctx.workTab, 'approval');
   ctx._apClosed = () => true; ctx.workTab = 'wr';
   assert.equal(ctx.navResolvePage('approval'), 'tasks'); assert.equal(ctx.workTab, 'wr');

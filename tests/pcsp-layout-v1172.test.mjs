@@ -381,6 +381,7 @@ function staffCtx(opt = {}) {
     myAmStores: () => opt.amStores || [],
     canViewPins: () => !!opt.pins, wageScopeStores: () => (opt.wage === 'all' ? null : []),
     canViewWageOf: e => opt.wage === 'all' || (opt.wage === 'F02' && e.store === 'F02'),
+    canViewIndividualWage: () => ['ceo', 'gm'].includes(ctx.curRole),   /* v1191：役職給与表のボタンは CEO・GM だけ */
     getStaffPin: n => (n === 'Kai Mori' ? '4321' : '0000'),
     renderInactiveCard: () => '<div class="card" data-clear>in</div>', renderUnregisteredCard: () => '', renderOffboardingCard: () => '', renderResignRepairCard: () => '',
     bStoreChips: () => '<chips>', storeBadge: id => '<sb ' + escapeHtml(id) + '>',

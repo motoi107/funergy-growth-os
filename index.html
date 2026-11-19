@@ -7671,8 +7671,8 @@ const MENU_GROUPS = [
      （1 ページだけのグループは firstAllowedChild がその 1 ページへ行くので、ここで絞らないと AM・SL にも出てしまう） */
   {id:'g_acct_center', label:'経理センター', icon:'ti-building-bank', roles:['ceo','gm','office'],
     children:['acct_center']},
-  {id:'g_acct_review', label:'経理レビュー', icon:'ti-checklist', roles:['ceo','gm','office'],
-    children:['acct_review']},
+  /* v1191（統合 UI・決めてほしいこと 5B・Moto 11/18）：大タブ「経理レビュー」は経理センターの中（経理レビュー）へ。
+     古い行き先（acct_review）は navResolvePage が経理センター › 経理レビューへ寄せる */
   {id:'g_settings', label:'設定', icon:'ti-settings', roles:['ceo','gm','office','am','sl'],
     children:['store_master','required','settings','diag_center','ar_settings']},   /* v1137: 診断と記録（GM・CEO・経理・事務Crew。AM・G4・SL は復旧の道具だけ。NAV_ITEMS の roles で絞る） */
 ];
@@ -7695,12 +7695,14 @@ const OFFICE_GROUPS = [
   {id:'go_chat', label:'チャット', icon:'ti-messages', roles:['ceo','gm','office'],
     children:['chat']},   /* v1156 */
   {id:'go_set', label:'設定', icon:'ti-settings', roles:['ceo','gm','office'],
-    children:['settings','diag_center','ar_settings','profile']},   /* v1137 */
+    children:['settings','diag_center','ar_settings']},   /* v1137 / v1191：「profile」は中身が無かった（準備中）ので外す */
 ]
 /* 経理(office)専用：キッチン側を含まない */
 const ACCT_GROUPS = [
-  {id:'ga_home', label:'本部', icon:'ti-building-skyscraper', children:['office_mgr','notifications','tasks','chat','biz_guide']},   /* v1156: chat */
-  {id:'ga_acct', label:'経理 請求・仕訳', icon:'ti-calculator', children:['invoice','acct_review','acct_export','monthly','purchase_detail','vendor_master','ingredient_master']},
+  /* v1191：Office管理（office_mgr）は前から経理センターを開いていた → 名前のとおり経理センター（acct_center）を置く。
+     経理レビュー（acct_review）は経理センターの中へ（決めてほしいこと 5B） */
+  {id:'ga_home', label:'本部', icon:'ti-building-skyscraper', children:['acct_center','notifications','tasks','chat','biz_guide']},   /* v1156: chat */
+  {id:'ga_acct', label:'経理 請求・仕訳', icon:'ti-calculator', children:['invoice','acct_export','monthly','purchase_detail','vendor_master','ingredient_master']},
   /* v1084: 会議は予実管理の中にあったので予実管理の右隣（経理は中間レビューを見ない）・仕入れは原価率(FC)の位置 */
   {id:'ga_budget', label:'経理 予実・労務', icon:'ti-chart-bar', children:['budget','meeting','labor','purchase','kpi_master','tip']},
   /* v844: ガソリン代・事前経費・建て替え経費の承認をここから全部たどれるようにする。
@@ -7709,7 +7711,7 @@ const ACCT_GROUPS = [
     children:['approval','expense','mileage','vacation','office_export']},
   {id:'ga_hr', label:'人材', icon:'ti-users', children:['hr','growthhub','hiring','crew_handbook']},
   {id:'ga_my', label:'マイページ', icon:'ti-user', children:['mypage','discount']},   /* v844: 事務Crew専用メニューから引き継ぐ / v897: discount / v1084: 対応依頼は廃止 */
-  {id:'ga_set', label:'設定', icon:'ti-settings', children:['settings','diag_center','profile']},   /* v1137 */
+  {id:'ga_set', label:'設定', icon:'ti-settings', children:['settings','diag_center']},   /* v1137 / v1191：profile は外す */
 ];
 /* ===== v766: Corporate Chef（本部のキッチン側）専用メニュー =====
    本部は「経理側（office）」と「キッチン側（chef）」の2つに分かれる。
@@ -7739,7 +7741,7 @@ const CHEF_GROUPS = [
     children:['staff_master','hiring','tip','skill','ojt_admin','growth_mgr','leadership',
               'growthhub','totoya_docs','crew_handbook']},
   {id:'gc_my', label:'マイページ', icon:'ti-user',
-    children:['mypage','discount','profile','required','settings']},
+    children:['mypage','discount','required','settings']},   /* v1191：profile は外す（中身が無かった） */
 ];
 /* Crew専用のシンプルメニュー（マイページ中心） */
 const CREW_GROUPS = [
@@ -7758,7 +7760,13 @@ const STORE_GROUPS = [
   {id:'g_inv', label:'棚卸し', icon:'ti-clipboard-list', children:['inventory']},
   {id:'g_vac', label:'休暇承認', icon:'ti-beach', children:['vacation']},
 ];
-function navItemById(id) { return NAV_ITEMS.find(n=>n.id===id) || {id, label:id, icon:'ti-circle'}; }
+/* v1191：NAV_ITEMS に無いのにナビに並ぶ画面の名前（前は ID のまま「acct_export」「monthly」と出ていた） */
+var NAV_EXTRA_ITEMS = {
+  acct_export:   {label:'経理出力',     icon:'ti-file-export'},
+  monthly:       {label:'月次サマリー', icon:'ti-calendar-stats'},
+  office_export: {label:'出力センター', icon:'ti-file-export'}
+};
+function navItemById(id) { return NAV_ITEMS.find(n=>n.id===id) || (NAV_EXTRA_ITEMS[id] ? Object.assign({id:id}, NAV_EXTRA_ITEMS[id]) : {id, label:id, icon:'ti-circle'}); }
 function groupsForRole() {
   var groups;
   if (curStoreLogin) groups = STORE_GROUPS;
@@ -7888,8 +7896,55 @@ function apOldPend(){
   }
   return pend;
 }
+/* ===== v1191（統合 UI・依頼の「直接の行き先も止める」）：画面を開けるかを 1 か所で決める =====
+   前は NAV_ITEMS の roles は「ナビに出すか」だけで、renderPage() は塞がなかった（v878）。そのため G1 でも go('acct_center') や
+   お気に入り・通知・前の画面の記録で経理センター・店舗マスター・承認・閲覧設定が開いた（docs/UNIFIED_UI_V1191_JA.md の 4）。
+   ・PAGE_GUARD：守る画面だけ、開ける役割（curRole）を決める。ナビ（navChildAllowed）と行き先（navGuardPage）が同じ決まりを見る。
+   ・G1（店舗 Crew の個人ログイン）は、ナビにある画面と、今の画面のボタンから行く画面（CREW_EXTRA_PAGES）だけ。
+   ・CEO・GM はどの画面も開ける（前のまま）。店のタブレット（curStoreLogin）は役割 sl のまま（前のまま・段階 2 で決める）。
+   ・これは画面の決まり。端末に届くデータの範囲をサーバーで絞るのは段階 5（RLS の続き） */
+var PAGE_GUARD = {
+  ar_settings:      ['ceo','gm'],                                   /* v1190：サーバーも CEO・GM だけ */
+  growth_karte:     ['ceo','gm'],                                   /* 画面も前から GM・CEO だけ */
+  store_master:     ['ceo','gm','office'],
+  company_msg_edit: ['ceo','gm','office'],
+  acct_center:      ['ceo','gm','office','office_crew'],
+  acct_review:      ['ceo','gm','office','office_crew'],
+  office_mgr:       ['ceo','gm','office','office_crew'],
+  monthly:          ['ceo','gm','office','office_crew'],
+  office_export:    ['ceo','gm','office','office_crew'],
+  hr:               ['ceo','gm','office','office_crew'],
+  acct_export:      ['ceo','gm','office'],                          /* 事務Crew は前から画面が断っていた（給与の出力があるため） */
+  settings:         ['ceo','gm','office','office_crew','chef']
+};
+/* G1 の画面から押して行く画面（マイページ・店舗オペレーション・成長の「申請・確認」・Handbook など）。ナビには出ないが前から開けていた */
+var CREW_EXTRA_PAGES = ['mypage','discount','crew_handbook','shift_staff','skill','ojtmap','totoya_docs','tiprate','store_cmd','chat',
+  'vacation','expense','mileage','lost_receipt','goals','hiring','onboarding','lunch_challenge','notifications','dailyops'];
+function pageRoleAllowed(pid){
+  var g = PAGE_GUARD[pid];
+  return !g || g.indexOf(curRole) >= 0;
+}
+function navGuardAllows(pid){
+  if (typeof curRole === 'undefined' || !curRole) return true;   /* ログインの前（画面はまだ無い） */
+  if (curRole === 'ceo' || curRole === 'gm') return true;
+  if (!pageRoleAllowed(pid)) return false;
+  if (curRole === 'crew' && !curStoreLogin) {
+    if (CREW_EXTRA_PAGES.indexOf(pid) >= 0) return true;
+    try { return groupsForRole().some(function(g){ return (g.children||[]).indexOf(pid) >= 0; }); } catch(e){ return false; }
+  }
+  return true;
+}
+var _navGuardToastAt = 0;
+function navGuardPage(page){
+  if (navGuardAllows(page)) return page;
+  var to = navHomePage();
+  if (!navGuardAllows(to)) to = 'mypage';
+  try { var now = Date.now(); if (now - _navGuardToastAt > 2000 && typeof showToast === 'function') { _navGuardToastAt = now; showToast(t('この画面は、このログインでは開けません','This screen is not available for this sign-in'), 'info'); } } catch(e){}
+  return to;
+}
 function navChildAllowed(pid){
-  if (pid==='approval') return false;   /* v1159：閉じたら外す → v1165（2A）：いつも外す（ワークセンターの申請/承認へ） */
+  if (pid==='approval') return false;
+  if (!pageRoleAllowed(pid)) return false;   /* v1191：守る画面はナビにも出さない（行き先の決まりと同じ） */   /* v1159：閉じたら外す → v1165（2A）：いつも外す（ワークセンターの申請/承認へ） */
   if (pid==='staff_master' && typeof canAccessStaffMaster==='function' && !canAccessStaffMaster()) return false;
   if (pid==='kpi_master' && typeof canAccessKpiMaster==='function' && !canAccessKpiMaster()) return false;
   if (pid==='dashboard') return (typeof canSeeDashboard==='function') ? canSeeDashboard() : true; // Totoya店長にも開放
@@ -7922,7 +7977,7 @@ function navHomePage(){
    ・原価率(FC)→仕入れ、日次食材差異→棚卸し、備品発注→発注、管理統括→ワークセンター、対応依頼→マイページ。
    ・v1087: 発注（食材管理）も廃止（Moto 10/16 ④）→棚卸し。備品発注も棚卸しへ（前は発注へ寄せていた）。
      寄せ先を開けない役職なら、その人のホーム。寄せることで見える人は増えない。 */
-var NAV_RETIRED = { foodcost:'purchase', fv_variance:'inventory', supply_order:'inventory', order:'inventory', mgmt_ctrl:'tasks', mc_requests:'mypage' };
+var NAV_RETIRED = { foodcost:'purchase', fv_variance:'inventory', supply_order:'inventory', order:'inventory', mgmt_ctrl:'tasks', mc_requests:'mypage', profile:'mypage' };   /* v1191：profile は中身が無かった */
 function navResolvePage(page){
   if (page === 'budget' && typeof budgetTab !== 'undefined') {
     if (budgetTab === 'meeting' || budgetTab === 'purchase') { page = budgetTab; budgetTab = 'daily'; }
@@ -7933,11 +7988,18 @@ function navResolvePage(page){
   if ((page === 'approval' || (page === 'tasks' && typeof workTab !== 'undefined' && workTab === 'approval')) && typeof _apClosed === 'function' && _apClosed()) { page = 'tasks'; workTab = 'wr'; }
   else if (page === 'approval') { page = 'tasks'; workTab = 'approval'; }   /* v1165（2A）：前の承認の画面はワークセンター › 申請/承認の中で開く（承認センターのページは出さない） */
   if (page === 'office_mgr' && typeof officeMgrTab !== 'undefined' && officeMgrTab === 'tasks') officeMgrTab = 'dash';
+  /* v1191（5B）：大タブ「経理レビュー」は経理センター › 経理レビュー（区分・承認）の中へ。本体は同じ renderAcctReview（v1095） */
+  if (page === 'acct_review') {
+    if (navGuardAllows('acct_center')) { try { _acCat = 'review'; _acSub = 'acctrev'; } catch(e){} page = 'acct_center'; }
+  }
   if (Object.prototype.hasOwnProperty.call(NAV_RETIRED, page)) {
     var to = NAV_RETIRED[page];
     page = navPageAllowed(to) ? to : navHomePage();
   }
-  return page;
+  /* PR #194 の Claude のルーティン（P3）：相談の返信・回答・解決の通知は本人あてで page:'growthhub'。G1 はお悩み相談室を開けないので、
+     「開けません」と出さずに、返事が読めるマイページ（これまでの相談）へ */
+  if (page === 'growthhub' && !navGuardAllows('growthhub')) page = 'mypage';
+  return navGuardPage(page);   /* v1191：直接の行き先でも、開けない画面は開かない */
 }
 var curGroup = null;
 
@@ -10261,18 +10323,50 @@ function canViewWages() {
   if ((ROLE_CONFIG[curRole]||{}).noWage) return false; // 事務Crew等は給与一切不可
   /* v950: Head Chef を AM と同じ扱いにする（Motoさん指示）。
      ★合計・率だけ。個人の給与額は canViewIndividualWage が別に見ており、
-       そちらは ceo / gm / office のまま。chef は足さない。 */
+       そちらは ceo / gm（v1191 から。前は office も）。chef は足さない。 */
   return curRole==='ceo' || curRole==='gm' || curRole==='office' || curRole==='am'
       || curRole==='chef' || isStoreManager();
 }
-/* 個人の給与額を表示できる役職（機密情報担当=CEO/GM/経理のみ）。AM/SMは合計は見えるが個人額は不可。 */
+/* 個人の給与額を表示できる役職。AM/SMは合計は見えるが個人額は不可。
+   v1191（統合 UI・決めてほしいこと 2A「経理マネージャー・リーダーの個人の給与を外す・給与計算は CEO・GM」Moto 11/18）：
+   CEO・GM だけ。経理（office）は人件費・人件費率などの合計（canViewWages）は前のまま見る。
+   Tip の個人額・本部シフトインの個人額・採用の Payroll の段は、給与に入れるかが決まっていないので今のまま（docs/UNIFIED_UI_V1191_JA.md の 10）。
+   ★画面の決まり。従業員の時給はアプリが人件費を計算するために端末に届く（サーバーで個人額を返さないのは段階 5） */
 function canViewIndividualWage() {
   if (!salaryVisibleToMe()) return false;
   if ((ROLE_CONFIG[curRole]||{}).noWage) return false;
-  return curRole==='ceo' || curRole==='gm' || curRole==='office';
+  return curRole==='ceo' || curRole==='gm';
 }
 /* 給与を編集できるのは GM/CEO のみ（従来どおり） */
 function canEditWages() { return curRole==='gm' || curRole==='ceo'; }
+/* v1191（Moto 11/18「はい」）：シフトリーダー手当の個人額・本部シフトインの個人額・採用の Payroll の段は給与。
+   経理（office）・事務Crew（office_crew）には見せない・出力させない（CEO・GM だけ）。合計（店・日・期間・全店）は今のまま見せる。
+   ★Tip の配分表は対象外（Moto 11/18 09:09 HST「TIPの配分表は今まで通り経理にも事務Crewにも全て見える、出力できる状態を維持」）：
+   人ごとの額・①〜④・No Tip の時間・Tip 対象外にする・CSV・経理出力の Tip 一覧は、経理・事務Crew にも今までどおり。payDetailHidden は Tip の額には使わない。
+   ただし Tip の CSV に同じファイルで入っていたシフトリーダー手当の人ごとの部分は、経理・事務Crew の出力から外す（PR #194 の Codex 6989080060・payDetailCsvNote）。
+   店の画面（店長・AM・G2 以上が自店のチップの配分・シフトリーダーを見る）は今のまま＝決めたのは経理への見せ方だけ。
+   本部シフトインの個人額（本部の人の現場時給と額）は店の側が無いので canViewIndividualWage（CEO・GM）で決める。
+   ★画面と出力の決まり。端末に届くデータ（Tip の確定・勤怠・時給）を絞るのは v1192（サーバーで合計を出す） */
+function payDetailHidden() { return curRole==='office' || curRole==='office_crew'; }
+/* PR #194 の Codex（2bdd2c1）：前は 1 つの文で「CEO・GM だけ」と出していたが、店の画面（店長・AM・G2 以上）の Tip・手当は今までどおり見られる。
+   止めている範囲どおりに 3 つの文に分ける：'sl'（初期）＝シフトリーダー手当（経理・事務Crew だけ止める）／'hq'＝本部シフトイン・給与のまとめ（CEO・GM だけ）／'out'＝経理の出力の画面。
+   Tip の配分表は 11/18 09:09 HST の Moto さんの指示で止めない（経理・事務Crew にも今までどおり） */
+function payDetailMsg(kind) {
+  if (kind === 'hq') return t('本部シフトインの個人の額と給与のまとめは、CEO・GM だけが見て出力します（合計はこのまま見られます）','Individual HQ shift-in amounts and the payroll summary: only the CEO and GM see and export them (totals stay visible)');
+  if (kind === 'out') return t('シフトリーダー手当・本部シフトインの個人の額と経理まとめ（3 タブ）は、ここからは出力しません（CEO・GM が出力します。Tip の一覧は今までどおり出力できます。シフトリーダー手当の列は入りません）','Individual shift leader and HQ shift-in amounts and the 3-tab accounting book are not exported here (the CEO and GM export them; the tip lists export as before, without the shift leader columns)');
+  return t('シフトリーダー手当の個人の額は給与のため、経理・事務Crew には出さず、出力もしません（店の画面と CEO・GM は今までどおり。合計はこのまま見られます）','Individual shift leader amounts are payroll: they are not shown to or exported by accounting and office crew (store screens and the CEO/GM are unchanged; totals stay visible)');
+}
+function payDetailBlocked(strict) {
+  var no = strict ? !canViewIndividualWage() : payDetailHidden();
+  if (!no) return false;
+  try { showToast(payDetailMsg(strict ? 'hq' : 'sl'), 'warning'); } catch (e) {}
+  return true;
+}
+/* PR #194 の Codex（4e7ae43・6989080060）：Tip の CSV（期間の日次 L/D 配分・店の Tip 一覧・全店の Tip 一覧）は経理・事務Crew にも今までどおり出すが、
+   同じファイルに入っていたシフトリーダー手当の人ごとの部分（回数・単価・手当・受取＋手当・SL だけの人・支給明細）は給与なので入れない。
+   その代わりに入れていないことをこの 1 行で書く（CSV は日本語だけ＝今までの見出しと同じ） */
+function payDetailCsvNote() { return 'シフトリーダー手当（回数・単価・手当・受取＋手当）は給与のため、この出力には入れていません（CEO・GM が出力します）'; }
+function payDetailNoteHtml(kind) { return '<div class="u-paynote" style="font-size:11.5px;color:var(--muted);line-height:1.6;padding:8px 2px"><i class="ti ti-lock"></i> ' + escapeHtml(payDetailMsg(kind)) + '</div>'; }
 /* 給与閲覧の対象店舗（AM=管轄, SM=自店, 全権=null=全店） */
 function wageScopeStores() {
   if (curRole==='ceo' || curRole==='gm' || curRole==='office') return null; // 全店
@@ -10290,7 +10384,7 @@ function canViewWageOf(emp) {
   if (!salaryVisibleToMe()) return false; // グローバル非表示（本人分も隠す）
   /* 本人の給与予定は本人が見られる（noWage役職を除く） */
   if (emp.name===curUserName && !((ROLE_CONFIG[curRole]||{}).noWage)) return true;
-  /* 他人の個人給与額は 機密情報担当(CEO/GM/経理)のみ */
+  /* 他人の個人給与額は CEO/GM のみ（v1191：経理を外した） */
   if (!canViewIndividualWage()) return false;
   return true; // 全店OK（CEO/GM/経理は全店）
 }
@@ -10667,7 +10761,7 @@ var NAV_LABEL_EN = {
   '食材移動':'Ingredient Transfer','業者マスター':'Vendor Master','スキルレベル':'Skill Level','チップ率':'Tip Rate',
   'OJTマップ':'OJT Map','お悩み相談室':'Support Room','成長管理':'Growth Mgmt','OJT管理':'OJT Admin',
   '承認センター':'Approval Center','エラーセンター':'Error Center','通知':'Notifications','マイページ':'My Page',
-  '店舗マスター':'Store Master','KPI管理':'KPI Mgmt','KPI設定':'KPI settings','経理出力':'Accounting Export','会社メッセージ':'Company Message',
+  '店舗マスター':'Store Master','KPI管理':'KPI Mgmt','KPI設定':'KPI settings','経理出力':'Accounting Export','会社メッセージ':'Company Message','月次サマリー':'Monthly Summary',
   'アナウンス':'Announcements','設定':'Settings',
   '予実':'Budget','人材管理':'People','育成・評価':'Development','食材管理':'Ingredients',
   '本部':'HQ','経理':'Accounting','店舗管理':'Store Mgmt','シフト':'Shift','スキル':'Skills','チップ':'Tips',
@@ -13473,7 +13567,7 @@ var OP_SYNC_KEYS = ['initiatives','handbook_tests','ojt_enroll',
   'ec_log','ec_resolutions',
   'my_vacations','mileage_requests','mileage_config','expense_requests','lost_receipts','tasks_all','crew_education','career_history','career_track','menu_log','reject_log','inv_templates','store_ingredients','train_master','grade_ojt','benefit_adjust',
   'dev_pipe','dev_pipe_start',
-  'offboardings','offboard_template','store_fixed_costs','m_ingredients_v2','ing_v2_seq','ing_migration_mode','ing_v2_backfill_done','ing_v2_storeprice_fix','dev_nominations','order_catalog','supply_orders','order_config','prep_history','trainees','trainee_checklists','prep_positions','prep_level_method','prep_cfg','prep_tables','prep_certs','ojt_gate_criteria','growth_karte','karte_bonus_config','bonus_rules','grade_hist','cs_criteria','bonus_coef','bonus_track','bonus_coef_rng','karte_pin','bonus_eval_rule','bonus_eval_ovr','bonus_eval','bonus_store_q','bonus_pool_extra','cs_strength_rule','cs_guide','career_cfg','reimbursements','checks','office_reports','ojt_def_g2','pl_config','pl_overrides','pl_expense_class','benefit_manual','hq_budget','hq_actions','tip_hours_config','resp_matrix','totoya_g2_matrix','handbook_chapters','handbook_reads','handbook_log','shift_trainee_pos','shift_sections','shift_headcount','shift_postime','shift_secrole','shift_ld_head','p4_fixavail','store_closures','meeting_minutes','ingredient_transfers','vendor_merges','meeting_reviews','meeting_kpi_thresholds','meeting_kgi_edits','q_budgets','fv_config','lunch_challenge'];
+  'offboardings','offboard_template','store_fixed_costs','m_ingredients_v2','ing_v2_seq','ing_migration_mode','ing_v2_backfill_done','ing_v2_storeprice_fix','dev_nominations','order_catalog','supply_orders','order_config','prep_history','trainees','trainee_checklists','prep_positions','prep_level_method','prep_cfg','prep_tables','prep_certs','ojt_gate_criteria','growth_karte','karte_bonus_config','bonus_rules','grade_hist','cs_criteria','bonus_coef','bonus_track','bonus_coef_rng','karte_pin','bonus_eval_rule','bonus_eval_ovr','bonus_eval','bonus_store_q','bonus_pool_extra','cs_strength_rule','cs_guide','career_cfg','reimbursements','checks','office_reports','ojt_def_g2','pl_config','pl_overrides','pl_expense_class','benefit_manual','hq_budget','hq_actions','tip_hours_config','resp_matrix','totoya_g2_matrix','handbook_chapters','handbook_reads','handbook_log','shift_trainee_pos','shift_sections','shift_headcount','shift_postime','shift_secrole','shift_ld_head','p4_fixavail','store_closures','meeting_minutes','ingredient_transfers','vendor_merges','meeting_reviews','meeting_kpi_thresholds','meeting_kgi_edits','q_budgets','fv_config','lunch_challenge','funergy_times'];
 /* v836: labor_hours_ を同期対象から外した。
    このキーは「死んでいる」＝書かれるだけで誰も読んでいない。
    唯一の入口 openLaborHourModal() に呼び出し元が無く（doToastLaborFetch も同じ）、
@@ -13741,7 +13835,7 @@ function outboxLabel(key){
     ['grade_hist','グレード履歴','Grade history'],['mileage_config','ガソリン代の設定','Mileage settings'],['career_cfg','Score管理の設定','Score settings'],['cs_criteria','スコア基準','Score criteria'],
     ['bonus_coef_rng','賞与の係数の幅','Bonus coefficient ranges'],['bonus_coef','賞与の係数','Bonus coefficients'],['bonus_track','G3 の職種','G3 track'],['bonus_eval_rule','賞与の 4 項目の設定','Bonus four-item settings'],
     ['bonus_eval_ovr','賞与の個人設定','Bonus personal settings'],['cs_strength_rule','強みの決まり','Strength rules'],['cs_guide','評価基準・例','Scoring guide'],
-    ['prep_tables','プレップの時給の表','Prep wage tables'],['prep_certs','プレップの認定','Prep certifications'],['pl_expense_class','PL の科目の区分','PL account classes']];   /* v1146 */   /* v1137：右上の「保存」の中身で読める名前。v1145：決めた人だけが書ける設定（サーバーが断ったものを外す画面に出す） */
+    ['prep_tables','プレップの時給の表','Prep wage tables'],['prep_certs','プレップの認定','Prep certifications'],['pl_expense_class','PL の科目の区分','PL account classes'],['funergy_times','FUNERGY TIMES の設定','FUNERGY TIMES settings']];   /* v1146 */   /* v1137：右上の「保存」の中身で読める名前。v1145：決めた人だけが書ける設定（サーバーが断ったものを外す画面に出す） */
   var en=(typeof curLang!=='undefined' && curLang==='en');   /* v1137（独立レビュー P3-10）：英語の画面では英語の名前 */
   if(k.indexOf('spl_tip_requests_')===0 && k.length>17) return 'Tip Rate（'+k.slice(17)+'）';   /* v1146：だれの Tip Rate か（断られたものを外す画面で見分ける） */
   for(var i=0;i<map.length;i++){ if(k.indexOf(map[i][0])===0) return (en && map[i][2]) ? map[i][2] : map[i][1]; }
@@ -17667,7 +17761,9 @@ var OP_MERGE = {
                          v1141（Codex #135 の P1）：読んだ行が変わっていないときだけ書く（2 台が同じ古い行に足して書くと、先の変更・権限の取り消しが消えた） */
   bonus_coef:         { merge: mergeMapByTime, covers: _coversMapByTime, cas: true },   /* v1058: グレード・職種係数。係数ごとに新しいほう */
   pl_expense_class:   { merge: mergeMapByTime, covers: _coversMapByTime, cas: true },   /* v1188（UI案76 8A）：PL の科目の区分（科目ごとに新しいほう・区分と科目名だけ・金額は入れない） */
-  lunch_challenge:    { merge: mergeMapByTime, covers: _coversMapByTime },   /* v1080: Tenkichi ランチチャレンジ。月の設定・日の印・確定・食事会・履歴を記録ごとに新しいほう */
+  lunch_challenge:    { merge: mergeMapByTime, covers: _coversMapByTime },
+  funergy_times:      { merge: mergeMapByTime, covers: _coversMapByTime, cas: true },   /* v1191（PR #194 の Codex P2-2）：FUNERGY TIMES の設定。保存ごとの記録（id → 記録）。
+                         記録ごとに足すので 2 台の保存はどちらも残る。読んだ行が変わっていないときだけ書く（同時に送っても、あとの書き込みが先の記録を消さない） */   /* v1080: Tenkichi ランチチャレンジ。月の設定・日の印・確定・食事会・履歴を記録ごとに新しいほう */
   /* v1106: プレップ（店の設定・Lv と時給の表・認定）。店・版・認定ごとに新しいほう。
      店の設定と表は cas（読んだ行が変わっていないときだけ書く・Handbook と同じ）：2 台がほぼ同時に送っても、あとの書き込みが先の版・設定を消さない（Codex 6340525082 の P2） */
   prep_cfg:           { merge: mergeMapByTime, covers: _coversMapByTime, keepLocal: true, cas: true },
@@ -19385,6 +19481,13 @@ function closeStaffPass(){
 /* ===== 管理者ログイン（Supabase Auth・メール認証） ===== */
 function managerRoleAllowed(role){ return ['ceo','gm','office'].indexOf(role)>=0; }
 function managerSessionAllowed(){ return !!(window._authSession && window._authSession.access_token && managerRoleAllowed(window._authSession.role)); }
+/* v1191（統合 UI・決めてほしいこと 3「セキュアページは CEO と GM のみ、経理は外す」Moto 11/18）：
+   メールとパスワードのログイン（managerRoleAllowed＝CEO・GM・経理）と、管理者セキュアページ（CEO・GM）を分ける。
+   経理はメールでアプリに入れる（v1185 のまま）が、セキュアページ（成長カルテ・PL分析・本部予算・業務Bot）は開かない。
+   経理の業務Bot は経理センターにある（前から）。 */
+function secureRoleAllowed(role){ return ['ceo','gm'].indexOf(role)>=0; }
+function secureSessionAllowed(){ return !!(window._authSession && window._authSession.access_token && secureRoleAllowed(window._authSession.role)); }
+var SECURE_ONLY_MSG = ['管理者セキュアページは CEO・GM だけが開けます。経理の作業は経理センターから行ってください。','The admin secure page is for the CEO and GM only. Accounting work is in the Accounting Center.'];
 function showManagerLogin(){
   if(!loginPerson || loginStoreMode || !managerRoleAllowed(loginPerson.role)) return;
   var ls=document.getElementById('login-screen'); if(ls) ls.style.display='none';
@@ -19427,6 +19530,7 @@ async function doManagerLogin(){
       if(_pend){ window._authSession=null; if(passEl) passEl.value=''; fail(t('この端末に、この方の送れていない状態の変更（退職など）があります。送れるまで（電波のある所で「最新に更新」）ログインできません。','This device has an unsent status change for this person (for example a resignation). Sign-in is refused until it is sent (update where you have a connection).')); return; }
     }
     if(mr.ok && Array.isArray(rows) && rows.length===1 && (rows[0].role==='suspended' || (rows[0].emp_id && empBlocked(getEmployees().find(function(e){ return String(e.id)===String(rows[0].emp_id); }))))){ window._authSession=null; if(passEl) passEl.value=''; fail(t('このアカウントは止まっています（退職・停止）。','This account is stopped (resigned).')); return; }   /* v1085 */
+    if(mr.ok && Array.isArray(rows) && rows.length===1 && managerRoleAllowed(rows[0].role) && !secureRoleAllowed(rows[0].role)){ window._authSession=null; if(passEl) passEl.value=''; fail(t(SECURE_ONLY_MSG[0], SECURE_ONLY_MSG[1])); return; }   /* v1191 */
     if(!mr.ok || !Array.isArray(rows) || rows.length!==1 || !managerRoleAllowed(rows[0].role)){ window._authSession=null; if(passEl) passEl.value=''; fail('このアカウントには管理者ページの権限がありません。Bot専用アカウントは通常ログイン後、ワークセンターの業務Botで認証してください。'); return; }
     window._authSession={ access_token:j.access_token, refresh_token:j.refresh_token, email:email, emp_id:rows[0].emp_id, role:rows[0].role };
     if(btn){ btn.disabled=false; if(btn.dataset._t) btn.textContent=btn.dataset._t; }
@@ -19523,7 +19627,10 @@ function plComputeStore(sid, ym, off){
     beginInv:Math.round(parseFloat(fc.beginInv)||0), endInv:Math.round(parseFloat(fc.endInv)||0), purchOrder:Math.round(purchOrder), purchBuy:Math.round(purchBuy), transferIn:Math.round(_tnet.inAmt), transferOut:Math.round(_tnet.outAmt) };
 }
 async function showManagerSecure(){
-  if(!managerSessionAllowed()){ hideManagerLogin(); return; }
+  if(!secureSessionAllowed()){   /* v1191：CEO・GM だけ */
+    if(managerSessionAllowed()){ try{ showToast(t(SECURE_ONLY_MSG[0], SECURE_ONLY_MSG[1]), 'info'); }catch(e){} return; }
+    hideManagerLogin(); return;
+  }
   var m=document.getElementById('manager-login-screen'); if(m) m.style.display='none';
   var ls=document.getElementById('login-screen'); if(ls) ls.style.display='none';
   var sec=document.getElementById('manager-secure-screen'); if(sec) sec.style.display='block';
@@ -19559,7 +19666,7 @@ async function showManagerSecure(){
 function _secRerender(){ try{ if(typeof kevFlushText==='function') kevFlushText(); }catch(e){} var b=document.getElementById('mgr-secure-body'); if(b){ try{ b.innerHTML=renderSecureBody(); }catch(e){ b.innerHTML='<div class="card" style="padding:16px;color:var(--red)">表示エラー: '+escapeHtml(String(e))+'</div>'; } } }
 function secTab(t){ window._secTab=t; _secRerender(); }
 function renderSecureBody(){
-  if(!managerSessionAllowed()) return '<div class="card">管理者認証が必要です / Administrator sign-in required</div>';
+  if(!secureSessionAllowed()) return '<div class="card">管理者認証が必要です / Administrator sign-in required</div>';
   /* ★v1021: 変数名は _st。t にすると翻訳関数 t() を隠してしまい、
      v1016 が足した t('業務Bot',…) が TypeError になって、このページ全体が「表示エラー」になっていた。 */
   var _st = (window._secTab==='pl'||window._secTab==='hq'||window._secTab==='bot') ? window._secTab : 'karte';
@@ -22935,6 +23042,203 @@ if(typeof window.FUNERGY_WEB_OFFICE_NAVIGATE==='function')return window.FUNERGY_
 function curMonthKey() { var n=new Date(); return n.getFullYear()+'-'+String(n.getMonth()+1).padStart(2,'0'); }
 function getCompanyMessage() { return ls('company_message', null); }
 function setCompanyMessage(data) { lsSet('company_message', data); }
+/* ============================================================
+   v1191 FUNERGY TIMES（統合 UI の依頼・決めてほしいこと 10「https://times.funergygroup.com/」Moto 11/18）
+   ・全員のマイページに入口を 1 つ（店舗の G1 の画面もこれだけ足す）。新しいタブで開く。
+   ・アドレスは画面ごとに書かず、設定 funergy_times（app_state・全端末同期・保存ごとの記録）の 1 か所。変えられるのは CEO・GM（設定のカード）。
+   ・号の題名・月・表紙は任意。入れたときだけ出す（号の中身をアプリで作らない・推測で出さない）。
+   ・app_state は公開の鍵で書けるので、使う直前に「https で funergygroup.com かその下」のアドレスだけを通す。違えば既定のアドレス（表紙は出さない）。
+   ============================================================ */
+var TIMES_DEFAULT_URL = 'https://times.funergygroup.com/';
+/* 使ってよいアドレスなら整えた href、だめなら ''（https・funergygroup.com とその下・利用者名／パスワード／ポートなし） */
+function timesHostOk(u){
+  try {
+    if (typeof u !== 'string') return '';
+    var v = u.trim(); if (!v || v.length > 500) return '';
+    var x = new URL(v);
+    if (x.protocol !== 'https:' || x.username || x.password || x.port) return '';
+    var h = x.hostname.toLowerCase();
+    if (h !== 'funergygroup.com' && !/\.funergygroup\.com$/.test(h)) return '';
+    return x.href;
+  } catch(e) { return ''; }
+}
+function timesSafeUrl(u){ return timesHostOk(u) || TIMES_DEFAULT_URL; }
+/* PR #194 の Codex（P2 2 つ）：
+   ① 前は lsSet の結果も送信も見ずに「保存しました」と出して閉じていた → 端末に保存できたか・クラウドに届いたかを見て、届いたときだけ閉じて「保存しました」。
+      届かなかったら閉じずに入力を残し、何が起きたかを画面に出す（同じ画面でもう一度押すと同じ記録を置き換えて送り直す＝二重にならない）。
+   ② 前は手元の前の値だけで履歴を作ったので、2 台が同じ古い値から保存すると、先に保存した設定が履歴から消えた
+      → 設定は「保存ごとの記録」の地図 { <id>: {url,title,month,cover,by,at,_at} } にし、app_state の合流の決まり（記録ごとに新しいほう・
+      読んだ行が変わっていないときだけ書く＝cas）で送る。2 台の保存はどちらも残る。今の設定＝いちばん新しい記録（時刻 → id の順）。
+      記録は消さない（年に十数件・前の設定として 10 件まで出す）。前の形（url などを直接持つ値・log の並び）も読む */
+function timesEntryOk(e){ return !!e && typeof e==='object' && !Array.isArray(e) && !e._deleted && typeof e.id==='string' && e.id && typeof e.at==='number' && isFinite(e.at); }
+function timesLogOf(raw){
+  raw = (raw && typeof raw==='object' && !Array.isArray(raw)) ? raw : {};
+  var log = [];
+  if (Array.isArray(raw.log)) log = raw.log.filter(timesEntryOk);
+  else if (typeof raw.url === 'string' || typeof raw.at === 'number') log = [{ id:'legacy', url:raw.url, title:raw.title, month:raw.month, cover:raw.cover, by:raw.by, at:(typeof raw.at==='number' && isFinite(raw.at)) ? raw.at : 0 }];
+  else Object.keys(raw).forEach(function(k){
+    var e = raw[k]; if (!e || typeof e!=='object' || Array.isArray(e)) return;
+    var x = Object.assign({}, e, { id: k });
+    if (timesEntryOk(x)) log.push(x);
+  });
+  return log.sort(function(a, b){ return (b.at - a.at) || (a.id < b.id ? 1 : (a.id > b.id ? -1 : 0)); });
+}
+/* 保存する地図（前の形なら記録に直してから足す） */
+function timesMapOf(raw){
+  var out = {};
+  timesLogOf(raw).forEach(function(e){ var r = Object.assign({}, e); delete r.id; if (typeof r._at!=='number') r._at = r.at; out[e.id] = r; });
+  if (raw && typeof raw==='object' && !Array.isArray(raw) && !Array.isArray(raw.log) && typeof raw.url!=='string' && typeof raw.at!=='number')
+    Object.keys(raw).forEach(function(k){ if (!Object.prototype.hasOwnProperty.call(out, k) && raw[k] && typeof raw[k]==='object') out[k] = raw[k]; });   /* 消した印などはそのまま */
+  return out;
+}
+function timesCfg(){
+  var log = timesLogOf(ls('funergy_times', null)), c = log[0] || {};
+  var str = function(v, n){ return (typeof v==='string') ? v.trim().slice(0, n) : ''; };
+  var month = str(c.month, 7); if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) month = '';
+  var at = (typeof c.at==='number' && isFinite(c.at)) ? c.at : 0;
+  /* saved：この端末で押した時刻（画面に出す日時）。at は今の設定を決める順で、時計の進んだ端末のあとは今より先になることがある */
+  var saved = (typeof c.saved==='number' && isFinite(c.saved) && c.saved > 0) ? c.saved : 0;
+  return { url: timesSafeUrl(c.url), title: str(c.title, 80), month: month, cover: c.cover ? timesHostOk(c.cover) : '',
+           by: str(c.by, 60), at: at, saved: saved, hist: log.slice(1, 11), urlBad: !!(c.url && !timesHostOk(c.url)) };
+}
+function timesMonthLabel(m){ if (!m) return ''; var p = m.split('-'); return (typeof curLang!=='undefined' && curLang==='en') ? (p[1]+'/'+p[0]) : (p[0]+'年'+Number(p[1])+'月号'); }
+/* マイページの入口（全員）。リンクは timesCfg が通したアドレスだけ */
+function timesCardHtml(){
+  var c = timesCfg();
+  var sub = c.title ? (escapeHtml(c.title) + (c.month ? ' · ' + escapeHtml(timesMonthLabel(c.month)) : ''))
+                    : (c.month ? escapeHtml(timesMonthLabel(c.month)) : t('グループの社内報を開く', 'Open the group newsletter'));
+  var pic = c.cover
+    ? `<img src="${escapeHtml(c.cover)}" alt="" loading="lazy" referrerpolicy="no-referrer" style="width:36px;height:46px;object-fit:cover;border-radius:6px;flex-shrink:0;background:var(--bg)">`
+    : `<div style="width:36px;height:36px;border-radius:10px;background:var(--text);color:#fff;display:flex;align-items:center;justify-content:center;flex-shrink:0"><i class="ti ti-news" style="font-size:18px"></i></div>`;
+  return `<a class="card" data-times="1" href="${escapeHtml(c.url)}" target="_blank" rel="noopener noreferrer" style="display:flex;align-items:center;gap:10px;padding:12px;text-decoration:none;color:inherit">
+    ${pic}
+    <div style="flex:1;min-width:0">
+      <div style="font-weight:600;font-size:13px;letter-spacing:.04em">FUNERGY TIMES</div>
+      <div style="font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${sub}</div>
+    </div>
+    <span class="btn btn-secondary btn-sm" style="pointer-events:none"><i class="ti ti-external-link"></i> ${t('開く','Open')}</span>
+  </a>`;
+}
+/* 設定のカード（CEO・GM だけ） */
+function timesSettingsCardHtml(){
+  if (curRole!=='ceo' && curRole!=='gm') return '';
+  var c = timesCfg();
+  return `<div class="card" data-times-set="1"><div class="card-title"><i class="ti ti-news" style="color:var(--accent)"></i> FUNERGY TIMES</div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:8px">${t('全員のマイページの入口が開くアドレスです。号の題名・月・表紙は入れたときだけ出します。','The address the link on everyone\'s My Page opens. The issue title, month and cover show only when entered.')}</div>
+    <div style="font-size:12.5px;word-break:break-all"><i class="ti ti-link" style="color:var(--muted)"></i> ${escapeHtml(c.url)}</div>
+    ${c.urlBad ? `<div style="font-size:11.5px;color:var(--yellow);font-weight:700;margin-top:4px"><i class="ti ti-alert-triangle"></i> ${t('保存されているアドレスは使えない形なので、既定のアドレスを開いています。','The saved address is not allowed, so the default address opens instead.')}</div>` : ''}
+    ${(c.title||c.month) ? `<div style="font-size:12px;margin-top:4px">${escapeHtml(c.title)}${c.month?' · '+escapeHtml(timesMonthLabel(c.month)):''}</div>` : ''}
+    ${(c.saved||c.at) ? `<div style="font-size:11px;color:var(--muted);margin-top:4px">${t('最後の変更','Last change')}：${escapeHtml(c.by||'—')} · ${new Date((typeof c.saved==='number'&&isFinite(c.saved)&&c.saved)?c.saved:c.at).toLocaleString(typeof langDateLocale==='function'?langDateLocale():'ja-JP')}</div>` : ''}
+    <button class="btn btn-secondary btn-sm" style="margin-top:8px" onclick="openTimesSettings()"><i class="ti ti-edit"></i> ${t('変更','Edit')}</button>
+  </div>`;
+}
+var _tmSave = { id:null, busy:false };
+function timesNewId(){ return 'tm' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
+function openTimesSettings(){
+  if (curRole!=='ceo' && curRole!=='gm') { showToast(t('FUNERGY TIMES の設定は CEO・GM だけが変えられます','Only the CEO and GM can change the FUNERGY TIMES settings'), 'warning'); return; }
+  var c = timesCfg(), cur = timesLogOf(ls('funergy_times', null))[0] || {};
+  _tmSave.id = timesNewId(); _tmSave.busy = false;   /* この画面の保存は 1 つの記録（押し直しても同じ記録を置き換える） */
+  var v = function(x){ return escapeHtml(typeof x==='string' ? x : ''); };
+  var hist = c.hist.map(function(h){
+    if (!h || typeof h!=='object') return '';
+    return '<div style="font-size:11px;color:var(--muted);padding:3px 0;border-top:1px solid var(--border)">'
+      + escapeHtml(typeof h.by==='string'?h.by:'—') + ' · ' + (function(){ var w = (typeof h.saved==='number' && isFinite(h.saved) && h.saved) ? h.saved : h.at; return (typeof w==='number' && w) ? escapeHtml(new Date(w).toLocaleString(typeof langDateLocale==='function'?langDateLocale():'ja-JP')) : '—'; })()
+      + '<br>' + escapeHtml(typeof h.url==='string'?h.url:'') + (h.title ? ' · ' + escapeHtml(String(h.title).slice(0,80)) : '') + '</div>';
+  }).join('');
+  openModal(`<div class="modal-title"><i class="ti ti-news"></i> FUNERGY TIMES <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+    <div class="form-group"><label class="form-label">${t('アドレス','Address')}</label><input class="form-input" id="tm-url" type="url" inputmode="url" value="${v(cur.url)||escapeHtml(TIMES_DEFAULT_URL)}"></div>
+    <div style="font-size:11px;color:var(--muted);margin:-4px 0 10px">${t('https で funergygroup.com（とその下）のアドレスだけ使えます。','Only https addresses on funergygroup.com (and its subdomains) can be used.')}</div>
+    <div class="form-group"><label class="form-label">${t('号の題名（任意）','Issue title (optional)')}</label><input class="form-input" id="tm-title" maxlength="80" value="${v(cur.title)}"></div>
+    <div class="form-group"><label class="form-label">${t('号の月（任意）','Issue month (optional)')}</label><input class="form-input" id="tm-month" type="month" value="${v(c.month)}"></div>
+    <div class="form-group"><label class="form-label">${t('表紙の画像のアドレス（任意）','Cover image address (optional)')}</label><input class="form-input" id="tm-cover" type="url" inputmode="url" value="${v(cur.cover)}"></div>
+    ${hist ? `<div style="margin:8px 0"><div style="font-size:12px;font-weight:600;margin-bottom:2px">${t('前の設定','Earlier settings')}</div>${hist}</div>` : ''}
+    <div id="tm-msg" style="font-size:12px;margin:6px 0"></div>
+    <div class="modal-footer"><button class="btn btn-secondary" onclick="closeModalDirect()">${t('やめる','Cancel')}</button>
+    <button class="btn btn-primary" id="tm-save" onclick="saveTimesSettings()"><i class="ti ti-device-floppy"></i> ${t('保存','Save')}</button></div>`);
+}
+function timesSaveMsg(text, kind){
+  var el = document.getElementById('tm-msg');
+  if (el) { el.textContent = text || ''; el.style.color = kind==='danger' ? 'var(--red)' : (kind==='warning' ? 'var(--yellow)' : 'var(--muted)'); el.style.fontWeight = text ? '700' : ''; }
+  if (text) showToast(text, kind || 'info');
+}
+/* true＝クラウドに届いた（閉じた）／false＝届いていない・保存していない（画面と入力はそのまま） */
+async function saveTimesSettings(){
+  if (curRole!=='ceo' && curRole!=='gm') { showToast(t('FUNERGY TIMES の設定は CEO・GM だけが変えられます','Only the CEO and GM can change the FUNERGY TIMES settings'), 'warning'); return false; }
+  if (_tmSave.busy) return false;
+  var gv = function(id){ var el = document.getElementById(id); return el ? String(el.value||'').trim() : ''; };
+  var url = timesHostOk(gv('tm-url'));
+  if (!url) { timesSaveMsg(t('アドレスは https の funergygroup.com のものを入れてください','Enter an https address on funergygroup.com'), 'danger'); return false; }
+  var month = gv('tm-month'); if (month && !/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) { timesSaveMsg(t('月の形が違います','The month is not valid'), 'danger'); return false; }
+  var coverIn = gv('tm-cover'), cover = coverIn ? timesHostOk(coverIn) : '';
+  if (coverIn && !cover) { timesSaveMsg(t('表紙の画像も https の funergygroup.com のアドレスだけ使えます','The cover image must also be an https address on funergygroup.com'), 'danger'); return false; }
+  var off = false;
+  try { off = (typeof navigator!=='undefined' && navigator && navigator.onLine===false) || (typeof SUPA_SYNC_ENABLED!=='undefined' && !SUPA_SYNC_ENABLED); } catch(e) {}
+  if (off) { timesSaveMsg(t('オフラインのため保存していません（全員のマイページに出る設定なので、つながってから保存してください）','Not saved: you are offline. This setting is shown on everyone\'s My Page, so save once connected'), 'warning'); return false; }
+  if (!_tmSave.id) _tmSave.id = timesNewId();
+  /* PR #194 の Codex（c9bdce8・2bdd2c1 の P2）：前は保存の順（at）をこの端末の写しだけから決めたので、時計の遅い端末が古い写しのまま保存すると、
+     クラウドの合流のあとも時計の進んだ端末の前の設定が「今の設定」のままで、それでも「保存しました」と出ていた。
+     → 送ったあとクラウドの行を読んで、この保存が今の設定になったかを確かめる（下の Codex の P2）。なっていなければ、
+     クラウドで分かったいちばん新しい設定より後の順で付け直して送り直す（3 回まで）。それでもほかの端末が後から保存し続けたら、
+     「保存しました」とは出さず、画面と入力を残して知らせる（この保存は履歴に残さない。もう一度押すと新しい記録で送る＝二重にならない） */
+  var id = _tmSave.id;
+  var entry = { url: url, title: gv('tm-title').slice(0, 80), month: month, cover: cover,
+    by: String(curUserName || ((ROLE_CONFIG[curRole]||{}).name || curRole)).slice(0, 60) };
+  _tmSave.busy = true;
+  var btn = document.getElementById('tm-save'); if (btn) btn.disabled = true;
+  timesSaveMsg('', '');
+  var P = (typeof _lsPushP!=='undefined' && _lsPushP) ? _lsPushP : null, okLocal = false, r, cur = null, tries = 0, cloud = null, cloudRead = true;
+  /* PR #194・#195 の Codex（fdbdc1f・31bed6e の P2）：前は今の設定かを「この端末の写し」で確かめた。送る道が合流した値をこの端末に書き戻せなかったとき
+     （_opWriteBack は書けなくても進む）、写しはこの保存だけのままなので、クラウドではほかの端末の設定が今のままでも「保存しました」と出ていた。
+     → 送り終えたら、クラウドの行そのもの（合流させない読み方）を読んで確かめる。読めなければ「保存しました」とは出さない（入力は残す）。
+     送り直すときの順も、この端末の写しとクラウドの行の両方から決める（書き戻せない端末でも、クラウドのいちばん新しい設定より後にする） */
+  while (true) {
+    tries++;
+    var now = Date.now();
+    var map = timesMapOf(ls('funergy_times', null));
+    if (cloud) { var cm = timesMapOf(cloud); Object.keys(cm).forEach(function(k){ var a = cm[k], b = map[k]; if (k !== id && a && typeof a==='object' && (!b || (Number(a._at)||0) > (Number(b._at)||0))) map[k] = a; }); }
+    var newest = timesLogOf(map).filter(function(e){ return e.id !== id; })[0];
+    var at = Math.max(now, ((newest && newest.at) || 0) + 1);
+    /* at は今の設定を決める順（ほかの端末の時計が進んでいると今より先になる）。画面に出す日時は、この端末で押した時刻（saved） */
+    map[id] = Object.assign({}, entry, { at: at, saved: now, _at: Math.max(at, ((map[id] && map[id]._at) || 0) + 1) });
+    try { if (P) delete P['funergy_times']; } catch(e) {}
+    try { okLocal = lsSet('funergy_times', map) !== false; } catch(e) { okLocal = false; }
+    try { r = P && P['funergy_times'] ? await P['funergy_times'] : undefined; } catch(e) { r = false; }
+    if (r !== true) break;   /* 届いていない */
+    var cv; try { cv = await _fetchOpValue('funergy_times', 'app_state', true); } catch(e) { cv = undefined; }
+    if (cv === undefined) { cloudRead = false; break; }
+    cloud = cv; cur = timesLogOf(cv)[0] || null;
+    if ((cur && cur.id === id) || tries >= 3 || !okLocal) break;
+  }
+  _tmSave.busy = false; if (btn) btn.disabled = false;
+  if (r === true && !cloudRead) {
+    timesSaveMsg(t('クラウドには送りましたが、今の設定になったかを確かめられませんでした（読み直せませんでした）。入力はそのままです。もう一度押すと同じ設定を送り直して確かめます','It was sent to the cloud, but we could not confirm it is now the current setting (could not read it back). Your input is kept. Press again to resend the same setting and check'), 'warning');
+    return false;
+  }
+  if (r === true && !(cur && cur.id === id)) {
+    /* PR #194 の Codex（fdbdc1f の P3）：今の設定にならなかった保存は、前の設定として履歴に出さない（自分の記録に消した印）。
+       もう一度押したときは新しい記録で送る（消した印は合流でいつも勝つので、同じ記録は使い直せない） */
+    try {
+      var tm = timesMapOf(ls('funergy_times', null)), mine = tm[id];
+      tm[id] = { _deleted: true, _at: Math.max(Date.now(), ((mine && mine._at) || 0) + 1) };
+      _tmSave.id = null;
+      if (lsSet('funergy_times', tm) !== false && P && P['funergy_times']) { try { await P['funergy_times']; } catch(e) {} }
+    } catch(e) {}
+    timesSaveMsg(t('クラウドには届きましたが、ほかの端末が同じころに別の FUNERGY TIMES の設定を保存したため、今の設定はそちらになっています（この保存は履歴に残しません）。この設定にするには、もう一度押してください','It reached the cloud, but another device saved different FUNERGY TIMES settings at about the same time, so those are current (this save is not kept in the history). Press again to make these the current settings'), 'warning');
+    return false;
+  }
+  if (r === true) {
+    _tmSave.id = null;
+    closeModalDirect();
+    if (okLocal) showToast(t('FUNERGY TIMES の設定を保存しました（全員のマイページに出ます）','Saved the FUNERGY TIMES settings (shown on everyone\'s My Page)'), 'success');
+    else showToast(t('クラウドには保存しましたが、この端末に保存できませんでした。この端末の表示は次に取り込んだときに新しくなります','Saved to the cloud, but this device could not store it. This device will show it after the next import'), 'warning');
+    try { renderPage(curPage); } catch(e) {}
+    return true;
+  }
+  if (!okLocal) timesSaveMsg(t('保存できませんでした（この端末にもクラウドにも入っていません）。入力はそのままです。もう一度押してください','Could not save (not on this device or in the cloud). Your input is kept. Please try again'), 'danger');
+  else if (r === 'booting') timesSaveMsg(t('この端末には入れましたが、アプリの起動の途中なのでクラウドに送っていません（未保存）。少し待ってからもう一度押してください','Stored on this device, but the app is still starting so it was not sent (not saved). Wait a moment and press again'), 'warning');
+  else timesSaveMsg(t('この端末には入れましたが、クラウドに届いていません（送信待ち・ほかの端末にはまだ出ません）。もう一度押すと同じ設定を送り直します','Stored on this device, but it has not reached the cloud (waiting to send; other devices do not show it yet). Press again to resend the same setting'), 'warning');
+  return false;
+}
 /* 店舗別メッセージ {storeId:data} */
 function getCompanyMsgStores() { return ls('company_message_stores', {}); }
 function getCompanyMessageStore(storeId) { var a=getCompanyMsgStores(); return a[storeId]||null; }
@@ -45090,6 +45394,7 @@ function slPayrollRows(storeId, fromISO, toISO){
 }
 /* 単独出力。給与にそのまま渡せる形にする。 */
 function exportSlPayrollCSV(storeId, anyDate){
+  if(payDetailBlocked()) return;   /* v1191：給与の個人額＝経理・事務Crew は出力しない */
   var per = _p4Period(anyDate);
   var p = slPayrollData(storeId, per.from, per.to);
   var nm = _owStoreName(storeId);
@@ -45100,6 +45405,7 @@ function exportSlPayrollCSV(storeId, anyDate){
   showToast(nm + '（' + per.label + '）' + _money(p.total) + ' を出力しました','success');
 }
 function exportAllSlPayrollCSV(d1, d2){
+  if(payDetailBlocked()) return;   /* v1191：給与の個人額＝経理・事務Crew は出力しない */
   var rows = [], grand = 0, hit = 0;
   (getVisibleStores()||[]).forEach(function(s){
     if(typeof slStoreEnabled==='function' && !slStoreEnabled(s.id)) return;
@@ -45247,6 +45553,7 @@ function hqSitePayrollRows(storeId, fromISO, toISO){
   return rows;
 }
 function exportHqSitePayrollCSV(storeId, fromISO, toISO){
+  if(payDetailBlocked(true)) return;   /* v1191：本部シフトインの個人額・給与まとめ＝CEO・GM だけ */
   var d = hqSiteLaborData(storeId, fromISO, toISO);
   var nm = (typeof _owStoreName==='function') ? _owStoreName(storeId) : storeId;
   if(!d.rows.length){ showToast(nm + ' はこの期間に本部シフトインがありません','danger'); return; }
@@ -45255,6 +45562,7 @@ function exportHqSitePayrollCSV(storeId, fromISO, toISO){
   showToast(nm + ' ' + _money(d.total) + ' を出力しました','success');
 }
 function exportAllHqSitePayrollCSV(fromISO, toISO){
+  if(payDetailBlocked(true)) return;   /* v1191：本部シフトインの個人額・給与まとめ＝CEO・GM だけ */
   var all = hqSiteLaborAll(fromISO, toISO);
   if(!all.stores.length){ showToast('この期間に本部シフトインがありません','danger'); return; }
   var rows = [];
@@ -45285,7 +45593,8 @@ function renderTipHqSite(storeId, info){
         + '<i class="ti ti-alert-triangle"></i> 現場時給が未設定の人が ' + all.noWage
         + '名います。$0 で計上され、店舗にも本部にも乗りません。役職テーブルで設定してください。</div>' : '')
     + '</div>';
-  h += '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">'
+  var _hqPay = canViewIndividualWage();   /* v1191：本部シフトインの個人額（現場時給・額）と CSV は CEO・GM だけ。ほかは合計 */
+  if (_hqPay) h += '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">'
     + '<button class="btn btn-secondary btn-sm" onclick="exportHqSitePayrollCSV(\''+storeId+'\',\''+info.from+'\',\''+info.to+'\')">'
     + '<i class="ti ti-table-export"></i> ' + escapeHtml(nm) + 'をCSV</button>'
     + '<button class="btn btn-secondary btn-sm" onclick="exportAllHqSitePayrollCSV(\''+info.from+'\',\''+info.to+'\')">'
@@ -45293,6 +45602,12 @@ function renderTipHqSite(storeId, info){
   if(!d.rows.length){
     return h + '<div class="card" style="padding:18px;text-align:center;font-size:12.5px;color:var(--muted)">'
       + escapeHtml(nm) + ' はこの期間に本部シフトインがありません</div>';
+  }
+  if (!_hqPay) {
+    return h + '<div class="card"><div class="card-title">' + escapeHtml(nm) + '</div>'
+      + '<div style="font-size:20px;font-weight:800">' + _money(d.total) + '</div>'
+      + '<div style="font-size:11px;color:var(--muted);margin-top:2px">' + d.hours + 'h ／ ' + d.rows.length + t('名','') + '</div>'
+      + payDetailNoteHtml('hq') + '</div>';
   }
   h += '<div class="card"><div class="card-title">' + escapeHtml(nm) + '</div>'
     + '<div style="overflow-x:auto"><table class="inv-table" style="width:100%;min-width:700px;font-size:11px">'
@@ -45374,7 +45689,7 @@ function renderTipShiftLeader(){
         +'<div style="font-size:9.5px;color:var(--muted)">'+x.s+'</div></div>';
     }).join('') + '</div>';
   /* 出力（給与にそのまま渡せる形） */
-  if(sum.rows.length){
+  if(sum.rows.length && !payDetailHidden()){
     h+='<button class="btn btn-secondary btn-sm" style="width:100%;margin-top:8px" '
       +'onclick="exportSlPayrollCSV(\''+escapeHtml(storeId)+'\',\''+per.to+'\')">'
       +'<i class="ti ti-file-download" style="color:var(--green)"></i> '
@@ -45389,6 +45704,8 @@ function renderTipShiftLeader(){
 
   if(!sum.rows.length){
     h+='<div class="card" style="font-size:12px;color:var(--muted)"><i class="ti ti-info-circle"></i> この期間の Shift Leader 記録はまだありません。</div>';
+  } else if(payDetailHidden()){
+    h+='<div class="card" style="padding:4px 11px">'+payDetailNoteHtml()+'</div>';   /* v1191：経理・事務Crew には人ごとの手当を出さない（上の合計は出す） */
   } else {
     /* v887: 表だと横に流れて金額が読めなかった。1人1枚にして、
        支給額を右に大きく緑で出す。順位・L/D・該当日を色分けする。 */
@@ -45576,7 +45893,7 @@ function renderTipMgmt() {/* v1129 ③：全店のときの店は soloStoreId（
     ${_hqSiteOn?`<div class="phase-tab${tipPeriodView==='hqsite'?' active':''}" onclick="setTipPeriodView('hqsite')"><i class="ti ti-briefcase" style="font-size:12px"></i> ${t('本部シフトイン','HQ shift-in')}</div>`:''}
   </div>`;
   // ペイロール期間（半月）の日次ランチ/ディナー配分内訳をCSV出力
-  if (tipPeriodView!=='rate' && tipPeriodView!=='ratemgmt') html += `<div style="margin-bottom:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap"><button class="btn btn-secondary btn-sm" id="tip-refresh-btn" onclick="tipRefreshPeriodFromToast('${storeId}','${info.from}','${info.to}')"><i class="ti ti-cloud-download"></i> ${t('この期間を Toast から取り直す','Re-fetch this period from Toast')}</button><button class="btn btn-secondary btn-sm" onclick="exportTipPeriodCsv()"><i class="ti ti-table-export"></i> ${t('期間の日次L/D配分をCSV出力','Export daily L/D distribution (CSV)')}</button><button class="btn btn-secondary btn-sm" onclick="exportAcctPayrollBook('${info.from}','${info.to}')"><i class="ti ti-file-spreadsheet"></i> ${t('経理まとめ（3タブ）','Accounting book (3 tabs)')}</button><span id="tip-refresh-status" style="font-size:10.5px;color:var(--muted)"></span></div>`;
+  if (tipPeriodView!=='rate' && tipPeriodView!=='ratemgmt') html += `<div style="margin-bottom:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap"><button class="btn btn-secondary btn-sm" id="tip-refresh-btn" onclick="tipRefreshPeriodFromToast('${storeId}','${info.from}','${info.to}')"><i class="ti ti-cloud-download"></i> ${t('この期間を Toast から取り直す','Re-fetch this period from Toast')}</button><button class="btn btn-secondary btn-sm" onclick="exportTipPeriodCsv()"><i class="ti ti-table-export"></i> ${t('期間の日次L/D配分をCSV出力','Export daily L/D distribution (CSV)')}</button>${canViewIndividualWage()?`<button class="btn btn-secondary btn-sm" onclick="exportAcctPayrollBook('${info.from}','${info.to}')"><i class="ti ti-file-spreadsheet"></i> ${t('経理まとめ（3タブ）','Accounting book (3 tabs)')}</button>`:''}<span id="tip-refresh-status" style="font-size:10.5px;color:var(--muted)"></span></div>`;
 
   if (tipPeriodView==='hqsite')   return html + renderTipHqSite(storeId, info);   /* v951 */
   if (tipPeriodView==='sl')       return html + renderTipShiftLeader();   /* v801 */
@@ -45804,9 +46121,13 @@ async function exportTipPeriodCsv(){
      判定は slDayRecords() が正。条件をここで作り直さない。
      Store Leader（SL拠出・再分配）とは別物。 */
   /* v887: 回数の右に単価と支給額を足す（Motoさん依頼）。金額は slPayrollData() が正。 */
-  var _slp = slPayrollData(storeId, info.from, info.to);
-  var _slPay = _slp.rows||[];
-  if(_slPay.length){
+  /* PR #194 の Codex（6989080060）：経理・事務Crew の出力にはシフトリーダー手当の人ごとの部分を入れない（Tip の部分は今までどおり）。
+     手当のデータは読みもしない（payDetailCsvNote の 1 行だけ） */
+  var _slHide = payDetailHidden();
+  var _slp = _slHide ? null : slPayrollData(storeId, info.from, info.to);
+  var _slPay = _slp ? (_slp.rows||[]) : [];
+  if(_slHide){ rows.push([]); rows.push([payDetailCsvNote()]); }
+  else if(_slPay.length){
     rows.push([]);
     rows.push(['【シフトリーダー】','単価 $'+_slp.amount.toFixed(2)+' / 1回','対象は G1 のみ']);
     var _slHead=['従業員＼日付',''];
@@ -45833,7 +46154,8 @@ async function exportTipPeriodCsv(){
     rows.push(_slTot);
   }
   downloadCSV(rows, `Tip配分_${(store.name||storeId)}_${info.from}_${info.to}.csv`);
-  showToast('配分表（①〜④＋各スタッフ／Tip Rate／シフトリーダー支給額つき）をCSV出力しました','success');
+  showToast(_slHide ? '配分表（①〜④＋各スタッフ／Tip Rate）をCSV出力しました（シフトリーダー手当は入れていません）'
+                    : '配分表（①〜④＋各スタッフ／Tip Rate／シフトリーダー支給額つき）をCSV出力しました','success');
 }
 function tipMatrixToggleExcl(storeId, date, name, slot){ toggleTipExclude(storeId, date, name, slot); if(typeof renderPage==='function') renderPage('tip'); }
 /* 配分表のセル1つ（タップでTip対象外の切替） */
@@ -47403,6 +47725,7 @@ var LS_NEVER_FREE = ['initiatives',   /* v956: 施策の定義。手入力なの
   'ec_resolutions',    /* v1088: エラーの解除（誰が・いつ・どの理由で。手で決めたもの・再生不可） */
   'sl_config','sl_manual_','ocs_asg_','ocs_ev_','ocs_cfg',   /* v1050: オフィス用 Career Score（手入力・再生不可） */
   'md_all_viewers',   /* v1090: ダッシュボードで全店を見る人（手で決めたもの・再生不可） */
+  'funergy_times',    /* v1191: FUNERGY TIMES の設定と前の設定（CEO・GM が決めたもの・再生不可） */
   'warnings_',   /* v832: 注意ログ（手入力・再生不可） */
   'att_fix_','tip_cf_','kpi_man_','dev_pipe',   /* v1136：勤怠の手動修正・Tip の確定・手入力 KPI・育成の記録（手入力・再生不可） */
   'att_override_','tip_confirm_','kpi_manual_','dev_data','dev_start',   /* v1136：前の名前（移し替えの元。戻すときのため消さない） */
@@ -49329,7 +49652,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1190';
+const APP_VERSION = '1191';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -62115,7 +62438,7 @@ function obCardInner(ob){
     html += `<button class="btn btn-primary btn-sm" onclick="openI9Modal('${ob.id}')"><i class="ti ti-id-badge-2"></i> I-9確認</button>`;
   }
   // Payroll登録
-  if (st==='経理確認中' && isOffice) {
+  if (st==='経理確認中' && canEditWages()) {   /* v1191：Payroll の段（時給を決めて登録）は給与＝CEO・GM だけ */
     html += `<button class="btn btn-primary btn-sm" onclick="openPayrollRegister('${ob.id}')"><i class="ti ti-user-dollar"></i> Payroll登録＆シフト設定</button>`;
   }
   // 研修チェック（登録完了後はOJT進捗）
@@ -62685,6 +63008,7 @@ function confirmI9(obId) {
 }
 /* Payroll登録＋シフト詳細設定 → 従業員マスター登録 */
 function openPayrollRegister(obId) {
+  if (!canEditWages()) { showToast(t('Payroll の登録（時給）は給与のため CEO・GM が行います','Payroll registration (hourly wage) is done by the CEO or GM'),'warning'); return; }   /* v1191 */
   var ob = ls('onboardings',[]).find(o=>o.id===obId); if(!ob)return;
   var p = ob.personal||{};
   var positions = getStorePositions(ob.store).filter(x=>x!=='Energy'&&x!=='Leadership');
@@ -62717,6 +63041,7 @@ function openPayrollRegister(obId) {
     <button class="btn btn-success" onclick="finalizePayroll('${obId}')"><i class="ti ti-user-check"></i> 従業員登録</button></div>`);
 }
 function finalizePayroll(obId) {
+  if (!canEditWages()) { showToast(t('Payroll の登録（時給）は給与のため CEO・GM が行います','Payroll registration (hourly wage) is done by the CEO or GM'),'warning'); return; }   /* v1191 */
   var obs=ls('onboardings',[]); var ob=obs.find(o=>o.id===obId); if(!ob)return;
   var p = ob.personal||{};
   var role=document.getElementById('pr-role').value;
@@ -63383,7 +63708,7 @@ function renderStaffMaster() {
     <div style="display:flex;gap:6px">
       ${canViewPins()?`<button class="btn btn-secondary btn-sm" onclick="openPinListModal()"><i class="ti ti-lock"></i> PIN一覧</button>`:''}
       ${(curRole==='gm')?`<button class="btn btn-secondary btn-sm" onclick="FUNERGY_PK.admin()"><i class="ti ti-fingerprint"></i> ${t('ログインの方式','Login method')}</button>`:''}
-      ${wageScopeStores()===null?`<button class="btn btn-secondary btn-sm" onclick="openTitleWageModal()"><i class="ti ti-table-options"></i> 役職給与表</button>`:''}
+      ${canViewIndividualWage()?`<button class="btn btn-secondary btn-sm" onclick="openTitleWageModal()"><i class="ti ti-table-options"></i> 役職給与表</button>`:''}
       ${['ceo','gm'].includes(curRole)?`<button class="btn btn-secondary btn-sm" onclick="openEvalLevelsModal()"><i class="ti ti-stairs-up"></i> ${t('Level基準','Level criteria')}</button>`:''}
       <button class="btn btn-primary btn-sm" onclick="openEmpModal()"><i class="ti ti-user-plus"></i> 登録</button>
     </div>
@@ -63601,6 +63926,8 @@ function empTitleChanged() {
 
 /* 役職ごとのデフォルト給与表の編集 */
 function openTitleWageModal() {
+  /* v1191（決めてほしいこと 2A）：役職の給与表は CEO・GM だけ（経理は外す） */
+  if (!canViewIndividualWage()) { showToast(t('役職の給与表は CEO・GM だけが開けます','Only the CEO and GM can open the title pay table'), 'warning'); return; }
   var tbl = getTitleWageTable();
   var rows = JOB_TITLES.map(t=>{
     var cell = (t.payType==='monthly')
@@ -63623,6 +63950,7 @@ function openTitleWageModal() {
     <button class="btn btn-primary" onclick="saveTitleWageTable()"><i class="ti ti-device-floppy"></i> 保存</button></div>`);
 }
 function saveTitleWageTable() {
+  if (!canEditWages()) { showToast(t('役職の給与表は CEO・GM だけが保存できます','Only the CEO and GM can save the title pay table'), 'warning'); return; }
   var tbl = {};
   JOB_TITLES.forEach(t=>{
     var key = t.key.replace(/[^A-Za-z]/g,'');
@@ -66452,8 +66780,10 @@ function ecDetOnboard(){
     var nm=o.name||(o.personal&&o.personal.name)||'(無名)';
     /* v1088: 1 件のオンボーディングごと。fp＝状態（状態が変われば、解除していてもまた出す） */
     var _k={key:'ob|'+(o.id||nm),fp:String(o.obStatus||''),store:o.store||'',who:nm};
-    if(o.obStatus==='提出完了'||o.obStatus==='I-9確認待ち'||o.obStatus==='経理確認中'||o.obStatus==='Payroll登録中')
-      issues.push(Object.assign({sev:'mid',cat:'OB',title:nm+'：Office対応待ち（'+o.obStatus+'）',detail:'オンボーディングがOffice側の対応待ちです。',fix:{label:'採用',action:"go('hiring')"}},_k));
+    if(o.obStatus==='提出完了'||o.obStatus==='I-9確認待ち'||o.obStatus==='経理確認中'||o.obStatus==='Payroll登録中'){
+      var _pay=(o.obStatus==='経理確認中'||o.obStatus==='Payroll登録中');   /* v1191：Payroll の段（時給を決めて登録）は GM・CEO */
+      issues.push(Object.assign({sev:'mid',cat:'OB',title:nm+'：'+(_pay?'GM・CEO の Payroll 登録待ち':'Office対応待ち')+'（'+o.obStatus+'）',detail:_pay?'Payroll の登録（時給）は給与のため GM・CEO が行います。':'オンボーディングがOffice側の対応待ちです。',fix:{label:'採用',action:"go('hiring')"}},_k));
+    }
     else if(o.obStatus==='本人入力待ち'||o.obStatus==='差し戻し')
       issues.push(Object.assign({sev:'low',cat:'OB',title:nm+'：本人入力待ち（'+o.obStatus+'）',detail:'招待済みですが本人の入力が完了していません。',fix:{label:'採用',action:"go('hiring')"}},_k));
   });
@@ -67186,11 +67516,16 @@ function renderOfficeExport(){
     {page:'acct_export', icon:'ti-credit-card', title:'カードレシート', sub:'社員別・Drive保存'},
     {page:'acct_review', icon:'ti-checklist', title:'経理レビュー', sub:'区分・承認'}
   ]);
-  html+=grp('<i class="ti ti-cash" style="color:var(--green)"></i>給与・経理CSV',[
+  /* v1191：給与の CSV（店舗の手当・本部シフトイン／Office の給与）は CEO・GM だけ。
+     Tip の一覧は経理・事務Crew にも今までどおり（Moto 11/18 09:09 HST）＝「Tip CSV（店舗）」から経理出力の画面（事務Crew はチップ管理）へ入る */
+  html+=grp('<i class="ti ti-cash" style="color:var(--green)"></i>'+(canViewIndividualWage()?'給与・経理CSV':'Tip・経理CSV'),(canViewIndividualWage()?[
     {page:'acct_export', icon:'ti-table-export', title:'給与CSV（店舗）', sub:'店舗別Payroll'},
-    {fn:"setOfficeMgrTab('attend')", icon:'ti-building-skyscraper', title:'給与CSV（Office）', sub:'月給/時給混在', col:'var(--accent2)'},
+    {fn:"setOfficeMgrTab('attend')", icon:'ti-building-skyscraper', title:'給与CSV（Office）', sub:'月給/時給混在', col:'var(--accent2)'}
+  ]:[
+    {page:(navGuardAllows('acct_export')?'acct_export':'tip'), icon:'ti-coin', title:'Tip CSV（店舗）', sub:'店舗別のチップ配分'}   /* 事務Crew は経理出力の画面を開けない（前から）＝チップ管理の画面の CSV へ */
+  ]).concat([
     {page:'acct_export', icon:'ti-file-spreadsheet', title:'経理区分エクスポート', sub:'区分別集計'}
-  ]);
+  ]));
   html+=grp('<i class="ti ti-chart-bar" style="color:var(--accent2)"></i>売上・分析',[   /* v1084: 備品発注（発注CSV）は廃止 */
     {page:'monthly', icon:'ti-calendar-stats', title:'月次サマリー', sub:'KPI・売上分析'},
     {page:'budget', icon:'ti-chart-dots', title:'予実管理', sub:'全社/店舗'}
@@ -67254,7 +67589,7 @@ function renderOfficeReport(){
   html+='<div class="card"><div class="card-title"><i class="ti ti-clipboard-check" style="color:var(--yellow)"></i>承認待ちキュー</div>';
   html+='<div style="display:flex;flex-direction:column;gap:8px">';
   html+='<div style="display:flex;align-items:center;gap:10px;padding:9px 11px;border:1px solid var(--border);border-radius:10px"><i class="ti ti-checklist" style="color:var(--accent2)"></i><div style="flex:1"><div style="font-size:13px;font-weight:600">経理レビュー（請求書区分）</div><div style="font-size:11px;color:var(--muted)">'+acctN+'件待ち</div></div><button class="btn btn-'+(acctN?'primary':'secondary')+' btn-sm" onclick="go(\'acct_review\')">開く</button></div>';
-  if(curRole!=='office_crew') html+='<div style="display:flex;align-items:center;gap:10px;padding:9px 11px;border:1px solid var(--border);border-radius:10px;opacity:0.7"><i class="ti ti-cash" style="color:var(--green)"></i><div style="flex:1"><div style="font-size:13px;font-weight:600">給与確定</div><div style="font-size:11px;color:var(--muted)">勤怠タブで月次を確定 → CSV出力</div></div><button class="btn btn-secondary btn-sm" onclick="setOfficeMgrTab(\'attend\')">勤怠へ</button></div>';
+  if(curRole==='ceo'||curRole==='gm') html+='<div style="display:flex;align-items:center;gap:10px;padding:9px 11px;border:1px solid var(--border);border-radius:10px;opacity:0.7"><i class="ti ti-cash" style="color:var(--green)"></i><div style="flex:1"><div style="font-size:13px;font-weight:600">給与確定</div><div style="font-size:11px;color:var(--muted)">勤怠タブで月次を確定 → CSV出力</div></div><button class="btn btn-secondary btn-sm" onclick="setOfficeMgrTab(\'attend\')">勤怠へ</button></div>';
   html+='</div></div>';
   // 報告
   var canPost=['ceo','gm','office'].includes(curRole);
@@ -67773,6 +68108,7 @@ function officePayrollRows(y,m,half){
   });
 }
 function exportOfficePayrollCSV(y,m,half){
+  if(!canViewIndividualWage()){ showToast(t('本部の給与の出力は CEO・GM だけです','HQ payroll export is for the CEO and GM only'),'info'); return; }   /* v1191（2A） */
   var r=officeHalfRange(y,m,half);
   var rows=officePayrollRows(y,m,half);
   if(!rows.length){ showToast('Officeメンバーがいません','danger'); return; }
@@ -67782,6 +68118,7 @@ function exportOfficePayrollCSV(y,m,half){
   showToast('Office給与（'+r.label+'）を出力しました','success');
 }
 function officePayrollCardHtml(y,m){
+  if(!canViewIndividualWage()) return '';   /* v1191（2A）：本部の人の時給・概算給与は CEO・GM だけ */
   var rows=officePayrollRows(y,m,0);
   var html='<div class="card"><div class="card-title"><i class="ti ti-clock-dollar" style="color:var(--accent2)"></i>Office勤怠・給与（半月）</div>';
   if(!rows.length){ html+='<p style="color:var(--muted);font-size:13px;text-align:center;padding:10px">Officeメンバーなし</p></div>'; return html; }
@@ -67834,7 +68171,11 @@ function renderAcctExport() {
 
   /* v954: まとめて出力を先頭に。個別のボタンは下にそのまま残す。
      経理が使い慣れた導線を消さない。 */
-  html += `<div class="card ax-sum${_axPc ? ' ax-sum-pc' : ''}" style="border:1.5px solid var(--accent)">
+  /* v1191（Moto 11/18「はい」）：シフトリーダー手当・本部シフトインの個人の額と経理まとめ（3 タブ）は給与＝CEO・GM だけ。
+     Tip の一覧（店ごと・全店）は経理・事務Crew にも今までどおり出す（Moto 11/18 09:09 HST）。本部の給与（officePayrollCardHtml）は自分で CEO・GM だけ */
+  var _payOk = !payDetailHidden() && canViewIndividualWage();
+  if (!_payOk) html += '<div class="card" style="padding:6px 12px">' + payDetailNoteHtml('out') + '</div>';
+  if (_payOk) html += `<div class="card ax-sum${_axPc ? ' ax-sum-pc' : ''}" style="border:1.5px solid var(--accent)">
     <div class="card-title"><i class="ti ti-file-spreadsheet" style="color:var(--accent)"></i>まとめて出力（Excel・タブ分け）</div>
     <p style="font-size:12px;color:var(--muted);margin-bottom:10px">Tip / Shift Leader / 本部シフトイン を
     <b>1ファイル3タブ</b>で出力します。両期間・全店ぶんが入ります。</p>
@@ -67846,7 +68187,7 @@ function renderAcctExport() {
   /* v1178：PC の店ごとの出力（1 つの表）。押す関数・押せる条件（取り直し中・記録なし）は下の今の形と同じ */
   function _axPcStores(){
     var slOn = function(s){ return (typeof slStoreEnabled === 'function') && slStoreEnabled(s.id); };
-    var slAny = stores.some(slOn), slGr = 0, slAmt = (typeof slCfg === 'function' ? slCfg().amount.toFixed(2) : '0.00');
+    var slAny = _payOk && stores.some(slOn), slGr = 0, slAmt = (typeof slCfg === 'function' ? slCfg().amount.toFixed(2) : '0.00');
     var ymS = y + '-' + String(m+1).padStart(2,'0');
     var rows = stores.map(function(s){
       var sid = String(s.id).replace(/'/g, '');
@@ -67896,14 +68237,14 @@ function renderAcctExport() {
   });
   html += `<button class="btn btn-primary" style="width:100%;margin-top:10px"${_busy} onclick="exportAllTipCSV('${d1}','${d2}')"><i class="ti ti-download"></i> 全店まとめて出力（両期間）</button>`;
 
-  html += officePayrollCardHtml(y, m);
+  html += officePayrollCardHtml(y, m);   /* 本部の給与は officePayrollCardHtml が CEO・GM だけに出す（v1191・2A） */
   html += `</div>`;
 
   /* v887: 出力する前に「どの店にいくら出るか」が見えるようにする。Motoさん依頼。 */
   var _slStores = stores.filter(function(s){
     return (typeof slStoreEnabled==='function') && slStoreEnabled(s.id);
   });
-  if(_slStores.length){
+  if(_payOk && _slStores.length){   /* v1191：シフトリーダー手当の人ごとの額は CEO・GM だけ */
     var _slGrand = 0, _slCards = '';
     _slStores.forEach(function(s){
       var a = slPayrollData(s.id, _p4Period(d1).from, _p4Period(d1).to);
@@ -68321,20 +68662,26 @@ function tipCSVRows(storeId, anyDate) {
   /* v887: 回数だけでは支給できないので、単価・手当・受取＋手当まで出す（Motoさん依頼）。
      金額は slPayrollData()＝slPeriodSummary() が正。slCountsInRange() は数えるだけで
      単価を持たず、制度対象外の店も数えてしまうので、金額を出すこちらでは使わない。 */
-  var _slp = slPayrollData(storeId, range.from, range.to);
+  /* PR #194 の Codex（4e7ae43・6989080060）：経理・事務Crew（payDetailHidden）の Tip 一覧には、シフトリーダー手当の列（回数・単価・手当・受取＋手当）・
+     SL だけを務めた人の行・手当の合計・支給明細を入れない（手当のデータは読みもしない）。Tip の列・行は今までどおり。
+     CEO・GM（経理まとめの Tip タブも）・店の役職は今までどおり手当つき */
+  var _slHide = payDetailHidden();
+  var _slp = _slHide ? { enabled:false, rows:[], total:0, amount:0 } : slPayrollData(storeId, range.from, range.to);
   var _slc = {}; (_slp.rows||[]).forEach(function(x){ _slc[x.name]=x; });
   var _slRate = _slp.enabled ? _slp.amount.toFixed(2) : '';
-  rows.push(['氏名','区分','労働時間','日次配分計($)','SL拠出($)','再分配受取($)','最終受取($)',
+  var _tipHead = ['氏名','区分','労働時間','日次配分計($)','SL拠出($)','再分配受取($)','最終受取($)'];
+  rows.push(_slHide ? _tipHead : _tipHead.concat([
     'シフトリーダー ランチ(回)','シフトリーダー ディナー(回)','シフトリーダー 計(回)',
-    'シフトリーダー 単価($)','シフトリーダー 手当($)','受取＋手当($)']);
+    'シフトリーダー 単価($)','シフトリーダー 手当($)','受取＋手当($)']));
   settle.rows.forEach(r=>{
     var _c=_slc[r.name], _amt=_c?(_c.amount||0):0;
-    rows.push([r.name, r.isSL?'Store Leader':'スタッフ',
-      r.hours.toFixed(2), r.base.toFixed(2), r.contribution.toFixed(2), r.redistrib.toFixed(2), r.final.toFixed(2),
+    var _tipCols = [r.name, r.isSL?'Store Leader':'スタッフ',
+      r.hours.toFixed(2), r.base.toFixed(2), r.contribution.toFixed(2), r.redistrib.toFixed(2), r.final.toFixed(2)];
+    rows.push(_slHide ? _tipCols : _tipCols.concat([
       _c?_c.L:0, _c?_c.D:0, _c?_c.count:0,
-      _c?_slRate:'', _amt.toFixed(2), (r.final+_amt).toFixed(2)]);
+      _c?_slRate:'', _amt.toFixed(2), (r.final+_amt).toFixed(2)]));
   });
-  /* 精算表に出てこない人（配分ゼロでもSLを務めた人）を落とさない */
+  /* 精算表に出てこない人（配分ゼロでもSLを務めた人）を落とさない（手当を出す人のとき。経理・事務Crew は _slc が空） */
   Object.keys(_slc).forEach(function(nm){
     if(settle.rows.some(function(r){ return r.name===nm; })) return;
     var c=_slc[nm];
@@ -68342,10 +68689,12 @@ function tipCSVRows(storeId, anyDate) {
       _slRate, (c.amount||0).toFixed(2), (c.amount||0).toFixed(2)]);
   });
   var totalFinal = settle.rows.reduce((a,r)=>a+r.final,0);
-  rows.push(['合計','','','','','', totalFinal.toFixed(2), '','','','',
-    (_slp.total||0).toFixed(2), (totalFinal+(_slp.total||0)).toFixed(2)]);
+  rows.push(_slHide ? ['合計','','','','','', totalFinal.toFixed(2)]
+    : ['合計','','','','','', totalFinal.toFixed(2), '','','','',
+       (_slp.total||0).toFixed(2), (totalFinal+(_slp.total||0)).toFixed(2)]);
+  if(_slHide){ rows.push([]); rows.push([payDetailCsvNote()]); }
   /* 給与担当が1枚で完結できるよう、支給明細（該当日つき）も同じCSVに付ける。 */
-  if(_slp.enabled && (_slp.rows||[]).length){
+  else if(_slp.enabled && (_slp.rows||[]).length){
     rows.push([]);
     rows = rows.concat(slPayrollRows(storeId, range.from, range.to));
   }
@@ -68518,6 +68867,7 @@ function acctPayrollSheets(d1, d2){
            tipHit:tipHit, slHit:slHit, hqHit:hqHit, hqTotal:Math.round(hqTotal*100)/100, pending:tipPending };
 }
 async function exportAcctPayrollBook(d1, d2){
+  if(payDetailBlocked(true)) return;   /* v1191：本部シフトインの個人額・給与まとめ＝CEO・GM だけ */
   var r = await tipNtSettle(function(){ return acctPayrollSheets(d1, d2); });   /* v1187 */
   if(!r) return;   /* 待つあいだにログインが変わった */
   if(r.pending){ showToast(tipNtPendingMsg(),'danger'); return; }
@@ -92235,8 +92585,8 @@ function u11ObSt(ob){ return (ob && ob.obStatus) || '本人入力待ち'; }
 function u11ObStep(st){ var m = { '本人入力待ち':0, '差し戻し':0, '提出完了':1, 'I-9確認待ち':2, '経理確認中':3, 'Payroll登録中':3, '登録完了':4 }; return (st in m) ? m[st] : 0; }
 function u11ObNext(st){
   var m = { '本人入力待ち':['本人が入力（招待を再送できます）','New hire enters info (resend invite)'], '差し戻し':['本人が直して出し直す','New hire fixes and resubmits'],
-    '提出完了':['経理が確認','Accounting reviews'], 'I-9確認待ち':['店長が I-9 を確認','Manager checks I-9'], '経理確認中':['Payroll に登録','Register in Payroll'],
-    'Payroll登録中':['Payroll に登録','Register in Payroll'], '登録完了':['研修チェック','Training checklist'], 'キャンセル':['中止','Cancelled'] };
+    '提出完了':['経理が確認','Accounting reviews'], 'I-9確認待ち':['店長が I-9 を確認','Manager checks I-9'], '経理確認中':['GM・CEO が Payroll に登録','GM/CEO registers in Payroll'],
+    'Payroll登録中':['GM・CEO が Payroll に登録','GM/CEO registers in Payroll'], '登録完了':['研修チェック','Training checklist'], 'キャンセル':['中止','Cancelled'] };
   var x = m[st] || ['確認','Check']; return t(x[0], x[1]);
 }
 function u11ObTag(st){
@@ -92582,6 +92932,8 @@ function renderMypage() {
     </div>
     <button class="btn btn-primary btn-sm" onclick="event.stopPropagation();openStaffPass()"><i class="ti ti-eye"></i> ${t('表示','Show')}</button>
   </div>`;
+  /* v1191：FUNERGY TIMES の入口（全員・従業員証明のすぐ下・同じ段に入れるので PC の 2 列の並びは変わらない） */
+  try { html += timesCardHtml(); } catch(e) {}
 
   // ===== スキルレベル（全Crew: レーダー＋各Lv）=====
   // Crewビューでは給与の直前に配置するため、ここでは変数に退避。管理者ビューはそのまま先頭表示。
@@ -93290,6 +93642,7 @@ function renderSettings() {
     </label>
     ${!salaryDisplayOn()?'<div style="font-size:11.5px;color:var(--yellow);font-weight:700"><i class="ti ti-alert-triangle"></i> 現在オフ：給与情報は全員に非表示です</div>':''}
   </div>` : ''}</div>
+  ${(curRole==='gm'||curRole==='ceo')?timesSettingsCardHtml():''}
   ${(curRole==='gm'||curRole==='ceo')?renderGradeHideConfig():''}
   `;
   var _stBot = `${renderStorageCard()}
@@ -114207,8 +114560,9 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   /* ---------------------------------------------------------------- v1154：経理レビュー › 申請（GM 承認済みの経費 3 種・UI案71）
      確認・精算は今までどおり 1 件の画面（wrOpen）で。GM・CEO は見るだけ（サーバーの can で決まる）。評価の変更は経理の作業が無いので出さない */
   function acctReload(){ if (S.acct) { S.acct.load = ''; S.acct.dload = ''; rerenderAcct(); } }
-  function onAcct(){ return typeof curPage !== 'undefined' && curPage === 'acct_review' && W._arTab === 'req'; }
-  function rerenderAcct(){ if (onAcct()) { try{ renderPage('acct_review'); }catch(e){} } }
+  /* v1191（5B）：経理レビューは経理センターの中（curPage は acct_center）。前は curPage==='acct_review' だけを見ていた */
+  function onAcct(){ return typeof curPage !== 'undefined' && (typeof arOnPage === 'function' ? arOnPage() : curPage === 'acct_review') && W._arTab === 'req'; }
+  function rerenderAcct(){ if (onAcct()) { try{ renderPage(curPage); }catch(e){} } }
   function acctLoad(){
     var a = S.acct, g = S.gen; a.load = 'loading';
     api({ action:'list', scope:'team', state:'open', limit:500 }).then(function(j){
@@ -120964,7 +121318,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       + '<div style="flex:1;min-width:180px"><div style="font-weight:600;font-size:13px">' + esc(T('メールとパスワードでログイン中', 'Logged in with email and password')) + '</div>'
       + '<div style="font-size:11px;color:var(--muted);word-break:break-all">' + esc(s.email || '') + esc(T(' · この端末には覚えません', ' · not remembered on this device')) + '</div></div></div>'
       + '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">'
-      + (typeof managerSessionAllowed === 'function' && managerSessionAllowed() ? '<button class="btn btn-primary btn-sm" onclick="FUNERGY_ML.openSecure()"><i class="ti ti-shield-lock"></i> ' + esc(T('管理者セキュアページを開く', 'Open the admin secure page')) + '</button>' : '')
+      + (typeof secureSessionAllowed === 'function' && secureSessionAllowed() ? '<button class="btn btn-primary btn-sm" onclick="FUNERGY_ML.openSecure()"><i class="ti ti-shield-lock"></i> ' + esc(T('管理者セキュアページを開く', 'Open the admin secure page')) + '</button>' : '')
       + (!W._sessionPin && !W._empPrivate ? '<button class="btn btn-secondary btn-sm" onclick="FUNERGY_ML.pinNow()"><i class="ti ti-key"></i> ' + esc(T('PIN を入れる（給与を読む）', 'Enter PIN (load pay)')) + '</button>' : '')
       + '<button class="btn btn-secondary btn-sm" onclick="FUNERGY_ML.logoutAll()"><i class="ti ti-logout"></i> ' + esc(T('すべての端末からログアウト', 'Log out of every device')) + '</button></div></div>';
   }
@@ -120988,6 +121342,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   }
   function openSecure() {
     if (!W._mlSignedIn || typeof managerSessionAllowed !== 'function' || !managerSessionAllowed()) { toast(T('管理者セキュアページは、メールとパスワードでログインしたときに開けます。', 'The admin secure page opens when you log in with email and password.')); return; }
+    if (typeof secureSessionAllowed === 'function' && !secureSessionAllowed()) { toast(T(SECURE_ONLY_MSG[0], SECURE_ONLY_MSG[1])); return; }   /* v1191：CEO・GM だけ */
     if (S.sec) return;
     return nav('mlOpenSecure', function () {
       S.sec = { role: curRole, real: curRealRole, store: curStore, user: curUserName, page: curPage, ku: W._karteUnlocked, ks: W._karteSelf, y: W.scrollY || 0 };
