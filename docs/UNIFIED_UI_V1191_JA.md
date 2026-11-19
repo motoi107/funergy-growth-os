@@ -451,4 +451,6 @@ Moto さんの答え「はい」＝Tip の個人額・シフトリーダー手�
   - 試験の DOM の代わりは、箱の HTML にその id があるときだけ中の部分を返すようにした（本物と同じ）。
   - `tests/aff-server-v1195.test.mjs` 6（版の上限）。
   - 足した試験は `3b19d5c` のコードで 5 つとも落ちる（印の取り替えの 1 つは守りの試験なので前も通る）。わざと壊す 16/16。
+  - 前の試験の直し：`tests/passkey-login-app-v1189.test.mjs` は関数を切り出して動かすので、`empLoginLoc` などの 1 行の関数を足した（直す前は 9 件が `empLoginLoc is not defined`）。
+  - CI（`.github/workflows` の手順を手元で流した・fetch と npm ci の 2 段は除く）：走る 83 段のうち 82 が成功、落ちた 1 段（上の passkey）を直して 31/31。本物の Chrome：`tests/e2e-login/passkey-v1189.mjs` 38/38。
 - 独立レビュー（Claude の別エージェント）は無し。実機・実ブラウザ・実通信は確かめていない。
