@@ -1859,6 +1859,12 @@ i.ti-loader, i.ti-loader-2 { display:inline-block; animation:uxSpin 1s linear in
 .ar-tbl td.ar-dt { font-variant-numeric:tabular-nums; color:var(--tm); }
 .ar-tbl td.ar-go { color:var(--muted); font-size:16px; padding-left:2px; }
 .ar-tbl tr.ar-row { cursor:pointer; }
+/* v1200：経理レビュー › 確認する（1 つの一覧）の表 */
+.acr-tbl { width:100%; border-collapse:collapse; font-size:12.5px; }
+.acr-tbl th { text-align:left; font-size:11px; font-weight:700; color:var(--muted); padding:9px 10px; border-bottom:1px solid var(--border); white-space:nowrap; }
+.acr-tbl td { padding:8px 10px; border-bottom:1px solid var(--border); vertical-align:middle; }
+.acr-tbl th.num, .acr-tbl td.num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+.acr-tbl tr.acr-row:hover td { background:var(--surface2); }
 @media (hover:hover) { .ar-tbl tr.ar-row:hover > td { background:var(--surface2); } }
 .ar-tbl tr.ar-row.sel > td { background:var(--accent-soft, #fff4ec); }
 .ar-tbl tr.ar-row:focus-visible { outline:2px solid var(--accent); outline-offset:-2px; }
@@ -8105,7 +8111,7 @@ function navResolvePage(page){
   if (page === 'office_mgr' && typeof officeMgrTab !== 'undefined' && officeMgrTab === 'tasks') officeMgrTab = 'dash';
   /* v1191（5B）：大タブ「経理レビュー」は経理センター › 経理レビュー（区分・承認）の中へ。本体は同じ renderAcctReview（v1095） */
   if (page === 'acct_review') {
-    if (navGuardAllows('acct_center')) { try { _acCat = 'review'; _acSub = 'acctrev'; } catch(e){} page = 'acct_center'; }
+    if (navGuardAllows('acct_center')) { try { _acCat = 'review'; _acSub = 'all'; } catch(e){} page = 'acct_center'; }   /* v1200（3A）：1 つの一覧から */
   }
   if (Object.prototype.hasOwnProperty.call(NAV_RETIRED, page)) {
     var to = NAV_RETIRED[page];
@@ -50103,7 +50109,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1199';
+const APP_VERSION = '1200';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -60397,6 +60403,7 @@ var AC_TABS = [
       { id:'dash', label:'経理ホーム', labelEn:'Accounting home', fn:'acDashBody' }
   ]},
   { id:'review', label:'経理レビュー', labelEn:'Accounting review', icon:'ti-file-check', subs:[
+      { id:'all',      label:'確認する', labelEn:'To check',       fn:'acrBody' },   /* v1200（段階 3 の 2 歩目・3A・4A）：申請・書類・前の画面の記録を 1 つの一覧に（読むだけで並べる） */
       { id:'invoice',  label:'Invoice', labelEn:'Invoices',       list:'invoice', more:'renderInvoice' },
       { id:'receipt',  label:'レシート', labelEn:'Receipts',       list:'receipt' },
       { id:'reimb',    label:'建て替え', labelEn:'Reimbursements',       list:'reimb',   more:'renderReimburseCard' },
@@ -60456,7 +60463,7 @@ function acOpenSub(id){
 /* v1199：Office管理の小タブ（前の画面のボタン：出勤中・承認待ち・今月・給与CSV（Office）・締めの「勤怠」）を経理センターの中タブへ。
    前は経理センターの経理ダッシュボードへ戻るだけで、押しても何も変わらなかった */
 function acFromOfficeTab(){
-  var m = { attend:['attend','attend'], report:['review','acctrev'], export:['reports','ohub'] }[(typeof officeMgrTab !== 'undefined') ? officeMgrTab : ''] || ['dash','dash'];
+  var m = { attend:['attend','attend'], report:['review','all'], export:['reports','ohub'] }[(typeof officeMgrTab !== 'undefined') ? officeMgrTab : ''] || ['dash','dash'];
   try { officeMgrTab = 'dash'; } catch(e){}
   _acCat = m[0]; _acSub = m[1];
 }
@@ -60484,14 +60491,142 @@ function acWorkLinksHtml(){
   return h + '</div>';
 }
 function acGoWork(tab){ try { workTab = tab; } catch(e){} go('tasks'); }
+/* ==== v1200：経理レビュー › 確認する（1 つの一覧・段階 3 の 2 歩目・UI案97 の 3A・4A・Moto さん 11/19）====
+   GM が承認した申請（ワークセンターの申請・wrAcctFeed）・承認の要らない書類（Invoice・レシート・チェック）・前の画面の記録（前の一覧のガソリン代・
+   事前経費・休暇・建て替え）を 1 つの一覧に並べる。読むだけ：保存先・処理は変えない。行を押すと今までの 1 件の画面（申請＝wrOpen・書類＝arOpenBox・
+   チェック＝openCheckReview）、前の画面の記録はその前の一覧（読むだけ）。
+   ・3A：開いたときは「確認待ち」（GM 承認済みの申請と、承認の要らない書類で、まだ確認していないもの）
+   ・4A：前の画面の記録は印を付けて読むだけ・初めは出さない（「前の画面の記録も出す」で出す）。申請の仕組みをまだ使っていないとき（not_live）は前の画面が今の申請なので出す
+   ・紛失届は 8B（サーバーの申請）までは今の一覧（8A）：件数とそこへの入口だけ
+   ・Invoice取込（Drive）の写しは出さない（v1095 の Q8 と同じ。③ インボイス取り込みで見る） */
+var ACR_PAGE = 100;
+var _acr = { st:'ck', kind:'', store:'', old:false, limit:100, map:{} };
+function acrOnPage(){ return typeof curPage !== 'undefined' && curPage === 'acct_center' && typeof _acCat !== 'undefined' && _acCat === 'review' && _acSub === 'all'; }
+function acrDocSt(rs){ return (rs === '差し戻し') ? 'ret' : (rs === '確認済み') ? 'done' : 'ck'; }
+var ACR_OLD = { old_gas:['ガソリン代','Mileage','gas'], old_exp:['事前経費','Pre-approval','exp'], old_vac:['休暇申請','Time off','vac'], old_rb:['建て替え経費','Reimbursement','reimb'] };
+function acrRows(){
+  var out = [], feed = null;
+  try { feed = (typeof wrAcctFeed === 'function') ? wrAcctFeed() : null; } catch(e) { feed = { state:'err', msg:String(e && e.message || e), rows:[] }; }
+  if (!feed) feed = { state:'none', msg:'', rows:[] };
+  (feed.rows || []).forEach(function(r){
+    out.push({ key:'r:' + r.id, src:'req', id:r.id, kind:'req:' + r.kind, kindL:r.kindL, no:r.code, store:r.store, storeL:r.storeL || _acStoreName(r.store), who:r.who,
+      amount:r.amount, useH:r.useH || '', gm:'done', gmAt:r.gmAt, gmBy:r.gmBy, st:r.st, stText: r.st === 'pay' ? t('精算待ち','To pay') : t('確認待ち','To check'), date:_acDate(r.at) });
+  });
+  var docs = []; try { docs = arReviewList(); } catch(e) { docs = []; }
+  docs.forEach(function(v){
+    if (!v || v._deleted) return;
+    var rs = v.reviewStatus || '未確認';
+    if (v.docType === 'Reimburse') {   /* 前の保存先の建て替え（v1095 の Q9）＝前の画面の記録 */
+      out.push({ key:'o:rbi:' + v.id, src:'old', id:v.id, kind:'old_rb', no:v.vendor || '', store:v.storeId, storeL:_acStoreName(v.storeId), who:v.empName || v.memoWho || v.byUser || '',
+        amount:Number(v.total) || 0, gm:'old', st:acrDocSt(rs), stText:rs, date:_acDate(v.docDate || v.date) });
+      return;
+    }
+    var rc = v.docType === 'Receipt';
+    out.push({ key:'d:' + v.id, src:'doc', id:v.id, kind: rc ? 'receipt' : 'invoice', kindL: rc ? t('レシート','Receipt') : 'Invoice', no:v.vendor || '', store:v.storeId, storeL:_acStoreName(v.storeId),
+      who: rc ? (v.empName || v.memoWho || '') : '', amount:Number(v.total) || 0, gm:'none', st:acrDocSt(rs), stText:rs, date:_acDate(v.docDate || v.date) });
+  });
+  var cks = []; try { cks = (typeof getChecks === 'function') ? getChecks() : []; } catch(e) { cks = []; }
+  cks.forEach(function(c){
+    var rs = c.reviewStatus || '未確認';
+    out.push({ key:'c:' + c.id, src:'doc', id:c.id, kind:'check', kindL:t('チェック','Check'), no:'#' + (c.checkNo || ''), store:c.storeId, storeL:_acStoreName(c.storeId), who:c.payee || '',
+      amount:Number(c.amount) || 0, gm:'none', st:acrDocSt(rs), stText:rs, date:_acDate(c.checkDate || c.date) });
+  });
+  var old = function(kind, list, f){ (list || []).forEach(function(x){ if (!x || x._deleted) return; var o = f(x); var st = _acStatus(x.status);
+    out.push(Object.assign({ key:'o:' + kind + ':' + x.id, src:'old', id:x.id, kind:kind, gm:'old', st: st === '確認済み' ? 'done' : st === '差し戻し' ? 'ret' : 'ck', stText:String(x.status || '申請中') }, o)); }); };
+  try { old('old_gas', (typeof getMileageRequests === 'function') ? getMileageRequests() : [], function(x){ return { no:(x.origin || '') + (x.destination ? ' → ' + x.destination : ''), store:x.storeId, storeL:_acStoreName(x.storeId), who:x.employee || '', amount:Number(x.amount) || 0, date:_acDate(x.date) }; }); } catch(e) {}
+  try { old('old_exp', (typeof getExpenseRequests === 'function') ? getExpenseRequests() : [], function(x){ return { no:x.project || x.purpose || '', store:x.storeId, storeL:_acStoreName(x.storeId), who:x.employee || '', amount:Number(x.total) || 0, date:_acDate(x.date) }; }); } catch(e) {}
+  try { old('old_vac', ls('my_vacations', []) || [], function(x){ return { no:(x.type || '') , store:x.storeId, storeL:_acStoreName(x.storeId), who:x.employee || '', amount:null, amtText:(x.startDate || '') + (x.endDate && x.endDate !== x.startDate ? ' – ' + x.endDate : ''), date:_acDate(x.startDate || x.date) }; }); } catch(e) {}
+  try { old('old_rb', (typeof getReimbursements === 'function') ? getReimbursements() : [], function(x){ return { no:x.vendor || x.purpose || '', store:x.storeId, storeL:_acStoreName(x.storeId), who:x.payer || '', amount:Number(x.amount) || 0, date:_acDate(x.date) }; }); } catch(e) {}
+  out.forEach(function(r){ if (r.src === 'old') { var o = ACR_OLD[r.kind]; r.kindL = t(o[0], o[1]); } });
+  var lost = 0; try { lost = ((typeof getLostReceipts === 'function') ? getLostReceipts() : []).filter(function(r){ return (r.status || '申請中') === '申請中'; }).length; } catch(e) {}
+  return { rows:out, feed:feed, lost:lost };
+}
+function acrSet(k, v){ if (!Object.prototype.hasOwnProperty.call(_acr, k) || k === 'map') return; _acr[k] = (k === 'old') ? !!v : (k === 'limit' ? (Number(v) || ACR_PAGE) : String(v || '')); if (k !== 'limit') _acr.limit = ACR_PAGE; renderPage('acct_center'); }
+function acrMore(){ _acr.limit += ACR_PAGE; renderPage('acct_center'); }
+function acrOpen(key){
+  var r = _acr.map[key]; if (!r) return;
+  if (r.src === 'req') { if (typeof wrOpen === 'function') wrOpen(r.id); return; }
+  if (r.kind === 'check') { if (typeof openCheckReview === 'function') openCheckReview(r.id); return; }
+  if (r.src === 'doc') { if (typeof arOpenBox === 'function') arOpenBox(r.id); return; }
+  var o = ACR_OLD[r.kind]; if (o) acOpenSub(o[2]);   /* 前の画面の記録：前の一覧（読むだけ） */
+}
+function acrBody(){
+  var e = escapeHtml, A = acrRows(), feed = A.feed;
+  try { setTimeout(function(){ try { if (typeof arPullLatest === 'function') arPullLatest(false); } catch(err) {} }, 0); } catch(err) {}   /* 書類も開いたら読み直す（60 秒に 1 回まで・v1095 と同じ） */
+  var forceOld = feed.state === 'not_live', showOld = _acr.old || forceOld;
+  var kinds = {}, stores = {}, oldN = 0;
+  A.rows.forEach(function(r){ if (r.src === 'old' && !showOld) { oldN++; return; } kinds[r.kind] = r.kindL; if (r.store) stores[r.store] = r.storeL; });
+  if (_acr.kind && !kinds[_acr.kind]) _acr.kind = '';
+  var base = A.rows.filter(function(r){ return (r.src !== 'old' || showOld) && (!_acr.kind || r.kind === _acr.kind) && (!_acr.store || r.store === _acr.store); });
+  var cnt = { ck:0, pay:0, ret:0, all:base.length };
+  base.forEach(function(r){ if (cnt[r.st] != null) cnt[r.st]++; });
+  var st = ['ck','pay','ret','all'].indexOf(_acr.st) >= 0 ? _acr.st : 'ck';
+  var view = base.filter(function(r){ return st === 'all' || r.st === st; }).sort(function(a, b){ return String(b.date || '').localeCompare(String(a.date || '')) || String(a.key).localeCompare(String(b.key)); });
+  var total = view.reduce(function(a, r){ return a + (r.amount != null ? r.amount : 0); }, 0);
+  _acr.map = {}; view.slice(0, _acr.limit).forEach(function(r){ _acr.map[r.key] = r; });
+  var money = function(v){ return '$' + (Number(v) || 0).toLocaleString('en-US', { minimumFractionDigits:2, maximumFractionDigits:2 }); };
+  var h = '<div class="acr">';
+  /* 申請が読めないとき・読み込み中（書類は出す） */
+  var fm = { loading:t('申請（GM 承認済み）を読み込んでいます…','Loading the GM-approved requests…'),
+    signin:t('申請（GM 承認済み）は、サインインすると出ます','Sign in to see the GM-approved requests') + (feed.msg ? '（' + feed.msg + '）' : ''),
+    not_live:t('申請の仕組みをまだ使っていないので、前の画面の記録を今の申請として出しています','Requests are not live yet, so the earlier screens are shown as the current requests'),
+    err:t('申請を読めませんでした：','Could not read the requests: ') + (feed.msg || ''), none:t('申請の画面を読み込めませんでした','Could not load the requests') }[feed.state];
+  if (fm) h += '<div class="alert ' + (feed.state === 'err' || feed.state === 'none' ? 'alert-danger' : 'alert-warning') + ' acr-feed" style="font-size:12px;padding:8px 11px;margin-bottom:8px"><i class="ti ti-info-circle"></i><div style="flex:1">' + e(fm) + '</div>'
+    + (feed.state === 'err' && typeof wrAcctRefresh === 'function' ? '<button class="btn btn-secondary btn-sm" onclick="wrAcctRefresh()"><i class="ti ti-refresh"></i> ' + t('最新','Latest') + '</button>' : '') + '</div>';
+  else if (feed.viewOnly) h += '<div style="font-size:11.5px;color:var(--muted);margin:0 2px 6px">' + t('申請は見るだけ（確認・精算は経理）','Requests are view only (accounting checks and pays)') + '</div>';
+  /* 状態（3A：初めは確認待ち） */
+  var chip = function(id, label){ var on = st === id; return '<button class="acr-st' + (on ? ' on' : '') + '" onclick="acrSet(\'st\',\'' + id + '\')" style="font:inherit;cursor:pointer;padding:7px 12px;border-radius:10px;border:1px solid ' + (on ? 'var(--accent)' : 'var(--border)') + ';background:' + (on ? 'var(--accent)' : 'var(--surface)') + ';color:' + (on ? '#fff' : 'var(--text)') + ';font-size:12.5px;font-weight:700">' + e(label) + ' <span style="font-weight:800">' + cnt[id] + '</span></button>'; };
+  h += '<div class="acr-sts" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">' + chip('ck', t('確認待ち','To check')) + chip('pay', t('精算待ち','To pay')) + chip('ret', t('差し戻し','Returned')) + chip('all', t('すべて','All')) + '</div>';
+  /* 絞り込み：種類・店・前の画面の記録 */
+  var kOpts = Object.keys(kinds).sort(function(a, b){ return String(kinds[a]).localeCompare(String(kinds[b])); });
+  var sOpts = Object.keys(stores).sort(function(a, b){ return String(stores[a]).localeCompare(String(stores[b])); });
+  h += '<div class="card acr-flt" style="padding:9px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
+    + '<select class="form-select" style="flex:1;min-width:140px;font-size:12px" onchange="acrSet(\'kind\', this.value)"><option value="">' + t('種類（すべて）','Kind (all)') + '</option>'
+    + kOpts.map(function(k){ return '<option value="' + e(k) + '"' + (_acr.kind === k ? ' selected' : '') + '>' + e(kinds[k]) + (k.indexOf('old_') === 0 ? t('（前の画面）',' (earlier screen)') : k.indexOf('req:') === 0 ? t('（申請）',' (request)') : '') + '</option>'; }).join('') + '</select>'
+    + '<select class="form-select" style="flex:1;min-width:120px;font-size:12px" onchange="acrSet(\'store\', this.value)"><option value="">' + t('店（すべて）','Store (all)') + '</option>'
+    + sOpts.map(function(k){ return '<option value="' + e(k) + '"' + (_acr.store === k ? ' selected' : '') + '>' + e(stores[k]) + '</option>'; }).join('') + '</select>'
+    + '<label class="acr-old" style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;white-space:nowrap"><input type="checkbox"' + (showOld ? ' checked' : '') + (forceOld ? ' disabled' : '') + ' onchange="acrSet(\'old\', this.checked)"> ' + t('前の画面の記録も出す','Show earlier-screen records') + '</label></div>';
+  if (A.lost) h += '<div class="acr-lost" onclick="acOpenSub(\'lost\')" style="cursor:pointer;display:flex;align-items:center;gap:8px;font-size:12px;padding:8px 11px;margin-bottom:8px;border:1px dashed var(--border);border-radius:10px"><i class="ti ti-receipt-off" style="color:var(--accent)"></i><div style="flex:1">'
+    + t('紛失届（今の一覧）：承認待ち ','Lost receipts (current list): waiting ') + '<b>' + A.lost + '</b>' + t(' 件',' ') + '</div><span style="color:var(--muted)">' + t('開く','Open') + ' <i class="ti ti-chevron-right"></i></span></div>';
+  h += '<div style="display:flex;align-items:baseline;gap:10px;margin:6px 2px 8px"><span style="font-size:12.5px;color:var(--muted)">' + view.length + ' ' + t('件','items') + '</span><span style="font-size:15px;font-weight:800">' + money(total) + '</span></div>';
+  if (!view.length) {
+    h += '<div class="card" style="text-align:center;color:var(--muted);padding:30px"><i class="ti ti-checklist" style="font-size:28px;display:block;margin-bottom:6px"></i>' + (st === 'ck' ? t('確認待ちはありません','Nothing to check') : t('該当するものはありません','Nothing matches')) + '</div>';
+  } else {
+    var gmL = function(r){ return r.gm === 'done' ? '<span class="tag tag-green">' + t('済み','Done') + (r.gmAt ? ' ' + e(_acDate(r.gmAt).slice(5).replace('-', '/')) : '') + '</span>' : r.gm === 'none' ? '<span class="tag tag-gray">' + t('不要','Not needed') + '</span>' : '<span class="tag tag-gray">' + t('前の画面','Earlier screen') + '</span>'; };
+    var srcL = function(r){ return r.src === 'req' ? '<span style="color:var(--accent2)">' + t('申請','Request') + '</span>' : r.src === 'doc' ? '<span style="color:#5b3f8c">' + t('書類','Document') + '</span>' : '<span class="tag tag-yellow acr-oldmark">' + t('前の画面の記録・読むだけ','Earlier screen · read only') + '</span>'; };
+    var amtL = function(r){ return r.amount != null ? money(r.amount) : e(r.amtText || '—'); };
+    var stL = function(r){ var c = r.st === 'ret' ? 'var(--red)' : r.st === 'done' ? 'var(--green)' : r.st === 'pay' ? 'var(--accent2)' : 'var(--yellow)'; return '<span style="font-weight:700;color:' + c + '">' + e(r.stText || '') + '</span>'; };
+    var shown = view.slice(0, _acr.limit), sp = (typeof window !== 'undefined' && (window.innerWidth || 1024) < 768);
+    if (sp) {
+      h += '<div class="card acr-list" style="padding:0;overflow:hidden">' + shown.map(function(r, i){
+        return '<button type="button" class="acr-row" data-k="' + e(r.key) + '" onclick="acrOpen(this.getAttribute(\'data-k\'))" style="display:block;width:100%;text-align:left;font:inherit;background:none;border:0;' + (i ? 'border-top:1px solid var(--border);' : '') + 'padding:10px 12px;cursor:pointer">'
+          + '<span style="display:flex;gap:8px;align-items:baseline"><b style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px">' + e(r.kindL) + (r.no ? ' · ' + e(r.no) : '') + '</b><b style="white-space:nowrap">' + amtL(r) + '</b></span>'
+          + '<span style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;font-size:11px;color:var(--muted);margin-top:3px">' + e(r.storeL || '') + (r.who ? ' · ' + e(r.who) : '') + ' · ' + srcL(r) + ' · GM ' + gmL(r) + ' · ' + stL(r) + '</span></button>';
+      }).join('') + '</div>';
+    } else {
+      h += '<div class="card acr-list" style="padding:0;overflow-x:auto"><table class="acr-tbl" style="min-width:760px"><thead><tr><th>' + t('種類・番号','Kind / No.') + '</th><th>' + t('店・人','Store / person') + '</th><th class="num">' + t('金額','Amount') + '</th><th>' + t('GM 承認','GM approval') + '</th><th>' + t('状態','Status') + '</th><th>' + t('日付','Date') + '</th></tr></thead><tbody>'
+        + shown.map(function(r){
+          return '<tr class="acr-row" data-k="' + e(r.key) + '" onclick="acrOpen(this.getAttribute(\'data-k\'))" style="cursor:pointer' + (r.src === 'old' ? ';opacity:.85' : '') + '"><td><b>' + e(r.kindL) + '</b>' + (r.no ? ' · ' + e(r.no) : '') + '<div style="font-size:11px">' + srcL(r) + (r.useH ? ' · <span style="color:var(--muted)">' + r.useH + '</span>' : '') + '</div></td>'
+            + '<td>' + e(r.storeL || '') + (r.who ? '<div style="color:var(--muted);font-size:11px">' + e(r.who) + '</div>' : '') + '</td><td class="num">' + amtL(r) + '</td><td>' + gmL(r) + '</td><td>' + stL(r) + '</td><td style="white-space:nowrap;color:var(--muted)">' + e(r.date || '') + '</td></tr>';
+        }).join('') + '</tbody></table></div>';
+    }
+    if (view.length > shown.length) h += '<div style="text-align:center;margin:10px 0"><button class="btn btn-secondary btn-sm acr-more" onclick="acrMore()">' + t('さらに ','Show ') + Math.min(ACR_PAGE, view.length - shown.length) + t(' 件を出す（全 ',' more (of ') + view.length + t(' 件）',')') + '</button></div>';
+  }
+  h += '<div class="acr-foot" style="font-size:11px;color:var(--muted);margin-top:8px;line-height:1.7">'
+    + (oldN ? t('前の画面の記録 ','') + oldN + t(' 件は出していません（「前の画面の記録も出す」で、読むだけで出ます）。',' earlier-screen records are hidden (tick “Show earlier-screen records” to see them, read only). ') : '')
+    + t('行を押すと今までの 1 件の画面（申請は確認・精算、書類は確認済み・差し戻し）。前の画面の記録はその前の一覧（読むだけ）。GM の承認はワークセンター › 申請/承認のまま。','Press a row to open the same screen as before (requests: check / pay; documents: confirm / return). Earlier-screen records open their earlier list (read only). GM approvals stay in Work Center › Requests.')
+    + '</div></div>';
+  return h;
+}
+/* ==== v1200 end ==== */
 function acSetCat(id){
   _acF = { store:'', ym:'', third:'', st:'' };
   _acCat = id;
   var c = AC_TABS.find(function(x){ return x.id===id; });
   var _cs = acSubsOf(c);   /* v1199：役割で出す中タブだけ */
   _acSub = _cs[0] ? _cs[0].id : '';
-  /* v1095（UI案57 ③）：経理レビューは「区分・承認」（独立した経理レビューと同じ本体）から開く。タブの数・並び・名前は変えない */
-  if(id==='review' && c && c.subs.some(function(s){ return s.id==='acctrev'; })) _acSub = 'acctrev';
+  /* v1200（UI案97 の 3A）：経理レビューは「確認する」（1 つの一覧・確認待ち）から開く（前は v1095 の「区分・承認」） */
+  if(id==='review'){ _acSub = 'all'; try { _acr.st = 'ck'; _acr.limit = ACR_PAGE; } catch(e){} }
   renderPage('acct_center');
 }
 function acSetSub(id){ _acSub = id; _acF = { store:'', ym:'', third:'', st:'' }; renderPage('acct_center'); }
@@ -60529,7 +60664,7 @@ function renderAcctCenter(){
   }
   h += '</div>';
   /* v881: 未処理の一覧は帯の下に置く（押せばその中タブへ飛ぶ）。 */
-  if(cat.id==='review'){ try{ h += _acPendHtml(); }catch(e){} }
+  if(cat.id==='review' && sub.id!=='all'){ try{ h += _acPendHtml(); }catch(e){} }   /* v1200：確認する（1 つの一覧）は一覧そのものが未処理 */
   /* v875: 絞り込み一覧。従来の画面は下に畳んで残す（登録・承認はそちらで行う）。 */
   if(sub.list){
     var lst='';
@@ -100760,7 +100895,7 @@ var _arBusy = {};
 var _arPull = { at:0, tried:0, ok:null, busy:0, gen:0, off:false, p:null };
 function arOnPage(){
   if(typeof curPage==='undefined') return false;
-  return curPage==='acct_review' || (curPage==='acct_center' && typeof _acCat!=='undefined' && _acCat==='review' && _acSub==='acctrev');
+  return curPage==='acct_review' || (curPage==='acct_center' && typeof _acCat!=='undefined' && _acCat==='review' && (_acSub==='acctrev' || _acSub==='all'));   /* v1200：確認する（1 つの一覧）にも書類が出る */
 }
 function arRerender(){
   try{ if(typeof curPage==='undefined') return; if(curPage==='acct_review' || curPage==='acct_center' || curPage==='invoice') renderPage(curPage); }catch(e){}
@@ -115086,7 +115221,8 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
      確認・精算は今までどおり 1 件の画面（wrOpen）で。GM・CEO は見るだけ（サーバーの can で決まる）。評価の変更は経理の作業が無いので出さない */
   function acctReload(){ if (S.acct) { S.acct.load = ''; S.acct.dload = ''; rerenderAcct(); } }
   /* v1191（5B）：経理レビューは経理センターの中（curPage は acct_center）。前は curPage==='acct_review' だけを見ていた */
-  function onAcct(){ return typeof curPage !== 'undefined' && (typeof arOnPage === 'function' ? arOnPage() : curPage === 'acct_review') && W._arTab === 'req'; }
+  function onAcct(){ return typeof curPage !== 'undefined' && (((typeof arOnPage === 'function' ? arOnPage() : curPage === 'acct_review') && W._arTab === 'req')
+    || (typeof acrOnPage === 'function' && acrOnPage())); }   /* v1200：経理レビュー › 確認する（1 つの一覧）にも申請を出す */
   function rerenderAcct(){ if (onAcct()) { try{ renderPage(curPage); }catch(e){} } }
   function acctLoad(){
     var a = S.acct, g = S.gen; a.load = 'loading';
@@ -115140,6 +115276,26 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     })(null);
   }
   W.wrAcctTab = function(t){ if (!S.acct || ['ck','wait','done'].indexOf(t) < 0) return; S.acct.tab = t; rerenderAcct(); };
+  /* v1200（段階 3 の 2 歩目・UI案97 の 3A・4A）：経理センター › 経理レビュー › 確認する（1 つの一覧）に、GM が承認した申請を渡す。
+     読むだけ（同じ読み込み＝acctLoad・同じ行）。確認・精算は今までどおり 1 件の画面（wrOpen）で。st：ck＝確認待ち（approved・acct）／pay＝精算待ち（checked）。
+     use は useL と同じ（もうエスケープしてある HTML）。金額は経費 3 種と予算だけ（ほかは null） */
+  W.wrAcctFeed = function(){
+    checkAuth();
+    if (!pinTok()) return { state:'signin', msg:errText('signin'), rows:[] };
+    if (S.load === '') load();
+    if (!S.me) return S.load === 'err' ? { state:'err', msg:String(S.err || ''), rows:[] } : { state:'loading', msg:'', rows:[] };
+    if (!S.live) return { state:'not_live', msg:errText('not_live'), rows:[] };
+    if (!S.acct) S.acct = { rows:null, load:'', tab:'ck', done:null, dload:'' };
+    if (S.acct.load === '') acctLoad();
+    var a = S.acct;
+    if (!a.rows) return a.load === 'err' ? { state:'err', msg:String(a.err || ''), rows:[] } : { state:'loading', msg:'', rows:[] };
+    return { state: a.load === 'err' ? 'err' : 'ok', msg: a.load === 'err' ? String(a.err || '') : '', viewOnly: ['ceo','gm'].indexOf(S.me.role) >= 0, rows: a.rows.map(function(r){
+      var cash = (KINDS.indexOf(r.kind) >= 0 || r.kind === 'budget') && r.amount_cents != null;
+      return { id:String(r.id), code:String(r.code || ''), kind:String(r.kind || ''), kindL:kindL(r.kind), status:r.status, st: r.status === 'checked' ? 'pay' : 'ck',
+        amount: cash ? (Number(r.amount_cents) || 0) / 100 : null, who:String(r.requester_name || ''), store:String(r.store_id || ''), storeL:storeName(r.store_id),
+        useH:useL(r), gmBy:(r.approved && r.approved.by) || '', gmAt:(r.approved && r.approved.at) || '', at:String(r.updated_at || r.created_at || '') };
+    }) };
+  };
   W.wrAcctRefresh = function(){ S.load = ''; acctReload(); };
   W.renderWrAcct = function(){
     checkAuth();

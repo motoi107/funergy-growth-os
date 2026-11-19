@@ -66,7 +66,7 @@ const FNS = ['renderAcctReview', 'arStatusColor', 'arStatusRank', 'arYm', 'arDoc
   'acSetCat', 'acSetSub', 'acSubsOf', 'acResolve', '_acPend', '_acPendHtml', '_acRows', '_acDate', '_acYm', '_acStoreName', 'acUploadList', '_acStatus', '_acStCol', '_acStRank',
   'renderAcctCenter', 'pageSync', 'pageSyncScope', '_syncMeta', 'getReimbursements', 'pendingAcctReviewCount', 'acFilterSet', 'lsSplitRO',
   'arFilterRows', 'arRowsNow', 'arMode', 'arPageOf', 'arPagerHtml', 'arNextPlan', 'arAdvance'];   // v1178：ページ・形・次の未確認   // v1098: 読むだけの所は lsSplitRO（この試験の ls をそのまま使う）
-const VARS = ['AR_PER', 'AR_STATUSES', 'AC_TABS', 'AC_ST', '_acF', '_acCat', '_acSub', '_arBusy', '_arPull', 'SYNC_SCOPE_META', 'PAGE_SYNC_SCOPE'];
+const VARS = ['AR_PER', 'AR_STATUSES', 'AC_TABS', 'ACR_PAGE', '_acr', 'AC_ST', '_acF', '_acCat', '_acSub', '_arBusy', '_arPull', 'SYNC_SCOPE_META', 'PAGE_SYNC_SCOPE'];
 
 function app(opt = {}) {
   const c = {
@@ -124,24 +124,25 @@ const tick = () => new Promise(r => setImmediate(r));
 function gate() { let open; const p = new Promise(r => { open = r; }); return { p, open }; }
 function bodyOf(html) { const i = html.indexOf('<div class="section-header"><div><div class="section-title">経理レビュー'); return i < 0 ? '' : html.slice(i); }
 
-test('the review category opens on 区分・承認; the body there is the same as the independent page (same counts, total, buttons); the tabs are unchanged', () => {
+test('the 区分・承認 tab shows the same body as the independent page (same counts, total, buttons); v1200: the review category opens on 確認する (tests/acct-list-v1200.test.mjs)', () => {
   const a = app({ page: 'acct_center' }), b = app({ page: 'acct_review' });
   const data = [INV({ id: 'i1', total: 120.5, date: '2026/10/18', docDate: '2026/10/17' }), INV({ id: 'i2', storeId: 'F02', total: 64.2, reviewStatus: '差し戻し', reviewNote: 'blurry', date: '2026/10/15' }),
     INV({ id: 'i3', total: 10, reviewStatus: '確認済み', date: '2026/10/01', docType: 'Receipt' })];
   seed(a, plain(data)); seed(b, plain(data));
   run(a, "acSetCat('review')");
-  assert.equal(run(a, '_acSub'), 'acctrev');
+  assert.equal(run(a, '_acSub'), 'all');   // v1200（UI案97 の 3A）
+  run(a, "acSetSub('acctrev')");
   const center = run(a, 'renderAcctCenter()'), page = run(b, 'renderAcctReview()');
   assert.ok(bodyOf(center).length > 100);
   assert.equal(bodyOf(center), bodyOf(page), 'same body in both entries');
   assert.match(page, /3 件 ・ 合計 \$194\.70/);
   const subs = plain(run(a, "AC_TABS.find(function(x){ return x.id==='review'; }).subs.map(function(s){ return s.id + ':' + s.label; })"));
   // v1199（UI案97）：業者マスターは マスター・設定へ、エラーセンターはワークセンター › エラーへ（tests/acct-tabs-v1199.test.mjs）
-  assert.deepEqual(subs, ['invoice:Invoice', 'receipt:レシート', 'reimb:建て替え', 'check:チェック', 'lost:紛失届', 'gas:ガソリン代', 'vac:休暇申請', 'exp:事前経費',
+  assert.deepEqual(subs, ['all:確認する', 'invoice:Invoice', 'receipt:レシート', 'reimb:建て替え', 'check:チェック', 'lost:紛失届', 'gas:ガソリン代', 'vac:休暇申請', 'exp:事前経費',
     'purchase:仕入明細', 'acctrev:区分・承認', 'appr:報告・承認']);
   run(a, "acSetCat('drive')"); assert.equal(run(a, '_acSub'), 'dlist', 'other categories open on their first tab as before');
   // the pending chip for unconfirmed invoices opens the review body
-  run(a, "acSetCat('review')");
+  run(a, "acSetCat('review'); acSetSub('acctrev')");
   assert.match(run(a, '_acPendHtml()'), /acSetSub\('acctrev'\)[^]*未確認のInvoice/);
 });
 

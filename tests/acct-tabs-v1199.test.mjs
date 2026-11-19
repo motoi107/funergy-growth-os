@@ -98,7 +98,7 @@ const state = c => [run(c, '_acCat'), run(c, '_acSub')];
 test('the 7 middle tabs in Moto’s order: home (clock stays), review, intake, Tip & shift leaders (own tab), HQ time card (kept), records, masters', () => {
   const c = app();
   assert.deepEqual(cats(c), ['dash:経理ホーム', 'review:経理レビュー', 'drive:インボイス取り込み', 'tip:Tip＆シフトリーダー', 'attend:本部タイムカード', 'reports:履歴・帳票', 'master:マスター・設定']);
-  assert.deepEqual(subsOf(c, 'review'), ['invoice', 'receipt', 'reimb', 'check', 'lost', 'gas', 'vac', 'exp', 'purchase', 'acctrev', 'appr']);
+  assert.deepEqual(subsOf(c, 'review'), ['all', 'invoice', 'receipt', 'reimb', 'check', 'lost', 'gas', 'vac', 'exp', 'purchase', 'acctrev', 'appr']);   // v1200：確認する（1 つの一覧）が先頭
   assert.deepEqual(subsOf(c, 'drive'), ['dlist', 'dreview', 'drecon', 'dhealth']);
   assert.deepEqual(subsOf(c, 'tip'), ['tip', 'tipsl']);
   assert.deepEqual(subsOf(c, 'attend'), ['attend']);
@@ -135,7 +135,7 @@ test('old pairs open the new place: Invoice settings → マスター・設定; 
   const c = app();
   run(c, "_acCat='drive'; _acSub='dsettings'"); run(c, 'renderAcctCenter()'); assert.deepEqual(state(c), ['master', 'dsettings']);
   run(c, "_acCat='review'; _acSub='vendor'"); run(c, 'renderAcctCenter()'); assert.deepEqual(state(c), ['master', 'vendor']);
-  run(c, "_acCat='review'; _acSub='err'"); run(c, 'renderAcctCenter()'); assert.deepEqual(state(c), ['review', 'invoice']);
+  run(c, "_acCat='review'; _acSub='err'"); run(c, 'renderAcctCenter()'); assert.deepEqual(state(c), ['review', 'all']);
   run(c, "_acCat='bot'; _acSub='bot'"); run(c, 'renderAcctCenter()'); assert.deepEqual(state(c), ['dash', 'dash']);
   run(c, "_acCat='hr'; _acSub='growth'"); run(c, 'renderAcctCenter()'); assert.deepEqual(state(c), ['dash', 'dash']);
   run(c, "_acCat='export'; _acSub='export'"); run(c, 'renderAcctCenter()'); assert.deepEqual(state(c), ['reports', 'export'], 'old 出力センター');
@@ -168,8 +168,9 @@ test('badges: review counts its own tabs, the intake counts 要確認; the tab b
   assert.match(bar, /acSetCat\('review'\)[^]*?経理レビュー<span class="ac-n">7<\/span>/);
   assert.match(bar, /acSetCat\('drive'\)[^]*?インボイス取り込み<span class="ac-n">3<\/span>/);
   assert.ok(!/acSetCat\('(bot|hr|export)'\)/.test(html), 'no removed tabs');
-  assert.match(html, /PENDLIST/, 'the pending list stays on the review tab');
-  assert.equal(run(c, '_acSub'), 'acctrev', 'review still opens on 区分・承認 (v1095)');
+  assert.equal(run(c, '_acSub'), 'all', 'v1200 (3A): review opens on 確認する');
+  assert.ok(!/PENDLIST/.test(html), 'the one list is the pending view');
+  run(c, "acSetSub('acctrev')"); assert.match(run(c, 'renderAcctCenter()'), /PENDLIST/, 'the pending list stays on the other review tabs');
 });
 
 test('home (1・5): the clock card stays; the moved entrances show the error count and go to Work Center / People; not on the old Office page', () => {
@@ -189,7 +190,7 @@ test('home (1・5): the clock card stays; the moved entrances show the error cou
 
 test('the old Office buttons (出勤中・承認待ち・今月・給与CSV（Office）) open the right tab; both router copies use it', () => {
   const c = app();
-  for (const [tab, want] of [['attend', ['attend', 'attend']], ['report', ['review', 'acctrev']], ['export', ['reports', 'ohub']], ['dash', ['dash', 'dash']], ['errors', ['dash', 'dash']]]) {
+  for (const [tab, want] of [['attend', ['attend', 'attend']], ['report', ['review', 'all']], ['export', ['reports', 'ohub']], ['dash', ['dash', 'dash']], ['errors', ['dash', 'dash']]]) {
     run(c, `officeMgrTab=${JSON.stringify(tab)}; acFromOfficeTab()`);
     assert.deepEqual(state(c), want, tab); assert.equal(run(c, 'officeMgrTab'), 'dash', 'reset so the next visit is home');
   }

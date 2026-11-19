@@ -283,6 +283,36 @@ test('3A: accounting review has 確認待ち / 確認済み・処理待ち / 処
   assert.match(hg, /（見るだけ）/); assert.doesNotMatch(hg, />確認する</);
 });
 
+test('v1200（UI案97 の 3A）: wrAcctFeed gives the accounting one list the same GM-approved requests (確認待ち・精算待ち), read only; it redraws the list when they arrive; GM is view only; no sign-in says so', async () => {
+  const s = await server();
+  const a = await s.approved('E8', 4250);
+  const ex = await s.pre('E8', 5000, 'Party'); await s.act('E2', ex, 'approve');
+  const ac = await app(s, 'E3', { role: 'office', page: 'acct_center' });
+  ac.ctx.acrOnPage = () => true;   // 経理センター › 経理レビュー › 確認する が開いている
+  let f = ac.ctx.wrAcctFeed();
+  assert.equal(f.state, 'loading');
+  await ac.settle(); ac.ctx.wrAcctFeed(); await ac.settle(); f = ac.ctx.wrAcctFeed();
+  assert.equal(f.state, 'ok'); assert.equal(f.viewOnly, false);
+  const ra = f.rows.find(r => r.id === a.id), re = f.rows.find(r => r.id === ex.id);
+  assert.deepEqual([ra.code, ra.kind, ra.kindL, ra.st, ra.amount, ra.who, ra.storeL, ra.gmBy], [a.code, 'reimburse', '建て替え経費', 'ck', 42.5, 'Lee Two', 'Store One', 'Gabe GM']);
+  assert.ok(ra.gmAt && ra.at); assert.match(ra.useH, /Costco/);
+  assert.deepEqual([re.kind, re.st, re.amount], ['expense_pre', 'ck', 50]);
+  assert.ok(ac.pages.includes('acct_center'), 'the one list is redrawn when the rows arrive');
+  // 確認したら精算待ち（同じ読み込み：wrAcctRefresh）
+  await s.act('E3', a, 'check'); ac.ctx.wrAcctRefresh(); await ac.settle();
+  ac.ctx.wrAcctFeed(); await ac.settle(); f = ac.ctx.wrAcctFeed();   // 一覧を描くたびに読む（読み終えたら描き直す）
+  assert.equal(f.rows.find(r => r.id === a.id).st, 'pay');
+  assert.ok(!f.rows.some(r => r.id === ex.id && r.st === 'pay'));
+  // GM・CEO は見るだけ
+  const gm = await app(s, 'E2', { page: 'acct_center' });
+  gm.ctx.wrAcctFeed(); await gm.settle(); gm.ctx.wrAcctFeed(); await gm.settle();
+  assert.equal(gm.ctx.wrAcctFeed().viewOnly, true);
+  // サインインしていない：rows は空・そう言う
+  ac.ctx._hwSession = null;
+  f = ac.ctx.wrAcctFeed();
+  assert.equal(f.state, 'signin'); assert.equal(f.rows.length, 0); assert.ok(f.msg.length > 0);
+});
+
 test('v1169（#161）: 処理済み（今月） is read by the day it was processed: an old request paid this month is shown; with the older SQL it says it uses the earlier way', async () => {
   for (const v1169 of [true, false]) {
     const s = await server({ v1169 });

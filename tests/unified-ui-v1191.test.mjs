@@ -87,7 +87,7 @@ test('store tablet (shared store sign-in) is unchanged for its own pages and can
 test('accounting (office at HQ): the old 経理レビュー tab opens 経理センター › 経理レビュー; CEO/GM-only pages do not open', () => {
   const c = navApp('office', { store: 'OFFICE' });
   assert.equal(run(c, "navResolvePage('acct_review')"), 'acct_center');
-  assert.equal(c._acCat, 'review'); assert.equal(c._acSub, 'acctrev');
+  assert.equal(c._acCat, 'review'); assert.equal(c._acSub, 'all');   // v1200（UI案97 の 3A）：確認する（1 つの一覧）から
   for (const p of ['ar_settings', 'growth_karte']) assert.notEqual(run(c, `navResolvePage(${JSON.stringify(p)})`), p, p);
   assert.equal(run(c, "navResolvePage('acct_export')"), 'acct_export');
   assert.equal(run(c, "navResolvePage('store_master')"), 'store_master');
