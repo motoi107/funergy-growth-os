@@ -1159,8 +1159,17 @@ begin
   'ready', not exists (select 1 from unnest(public.ar_kinds()) k2 where not exists (select 1 from public.ar_rules x where x.kind = k2 and x.status = 'active')));
 end $$;
 
--- 画面が見た下書きを、版（expect_ver）と変更の回数（expect_rev）の両方で確かめる（版ごとに rev が 1 から始まるので、rev だけでは別の版の下書きに当たる）。
--- 下書きが無いとき（expect_ver・expect_rev が 0）は、画面が見た有効な版（base_ver・無ければ 0）が今と同じときだけ新しい下書きを作る。
+-- 新しい下書きの変更の回数（rev）の始まり：その種類のいちばん大きい回数（捨てた・前の版も）と 1000000 の大きいほう ＋ 1。
+-- 前の ②（8b1ddec まで）は捨てた下書きの行を消していたので、消えた版の番号（v N）がまた使われ、回数も 1 から始まっていた。
+-- 消える前から開いていた画面の「v N・回数 k（k は小さい）」が、作り直した別の中身の下書きに当たって有効にできた（#191・#192 の Codex の P2）。
+-- 回数を 1000001 から始めれば、前の画面の小さな回数とは二度と当たらない（関数は 1〜10 億を受ける・画面は回数を見せずにそのまま送り返す）。
+create or replace function public.ar_rule_rev_next(p_kind text) returns integer
+language sql stable security invoker set search_path = public, pg_temp as $$
+ select greatest(1000000, coalesce(max(x.rev), 0)) + 1 from public.ar_rules x where x.kind = p_kind;
+$$;
+
+-- 画面が見た下書きを、版（expect_ver）と変更の回数（expect_rev）の両方で確かめる。
+-- 下書きが無いとき（expect_ver・expect_rev が 0）は、画面が見た有効な版（base_ver・無ければ 0）が今と同じときだけ新しい下書きを作る（回数は ar_rule_rev_next）。
 create or replace function public.ar_rule_save(p jsonb) returns jsonb
 language plpgsql volatile security invoker set search_path = public, pg_temp as $$
 declare a jsonb := public.ar_admin(p); v_kind text := p->>'kind'; d jsonb := p->'def'; g public.ar_rules; v_note text := public.ar_note(p, false); v_now timestamptz := now(); v_ver integer;
@@ -1176,7 +1185,7 @@ begin
   if (p->>'expect_rev')::int <> 0 or (p->>'expect_ver')::int <> 0 or (p->>'base_ver')::int <> v_active then raise exception 'conflict'; end if;
   select coalesce(max(x.ver), 0) + 1 into v_ver from public.ar_rules x where x.kind = v_kind;
   insert into public.ar_rules(kind, ver, status, def, note, rev, created_by, created_emp, created_at, updated_by, updated_emp, updated_at)
-   values (v_kind, v_ver, 'draft', d, v_note, 1, a->>'name', a->>'emp', v_now, a->>'name', a->>'emp', v_now) returning * into g;
+   values (v_kind, v_ver, 'draft', d, v_note, public.ar_rule_rev_next(v_kind), a->>'name', a->>'emp', v_now, a->>'name', a->>'emp', v_now) returning * into g;
  else
   if (p->>'expect_rev')::int <> g.rev or (p->>'expect_ver')::int <> g.ver then raise exception 'conflict'; end if;
   update public.ar_rules set def = d, note = v_note, rev = g.rev + 1, updated_by = a->>'name', updated_emp = a->>'emp', updated_at = v_now
@@ -1564,6 +1573,17 @@ begin
   end if;
   d := d || jsonb_build_object('viewers', v_view, 'self', 'gm');
   insert into public.ar_rules(kind, ver, status, def, note, created_by, updated_by) values (k, 1, 'draft', d, '初めの下書き（11/17 の答え）', 'sql', 'sql');
+ end loop;
+end $$;
+
+-- 今ある下書きの回数を 1 回だけ繰り上げる（回数が 1000000 以下＝前の作り方の下書きだけ・2 回流しても同じ）。
+-- 前の ② のときに捨てて（行が消えて）作り直した下書きは、消える前から開いていた画面と版も回数も同じになっている。どれがそうかは表から分からないので、全部の下書きを繰り上げる。
+-- 開いていた設定の画面は、次に押したとき「ほかの人が先に変えました」になり、入れていた変更を残したまま読み直す（何も書き換えない）。
+do $$ declare g record; begin
+ for g in select x.kind, x.ver from public.ar_rules x where x.status = 'draft' and x.rev <= 1000000 order by x.kind loop
+  perform pg_advisory_xact_lock(hashtext('ar_rule:' || g.kind));
+  update public.ar_rules set rev = public.ar_rule_rev_next(g.kind)
+   where kind = g.kind and ver = g.ver and status = 'draft' and rev <= 1000000;
  end loop;
 end $$;
 

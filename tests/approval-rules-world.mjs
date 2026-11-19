@@ -88,4 +88,3 @@ export async function setup({ ar = true, twice = false } = {}) {
 export const G = { t: 'role', role: 'gm', scope: 'all' }, C = { t: 'role', role: 'ceo', scope: 'all' }, AMm = { t: 'role', role: 'am', scope: 'mine' };
 export const STAGE = (...slots) => ({ mode: 'any', slots });
 export const ALLS = (...slots) => ({ mode: 'all', slots });
-
