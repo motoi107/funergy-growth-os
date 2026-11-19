@@ -198,7 +198,7 @@ test('menu: CEO, GM, AM, Corporate Chef, G4 and G3 get the entry (the server dec
     const c = { curRealRole: real, curRole: role, curStore: store, curStoreLogin: false, mcCanOpen: () => true, mdCanOpen: () => true, _gradeHideApplies: () => false,
       canAccessStaffMaster: () => true, canAccessKpiMaster: () => true, canSeeDashboard: () => true, console };
     vm.createContext(c);
-    vm.runInContext(['NAV_ITEMS', 'MENU_GROUPS', 'OFFICE_GROUPS', 'ACCT_GROUPS', 'CHEF_GROUPS', 'CREW_GROUPS', 'STORE_GROUPS'].map(constSrc).join('\n') + '\n' + MOD + '\n' + fnSrc('groupsForRole') + '\n' + guardSrc() + '\n' + fnSrc('navChildAllowed') + '\n' + fnSrc('firstAllowedChild'), c);
+    vm.runInContext(['NAV_ITEMS', 'MENU_GROUPS', 'OFFICE_GROUPS', 'ACCT_GROUPS', 'CHEF_GROUPS', 'CREW_GROUPS', 'STORE_GROUPS'].map(constSrc).join('\n') + '\n' + MOD + '\n' + fnSrc('_navBaseGroups') + '\n' + fnSrc('groupsForRole') + '\n' + guardSrc() + '\n' + fnSrc('navChildAllowed') + '\n' + fnSrc('_navChildAllowedToday') + '\n' + fnSrc('firstAllowedChild'), c);
     assert.equal(vm.runInContext('mrCanSee()', c), want, real);
     const has = vm.runInContext('groupsForRole()', c).some(g => g.children.includes('mid_review'));
     assert.equal(has, want, real);

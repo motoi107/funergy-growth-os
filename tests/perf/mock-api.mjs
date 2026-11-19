@@ -144,6 +144,23 @@ export function createMock(data) {
       return json(200, out.slice(off, off + lim));
     }
     if (name === 'employee_access_state') return json(200, { blocked: false, pin: 'ok', manager: 'none', stopped: false });
+    // v1193：supabase/migrations/20261211090000_pv_doc.sql の pv_save と同じ答え（サーバーの鍵だけ・読んだ版のときだけ書く・記録を 1 行足す）
+    if (name === 'pv_save') {
+      if (u.__anon) return json(401, { code: '42501', message: 'permission denied for function pv_save' });
+      const p = JSON.parse(body || '{}');
+      if (!T.pv_doc) T.pv_doc = []; if (!T.pv_log) T.pv_log = [];
+      const cur = T.pv_doc.find(r => r.id === 1), t = new Date().toISOString();
+      const logRow = (ver, before) => T.pv_log.push({ id: T.pv_log.length + 1, at: t, ver, by_emp: p.p_by_emp, by_name: p.p_by_name, by_role: p.p_by_role, via: 'fn', reason: p.p_reason, summary: p.p_summary, before, after: p.p_doc });
+      if (!cur) {
+        if (p.p_expect !== 0) return json(200, { ok: false, conflict: true, ver: 0 });
+        T.pv_doc.push({ id: 1, doc: p.p_doc, ver: 1, updated_at: t, by_emp: p.p_by_emp, by_name: p.p_by_name, by_role: p.p_by_role }); logRow(1, null);
+        return json(200, { ok: true, ver: 1, at: t });
+      }
+      if (cur.ver !== p.p_expect) return json(200, { ok: false, conflict: true, ver: cur.ver });
+      if (JSON.stringify(cur.doc) === JSON.stringify(p.p_doc)) return json(200, { ok: true, same: true, ver: cur.ver, at: cur.updated_at });
+      const before = cur.doc; Object.assign(cur, { doc: p.p_doc, ver: cur.ver + 1, updated_at: t, by_emp: p.p_by_emp, by_name: p.p_by_name, by_role: p.p_by_role }); logRow(cur.ver, before);
+      return json(200, { ok: true, ver: cur.ver, at: t });
+    }
     if (name === 'financial_web_receipt') {
       const p = JSON.parse(body || '{}');
       return json(200, receipts.get(p.p_request_id) || { status: 'not-found', request_id: p.p_request_id });

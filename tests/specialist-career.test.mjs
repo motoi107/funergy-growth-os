@@ -386,7 +386,7 @@ test('7(2). Career Score permissions per career × grade: view / score / approve
   as('sl');
   assert.equal(run(c, 'cgCsGrantForMe()'), false);
   // the hooks in the app use these
-  assert.match(fnSrc('navChildAllowed'), /pid==='leadership' && typeof cgCsGrantForMe==='function' && cgCsGrantForMe\(\)/);
+  assert.match(fnSrc('_navChildAllowedToday'), /pid==='leadership' && typeof cgCsGrantForMe==='function' && cgCsGrantForMe\(\)/);
   assert.match(fnSrc('groupsForRole'), /g_cs_grant/);
   assert.match(SRC, /async function openLssDetail\(name\) \{[\s\S]{0,500}canViewLssOf\(name\)/);
   assert.match(fnSrc('renderLeadership'), /canViewLssOfEmp\(e\)/);
