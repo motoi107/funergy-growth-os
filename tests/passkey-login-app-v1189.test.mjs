@@ -33,6 +33,12 @@ function scriptOf(marker) {
 }
 const pkBlock = () => scriptOf('/* ==== FUNERGY_PK（v1189）');
 const mlBlock = () => scriptOf('/* ==== FUNERGY_ML（v1185）');
+/* 1 行の関数（v1195 の empOfficeStore・empAnyStore・empLoginLoc） */
+function lineSrc(name) {
+  const i = HTML.indexOf('\nfunction ' + name + '(');
+  assert.ok(i >= 0, name);
+  return HTML.slice(i + 1, HTML.indexOf('\n', i + 1) + 1);
+}
 function fnSrc(name) {
   let i = HTML.indexOf('\nfunction ' + name + '(');
   if (i < 0) i = HTML.indexOf('\nasync function ' + name + '(');
@@ -241,6 +247,7 @@ async function app(srv, opts = {}) {
   vm.runInContext(fnSrc('invInSessionRefresh'), win, { filename: 'invInSessionRefresh.js' });
   vm.runInContext(fnSrc('authPinCheck') + fnSrc('doStaffLogin'), win, { filename: 'doStaffLogin.js' });
   vm.runInContext(mlBlock(), win, { filename: 'FUNERGY_ML.js' });
+  vm.runInContext(lineSrc('empOfficeStore') + lineSrc('empAnyStore') + lineSrc('empLoginLoc'), win, { filename: 'empLoginLoc.js' });   /* v1195：場所を選ばずに入るときの決め方 */
   vm.runInContext(pkBlock(), win, { filename: 'FUNERGY_PK.js' });
   const PK = win.FUNERGY_PK;
   const dl = (action) => sent.filter(x => x.url.endsWith('/device-login') && x.body && x.body.action === action);

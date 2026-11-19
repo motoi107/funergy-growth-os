@@ -38,6 +38,8 @@
 // ・v1193（UI案95）：画面の表示の設定（どの役職・グレードの人にどの画面を出すか）。表 pv_doc の 1 行を、GM・CEO だけが書く（pv_full・pv_save・pv_log）。
 //   ログインした人には、自分の列（グレード・役職ごと）と自分の例外と「指定スタッフ限定」に自分が入っているかだけを返す（pv_get。ほかの人の例外は返さない）。
 //   画面の出し分けだけで、データを読める範囲は変えない（読める範囲は今までどおり、ほかの頼みが決める）。docs/PAGE_VIEW_V1193_JA.md。答えにはいつも pvfn:1。
+// ・v1195（UI案96 の段階 2 の ①）：所属の確認。表 aff_people（人ごとに、GM・CEO が確かめた所属＝本部か店か・応援）を GM・CEO だけが書く（aff_full・aff_save）。
+//   ログインした人には自分の行だけ（aff_get）。この版では見え方は変えない（v1196 から）。docs/UNIFIED_UI_V1191_JA.md の 18。答えにはいつも affn:1。
 
 import { ltAsks, ltCompute, ltLoad, ltToday, LT_MAX_ASKS } from './labor.mjs';
 
@@ -2298,7 +2300,68 @@ export function createHandler(deps) {
     } catch (e) { if (e && e.status === 404) return { rows: [], nosql: true }; throw e; }
   }
 
-  const ACTIONS = { pull, get, put, hist: csHist, pin_check: pinCheck, pin_set: pinSet, hr_get: hrGet, hr_op: hrOp, hr_match: hrMatch, pii_get: piiGet, pii_op: piiOp, card_match: cardMatch, tcf_status: tcfStatus, change_log: clGet, labor: ltGet, pv_get: pvGet, pv_full: pvFull, pv_save: pvSave, pv_log: pvLog };
+  // ---- v1195（UI案96 の段階 2 の ①）：所属の確認。aff_get＝ログインした人の行だけ・aff_full／aff_save＝GM・CEO だけ。
+  // 表 aff_people（人ごとの所属の写し）と aff_log（記録）。従業員マスターの所属はアプリが今までの道で書く（ここでは書かない）。
+  // 見え方が変わるのは、マスターと写しが同じときだけ（次の版 v1196 から。違えば狭いほう）。docs/UNIFIED_UI_V1191_JA.md の 18
+  const AFF_ID = /^[A-Za-z0-9][A-Za-z0-9_+-]{0,31}$/;
+  const affStoreOk = v => typeof v === 'string' && AFF_ID.test(v) && v.toUpperCase() !== 'ALL' && v.toUpperCase() !== 'OFFICE';
+  async function affGet(a) {
+    if (!a.emp) return { row: null };
+    let rows;
+    try { rows = await rest('aff_people?emp_id=eq.' + encodeURIComponent(a.emp) + '&select=aff,store,support,ver,updated_at'); }
+    catch (e) { if (e && e.status === 404) return { row: null, nosql: true }; throw e; }
+    const r = Array.isArray(rows) && rows[0] ? rows[0] : null;
+    return { row: r ? { aff: r.aff, store: r.store || '', support: Array.isArray(r.support) ? r.support : [], ver: r.ver, at: r.updated_at } : null };
+  }
+  async function affFull(a) {
+    await pvMgr(a);
+    let rows, log;
+    try {
+      rows = await rest('aff_people?select=emp_id,aff,store,support,ver,updated_at,by_name,by_role&order=emp_id.asc&limit=5000');
+      log = await rest('aff_log?select=id,at,emp_id,emp_name,ver,by_name,by_role,reason,before,after&order=id.desc&limit=100');
+    } catch (e) { if (e && e.status === 404) return { rows: [], log: [], nosql: true }; throw e; }
+    return { rows: Array.isArray(rows) ? rows : [], log: Array.isArray(log) ? log : [] };
+  }
+  async function affSave(a, b) {
+    await pvMgr(a);
+    const its = b.items;
+    if (!Array.isArray(its) || its.length < 1 || its.length > 200) throw bad();
+    const reason = b.reason === undefined || b.reason === null ? '' : (typeof b.reason === 'string' ? b.reason.trim() : null);
+    if (reason === null || reason.length > 500) throw bad();
+    const seen = new Set(), out = [];
+    for (const x of its) {
+      if (!obj(x)) throw bad();
+      const emp = x.emp;
+      if (typeof emp !== 'string' || !emp || emp.length > 64 || emp.charAt(0) === '_' || seen.has(emp)) throw bad();
+      seen.add(emp);
+      if (x.aff !== 'hq' && x.aff !== 'store') throw bad();
+      const store = x.aff === 'hq' ? (x.store === undefined || x.store === null ? '' : x.store) : x.store;
+      if (x.aff === 'hq' ? store !== '' : !affStoreOk(store)) throw bad();
+      const sup = x.support === undefined || x.support === null ? [] : x.support;
+      if (!Array.isArray(sup) || sup.length > 20 || sup.some(s => !affStoreOk(s) || s === store) || new Set(sup).size !== sup.length) throw bad();
+      /* 版は SQL で integer（(it->>'expect')::integer）。範囲の外は 500 ではなく 400 で断る（Claude のルーティン 7002642425 の P3-2） */
+      if (!Number.isSafeInteger(x.expect) || x.expect < 0 || x.expect > 2147483647) throw bad();
+      out.push({ emp, aff: x.aff, store, support: sup, expect: x.expect });
+    }
+    // 人は在籍していること・店は店舗マスターにあること（端末の名簿が古くても、サーバーで確かめる）
+    const es = await rest('employees?id=' + encodeURIComponent(IN([...seen])) + '&select=id,name,status,data');
+    const em = new Map((Array.isArray(es) ? es : []).map(e => [String(e.id), e]));
+    for (const x of out) { const e0 = em.get(x.emp); if (!e0 || empOut(e0)) throw err('not_found', 404); x.name = String((obj(e0.data) || {}).name || e0.name || '').slice(0, 120); }
+    const st = await rest('stores?select=id');
+    const S = new Set((Array.isArray(st) ? st : []).map(r => String(r.id)));
+    for (const x of out) { if ((x.store && !S.has(x.store)) || x.support.some(s => !S.has(s))) throw bad(); }
+    let r;
+    try {
+      r = await rest('rpc/aff_save', { method: 'POST', headers: fpHdr(a), body: JSON.stringify({ p_items: out, p_reason: reason,
+        p_by_emp: a.emp || null, p_by_name: a.name || null, p_by_role: a.role || null }) });
+    } catch (e) { if (e && e.status === 404) throw err('not_installed', 503); throw e; }
+    if (!obj(r)) throw err('db', 500);
+    if (r.conflict === true) { const e = err('conflict', 409); e.ids = Array.isArray(r.ids) ? r.ids : []; throw e; }
+    if (r.ok !== true || !Array.isArray(r.rows)) throw err('db', 500);
+    return { ok: true, rows: r.rows, same: Number(r.same) || 0, at: r.at || null };
+  }
+
+  const ACTIONS = { pull, get, put, hist: csHist, pin_check: pinCheck, pin_set: pinSet, hr_get: hrGet, hr_op: hrOp, hr_match: hrMatch, pii_get: piiGet, pii_op: piiOp, card_match: cardMatch, tcf_status: tcfStatus, change_log: clGet, labor: ltGet, pv_get: pvGet, pv_full: pvFull, pv_save: pvSave, pv_log: pvLog, aff_get: affGet, aff_full: affFull, aff_save: affSave };
   const CODES = { forbidden: 403, bad_value: 400, conflict: 409, locked: 429, gone: 410, not_found: 404, not_installed: 503 };
 
   return async function handle(req) {
@@ -2319,8 +2382,9 @@ export function createHandler(deps) {
     // clfn:1＝変更の記録（v1151）を読める（change_log）・書き込みに確かめた人を付ける。アプリは clfn の無い答えを前の版とみなし、記録のタブで「関数を v1151 に」と出す
     // ntfn:1＝通知（v1152）を読み書きする（nt）。アプリは ntfn の無い答えを前の版とみなし、通知を今までどおり REST で読み書きする
     // ltfn:1＝人件費の合計（v1192・labor）を出す。アプリは ltfn の無い答え（unknown_action）を前の版とみなし、10 分は端末で数える
+    // affn:1＝所属の確認（v1195・aff_get・aff_full・aff_save）を扱う。アプリは affn の無い答えを前の版とみなし、「所属の確認」で「関数を v1195 に」と出す
     // pvfn:1＝画面の表示の設定（v1193・pv_get など）を扱う。アプリは pvfn の無い答え（unknown_action）を前の版とみなし、画面を今までの決まりで出す
-    const json = (v, s = 200) => new Response(JSON.stringify({ ...v, fn: 1, csfn: 1, swfn: 1, hrfn: 1, sw2: 1, piifn: 1, ghfn: 1, tpfn: 1, scfn: 1, gbfn: 1, clfn: 1, ntfn: 1, ltfn: 1, pvfn: 1 }), { status: s, headers: { 'content-type': 'application/json', 'cache-control': 'no-store', ...cors } });
+    const json = (v, s = 200) => new Response(JSON.stringify({ ...v, fn: 1, csfn: 1, swfn: 1, hrfn: 1, sw2: 1, piifn: 1, ghfn: 1, tpfn: 1, scfn: 1, gbfn: 1, clfn: 1, ntfn: 1, ltfn: 1, pvfn: 1, affn: 1 }), { status: s, headers: { 'content-type': 'application/json', 'cache-control': 'no-store', ...cors } });
     if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });
     if (req.method !== 'POST') return json({ error: 'method' }, 405);
     let body;
@@ -2358,7 +2422,7 @@ export function createHandler(deps) {
       return json(await fn(a, body));
     } catch (e) {
       const code = e && e.code && CODES[e.code] ? e.code : '';
-      if (code) return json({ error: code }, CODES[code]);
+      if (code) return json(Array.isArray(e.ids) ? { error: code, ids: e.ids } : { error: code }, CODES[code]);   // v1195：aff_save の conflict は違った人を返す
       console.error('secure-state', body.action, safeErr(e));
       return json({ error: 'error' }, 500);
     }

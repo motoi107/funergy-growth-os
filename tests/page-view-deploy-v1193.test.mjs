@@ -8,7 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { build, withoutTail, TAIL, OUT } from '../scripts/build-secure-state-one.mjs';
+import { withoutTail, TAIL, OUT } from '../scripts/build-secure-state-one.mjs';
 import { createHandler } from '../supabase/functions/secure-state/handler.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -16,14 +16,19 @@ const rd = p => fs.readFileSync(path.join(ROOT, p), 'utf8');
 const sha = p => crypto.createHash('sha256').update(fs.readFileSync(path.join(ROOT, p))).digest('hex');
 const D = 'deploy/page-view-v1193/';
 
-test('the one-file secure-state (v1193) is what build() makes now and has no private part', () => {
-  assert.equal(OUT, D + '4_関数_secure-state_index.ts');
-  const one = rd(OUT);
-  assert.equal(one, build(), 'run node scripts/build-secure-state-one.mjs');
+// v1195 から build() は deploy/unified-stage2-v1195/ に書く。v1193 の 1 ファイルは Moto さんに渡したときのまま（sha256 で固定）
+const ONE = D + '4_関数_secure-state_index.ts';
+const ONE_SHA = '812cae2884a1f6315bec073a7b0093c4322b96dbe99753ae341cca9adc138235';
+
+test('the one-file secure-state (v1193) is the file given to Moto and has no private part', () => {
+  assert.notEqual(OUT, ONE, 'v1195 builds into its own folder');
+  const one = rd(ONE);
+  assert.equal(sha(ONE), ONE_SHA, 'the v1193 one file stays as it was given');
   assert.ok(one.endsWith(TAIL));
   assert.ok(!/^import\s/m.test(one), 'no import left');
   assert.ok(!/verifyPin/.test(one), 'no private part');
   assert.match(one, /pvfn: 1/); assert.match(one, /ltfn: 1/);
+  assert.ok(!/affn/.test(one), 'the v1193 function does not know the affiliation check');
   assert.match(one, /export function pvCheck\(doc\)/);
   assert.match(one, /async function pvSave\(a, b\)/);
 });
@@ -32,7 +37,7 @@ test('the one-file secure-state answers the same as the module handler (pv_get a
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pv-one-test-'));
   try {
     const f = path.join(dir, 'one.mjs');
-    fs.writeFileSync(f, withoutTail(rd(OUT)));
+    fs.writeFileSync(f, withoutTail(rd(ONE)));
     const mod = await import(pathToFileURL(f).href);
     const URL0 = 'https://db.example.test', SS = URL0 + '/functions/v1/secure-state';
     const JWT = sub => 'eyJhbGciOiJIUzI1NiJ9.' + Buffer.from(JSON.stringify({ role: 'authenticated', sub })).toString('base64url') + '.c2ln';
@@ -58,6 +63,7 @@ test('the one-file secure-state answers the same as the module handler (pv_get a
       const a = await ask(mod.createHandler({ env, fetch: fetchStub, now }), body);
       const b = await ask(createHandler({ env, fetch: fetchStub, now }), body);
       assert.equal(a[0], 200, JSON.stringify(a));
+      delete b[1].affn;   // v1195 の handler は答えに affn:1 も付ける（v1193 の 1 ファイルは付けない）
       assert.deepEqual(a, b);
     }
     const g = await ask(mod.createHandler({ env, fetch: fetchStub, now }), { action: 'pv_get' });

@@ -16779,6 +16779,7 @@ function ssOnLogout(){
   try{ if(typeof ntOnLogout==='function') ntOnLogout(); }catch(e){}   /* v1152：通知も（受け取った分は残さない） */
   try{ if(typeof ltOnLogout==='function') ltOnLogout(); }catch(e){}   /* v1192：人件費の合計も（前の人の答えを残さない） */
   try{ if(window.FUNERGY_PV) FUNERGY_PV.onLogout(); }catch(e){}   /* v1193：画面の表示の設定も */
+  try{ if(window.FUNERGY_AFF) FUNERGY_AFF.onLogout(); }catch(e){}   /* v1195：所属の確認も（待っている答えは使わない・Codex #200 P2-2） */
 }
 /* 関数を呼ぶ。返す：{ok, j}／{legacy}／{none}（ログインの印が無い）／{net}／{status, error} */
 async function ssCall(payload, retried){
@@ -16852,7 +16853,13 @@ async function ssCall(payload, retried){
   /* v1152：通知を扱う関数か（ntfn:1）。前の版の関数なら、通知は 10 分のあいだ今までどおり REST で読み書きする */
   if(j.ntfn===1){ if(typeof _nt!=='undefined') _nt.old=null; }
   else { if(typeof _nt!=='undefined') _nt.old={ id:S.id, at:Date.now() }; if(payload.action==='nt') return { legacy:true }; }
-  if(!r.ok) return { status:r.status, error:(typeof j.error==='string') ? j.error : '' };
+  /* v1195：所属の確認（aff_get・aff_full・aff_save）を扱う関数か（affn:1）。前の版の関数は「知らない頼み」と断るだけ（何も書かない）＝前の版として扱う */
+  if(j.affn!==1 && typeof payload.action==='string' && payload.action.indexOf('aff_')===0) return { legacy:true };
+  if(!r.ok){
+    var _ro={ status:r.status, error:(typeof j.error==='string') ? j.error : '' };
+    if(Array.isArray(j.ids)) _ro.ids=j.ids.slice(0, 200).map(String);   /* v1195：aff_save の conflict は、ほかで先に変わった人を返す */
+    return _ro;
+  }
   return { ok:true, j:j };
 }
 /* ログイン・「最新に更新」の取り込み（_kvPullRows から）。返す：
@@ -19655,7 +19662,7 @@ function _staffPinView(name){ var c=window._pinCache; if(!c) return '----'; var 
 function renderPinListBody(){
   var emps = getEmployees().filter(e=>e.status!=='退職').sort((a,b)=>((a.role==='ceo')?0:1)-((b.role==='ceo')?0:1)||(a.store||'').localeCompare(b.store||'')||a.name.localeCompare(b.name));
   var rows = emps.map(e=>{
-    var storeName = e.store==='ALL'?'全店':(STORES.find(s=>s.id===e.store)||{name:e.store}).name;
+    var storeName = empAnyStore(e.store)?empStoreLabel(e.store):(STORES.find(s=>s.id===e.store)||{name:e.store}).name;
     var lk = pinLockLeftSec('staff:'+e.name);
     return `<tr>
       <td style="padding:6px 8px">${escapeHtml(e.name)}<div style="font-size:10px;color:var(--muted)">${escapeHtml(storeName)}${e.title?' · '+escapeHtml(e.title):''}</div>${lk?`<div style="font-size:10.5px;color:var(--red);font-weight:700"><i class="ti ti-lock"></i> ${t('ロック中','Locked')}・${pinLockLeft(lk)}</div>`:''}</td>
@@ -19735,7 +19742,7 @@ function openStaffPass(){
   var me = curUserName || rc.name || '';
   var meEmp = (typeof getEmployees==='function') ? getEmployees().find(function(e){ return e.name===me; }) : null;
   var storeId = (curStore==='ALL') ? ((STORES[0]||{}).id) : curStore;
-  if (meEmp && meEmp.store && meEmp.store!=='ALL') storeId = meEmp.store;
+  if (meEmp && meEmp.store && !empAnyStore(meEmp.store)) storeId = meEmp.store;
   var store = STORES.find(function(s){ return s.id===storeId; }) || STORES[0] || {name:''};
   var grade = meEmp ? empGrade(meEmp) : empGrade({role:curRole});
   var title = (meEmp && meEmp.title) ? meEmp.title : roleLabelI18n(curRole);
@@ -23244,7 +23251,7 @@ function resolveLoginIdentity(){
   _applyRole(emp.role || curRealRole || 'crew');
   curUserName = emp.name;
   if (loginLocation==='OFFICE') curStore = 'ALL';
-  else curStore = (emp.store && emp.store!=='ALL') ? emp.store : loginLocation;
+  else curStore = (emp.store && !empAnyStore(emp.store)) ? emp.store : loginLocation;   /* v1195：所属が本部（OFFICE）の人も全店と同じく選んだ店（Codex・Claude #200 P2-3） */
   if (['ceo','gm','office'].includes(curRole)) curStore = 'ALL';
 }
 /* ログイン画面表示前に、クラウドから従業員・店舗・PINだけ先読みする（軽量）。
@@ -49682,7 +49689,7 @@ function renderLaborDetail(storeId, store) {
     _shown[name] = 1;
     var _uEmp = null;
     try { _uEmp = (getEmployees()||[]).find(function(x){ return x && x.name===name; }) || null; } catch(e){}
-    var _uStore = _uEmp ? (_uEmp.store==='ALL' ? '全店' : ((STORES.find(function(s){return s.id===_uEmp.store;})||{}).name || _uEmp.store || '')) : '';
+    var _uStore = _uEmp ? (empAnyStore(_uEmp.store) ? empStoreLabel(_uEmp.store) : ((STORES.find(function(s){return s.id===_uEmp.store;})||{}).name || _uEmp.store || '')) : '';
     var _uMonthly = !!(_uEmp && typeof empPayType==='function' && empPayType(_uEmp)==='monthly');
     /* マスターに居るのに「未登録」と黄色で出すと誤警報になる。
        月給者がここに来るのは「固定給は別店（または本部）で、現場ぶんだけこの店に計上」という意味。 */
@@ -50034,7 +50041,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1194';
+const APP_VERSION = '1195';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -50887,6 +50894,15 @@ function empHqState(e) {
   return ok ? 'store' : 'unknown';
 }
 function empIsHq(e) { return empHqState(e) === 'hq'; }
+/* v1195：所属の値 OFFICE（本部・大文字小文字は見ない）。所属の確認（FUNERGY_AFF）で本部にした人はこの値になる（前は ALL のことが多かった）。
+   empAnyStore＝「特定の店ではない」（ALL か OFFICE）。自分の店を 1 つ決める所（既定の店に戻す所）だけで使う。
+   全店の一覧に入れる所（シフト作成・AM の従業員マスター）は ALL のままにする＝本部の人は応援の店だけ（見える範囲を広げない） */
+function empOfficeStore(v) { return v != null && String(v).trim().toUpperCase() === 'OFFICE'; }
+function empAnyStore(v) { return v === 'ALL' || empOfficeStore(v); }
+function empStoreLabel(v) { return v === 'ALL' ? '全店' : (empOfficeStore(v) ? '本部' : ''); }
+/* ログインの場所（登録した端末・パスキーで、場所を選ばずに入ったとき）：本部の役割・所属が空・全店・本部（OFFICE・大文字小文字は見ない）は Office、
+   ほかは所属の店。v1195（Codex #200 7002734955 の P2-3）：2 か所に書いていた決め方を 1 つに（前は OFFICE をちょうどの文字だけで見ていた） */
+function empLoginLoc(emp) { return (!emp || ['ceo', 'gm', 'am', 'office', 'chef', 'office_crew'].indexOf(emp.role) >= 0 || !emp.store || empAnyStore(emp.store)) ? 'OFFICE' : emp.store; }
 /* 店舗のスキルマトリクスに出す人（在籍・店舗の役職・プレップでない・その店で働く・本部所属でない）。表示の個別設定より先に外す */
 function skillMatrixStaffAt(storeId) {
   return visibleStaffForManager().filter(function (e) { return isStoreStaff(e) && !e.prep && !empIsHq(e) && empWorksAt(e, storeId); });
@@ -54104,7 +54120,7 @@ function p4StaffWeekHtml(storeId, week, me){
 function renderShiftStaff() {
   var me = myName();
   var emp = getEmployees().find(e=>e.name===me);
-  var _mainStore = emp ? (emp.store==='ALL'?STORES[0].id:emp.store) : (curStore==='ALL'?STORES[0].id:curStore);
+  var _mainStore = emp ? (empAnyStore(emp.store)?STORES[0].id:emp.store) : (curStore==='ALL'?STORES[0].id:curStore);
   var _myStores = [_mainStore].concat((emp&&emp.support)||[]).filter(function(v,i,a){return v && a.indexOf(v)===i;}); // 配属店＋応援店
   if(!window._myShiftStore || _myStores.indexOf(window._myShiftStore)<0) window._myShiftStore=_mainStore;
   var storeId = window._myShiftStore;
@@ -64096,7 +64112,7 @@ function renderStaffMaster() {
       <button class="btn btn-primary btn-sm" onclick="openEmpModal()"><i class="ti ti-user-plus"></i> 登録</button>
     </div>
   </div>
-  <div class="sm-chk">${renderInactiveCard()}${renderUnregisteredCard()}${renderOffboardingCard()}${renderResignRepairCard()}</div>
+  <div class="sm-chk">${(window.FUNERGY_AFF?FUNERGY_AFF.cardHtml():'')}${renderInactiveCard()}${renderUnregisteredCard()}${renderOffboardingCard()}${renderResignRepairCard()}</div>
     <div style="position:relative">
       <i class="ti ti-search" style="position:absolute;left:10px;top:50%;transform:translateY(-50%);color:var(--muted)"></i>
       <input class="form-input" style="padding-left:32px" id="emp-search" placeholder="名前・従業員コード・Email・電話で検索" value="${escapeHtml(empSearchQ)}" oninput="empSearch(this.value)">
@@ -64397,7 +64413,7 @@ function openEmpModal(empId) {
   try { var _al0 = empToastAliases(e); window._empForm.aliases = JSON.parse(JSON.stringify(_al0)); window._empForm.aliasOrig = JSON.parse(JSON.stringify(_al0)); window._empForm.aliasEdit = !isNew && empAliasCanEdit(e); } catch(err) { window._empForm.aliases = []; window._empForm.aliasOrig = []; window._empForm.aliasEdit = false; }
   var storeOpts = [{id:'ALL',name:'全店'},{id:'OFFICE',name:'Office'},...STORES];
   // 現在のシフト条件
-  var wc = (typeof getWorkCondition==='function' && e.store && e.store!=='ALL') ? getWorkCondition(e.store, e.name) : null;
+  var wc = (typeof getWorkCondition==='function' && e.store && !empAnyStore(e.store)) ? getWorkCondition(e.store, e.name) : null;
   openModal(`<div class="modal-title">${isNew?'従業員登録':'従業員編集'} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
     <div style="max-height:64vh;overflow-y:auto;padding-right:4px">
     <div class="form-row">
@@ -64624,7 +64640,7 @@ function saveEmp(empId) {
   try{ var _seP = empId ? emps.find(function(x){return x.id===empId;}) : emps[emps.length-1]; if(_piiCh && _seP) piiSave(_seP.id, _piiCh.set, _piiCh.base, !empId); }catch(e){}   /* v1144 */
   // シフト条件を保存（配属店舗がある場合）。最大時間のみ更新、曜日×区分の詳細はシフト画面で。
   var store = data.store;
-  if (store && store!=='ALL' && typeof setWorkCondition==='function') {
+  if (store && !empAnyStore(store) && typeof setWorkCondition==='function') {
     var maxH = parseInt(document.getElementById('e-wc-maxh').value)||40;
     var existing = getWorkCondition(store, name);
     setWorkCondition(store, name, {slots: existing.slots, minH: existing.minH||0, maxH: maxH});
@@ -65173,7 +65189,7 @@ function openOffboardPickerModal(){
   var isSL=(curRole==='sl');
   var rows = list.length ? list.map(function(e){
     var s=STORES.find(function(z){return z.id===e.store;});
-    var badge=s?'<span class="store-dot" style="background:'+s.color+'"></span>'+escapeHtml(s.name)+' · ':(e.store==='ALL'?'全店 · ':'');
+    var badge=s?'<span class="store-dot" style="background:'+s.color+'"></span>'+escapeHtml(s.name)+' · ':(empAnyStore(e.store)?empStoreLabel(e.store)+' · ':'');
     var act=activeOffboarding(e.id);
     var right=act?'<span class="tag tag-yellow" style="font-size:9px">手続き中</span>':'<i class="ti ti-chevron-right" style="color:var(--muted)"></i>';
     return '<div class="staff-item" style="cursor:pointer" onclick="closeModalDirect();'+(act?('openOffboardingModal(\''+act.id+'\')'):('startOffboardingModal(\''+e.id+'\')'))+'">'
@@ -67092,7 +67108,7 @@ function ecDetEmpMaster(){
   emps.forEach(function(e){
     var nm=e.name||e.id, fix={label:'編集',action:"openEmpModal('"+e.id+"')"};
     /* v1088: 解除のための印（key＝どの人のどの不備か・fp＝中身。中身が変われば解除していてもまた出す） */
-    var sid=(e.store && e.store!=='ALL') ? e.store : '';
+    var sid=(e.store && !empAnyStore(e.store)) ? e.store : '';   /* v1195：本部（OFFICE）も店ではない */
     function add(type, sev, title, detail, fp){ issues.push({sev:sev,cat:'従業員',title:title,detail:detail,fix:fix,key:'emp|'+type+'|'+(e.id||nm),fp:String(fp==null?'':fp),store:sid,who:nm}); }
     // ステータス不整合
     if(!e.status) add('status','mid',nm+'：ステータス未設定','在籍状況（在籍/研修中/休職/退職）が未設定です。','');
@@ -71540,7 +71556,7 @@ function g2RaiseAxisFloor(name, axisKey, floor){
 function g2AutoReflect(name, mod){
   var by=(ROLE_CONFIG[curRole]||{}).name||curUserName;
   var emp=(typeof getEmployees==='function')?getEmployees().find(function(x){return x.name===name;}):null;
-  var store=emp?((emp.store&&emp.store!=='ALL')?emp.store:((typeof STORES!=='undefined'&&STORES[0])?STORES[0].id:null)):null;
+  var store=emp?((emp.store&&!empAnyStore(emp.store))?emp.store:((typeof STORES!=='undefined'&&STORES[0])?STORES[0].id:null)):null;
   if(mod.reflect&&mod.reflect.skill&&store){
     if(mod.reflect.skill==='multi'){
       var sk=getEmpSkillsStore(name,store)||{};
@@ -76275,7 +76291,7 @@ function renderKarteDetailPage(empId){
   var lv=(typeof evalLevelFromPct==='function')?evalLevelFromPct(pct):{n:'-',label:'',color:'var(--muted)'};
   var gcol=(function(){ var gm=(typeof GRADE_MAP_DATA!=='undefined')?GRADE_MAP_DATA.find(function(x){return x.g===g;}):null; return gm?gm.col:'var(--accent)'; })();
   var rate=(typeof effectiveTipRate==='function')?effectiveTipRate(e.name):null;
-  var storeId=(e.store&&e.store!=='ALL')?e.store:null;
+  var storeId=(e.store&&!empAnyStore(e.store))?e.store:null;
   var elig=(typeof checkLevelUpEligibility==='function'&&storeId)?checkLevelUpEligibility(e.name,storeId):null;
 
   if(window._karteSelf) return renderKarteSelfView(e, {cfg:cfg, k:k, b:b, sum:sum, pct:pct, lv:lv, g:g, gcol:gcol});   /* v1045: 本人に見せる表示（UI案31 段階4） */
@@ -93264,7 +93280,7 @@ function renderMypage() {
   var me = curUserName || rc.name;
   // 本人の所属店舗を優先（応援店舗ではなく自店のデータを見せる）
   var meEmp = getEmployees().find(e=>e.name===me);
-  if (meEmp && meEmp.store && meEmp.store!=='ALL') { storeId = meEmp.store; store = STORES.find(s=>s.id===storeId)||store; }
+  if (meEmp && meEmp.store && !empAnyStore(meEmp.store)) { storeId = meEmp.store; store = STORES.find(s=>s.id===storeId)||store; }
   try{ if(typeof maybePullSkillStore==='function') maybePullSkillStore(storeId); }catch(e){}
   /* v705: 端末に保存できない場合でも表示できるよう、クラウドから直接読み込む（保存には依存しない） */
   try{
@@ -93304,7 +93320,7 @@ function renderMypage() {
   var _mp = function(c, o){ return '<!--MPC:'+c+':'+o+'-->'; };
   html += _mp('g',10);
   /* v1153（UI案70）：G1〜G3 は自店の現場の重点 KPI を最初に見る（売上・原価などの管理の KPI は出さない） */
-  try { if (curStore!=='ALL' || (meEmp && meEmp.store && meEmp.store!=='ALL')) { if (myGradeNum()<=3) html += k2FocusCard(storeId, 'field'); } } catch(e) {}
+  try { if (curStore!=='ALL' || (meEmp && meEmp.store && !empAnyStore(meEmp.store))) { if (myGradeNum()<=3) html += k2FocusCard(storeId, 'field'); } } catch(e) {}
 
   /* v1080: Tenkichi ランチチャレンジ（Tenkichi に所属・応援の人と本部だけ） */
   html += _mp('g',20);
@@ -93330,7 +93346,7 @@ function renderMypage() {
   var _mySkillStore = (function(){
     try{
       var _e=getEmployees().find(function(x){return x.name===me;});
-      if(_e && _e.store && _e.store!=='ALL') return _e.store;
+      if(_e && _e.store && !empAnyStore(_e.store)) return _e.store;
       var _sv=getSkillsV2()[me]||{};
       var _cand=Object.keys(_sv).filter(function(sid){ var pm=_sv[sid]||{}; return Object.keys(pm).some(function(p){ return pm[p] && pm[p].status==='承認'; }); });
       if(_cand.length) return _cand[0];
@@ -96281,7 +96297,7 @@ function _myManagedStores(){
     if(curRole==='am') return myAmStores();
     if(curRole==='sl'){
       var e=getEmployees().find(function(x){return x.name===curUserName;});
-      var arr=[]; if(e){ if(e.store && e.store!=='ALL') arr.push(e.store); (e.support||[]).forEach(function(s){arr.push(s);}); }
+      var arr=[]; if(e){ if(e.store && !empAnyStore(e.store)) arr.push(e.store); (e.support||[]).forEach(function(s){arr.push(s);}); }
       return arr;
     }
   }catch(_){}
@@ -105065,7 +105081,7 @@ function ojtPhaseEval(e){
    ojtPhaseEval と同じ形を返すので ojtLadderHtml をそのまま流用できる。 */
 function ojtPhaseEvalSkill(e){
   var map = getOjtPhaseMap();
-  var storeId = (e.store==='ALL'||!e.store) ? STORES[0].id : e.store;
+  var storeId = (empAnyStore(e.store)||!e.store) ? STORES[0].id : e.store;
   var positions = (typeof getStorePositions==='function') ? getStorePositions(storeId) : [];
   var sk = (typeof getEmpSkillsStore==='function') ? getEmpSkillsStore(e.name, storeId) : {};
   var anyRec = positions.some(function(p){ return sk[p] && sk[p].status; });
@@ -106839,7 +106855,7 @@ function renderCrewGrowthList() {
 }
 function renderCrewGrowthDetail(name, emp) {
   emp = emp || getEmployees().find(e=>e.name===name) || {};
-  var storeId = emp.store==='ALL'?STORES[0].id:emp.store;
+  var storeId = empAnyStore(emp.store)?STORES[0].id:emp.store;
   var positions = getStorePositions(storeId).filter(p=>p!=='Energy'&&p!=='Leadership');
   var sk = getEmpSkills(name);
   var ap = approvedPositions(name);
@@ -116013,7 +116029,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   function ojtAskMode(){ try { return liveSeen() && !!pinTok() && !ojtByGm() && !(typeof curStoreLogin !== 'undefined' && curStoreLogin); } catch(e) { return false; } }
   function ojtStore(name){
     var emp = empByName(name);
-    return emp ? ((emp.store && emp.store !== 'ALL') ? emp.store : ((typeof STORES !== 'undefined' && STORES[0]) ? STORES[0].id : null)) : null;
+    return emp ? ((emp.store && !(typeof empAnyStore === 'function' ? empAnyStore(emp.store) : emp.store === 'ALL')) ? emp.store : ((typeof STORES !== 'undefined' && STORES[0]) ? STORES[0].id : null)) : null;
   }
   function ojtLv(name, store, pos){ try { if (typeof _g2SkillLv === 'function') return _g2SkillLv(name, store, pos); var s = (getEmpSkillsStore(name, store) || {})[pos]; return s ? (s.level != null ? s.level : 0) : 0; } catch(e) { return 0; } }
   /* g2AutoReflect と同じ決め方（上げるポジション・項目）。from は申請の「申請したときの値」 */
@@ -116042,7 +116058,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   function ojtAskStore(emp){
     var me = S.me || {}, ok = (me.stores || []).concat(me.am_stores || []), cand = [emp.store].concat(emp.support || []);
     for (var i = 0; i < cand.length; i++) if (cand[i] && ok.indexOf(cand[i]) >= 0) return cand[i];
-    return (emp.store && emp.store !== 'ALL') ? emp.store : '';
+    return (emp.store && !(typeof empAnyStore === 'function' ? empAnyStore(emp.store) : emp.store === 'ALL')) ? emp.store : '';
   }
   function ojtTell(name, mod, why){
     try { addNotif({ type:'approval', title:T('OJT の合格の反映を GM に申請できませんでした','Could not ask the GM to apply an OJT pass'), text:name + ' · ' + (mod.no ? 'M' + mod.no + ' ' : '') + (mod.title || '') + ' · ' + why, toRoles:['gm'], page:'tasks' }); } catch(e) {}
@@ -117428,6 +117444,589 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   };
 })();
 /* ==== FUNERGY_PV end ==== */
+</script>
+<script>
+/* ==== FUNERGY_AFF（v1195・UI案96 の段階 2 の ①）：所属の確認（本部か店か・応援の店）====
+   仕様：docs/UNIFIED_UI_V1191_JA.md の 18（Moto さん 11/18「1 B・2 A・3 A・4 A・5 B・6 B・7 B」）。
+   ・GM・CEO が、在籍の人ごとに「本部か店か・応援の店」を確かめる。入口は従業員マスターの上のカード（GM・CEO だけ）。
+   ・保存すると、先に関数 secure-state（aff_save）へ確かめた所属の写しを書き（人ごとの版・1 人でも先に変わっていれば何も書かない）、
+     そのあと従業員マスターの所属（店・応援）を今までの道（m_employees）で書く。本部は所属の値 OFFICE（前は ALL のことが多かった）。
+   ・この版では左上の店・メニューの見え方は変えない（v1196 から。マスターと写しが同じ人だけ新しい見え方・違えば狭いほう）。
+   ・ただし従業員マスターの所属が変わるので、v1195 でも変わること：スキルマトリクス（本部の人は出ない＝v1184）・店の一覧
+     （シフト作成・AM の従業員マスター：全店の人は全部の店・本部の人は応援の店だけ）・ログインで名前が出る場所（店の役割の人）。
+     画面の「変わること」に人ごとに出す。AM が見られる範囲は広げない（本部の人は応援が担当の店のときだけ）。
+   ・この端末には何も残さない（写しはメモリだけ・ログインが変わったら捨てる）。 */
+(function(){
+  'use strict';
+  var W = window;
+  if (W.FUNERGY_AFF) return;
+  function T(ja, en){ try{ return typeof t === 'function' ? t(ja, en) : ja; }catch(e){ return ja; } }
+  function esc(s){ return String(s == null ? '' : s).replace(/[&<>"']/g, function(c){ return { '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]; }); }
+  function toast(m, k){ try{ showToast(m, k || 'info'); }catch(e){} }
+  function clone(o){ return o == null ? o : JSON.parse(JSON.stringify(o)); }
+  var STORE_ID = /^[A-Za-z0-9][A-Za-z0-9_+-]{0,31}$/;   /* 関数の AFF_ID と同じ */
+  var OFFICE_ROLES = { ceo:1, gm:1, office:1, office_crew:1 };   /* 本部の役割 */
+  var STORE_ROLES = { g4:1, sl:1, g2:1, crew:1 };                /* 店の役割（ログインは店の場所から） */
+  var MAX_ITEMS = 200, MAX_SUP = 20;
+
+  /* ---------------------------------------------------------------- 状態（メモリだけ） */
+  function fresh(){ return { k:'', load:'', code:'', rows:{}, log:[], draft:{}, tab:'need', q:'', busy:false, view:'list', reason:'', band:'', conflict:[], ix:[], open:false, mfail:[], okOnce:false }; }
+  var E = fresh();
+  function who(){
+    try{
+      if (typeof curStoreLogin !== 'undefined' && curStoreLogin) return '';
+      if (typeof curUserName === 'undefined' || !curUserName || typeof curRole === 'undefined' || !curRole) return '';
+      return String((typeof curRealRole !== 'undefined' && curRealRole) || curRole) + '|' + String(curUserName);
+    }catch(e){ return ''; }
+  }
+  /* Codex（#200 7002734955）P2-2：答えを待つあいだにログアウト・ログインし直し（同じ人でも）があったら、その答えは使わない。
+     世代は、ログインが変わったとき（sync）とログアウト（ssOnLogout → onLogout）で進める。ログインの印（PIN の印など）は
+     30 分ごとに取り替わるので比べない（取り替わっても同じログインのまま） */
+  var GEN = 0;
+  function sync(){ var k = who(); if (E.k !== k) { GEN++; E = fresh(); E.k = k; } }
+  function ssG(){ try{ return typeof _ssGen !== 'undefined' ? _ssGen : 0; }catch(e){ return 0; } }
+  function tok(){ return { g:GEN, s:ssG(), k:E.k, e:E }; }
+  function stale(t0){ return t0.g !== GEN || t0.s !== ssG() || t0.e !== E || who() !== t0.k || E.k !== t0.k; }
+  function onLogout(){ GEN++; E = fresh(); }
+  /* GM・CEO だけ（従業員マスターの GM・CEO の確かめと同じ。関数も確かめる） */
+  function mgr(){
+    try{
+      if (typeof curStoreLogin !== 'undefined' && curStoreLogin) return false;
+      return ['ceo','gm'].indexOf(curRole) >= 0;
+    }catch(e){ return false; }
+  }
+  function phone(){ try{ return W.matchMedia && W.matchMedia('(max-width: 767px)').matches; }catch(e){ return false; } }
+
+  /* ---------------------------------------------------------------- 店・人 */
+  function storesAll(){
+    try{
+      return (getStoresAll() || []).filter(function(s){ return s && s.id != null && STORE_ID.test(String(s.id)) && String(s.id).toUpperCase() !== 'ALL' && !empOfficeStore(s.id); })
+        .map(function(s){ return { id:String(s.id), name:String(s.name || s.id), active:s.active !== false }; });
+    }catch(e){ return []; }
+  }
+  function storeName(id){ var s = storesAll().find(function(x){ return x.id === id; }); return s ? s.name : String(id || ''); }
+  function isStoreId(id){ return storesAll().some(function(x){ return x.id === id; }); }
+  function blocked(e){ return !e || e.status === '退職' || e.osDisabled === true || e.osDisabled === 'true'; }
+  function empOk(id){ id = String(id == null ? '' : id); return !!id && id.length <= 64 && id.charAt(0) !== '_'; }
+  function people(){
+    var o = [];
+    try{ (getEmployees() || []).forEach(function(e){ if (e && e.id != null && !blocked(e) && empOk(e.id)) o.push(e); }); }catch(x){}
+    o.sort(function(a, b){ return String(a.name || '').localeCompare(String(b.name || '')); });
+    return o;
+  }
+  function empById(id){ try{ return (getEmployees() || []).find(function(e){ return e && String(e.id) === String(id); }) || null; }catch(x){ return null; } }
+  function nm(e){ return String((e && (e.name || e.id)) || ''); }
+  function mStore(e){ return String(e && e.store != null ? e.store : '').trim(); }
+  function uniq(a){ var m = {}, o = []; (a || []).forEach(function(x){ x = String(x == null ? '' : x).trim(); if (x && !m[x]) { m[x] = 1; o.push(x); } }); return o; }
+  function supOf(e){ return uniq(Array.isArray(e && e.support) ? e.support : []); }
+  function sameSet(a, b){ a = uniq(a); b = uniq(b); if (a.length !== b.length) return false; var m = {}; a.forEach(function(x){ m[x] = 1; }); return b.every(function(x){ return m[x]; }); }
+  function amOf(e){ try{ return (e && e.role === 'am' && typeof amStoresOf === 'function') ? uniq(amStoresOf(e.name)).filter(isStoreId) : []; }catch(x){ return []; } }
+  function hqState(e){ try{ return empHqState(e); }catch(x){ return 'unknown'; } }
+
+  /* ---------------------------------------------------------------- 決まり */
+  /* マスターと確かめた所属（写し）が同じか。本部は、マスターの所属が本部の値（OFFICE・本部・HQ・---）。応援は店を除いて同じ組 */
+  function matches(e, row){
+    var st = hqState(e), v = mStore(e);
+    var okStore = row.aff === 'hq' ? st === 'hq' : (v === row.store);
+    return okStore && sameSet(supOf(e).filter(function(x){ return x !== v; }), row.support || []);
+  }
+  /* 「確認が必要」の理由。none＝まだ決まっていない／diff＝マスターと確かめた所属が違う／role＝役割と所属が合わない（2A）／
+     all＝所属が全店／unknown＝所属が空・店舗マスターに無い／am＝AM の管轄（店舗マスターの AM 欄）が所属と応援に無い */
+  function reasons(e){
+    var id = String(e.id), row = E.rows[id], st = hqState(e), role = String(e.role || ''), v = mStore(e), out = [];
+    if (!row) out.push('none'); else if (!matches(e, row)) out.push('diff');
+    if ((OFFICE_ROLES[role] && st === 'store') || (STORE_ROLES[role] && (st === 'hq' || st === 'all'))) out.push('role');
+    if (st === 'all') out.push('all'); else if (st === 'unknown') out.push('unknown');
+    if (role === 'am') {
+      var have = (st === 'store' ? [v] : []).concat(supOf(e));
+      if (amOf(e).some(function(s){ return have.indexOf(s) < 0; })) out.push('am');
+    }
+    return out;
+  }
+  var R_L = {
+    none:['まだ決まっていない','Not confirmed yet'], diff:['マスターと確かめた所属が違う','Master differs from the confirmed value'],
+    role:['役割と所属が合わない','Role and affiliation do not match'], all:['所属が全店','Affiliation is "All stores"'],
+    unknown:['所属が空・店舗マスターに無い','Affiliation is empty or not in the store master'], am:['管轄の店が所属・応援に無い','Some assigned stores are missing']
+  };
+  function rL(c){ var x = R_L[c]; return x ? T(x[0], x[1]) : c; }
+  /* おすすめ（下書きに入れるだけ・保存はまだ）。マスターではっきりしている所属はそのまま。全店・空のときだけ役割で決める。
+     店の役割で全店・空の人は決めない（どの店か分からない＝GM・CEO が選ぶ） */
+  function suggest(e){
+    var st = hqState(e), v = mStore(e), role = String(e.role || '');
+    var sup = supOf(e).filter(isStoreId).concat(amOf(e));
+    if (st === 'store') return { aff:'store', store:v, support:uniq(sup).filter(function(s){ return s !== v; }) };
+    if (st === 'hq') return { aff:'hq', store:'', support:uniq(sup) };
+    if (OFFICE_ROLES[role] || role === 'am' || role === 'chef') return { aff:'hq', store:'', support:uniq(sup) };
+    return null;
+  }
+  function rowVal(id){ var r = E.rows[id]; return r ? { aff:r.aff, store:r.store, support:(r.support || []).slice() } : null; }
+  function effVal(id){ return E.draft[id] || rowVal(id); }
+  function sameVal(a, b){ return !!a && !!b && a.aff === b.aff && (a.aff === 'hq' || a.store === b.store) && sameSet(a.support, b.support); }
+  function setDraft(id, d){
+    d.support = uniq(d.support).filter(function(s){ return s !== d.store; });
+    if (d.aff === 'hq') d.store = '';
+    var r = rowVal(id);
+    if (r && sameVal(r, d)) delete E.draft[id]; else E.draft[id] = d;
+  }
+
+  /* ---------------------------------------------------------------- 文字 */
+  function storeLbl(v){
+    v = String(v == null ? '' : v).trim();
+    if (!v) return T('（空）','(empty)');
+    if (v === 'ALL') return T('全店','All stores');
+    if (empOfficeStore(v)) return T('本部','Head office');
+    if (typeof EMP_HQ_STORE !== 'undefined' && EMP_HQ_STORE[v.toLowerCase()]) return T('本部','Head office') + '（' + v + '）';
+    return isStoreId(v) ? storeName(v) : v + T('（店舗マスターに無い）',' (not in the store master)');
+  }
+  function supLbl(a){ a = uniq(a); return a.length ? a.map(storeName).join('・') : T('なし','none'); }
+  function valLbl(d){ if (!d) return T('（まだ）','(none)'); return (d.aff === 'hq' ? T('本部','Head office') : storeName(d.store)) + (d.support && d.support.length ? '（' + T('応援 ','support ') + supLbl(d.support) + '）' : ''); }
+  /* 従業員マスターに書く値 */
+  function newStoreOf(d){ return d.aff === 'hq' ? 'OFFICE' : d.store; }
+  /* 店の一覧（シフト作成・AM の従業員マスター）に出る店：全店の人は全部の店・それ以外は所属の店（本当の店のとき）と応援の店 */
+  function listStores(store, sup){
+    if (store === 'ALL') return { all:true, ids:[] };
+    return { all:false, ids:uniq((isStoreId(store) ? [store] : []).concat(sup || [])) };
+  }
+  /* ログインで名前が出る場所（店の役割の人だけ）：所属の店と応援の店。所属が OFFICE（ちょうど）なら Office */
+  function loginLocs(store, sup){ return uniq((isStoreId(store) ? [store] : (store === 'OFFICE' ? ['OFFICE'] : [])).concat(sup || [])); }
+  function locLbl(a){ return a.length ? a.map(function(x){ return x === 'OFFICE' ? 'Office' : storeName(x); }).join('・') : T('どこにも出ない','nowhere'); }
+  /* 変わること（人ごと）：マスターの所属・応援・スキルマトリクス・店の一覧・ログインの場所 */
+  function changes(e, d){
+    var out = [], v = mStore(e), sup0 = supOf(e), ns = newStoreOf(d), sup1 = uniq(d.support), st = hqState(e);
+    if (v !== ns) out.push(T('所属：','Affiliation: ') + storeLbl(v) + ' → ' + storeLbl(ns));
+    if (!sameSet(sup0, sup1)) out.push(T('応援：','Support: ') + supLbl(sup0) + ' → ' + supLbl(sup1));
+    var stStaff = false; try{ stStaff = typeof isStoreStaff === 'function' && isStoreStaff(e) && !e.prep; }catch(x){}
+    if (stStaff && st !== 'hq' && d.aff === 'hq') out.push(T('スキルマトリクスに出なくなる（本部）','Leaves the skill matrix (head office)'));
+    if (stStaff && st === 'hq' && d.aff === 'store') out.push(T('スキルマトリクスに出る（','Joins the skill matrix (') + storeName(d.store) + '）');
+    var b = listStores(v, sup0), a = listStores(ns, sup1);
+    if (b.all) out.push(T('店の一覧（シフト作成・AM の従業員マスター）：全店 → ','Store lists (shift building, AM staff master): all stores → ') + (a.ids.length ? a.ids.map(storeName).join('・') : T('どの店にも出ない','none')));
+    else {
+      var lost = b.ids.filter(function(x){ return a.ids.indexOf(x) < 0; }), got = a.ids.filter(function(x){ return b.ids.indexOf(x) < 0; });
+      if (lost.length) out.push(T('店の一覧から外れる：','Leaves store lists: ') + lost.map(storeName).join('・'));
+      if (got.length) out.push(T('店の一覧に入る：','Joins store lists: ') + got.map(storeName).join('・'));
+    }
+    if (STORE_ROLES[String(e.role || '')]) {
+      var l0 = loginLocs(v, sup0), l1 = loginLocs(ns, sup1);
+      if (!sameSet(l0, l1)) out.push(T('ログインで名前が出る場所：','Login location: ') + locLbl(l0) + ' → ' + locLbl(l1));
+    }
+    return out;
+  }
+
+  /* ---------------------------------------------------------------- 読む */
+  async function load(keepBand){
+    sync();
+    var t0 = tok(); E.load = 'loading'; if (!keepBand) E.band = ''; paintAll();
+    var r = null;
+    try{ r = await ssCall({ action:'aff_full', ms:20000 }); }catch(x){ r = { net:true }; }
+    if (stale(t0)) return false;
+    E.code = '';
+    if (r && r.ok && r.j) {
+      if (r.j.nosql) { E.load = 'err'; E.code = 'nosql'; }
+      else {
+        var had = E.okOnce, oldRows = E.rows;
+        E.load = 'ok'; E.okOnce = true; E.rows = {};
+        (Array.isArray(r.j.rows) ? r.j.rows : []).forEach(function(x){
+          if (!x || x.emp_id == null || (x.aff !== 'hq' && x.aff !== 'store')) return;
+          E.rows[String(x.emp_id)] = { aff:x.aff, store:x.aff === 'hq' ? '' : String(x.store || ''), support:uniq(Array.isArray(x.support) ? x.support : []),
+            ver:Number(x.ver) || 0, at:String(x.updated_at || ''), by:String(x.by_name || '') };
+        });
+        E.log = Array.isArray(r.j.log) ? r.j.log : [];
+        /* 同じになった下書きは捨てる。残った下書きのうち、読み直す前からサーバーの版が変わった人は「ほかの人が先に変えた」に入れる
+           （黙って新しい版に載せ替えて、次の保存でほかの人の変更を上書きしないように・Claude のルーティン 7008305851 の P3-1） */
+        var moved = [];
+        Object.keys(E.draft).forEach(function(id){
+          var d = E.draft[id]; setDraft(id, d);
+          if (had && E.draft[id] === d) { var o = oldRows[id], n = E.rows[id]; if ((o ? o.ver : 0) !== (n ? n.ver : 0)) moved.push(id); }
+        });
+        if (moved.length) { moved.forEach(function(id){ if (E.conflict.indexOf(id) < 0) E.conflict.push(id); }); if (E.band !== 'conflict') E.band = 'changed'; }
+      }
+    } else if (r && r.status === 403) { E.load = 'err'; E.code = 'forbidden'; }
+    else if ((r && r.status === 400 && r.error === 'unknown_action') || (r && r.legacy)) { E.load = 'err'; E.code = 'old'; }
+    else if (r && r.none) { E.load = 'err'; E.code = 'nosign'; }
+    else { E.load = 'err'; E.code = 'net'; }
+    paintAll();
+    return E.load === 'ok';
+  }
+  function errMsg(c){
+    return c === 'nosql' ? T('所属の確認の SQL がまだ入っていません（手順の ②）。入るまで今までどおりです','The affiliation SQL is not installed yet (step 2). Nothing changes until it is')
+      : c === 'old' ? T('関数 secure-state が前の版です。v1195 の 1 ファイルにしてください','secure-state is an older version. Deploy the v1195 file')
+      : c === 'forbidden' ? T('CEO・GM だけが使えます','Only the CEO and GM can use this')
+      : c === 'nosign' ? T('PIN かメールでログインし直してください（サーバーで確かめます）','Sign in again with your PIN or email (checked on the server)')
+      : T('読み込めませんでした（通信）','Could not load (network)');
+  }
+
+  /* ---------------------------------------------------------------- 数 */
+  function counts(){
+    var c = { none:0, diff:0, am:0, need:0, done:0 };
+    people().forEach(function(e){
+      var rs = reasons(e);
+      if (rs.indexOf('none') >= 0) c.none++;
+      if (rs.indexOf('diff') >= 0 || rs.indexOf('role') >= 0) c.diff++;
+      if (rs.indexOf('am') >= 0) c.am++;
+      if (rs.length) c.need++; else c.done++;
+    });
+    return c;
+  }
+
+  /* ---------------------------------------------------------------- カード（従業員マスター） */
+  function cardHtml(){
+    sync();
+    if (!mgr()) return '';
+    if (!E.load) setTimeout(function(){ if (!E.load) load(); }, 0);
+    return '<div id="aff-card">' + cardInner() + '</div>';
+  }
+  function cardInner(){
+    var head = '<div class="card-title"><i class="ti ti-building-community" style="color:var(--accent)"></i> ' + T('所属の確認（本部か店か・応援）','Affiliation check (head office or store, support)') + '</div>'
+      + '<div style="font-size:11px;color:var(--muted);margin:2px 0 8px">' + T('GM・CEO が人ごとに確かめます。保存すると従業員マスターの所属も変わります。左上の店・メニューの見え方は次の版（v1196）から','GM/CEO confirm each person. Saving also updates the staff master. Store switcher and menus change from the next version (v1196)') + '</div>';
+    var body;
+    if (E.load === 'ok') {
+      var c = counts();
+      body = '<div style="display:flex;gap:14px;flex-wrap:wrap;font-size:13px;margin-bottom:8px">'
+        + '<span>' + T('決まっていない','Not confirmed') + ' <b>' + c.none + '</b></span>'
+        + '<span>' + T('合わない','Mismatch') + ' <b>' + c.diff + '</b></span>'
+        + '<span>' + T('管轄と所属が違う AM','AMs with missing stores') + ' <b>' + c.am + '</b></span></div>'
+        + (c.need ? '' : '<div style="font-size:12px;color:var(--green,#0f7b3f);margin-bottom:8px"><i class="ti ti-check"></i> ' + T('全員、所属を確かめ済みです','Everyone is confirmed') + '</div>')
+        + '<button class="btn btn-primary btn-sm" onclick="FUNERGY_AFF.h.open()">' + T('所属の確認を開く','Open affiliation check') + '</button>';
+    } else if (E.load === 'err') {
+      body = '<div style="font-size:12px;color:var(--muted);margin-bottom:8px">' + esc(errMsg(E.code)) + '</div>'
+        + '<button class="btn btn-secondary btn-sm" onclick="FUNERGY_AFF.h.reload()">' + T('もう一度読む','Retry') + '</button>';
+    } else body = '<div style="font-size:12px;color:var(--muted)"><i class="ti ti-loader"></i> ' + T('読み込み中…','Loading…') + '</div>';
+    return '<div class="card" style="border-left:3px solid var(--accent)">' + head + body + '</div>';
+  }
+
+  /* ---------------------------------------------------------------- 箱 */
+  var CSS = '<style>'
+    + '#modal-body:has(> #aff-root){max-width:min(1180px,96vw)}'
+    + '#aff-root{font-size:13px}'
+    + '.aff-tabs{display:flex;gap:6px;flex-wrap:wrap;margin:6px 0}'
+    + '.aff-tab{border:1px solid var(--border);border-radius:16px;padding:4px 12px;background:none;cursor:pointer;font-size:12.5px;min-height:32px}'
+    + '.aff-tab.on{background:var(--accent,#c2410c);border-color:var(--accent,#c2410c);color:#fff}'
+    + '.aff-tbl{border-collapse:separate;border-spacing:0;width:100%;font-size:12.5px}'
+    + '.aff-tbl th,.aff-tbl td{border-bottom:1px solid var(--border);padding:6px;text-align:left;vertical-align:top}'
+    + '.aff-tbl th{position:sticky;top:0;background:var(--card,#fff);z-index:1;font-weight:600;white-space:nowrap}'
+    + '.aff-tbl tr.cf td{background:#fff4e5}'
+    + '.aff-chip{display:inline-flex;align-items:center;gap:2px;border:1px solid var(--border);border-radius:12px;padding:1px 4px 1px 8px;margin:2px 3px 2px 0;font-size:11.5px;white-space:nowrap}'
+    + '.aff-chip button{border:none;background:none;cursor:pointer;font-size:13px;line-height:1;padding:2px 4px;color:var(--muted)}'
+    + '.aff-rs{display:inline-block;font-size:10.5px;border-radius:8px;padding:1px 6px;margin:1px 3px 1px 0;background:#fdecc8;color:#7a4b00;white-space:nowrap}'
+    + '.aff-rs.none{background:#eef1f6;color:#3b4a63}'
+    + '.aff-seg{display:inline-flex;border:1px solid var(--border);border-radius:8px;overflow:hidden;margin-bottom:4px}'
+    + '.aff-seg button{border:none;background:none;padding:4px 12px;min-height:32px;cursor:pointer;font-size:12.5px}'
+    + '.aff-seg button.on{background:var(--accent,#c2410c);color:#fff}'
+    + '.aff-sel{font-size:12px;padding:3px 4px;border:1px solid var(--border);border-radius:6px;max-width:170px;min-height:30px}'
+    + '.aff-ch{margin:0;padding-left:16px;font-size:11.5px;color:#5a4a2a}'
+    + '.aff-hint{font-size:11px;color:var(--muted);margin-top:3px}'
+    + '.aff-hint button{border:none;background:none;color:var(--accent,#c2410c);cursor:pointer;font-size:11px;padding:0;text-decoration:underline}'
+    + '.aff-bar{position:sticky;bottom:0;background:var(--card,#fff);border:1px solid var(--border);border-radius:12px;padding:10px 12px;margin-top:10px;box-shadow:0 -2px 10px rgba(0,0,0,.05);display:flex;gap:8px;align-items:center;flex-wrap:wrap}'
+    + '.aff-wrap{overflow:auto;max-height:62vh;border:1px solid var(--border);border-radius:12px}'
+    + '.aff-card{border:1px solid var(--border);border-radius:10px;padding:10px;margin-bottom:8px}'
+    + '.aff-card.cf{background:#fff4e5}'
+    + '</style>';
+  function open(){
+    sync();
+    if (!mgr()) { toast(T('CEO・GM だけが使えます','Only the CEO and GM can use this'), 'warning'); return; }
+    E.open = true; E.view = 'list';
+    try{
+      openModal('<div class="modal-title">' + T('所属の確認','Affiliation check') + ' <button class="modal-close" onclick="FUNERGY_AFF.h.close()">×</button></div>' + CSS + '<div id="aff-root">' + inner() + '</div>');
+    }catch(x){}
+    if (!E.load || E.load === 'err') load(true);
+  }
+  function rootEl(){ var el = document.getElementById('aff-root'); return el && E.open ? el : null; }
+  function paint(){ var el = rootEl(); if (el) el.innerHTML = inner(); }
+  function paintList(){
+    var el = document.getElementById('aff-list'); if (!el || !E.open) { paint(); return; }
+    el.innerHTML = listHtml();
+    var tb = document.getElementById('aff-tabs'); if (tb) tb.innerHTML = tabsHtml();
+    var bar = document.getElementById('aff-bar'); if (bar) bar.innerHTML = barHtml();
+  }
+  function paintCard(){ var el = document.getElementById('aff-card'); if (el) el.innerHTML = cardInner(); }
+  function paintAll(){ paintCard(); paint(); }
+  function inner(){
+    if (E.load === 'loading' && !Object.keys(E.rows).length) return '<div style="padding:20px;color:var(--muted)"><i class="ti ti-loader"></i> ' + T('読み込み中…','Loading…') + '</div>';
+    if (E.load === 'err') return '<div class="alert alert-warning" style="font-size:12.5px"><i class="ti ti-alert-triangle"></i><div>' + esc(errMsg(E.code)) + '</div></div>'
+      + '<button class="btn btn-secondary btn-sm" onclick="FUNERGY_AFF.h.reload()">' + T('もう一度読む','Retry') + '</button>';
+    return E.view === 'confirm' ? confirmHtml() : mainHtml();
+  }
+  function bandHtml(){
+    if (E.band === 'conflict') {
+      var ns = E.conflict.map(function(id){ var e = empById(id); return e ? nm(e) : id; });
+      return '<div class="alert alert-warning" style="font-size:12.5px;margin-bottom:8px"><i class="ti ti-alert-triangle"></i><div>'
+        + esc(T('ほかの人が先に変えた人がいるので、何も保存していません：','Someone else changed these people first, so nothing was saved: ') + ns.join('、'))
+        + '<br>' + esc(T('色の付いた行の今の値を確かめてから、もう一度保存してください（あなたの変更は残っています）','Check the highlighted rows, then save again (your changes are kept)')) + '</div></div>';
+    }
+    if (E.band === 'changed') {
+      var nc = E.conflict.map(function(id){ var e = empById(id); return e ? nm(e) : id; });
+      return '<div class="alert alert-warning" style="font-size:12.5px;margin-bottom:8px"><i class="ti ti-alert-triangle"></i><div>'
+        + esc(T('読み直したら、ほかの人が先に変えていた人がいます（あなたの変更はまだ保存していません）：','After reloading, someone else had already changed these people (your changes are not saved yet): ') + nc.join('、'))
+        + '<br>' + esc(T('色の付いた行の今の値を確かめてから、保存してください（あなたの変更は残っています）','Check the highlighted rows, then save (your changes are kept)')) + '</div></div>';
+    }
+    if (E.band === 'master') {
+      return '<div class="alert alert-warning" style="font-size:12.5px;margin-bottom:8px"><i class="ti ti-alert-triangle"></i><div>'
+        + esc(T('確かめた所属はサーバーに保存しましたが、この端末の従業員マスターに書けませんでした：','Saved on the server, but the staff master on this device could not be written: ') + E.mfail.join('、'))
+        + '<br>' + esc(T('「合わない」に出ている人の「確かめた所属をマスターに書く」をもう一度押してください','Press "Write to the staff master" again for the people listed under Mismatch')) + '</div></div>';
+    }
+    return '';
+  }
+  function tabsHtml(){
+    var c = counts();
+    return '<button class="aff-tab' + (E.tab === 'need' ? ' on' : '') + '" onclick="FUNERGY_AFF.h.tab(\'need\')">' + T('確認が必要','Needs check') + ' ' + c.need + '</button>'
+      + '<button class="aff-tab' + (E.tab === 'done' ? ' on' : '') + '" onclick="FUNERGY_AFF.h.tab(\'done\')">' + T('決めた人','Confirmed') + ' ' + c.done + '</button>';
+  }
+  function visiblePeople(){
+    var q = String(E.q || '').trim().toLowerCase();
+    return people().filter(function(e){
+      var rs = reasons(e), need = rs.length > 0, id = String(e.id);
+      if (E.draft[id] || E.conflict.indexOf(id) >= 0) { /* 下書き・違った人はどちらのタブでも見えるように */ }
+      else if ((E.tab === 'need') !== need) return false;
+      if (q && nm(e).toLowerCase().indexOf(q) < 0) return false;
+      return true;
+    });
+  }
+  function mainHtml(){
+    return bandHtml()
+      + '<div style="font-size:12px;color:var(--muted);margin-bottom:6px">' + T('本部か店かと応援の店を決めて、下の「内容を確かめて保存」。保存するまで何も変わりません。左上の店・メニューの見え方は v1196 から（この版では変わりません）','Choose head office or store, plus support stores, then "Review and save". Nothing changes until you save. The store switcher and menus change from v1196') + '</div>'
+      + '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
+      + '<div class="aff-tabs" id="aff-tabs">' + tabsHtml() + '</div>'
+      + '<input type="search" placeholder="' + esc(T('名前で探す','Search by name')) + '" value="' + esc(E.q) + '" oninput="FUNERGY_AFF.h.q(this.value)" style="font-size:13px;padding:5px 8px;border:1px solid var(--border);border-radius:8px;min-height:32px;min-width:160px">'
+      + (E.tab === 'need' ? '<button class="btn btn-secondary btn-sm" onclick="FUNERGY_AFF.h.fill()" title="' + esc(T('まだ決まっていない人に、おすすめを下書きとして入れます（保存はまだ）','Put the suggestion into the draft for unconfirmed people (not saved yet)')) + '">' + T('おすすめを下書きに入れる','Use suggestions as draft') + '</button>' : '')
+      + '</div>'
+      + '<div id="aff-list">' + listHtml() + '</div>'
+      + logHtml()
+      + '<div class="aff-bar" id="aff-bar">' + barHtml() + '</div>';
+  }
+  /* 下の帯（変える人の数・「内容を確かめて保存」）。1 人ずつ変えたとき（paintList）も描き直す（Codex #200 7002734955 P2-1） */
+  function barHtml(){
+    var nd = Object.keys(E.draft).length;
+    return '<span style="font-size:12.5px">' + (nd ? T('変える人 ','To change: ') + '<b>' + nd + '</b>' + T(' 人・保存するまで何も変わりません',' · nothing changes until you save') : T('変える人はまだいません','Nothing to change yet')) + '</span>'
+      + '<span style="flex:1"></span>'
+      + (nd ? '<button class="btn btn-secondary btn-sm" onclick="FUNERGY_AFF.h.discard()">' + T('選び直す','Reset') + '</button>' : '')
+      + '<button class="btn btn-primary btn-sm"' + (nd && !E.busy ? '' : ' disabled') + ' onclick="FUNERGY_AFF.h.review()">' + T('内容を確かめて保存','Review and save') + '</button>';
+  }
+  function listHtml(){
+    var ps = visiblePeople(); E.ix = ps.map(function(e){ return String(e.id); });
+    if (!ps.length) return '<div style="padding:18px;color:var(--muted);text-align:center">' + (E.tab === 'need' ? T('確認が必要な人はいません','Nobody needs checking') : T('まだいません','Nobody yet')) + '</div>';
+    if (phone()) return ps.map(function(e, i){ return cardRow(e, i); }).join('');
+    return '<div class="aff-wrap"><table class="aff-tbl"><thead><tr><th>' + T('名前','Name') + '</th><th>' + T('役割・Grade','Role · Grade') + '</th><th>' + T('いまの所属（マスター）','Current (master)') + '</th><th>' + T('理由','Why') + '</th><th>' + T('本部／店・応援','Head office / store · support') + '</th><th>' + T('変わること','What changes') + '</th></tr></thead><tbody>'
+      + ps.map(function(e, i){ return tblRow(e, i); }).join('') + '</tbody></table></div>';
+  }
+  function roleLbl(e){
+    var g = ''; try{ g = typeof empGradeNum === 'function' ? empGradeNum(e) : ''; }catch(x){ g = ''; }
+    return esc(String(e.title || e.role || '')) + (g ? ' · G' + esc(g) : '');
+  }
+  function curLbl(e){ var v = mStore(e), s = supOf(e); return esc(storeLbl(v)) + (s.length ? '<div style="font-size:11px;color:var(--muted)">' + T('応援 ','Support ') + esc(supLbl(s)) + '</div>' : ''); }
+  function reasonsHtml(e){
+    var rs = reasons(e), id = String(e.id), row = E.rows[id];
+    var h = rs.map(function(c){ return '<span class="aff-rs' + (c === 'none' ? ' none' : '') + '">' + esc(rL(c)) + '</span>'; }).join('');
+    if (row) h += '<div style="font-size:10.5px;color:var(--muted);margin-top:2px">' + T('確かめた所属：','Confirmed: ') + esc(valLbl(row)) + (row.by ? ' · ' + esc(row.by) : '') + '</div>';
+    return h || '<span style="font-size:11px;color:var(--muted)">—</span>';
+  }
+  function ctrlHtml(e, i){
+    var id = String(e.id), d = effVal(id), sg = d ? null : suggest(e), all = storesAll(), isD = !!E.draft[id], ro = E.busy;
+    var aff = d ? d.aff : '';
+    var h = '<div class="aff-seg" role="group" aria-label="' + esc(nm(e) + ' ' + T('本部か店か','head office or store')) + '">'
+      + '<button class="' + (aff === 'hq' ? 'on' : '') + '"' + (ro ? ' disabled' : '') + ' onclick="FUNERGY_AFF.h.aff(' + i + ',\'hq\')">' + T('本部','Head office') + '</button>'
+      + '<button class="' + (aff === 'store' ? 'on' : '') + '"' + (ro ? ' disabled' : '') + ' onclick="FUNERGY_AFF.h.aff(' + i + ',\'store\')">' + T('店','Store') + '</button></div>';
+    if (aff === 'store') {
+      h += ' <select class="aff-sel"' + (ro ? ' disabled' : '') + ' onchange="FUNERGY_AFF.h.store(' + i + ',this.value)" aria-label="' + esc(T('所属の店','Home store')) + '"><option value="">' + T('店を選ぶ','Pick a store') + '</option>'
+        + all.filter(function(s){ return s.active || s.id === d.store; }).map(function(s){ return '<option value="' + esc(s.id) + '"' + (s.id === d.store ? ' selected' : '') + '>' + esc(s.name) + '</option>'; }).join('') + '</select>';
+    }
+    if (d) {
+      h += '<div>' + d.support.map(function(s){ return '<span class="aff-chip">' + esc(storeName(s)) + '<button' + (ro ? ' disabled' : '') + ' aria-label="' + esc(T('応援から外す ','Remove support ') + storeName(s)) + '" onclick="FUNERGY_AFF.h.supDel(' + i + ',\'' + esc(s) + '\')">×</button></span>'; }).join('');
+      var cand = all.filter(function(s){ return s.active && s.id !== d.store && d.support.indexOf(s.id) < 0; });
+      if (cand.length && d.support.length < MAX_SUP) h += '<select class="aff-sel"' + (ro ? ' disabled' : '') + ' onchange="FUNERGY_AFF.h.supAdd(' + i + ',this.value)" aria-label="' + esc(T('応援を足す','Add support')) + '"><option value="">' + T('＋応援','+ Support') + '</option>'
+        + cand.map(function(s){ return '<option value="' + esc(s.id) + '">' + esc(s.name) + '</option>'; }).join('') + '</select>';
+      h += '</div>';
+    }
+    if (sg) h += '<div class="aff-hint">' + T('おすすめ：','Suggested: ') + esc(valLbl(sg)) + ' <button onclick="FUNERGY_AFF.h.sugg(' + i + ')">' + T('使う','Use') + '</button></div>';
+    if (isD) h += '<div class="aff-hint"><button onclick="FUNERGY_AFF.h.undo(' + i + ')">' + T('この人を元に戻す','Undo this person') + '</button></div>';
+    var row = E.rows[id];
+    if (row && !isD && reasons(e).indexOf('diff') >= 0 && (row.aff === 'hq' || isStoreId(row.store)))
+      h += '<div class="aff-hint"><button onclick="FUNERGY_AFF.h.toMaster(' + i + ')">' + T('確かめた所属をマスターに書く','Write the confirmed value to the staff master') + '</button></div>';
+    return h;
+  }
+  function chHtml(e){
+    var d = E.draft[String(e.id)];
+    if (!d) return '<span style="font-size:11px;color:var(--muted)">—</span>';
+    if (d.aff === 'store' && !d.store) return '<span style="font-size:11.5px;color:#a33">' + T('店を選んでください','Pick a store') + '</span>';
+    var c = changes(e, d);
+    return c.length ? '<ul class="aff-ch">' + c.map(function(x){ return '<li>' + esc(x) + '</li>'; }).join('') + '</ul>'
+      : '<span style="font-size:11.5px;color:var(--muted)">' + T('従業員マスターは変わりません（確かめた所属だけ保存）','Staff master unchanged (only the confirmation is saved)') + '</span>';
+  }
+  function tblRow(e, i){
+    var cf = E.conflict.indexOf(String(e.id)) >= 0;
+    return '<tr' + (cf ? ' class="cf"' : '') + '><td><b>' + esc(nm(e)) + '</b></td><td>' + roleLbl(e) + '</td><td>' + curLbl(e) + '</td><td>' + reasonsHtml(e) + '</td><td>' + ctrlHtml(e, i) + '</td><td>' + chHtml(e) + '</td></tr>';
+  }
+  function cardRow(e, i){
+    var cf = E.conflict.indexOf(String(e.id)) >= 0;
+    return '<div class="aff-card' + (cf ? ' cf' : '') + '"><div style="display:flex;justify-content:space-between;gap:6px"><b>' + esc(nm(e)) + '</b><span style="font-size:11px;color:var(--muted)">' + roleLbl(e) + '</span></div>'
+      + '<div style="font-size:12px;margin:4px 0">' + T('いま：','Now: ') + curLbl(e) + '</div><div>' + reasonsHtml(e) + '</div><div style="margin-top:6px">' + ctrlHtml(e, i) + '</div><div style="margin-top:4px">' + chHtml(e) + '</div></div>';
+  }
+  function logHtml(){
+    if (!E.log.length) return '';
+    return '<details style="margin-top:10px"><summary style="cursor:pointer;font-size:12.5px">' + T('記録（新しい 100 件）','Log (latest 100)') + '</summary><div style="font-size:11.5px;max-height:30vh;overflow:auto">'
+      + E.log.map(function(x){
+        var at = String(x && x.at || '').replace('T', ' ').slice(0, 16);
+        return '<div style="border-bottom:1px solid var(--border);padding:4px 0">' + esc(at) + ' · <b>' + esc(x && x.emp_name || x && x.emp_id || '') + '</b> · ' + esc(valLbl(x && x.before)) + ' → ' + esc(valLbl(x && x.after))
+          + ' · ' + esc(x && x.by_name || '') + (x && x.reason ? '<div style="color:var(--muted)">' + esc(x.reason) + '</div>' : '') + '</div>';
+      }).join('') + '</div></details>';
+  }
+  /* 保存する中身（関数に送る形）。おかしければ文字（知らせ）を返す */
+  function itemsOf(){
+    var out = [], bad = '';
+    Object.keys(E.draft).forEach(function(id){
+      var d = E.draft[id], e = empById(id);
+      if (!e || blocked(e)) { delete E.draft[id]; return; }
+      if (d.aff === 'store' && !isStoreId(d.store)) { bad = bad || T('店を選んでいない人がいます：','Pick a store for: ') + nm(e); return; }
+      var sup = uniq(d.support).filter(function(s){ return s !== d.store && isStoreId(s); });
+      if (sup.length > MAX_SUP) { bad = bad || T('応援は 20 店までです：','Up to 20 support stores: ') + nm(e); return; }
+      var row = E.rows[id];
+      out.push({ emp:id, aff:d.aff, store:d.aff === 'hq' ? '' : d.store, support:sup, expect:row ? row.ver : 0, name:nm(e) });
+    });
+    if (bad) return bad;
+    if (out.length > MAX_ITEMS) return T('一度に保存できるのは 200 人までです。分けて保存してください','Up to 200 people per save. Save in parts');
+    return out;
+  }
+  function confirmHtml(){
+    var its = itemsOf(); if (typeof its === 'string') { E.view = 'list'; return mainHtml(); }
+    return '<div style="font-size:12.5px;margin-bottom:8px">' + T('次の ','These ') + its.length + T(' 人を変えます。サーバーに確かめた所属を保存してから、従業員マスターの所属と応援を書きます。',' people will change. The confirmation is saved on the server first, then the staff master is updated.') + '</div>'
+      + '<div class="aff-wrap"><table class="aff-tbl"><thead><tr><th>' + T('人','Person') + '</th><th>' + T('所属 前 → 後','Affiliation before → after') + '</th><th>' + T('応援 前 → 後','Support before → after') + '</th><th>' + T('変わること','What changes') + '</th></tr></thead><tbody>'
+      + its.map(function(it){
+        var e = empById(it.emp), d = { aff:it.aff, store:it.store, support:it.support };
+        var c = e ? changes(e, d) : [];
+        return '<tr><td><b>' + esc(it.name) + '</b></td><td>' + esc(storeLbl(mStore(e))) + ' → ' + esc(storeLbl(newStoreOf(d))) + '</td><td>' + esc(supLbl(supOf(e))) + ' → ' + esc(supLbl(it.support)) + '</td><td>'
+          + (c.length ? '<ul class="aff-ch">' + c.map(function(x){ return '<li>' + esc(x) + '</li>'; }).join('') + '</ul>' : '<span style="color:var(--muted);font-size:11.5px">' + T('マスターは変わりません','Master unchanged') + '</span>') + '</td></tr>';
+      }).join('') + '</tbody></table></div>'
+      + '<div class="form-group" style="margin-top:10px"><label class="form-label" style="font-size:12px">' + T('理由（任意・500 字まで）','Reason (optional, up to 500 characters)') + '</label>'
+      + '<textarea maxlength="500" rows="2" style="width:100%;font-size:13px" oninput="FUNERGY_AFF.h.reason(this.value)">' + esc(E.reason) + '</textarea></div>'
+      + '<div class="aff-bar"><button class="btn btn-secondary btn-sm"' + (E.busy ? ' disabled' : '') + ' onclick="FUNERGY_AFF.h.back()">' + T('戻る','Back') + '</button><span style="flex:1"></span>'
+      + '<button class="btn btn-primary btn-sm"' + (E.busy ? ' disabled' : '') + ' onclick="FUNERGY_AFF.h.save()">' + (E.busy ? T('保存中…','Saving…') : T('保存する','Save')) + '</button></div>';
+  }
+
+  /* ---------------------------------------------------------------- 書く */
+  /* 従業員マスターに所属（本部は OFFICE）と応援を書く。変わった人だけ。書けなかった人の名前を返す */
+  function writeMaster(items){
+    /* 写しを直して書く（書けなかったとき、読んだ名簿をこの端末のメモリで変えたままにしない） */
+    var emps = null; try{ emps = clone(getEmployees()); }catch(x){ emps = null; }
+    if (!Array.isArray(emps)) return items.map(function(it){ return it.name; });
+    var ch = [];
+    items.forEach(function(it){
+      var e = emps.find(function(x){ return x && String(x.id) === it.emp; }); if (!e) return;
+      var ns = it.aff === 'hq' ? 'OFFICE' : it.store;
+      if (mStore(e) !== ns || !sameSet(supOf(e), it.support) || !Array.isArray(e.support)) { e.store = ns; e.support = it.support.slice(); ch.push(it); }
+    });
+    if (!ch.length) return [];
+    var ok = false; try{ ok = lsSet('m_employees', emps) !== false; }catch(x){ ok = false; }
+    return ok ? [] : ch.map(function(it){ return it.name; });
+  }
+  function afterMaster(){ try{ if (typeof curPage !== 'undefined' && curPage === 'staff_master' && typeof renderPage === 'function') renderPage('staff_master'); }catch(x){} }
+  async function save(){
+    if (E.busy) return;
+    var its = itemsOf(); if (typeof its === 'string') { toast(its, 'warning'); E.view = 'list'; paint(); return; }
+    if (!its.length) { toast(T('変える人がいません','Nobody to change'), 'info'); E.view = 'list'; paint(); return; }
+    E.busy = true; paint();
+    /* 送った下書き（入れ物）。答えのあと消すのは、送ったときのままの下書きだけ（あとで変えた下書きは残す・Codex 7008350412） */
+    var sent = {}; its.forEach(function(it){ sent[it.emp] = E.draft[it.emp]; });
+    function dropSent(id){ if (sent[id] && E.draft[id] === sent[id]) delete E.draft[id]; }
+    var t0 = tok(), r = null;
+    try{ r = await ssCall({ action:'aff_save', items:its.map(function(it){ return { emp:it.emp, aff:it.aff, store:it.store, support:it.support, expect:it.expect }; }), reason:String(E.reason || '').trim().slice(0, 500), ms:20000 }); }catch(x){ r = { net:true }; }
+    /* ログアウト・ログインし直しのあとに届いた答え：従業員マスターに書かない・知らせない（サーバーに書けていれば、次に開いたとき「合わない」に出る） */
+    if (stale(t0)) { if (t0.e === E) E = fresh(); return; }
+    /* 保存のあとの読み直しが終わるまで E.busy のまま（そのあいだは打てない・押せない・Codex 7008350412 の P2） */
+    if (r && r.ok && r.j && r.j.ok) {
+      var fail = writeMaster(its);
+      its.forEach(function(it){ dropSent(it.emp); });
+      E.reason = ''; E.view = 'list'; E.conflict = []; E.mfail = fail; E.band = fail.length ? 'master' : '';
+      if (fail.length) toast(T('サーバーには保存しました。従業員マスターに書けなかった人がいます','Saved on the server; some staff master rows could not be written'), 'warning');
+      else toast(r.j.same && r.j.same === its.length ? T('変わったところはありませんでした','Nothing changed') : T('保存しました（' + its.length + ' 人）','Saved (' + its.length + ')'), 'success');
+      afterMaster();
+      try{ await load(true); }catch(x){}
+      if (stale(t0)) return;
+      E.busy = false; paintAll();
+      return;
+    }
+    if (r && r.status === 409) {
+      var cf = (r.ids || []).map(String);
+      E.conflict = cf; E.band = 'conflict'; E.view = 'list';
+      var ok = false; try{ ok = await load(true); }catch(x){ ok = false; }
+      if (stale(t0)) return;
+      /* Claude のルーティン（7002642425）P3-3：サーバーの今の値が、この保存で送った値と同じ人は「先に入っていた」
+         （前に押した保存の答えが届かなかったときなど）。版が古いので 409 になっても、ほかの人が変えたのではない。
+         その人は従業員マスターにも書いて、色を付けない。ほかの人の変更はまだ保存していない（1 人でも違えば何も書かない） */
+      var got = ok ? its.filter(function(it){ var row = E.rows[it.emp]; return cf.indexOf(it.emp) >= 0 && row && sameVal(row, { aff:it.aff, store:it.store, support:it.support }); }) : [];
+      if (got.length) {
+        var gotIds = got.map(function(it){ return it.emp; });
+        got.forEach(function(it){ dropSent(it.emp); });
+        E.conflict = E.conflict.filter(function(id){ return gotIds.indexOf(id) < 0; });
+        var mf = writeMaster(got);
+        if (mf.length) { E.mfail = mf; E.band = 'master'; }
+        else if (!E.conflict.length) E.band = '';
+        afterMaster();
+        toast(T('同じ内容がもうサーバーに入っていた人がいます（前に押した保存の答えが届かなかったときなど）：','Already saved on the server (for example, an earlier save whose answer did not arrive): ') + got.map(function(it){ return it.name; }).join('、')
+          + (Object.keys(E.draft).length ? T('。ほかの変更はまだ保存していません。もう一度「内容を確かめて保存」を押してください','. Your other changes are not saved yet. Press "Review and save" again') : ''), 'info');
+      }
+      if (E.conflict.length) toast(T('ほかの人が先に変えた人がいます。何も保存していません','Someone else changed some people first. Nothing was saved'), 'warning');
+      E.busy = false; paintAll();
+      return;
+    }
+    E.busy = false;
+    E.view = 'list';
+    if (r && r.status === 404) toast(T('在籍でない人（退職など）が入っています。名簿を読み直してから、もう一度保存してください','Someone is no longer active (resigned, etc.). Reload the roster and save again'), 'danger');
+    else if (r && r.status === 503) toast(T('所属の確認の SQL がまだ入っていません','The affiliation SQL is not installed yet'), 'danger');
+    else if (r && r.status === 403) toast(T('CEO・GM だけが保存できます','Only the CEO and GM can save'), 'danger');
+    else if ((r && r.status === 400 && r.error === 'unknown_action') || (r && r.legacy)) toast(errMsg('old'), 'danger');
+    else if (r && r.status === 400) toast(T('中身の形が合わないので保存しませんでした（店舗マスターに無い店など）','Not saved: invalid values (a store not in the store master, etc.)'), 'danger');
+    else if (r && r.none) toast(errMsg('nosign'), 'danger');
+    else toast(T('保存できませんでした（通信）。変更は残っています','Could not save (network). Your changes are kept'), 'danger');
+    paint();
+  }
+
+  /* ---------------------------------------------------------------- 押したとき */
+  function idAt(i){ var id = E.ix[i]; return id == null ? null : id; }
+  function baseFor(id){ var e = empById(id); return clone(effVal(id)) || (e ? clone(suggest(e)) : null); }
+  var h = {
+    open: open,
+    close: function(){ E.open = false; try{ closeModalDirect(); }catch(x){} },
+    reload: function(){ if (E.busy) return; E.load = ''; E.code = ''; paintAll(); load(true); },   /* 保存のあとの読み直しのあいだは押さない */
+    tab: function(x){ E.tab = x === 'done' ? 'done' : 'need'; paint(); },
+    q: function(v){ E.q = String(v || '').slice(0, 60); paintList(); },
+    aff: function(i, a){
+      var id = idAt(i); if (!id || E.busy || (a !== 'hq' && a !== 'store')) return;
+      var e = empById(id), d = baseFor(id) || { aff:a, store:'', support:[] };
+      if (a === 'store' && d.aff !== 'store') { var v = mStore(e); d.store = isStoreId(v) ? v : ''; }
+      d.aff = a; setDraft(id, d); paintList();
+    },
+    store: function(i, v){ var id = idAt(i); if (!id || E.busy) return; var d = baseFor(id) || { aff:'store', store:'', support:[] }; d.aff = 'store'; d.store = isStoreId(v) ? v : ''; setDraft(id, d); paintList(); },
+    supAdd: function(i, v){ var id = idAt(i); if (!id || E.busy || !isStoreId(v)) return; var d = baseFor(id); if (!d) return; if (d.support.indexOf(v) < 0 && d.support.length < MAX_SUP) d.support.push(v); setDraft(id, d); paintList(); },
+    supDel: function(i, v){ var id = idAt(i); if (!id || E.busy) return; var d = baseFor(id); if (!d) return; d.support = d.support.filter(function(s){ return s !== v; }); setDraft(id, d); paintList(); },
+    sugg: function(i){ var id = idAt(i), e = id && empById(id), s = e && suggest(e); if (!s || E.busy) return; setDraft(id, s); paintList(); },
+    undo: function(i){ var id = idAt(i); if (!id || E.busy) return; delete E.draft[id]; paintList(); },
+    fill: function(){
+      if (E.busy) return; var n = 0;
+      visiblePeople().forEach(function(e){ var id = String(e.id); if (E.rows[id] || E.draft[id]) return; var s = suggest(e); if (s) { setDraft(id, s); n++; } });
+      toast(n ? T('おすすめを ' + n + ' 人の下書きに入れました（保存はまだ）','Suggestions drafted for ' + n + ' (not saved yet)') : T('入れられるおすすめはありません（店の役割で全店・空の人は店を選んでください）','No suggestions to use (pick a store for store roles with "All" or empty)'), 'info');
+      paint();
+    },
+    toMaster: function(i){
+      var id = idAt(i), e = id && empById(id), row = id && E.rows[id]; if (!e || !row || E.busy) return;
+      var it = { emp:id, aff:row.aff, store:row.store, support:uniq(row.support).filter(isStoreId), name:nm(e) };
+      if (!confirm(T('「' + nm(e) + '」の従業員マスターの所属を、確かめた所属（' + valLbl(row) + '）にします。よろしいですか？','Set the staff master for "' + nm(e) + '" to the confirmed value (' + valLbl(row) + ')?'))) return;
+      var fail = writeMaster([it]);
+      if (fail.length) { E.mfail = fail; E.band = 'master'; toast(T('従業員マスターに書けませんでした','Could not write the staff master'), 'danger'); }
+      else { if (E.band === 'master') { E.band = ''; E.mfail = []; } toast(T('従業員マスターを確かめた所属にしました','Staff master updated to the confirmed value'), 'success'); }
+      afterMaster(); paint(); paintCard();
+    },
+    discard: function(){ if (E.busy) return; E.draft = {}; E.conflict = []; if (E.band === 'conflict' || E.band === 'changed') E.band = ''; paint(); },
+    review: function(){
+      var its = itemsOf(); if (typeof its === 'string') { toast(its, 'warning'); paint(); return; }
+      if (!its.length) { toast(T('変える人がいません','Nobody to change'), 'info'); return; }
+      E.view = 'confirm'; paint();
+    },
+    back: function(){ if (E.busy) return; E.view = 'list'; paint(); },
+    reason: function(v){ E.reason = String(v || '').slice(0, 500); },
+    save: function(){ save(); }
+  };
+  W.FUNERGY_AFF = { cardHtml:cardHtml, h:h, onLogout:onLogout, _t:{ E:function(){ return E; }, reasons:reasons, suggest:suggest, changes:changes, matches:matches, itemsOf:itemsOf, writeMaster:writeMaster, load:load, counts:counts, reset:function(){ E = fresh(); } } };
+})();
+/* ==== FUNERGY_AFF end ==== */
 </script>
 <script>
 /* ==== FUNERGY_AR（v1190・UI案93）：承認・閲覧の共通ルールの画面（設定 › 承認・閲覧設定・申請の画面のルートと例外）====
@@ -121959,7 +122558,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     if (!emp) { hide(); loginNote(T('名簿にこの人が見つかりませんでした。いつもの PIN でログインしてください。', 'Could not find you in the staff list. Log in with your PIN.')); return false; }
     if (typeof empBlocked === 'function' && empBlocked(emp)) { hide(); loginNote(msg({ error: 'inactive' })); return false; }
     loginPerson = emp; loginStoreMode = false;
-    loginLocation = (['ceo', 'gm', 'am', 'office', 'chef', 'office_crew'].indexOf(emp.role) >= 0 || !emp.store || emp.store === 'OFFICE' || emp.store === 'ALL') ? 'OFFICE' : emp.store;
+    loginLocation = empLoginLoc(emp);   /* v1195：決め方を 1 つに（empLoginLoc） */
     W._hwSession = r.token; W._hwSessionWarned = false; W._sessionPin = (typeof pin === 'string' && pin) ? pin : null; W._dlSignedIn = true;
     var x = rec(); if (x) { x.name = r.name || x.name; x.emp = r.emp_id; recSet(x); }
     S.last = Date.now(); S.gen++; schedule();
@@ -123038,7 +123637,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     if (typeof empBlocked === 'function' && empBlocked(emp)) { call({ action: 'pk_logout', session: r.session }); note(msg('inactive')); return false; }
     sessPut({ v: 1, s: r.session, emp: String(r.emp_id), name: r.name || emp.name, exp: r.session_exp, keep: !!keep }, !!keep);
     loginPerson = emp; loginStoreMode = false;
-    if (!keepLoc || !loginLocation) loginLocation = (['ceo', 'gm', 'am', 'office', 'chef', 'office_crew'].indexOf(emp.role) >= 0 || !emp.store || emp.store === 'OFFICE' || emp.store === 'ALL') ? 'OFFICE' : emp.store;
+    if (!keepLoc || !loginLocation) loginLocation = empLoginLoc(emp);   /* v1195：決め方を 1 つに（empLoginLoc） */
     W._hwSession = r.token; W._hwSessionWarned = false; W._sessionPin = null; W._pkSignedIn = true;
     S.last = Date.now(); S.gen++; S.busy = false; S.emp = null; schedule();
     var el = $('login-step-pk'); if (el) { el.style.display = 'none'; el.innerHTML = ''; }

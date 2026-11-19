@@ -153,7 +153,7 @@ const FNS = ['lsSet', '_pushWithOutbox', 'syncMasterToSupabase', 'supaUpsert', '
   '_opMergeDef', '_fetchOpValue', '_opUpsertRow', '_opWriteBack', 'opMergePush', 'pullOpKey', '_splitRead', '_splitWrite', '_splitPrefix', '_mutBare',
   'ghTxnBegin', 'ghTxnEnd', 'empStatusLabel'];
 const FNS_1085 = ['resignRepairCandidates', 'resignRepairApply', 'resignRepairKeep', '_obBusy', 'secAuthSession', 'secAuthEnsure', 'secAuthCall', 'secAuthNeedLogin',
-  'secAuthErrText', 'secAuthLoginModal', '_restoreErrText', 'empRestoreServer', 'reopenApproval', '_reopenOffboardApproval', 'saveEmp', 'doManagerLogin', 'managerRoleAllowed'];
+  'secAuthErrText', 'secAuthLoginModal', '_restoreErrText', 'empRestoreServer', 'reopenApproval', '_reopenOffboardApproval', 'empOfficeStore', 'empAnyStore', 'saveEmp', 'doManagerLogin', 'managerRoleAllowed'];
 function device(S, src, { user = 'Gus Sample', role = 'gm', me = null, idb = true } = {}) {
   const x = extractor(src);
   const v1085 = x.has('/* FUNERGY_EMP_SYNC_BEGIN */');
