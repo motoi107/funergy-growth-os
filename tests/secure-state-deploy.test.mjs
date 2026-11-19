@@ -210,18 +210,18 @@ test('the v1151 bundle is as it was (the SQL files and the pinned function file)
   for (const f of ['1_確かめ_読むだけ.sql', '2_関数_secure-state_index.ts', '3_SQL_合図と変更の記録.sql', '4_確かめ_読むだけ.sql', '戻す_SQL.sql', 'deploy/secure-grade-bonus-read-v1148/2_関数_secure-state_index.ts', 'docs/CHANGE_SIGNAL_V1151_JA.md']) assert.ok(how.includes(f), '手順.md names ' + f);
 });
 
-test('the v1152 bundle matches the repository (the SQL files, and the function file is the current handler + the start line)', () => {
+test('the v1152 bundle is as it was (the SQL files and the pinned function file)', () => {
   const D = 'deploy/secure-notifications-v1152/';
   assert.equal(rd(D + '1_確かめ_読むだけ.sql'), rd('db/secure-notifications-precheck.sql'));
   assert.equal(rd(D + '3_SQL_公開の鍵から外す.sql'), rd('supabase/migrations/20261119090000_secure_notifications.sql'));
   assert.equal(rd(D + '4_確かめ_読むだけ.sql'), rd('db/secure-notifications-postcheck.sql'));
   assert.equal(rd(D + '戻す_SQL.sql'), rd('db/secure-notifications-rollback.sql'));
+  // v1192 から関数は先へ進んだので、v1152 の 1 ファイルは入れたときのまま固定（v1192 を戻すときに使う）
+  assert.equal(sha(D + '2_関数_secure-state_index.ts'), 'b50e2ba2d822b80b3463914a9d4d4470c396aa3810f8792adf3c35afd983597d', 'the v1152 function file is not changed');
   const one = rd(D + '2_関数_secure-state_index.ts');
-  const h = rd('supabase/functions/secure-state/handler.mjs');
-  assert.ok(one.startsWith(h), 'the function file starts with the current handler (rebuild it after changing the handler)');
-  assert.match(one.slice(h.length), TAIL);
-  assert.equal(one.length, h.length + one.slice(h.length).length);
+  assert.match(one, TAIL);
   assert.ok(!/verifyPin/.test(one), 'no private part');
+  assert.ok(!/ltfn/.test(one), 'the v1152 function does not know the v1192 labor totals');
   assert.match(one, /ntfn: 1/); assert.match(one, /clfn: 1/); assert.match(one, /gbfn: 1/);
   assert.match(one, /async function ntOp\(a, b\)/); assert.match(one, /async function ntCtx\(a\)/); assert.match(one, /export function ntVisible\(n, c\)/);
   assert.match(one, /async function clGet\(a, b\)/, 'keeps the v1151 change log');

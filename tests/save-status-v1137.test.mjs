@@ -479,7 +479,7 @@ async function empPriv(resp) {
   const c = ctxOf({ window: { _sessionPin: '1', FUNERGY_UX: { _track: (k, p, o) => tracked.push([k, o]) } }, curUserName: 'GM', curRole: 'gm', t: ja => ja,
     SUPABASE_URL: 'https://x.invalid', supaHeaders: () => ({}), fetch: async () => { if (resp === 'throw') throw new Error('net'); return resp; } });
   c.window.window = c.window; c.FUNERGY_UX = c.window.FUNERGY_UX;   // ブラウザでは window と全体が同じ
-  vm.runInContext(fnFrom('_empPrivOk') + '\n' + fnFrom('saveEmpPrivate'), c);
+  vm.runInContext(fnFrom('_empPrivOk') + '\n' + fnFrom('empPrivSaveMode') + '\n' + fnFrom('saveEmpPrivate'), c);   // v1192：保存のしかたを決める関数も
   const r = await c.saveEmpPrivate('e1', 20, 'x@example.invalid', '0', null);
   return { r, tracked, c };
 }

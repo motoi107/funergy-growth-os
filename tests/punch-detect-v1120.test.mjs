@@ -20,7 +20,7 @@ function pick(src, name) {
   assert.fail('missing ' + name);
 }
 const NAMES = ['toastNameKey', 'toastAliasCovers', 'toastAliasField', '_toastAliasRec', 'empToastAliases', 'toastAliasIndex', 'toastAliasFind', 'toastAliasResolve', '_toastShiftsOverlap', 'tipLaborPut', 'tipLaborWithGuid',
-  'syncTipLaborFromDB', 'isOrderOnlyAccount', 'ceIsSystemAccount', 'unregisteredClockIns', '_toastNameTokens', 'toastNameCandidates', 'toastLinkCan', 'toastLinkItemOk',
+  'syncTipLaborFromDB', 'tipLaborBuildDay', 'isOrderOnlyAccount', 'ceIsSystemAccount', 'unregisteredClockIns', '_toastNameTokens', 'toastNameCandidates', 'toastLinkCan', 'toastLinkItemOk',
   'toastLinkStoreName', 'renderUnregisteredCard', 'escapeHtml', 't', 'openToastLinkModal', 'empAliasCanEdit', 'toastAliasScope', 'toastLinkPeriodStart',
   'tipPeriodStartOf', 'toastLinkEarliest', '_toastLinkPreview', '_toastLinkByDate'];
 const HAS_NEW = source.includes('\nfunction toastSystemAccount(');

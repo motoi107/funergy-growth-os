@@ -33,6 +33,10 @@
 //   （Moto さん 11/10「Career Score と同じ範囲に」：GM・CEO 以外は Career Score で見られる人と本人の記録だけ。経理・事務Crew のグレード履歴は全部＝HR・福利厚生の画面）。
 //   書くのは今までどおり GM・CEO だけ（swPut）。取り込みは gb_have を送ったアプリにだけ gb の部分を付ける。下の「v1148」の節・
 //   docs/SECURE_GRADE_BONUS_READ_V1148_JA.md）。答えにはいつも gbfn:1。
+// ・v1192：人件費の合計（labor）。経理・AM の端末には全員の時給が届かなくなる（emp-private v1192）ので、店・月ごとのお金の合計だけを
+//   この関数が出す（計算は index.html の関数そのもの＝labor-core.gen.mjs・labor.mjs。人ごとの額は返さない。docs/LABOR_TOTALS_V1192_JA.md）。答えにはいつも ltfn:1。
+
+import { ltAsks, ltCompute, ltLoad, ltToday, LT_MAX_ASKS } from './labor.mjs';
 
 export const SS_KEYS = ['growth_karte', 'karte_pin', 'karte_bonus_config', 'bonus_q', 'bonus_eval', 'bonus_store_q', 'bonus_rules', 'bonus_pool_extra'];
 export const SS_PREFIX = ['spl_bonus_q_'];
@@ -93,8 +97,13 @@ export const SW2_KEYS = ['cs_criteria', 'bonus_coef', 'bonus_coef_rng', 'bonus_t
 //   賞与の日割り（区間ごとのグレード）にアプリが使う。公開の鍵で書けると、確定日・グレード・確定した評価を書き換えられた。
 //   形は v1143 の 8 つと同じ「キー（社員 ID）→ 記録（オブジェクトか null）」の地図。前の関数（v1144 以前）は「知らないキー」と断るだけで何も書かない
 export const GH_KEYS = ['grade_hist'];
+// v1192（Codex 6986713362 の P2-1）：ダッシュボードで全店を見る AM（GM・CEO が「管轄の割り当て」で決める）の、GM・CEO だけが書ける写し。
+//   人件費の合計（labor）を全店で返すかは、これだけで決める。前は app_settings の md_all_viewers（公開の鍵で書ける）で決めていたので、
+//   AM が自分の行を書き足すと、担当外の店の人件費の合計まで受け取れた。形は grade_hist と同じ「社員 ID → 記録（オブジェクトか null）」の地図。
+//   公開の鍵で書けなくするのは SQL 20261210090000（ss_guard_key に足す・今の md_all_viewers を 1 回だけ写す）
+export const LV_KEYS = ['md_all_viewers_gm'];
 export const SW_WRITE = { mileage_config: ['ceo', 'gm', 'office'], career_cfg: ['ceo', 'gm'], ...Object.fromEntries(SW2_KEYS.map(k => [k, ['ceo', 'gm']])),
-  ...Object.fromEntries(GH_KEYS.map(k => [k, ['ceo', 'gm']])) };
+  ...Object.fromEntries(GH_KEYS.map(k => [k, ['ceo', 'gm']])), ...Object.fromEntries(LV_KEYS.map(k => [k, ['ceo', 'gm']])) };
 export function swIsKey(k) { return typeof k === 'string' && Object.prototype.hasOwnProperty.call(SW_WRITE, k); }
 // 値の形（決めた人が書くときに確かめる：おかしな単価で、ガソリン代の申請が全部止まらないように）
 //   mileage_config：アプリが書く形（包まない）だけ。包んだ形（{__st:…}）は断る（wr_mileage_rate は中身を読み、アプリの画面は外を読むので、
@@ -105,7 +114,7 @@ export function swIsKey(k) { return typeof k === 'string' && Object.prototype.ha
 export function swCgEntryOk(k, x, max = 100) { return typeof k === 'string' && k.length <= max && (x === null || (typeof x === 'object' && !Array.isArray(x))); }
 export function swCgBadKeys(value, max = 100) { return (value && typeof value === 'object' && !Array.isArray(value)) ? Object.keys(value).filter(k => !swCgEntryOk(k, value[k], max)) : []; }
 const swMapMax = key => (key === 'career_cfg' ? 100 : 200);
-const swMapKey = key => key === 'career_cfg' || SW2_KEYS.includes(key) || GH_KEYS.includes(key);
+const swMapKey = key => key === 'career_cfg' || SW2_KEYS.includes(key) || GH_KEYS.includes(key) || LV_KEYS.includes(key);
 export function swShapeOk(key, value, cloud) {
   let s;
   try { s = JSON.stringify(value === undefined ? null : value); } catch { return false; }
@@ -2117,7 +2126,42 @@ export function createHandler(deps) {
     throw err('conflict', 409);
   }
 
-  const ACTIONS = { pull, get, put, hist: csHist, pin_check: pinCheck, pin_set: pinSet, hr_get: hrGet, hr_op: hrOp, hr_match: hrMatch, pii_get: piiGet, pii_op: piiOp, card_match: cardMatch, tcf_status: tcfStatus, change_log: clGet };
+  // ---- v1192：人件費の合計（店・月ごと）。見られるのは CEO・GM・経理（全店）と AM（担当の店と応援の店・ダッシュボードで全店を見る人は全店）。
+  //   頼めない店は no に入れて返す（端末は今までどおり自分で数える）。社員と結ばれた人は今の社員の表で退職・OS 停止なら何も出さない
+  async function ltGet(a, b) {
+    const asks = ltAsks(b.asks);
+    if (!asks) throw bad();
+    const empOk = async () => {
+      const es = await rest('employees?id=eq.' + encodeURIComponent(a.emp) + '&select=id,role,status,data');
+      const e0 = Array.isArray(es) ? es[0] : null;
+      return !!(e0 && !empOut(e0));
+    };
+    let all = false; const S = new Set();
+    if (['ceo', 'gm', 'office'].includes(a.role)) {
+      if (a.emp && !(await empOk())) throw err('forbidden', 403);
+      all = true;
+    } else if (a.role === 'am' && a.emp) {
+      if (!(await empOk())) throw err('forbidden', 403);
+      for (const x of [...a.am, ...a.stores]) if (typeof x === 'string' && x) S.add(x);
+      // 全店で返すのは、GM・CEO だけが書ける写し（app_state の md_all_viewers_gm・上の LV_KEYS）で ON の人だけ。
+      // app_settings の md_all_viewers（ダッシュボードの表示に使う・公開の鍵で書ける）は見ない（Codex 6986713362 の P2-1：AM の自分での書き足し）
+      // 写しを信じるのは、SQL が公開の鍵の書き込みを止めているときだけ（rpc/md_all_viewers_gm_trusted が true。Codex 6989812896 の P2-1・P2-3）。
+      // 関数が無い（SQL の前・戻す SQL のあと＝404）・false・読めないときは写しを見ずに担当の店だけ
+      const [trusted, rows] = await Promise.all([
+        rest('rpc/md_all_viewers_gm_trusted', { method: 'POST', body: '{}' }).then(x => x === true, () => false),
+        rest('app_state?select=value&key=eq.' + LV_KEYS[0]),
+      ]);
+      const v = trusted && Array.isArray(rows) && rows[0] && obj(rows[0].value) ? rows[0].value[a.emp] : null;
+      if (obj(v) && v.on === true && !v._deleted) all = true;
+    } else throw err('forbidden', 403);
+    const ok = asks.filter(x => all || S.has(x.s)), no = asks.filter(x => !(all || S.has(x.s))).map(x => x.s + '|' + x.m);
+    const today = ltToday(b.to, now());
+    if (!ok.length) return { r: {}, no, today, max: LT_MAX_ASKS };
+    const data = await ltLoad(rest, ok, today);
+    return { r: ltCompute(data, ok), no, today, max: LT_MAX_ASKS };
+  }
+
+  const ACTIONS = { pull, get, put, hist: csHist, pin_check: pinCheck, pin_set: pinSet, hr_get: hrGet, hr_op: hrOp, hr_match: hrMatch, pii_get: piiGet, pii_op: piiOp, card_match: cardMatch, tcf_status: tcfStatus, change_log: clGet, labor: ltGet };
   const CODES = { forbidden: 403, bad_value: 400, conflict: 409, locked: 429, gone: 410, not_found: 404 };
 
   return async function handle(req) {
@@ -2137,7 +2181,8 @@ export function createHandler(deps) {
     // gbfn:1＝グレード履歴・賞与の個人設定・G3 の職種を読む範囲（v1148）も扱う。アプリは gbfn の無い答えを前の版とみなし、その 3 つを今までどおり REST で読む
     // clfn:1＝変更の記録（v1151）を読める（change_log）・書き込みに確かめた人を付ける。アプリは clfn の無い答えを前の版とみなし、記録のタブで「関数を v1151 に」と出す
     // ntfn:1＝通知（v1152）を読み書きする（nt）。アプリは ntfn の無い答えを前の版とみなし、通知を今までどおり REST で読み書きする
-    const json = (v, s = 200) => new Response(JSON.stringify({ ...v, fn: 1, csfn: 1, swfn: 1, hrfn: 1, sw2: 1, piifn: 1, ghfn: 1, tpfn: 1, scfn: 1, gbfn: 1, clfn: 1, ntfn: 1 }), { status: s, headers: { 'content-type': 'application/json', 'cache-control': 'no-store', ...cors } });
+    // ltfn:1＝人件費の合計（v1192・labor）を出す。アプリは ltfn の無い答え（unknown_action）を前の版とみなし、10 分は端末で数える
+    const json = (v, s = 200) => new Response(JSON.stringify({ ...v, fn: 1, csfn: 1, swfn: 1, hrfn: 1, sw2: 1, piifn: 1, ghfn: 1, tpfn: 1, scfn: 1, gbfn: 1, clfn: 1, ntfn: 1, ltfn: 1 }), { status: s, headers: { 'content-type': 'application/json', 'cache-control': 'no-store', ...cors } });
     if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });
     if (req.method !== 'POST') return json({ error: 'method' }, 405);
     let body;

@@ -26,7 +26,7 @@ export function ctx(){
     repeatStats:()=>({has:false}),prevMonthDaysList:()=>[],t:(ja,en)=>c.lang==='en'?en:ja,
     daily:{},salesBudget:14000};
   vm.createContext(c);
-  for(const name of ['usesDowMode','segSales','weekdayCountsForMonth','dowSegMonthly','salesActualForDay','budgetSpendBasis','daysOfYm','meetingBudgetPlan','meetingBudgetKpi','keyKpiStats','_meetSegExtra','_meetLaborLD','_meetKpiRows']) vm.runInContext(fn(name),c);
+  for(const name of ['usesDowMode','segSales','weekdayCountsForMonth','dowSegMonthly','salesActualForDay','budgetSpendBasis','daysOfYm','meetingBudgetPlan','meetingBudgetKpi','keyKpiStats','_meetSegExtra','_meetLaborLD','_meetLaborLDDay','_meetKpiRows']) vm.runInContext(fn(name),c);
   c.budget={dow:{lunch:[],dinner:Array.from({length:7},()=>({guests:10,spend:51})),takeout:[]}};
   return c;
 }

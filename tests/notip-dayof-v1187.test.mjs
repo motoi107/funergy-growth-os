@@ -47,7 +47,7 @@ const FNS = ['calcTipDistribution', 'tipWeightByRate', '_tipDecDay', '_tipDecDay
   '_tipDecT', 'firstWorkDate', 'isThreeMonths', 'effectiveTipRate', 'isTipEligibleRole', 'tipBaseRole', 'isTipExcludedTitle', 'getTipLeaderSplit',
   'calcHalfMonthSettlement', 'halfMonthRange', 'halfMonthDates', 'isoOf', '_tipHstDay', 'workedShiftCount',
   'tipPeriodRates', 'tipPeriodRateFrom', '_tipUsedRate', '_tipRateSlotUsed', 'tipPeriodMatrix', 'confirmTip', 'payDetailHidden', 'payDetailMsg', 'payDetailBlocked', 'exportTipCSV', 'exportAllTipCSV', 'estimateMyTip',
-  'syncTipLaborFromDB', 'fetchTipLaborFromDB', '_tipLaborFetchErr', '_tipLaborNewer', '_tipLaborMark', 'fetchTipLabor',
+  'syncTipLaborFromDB', 'tipLaborBuildDay', 'fetchTipLaborFromDB', '_tipLaborFetchErr', '_tipLaborNewer', '_tipLaborMark', 'fetchTipLabor',
   'toastNameKey', 'toastAliasField', '_toastAliasRec', 'empToastAliases', 'toastAliasIndex', 'toastAliasFind', 'toastAliasResolve', 'tipLaborPut', '_toastShiftsOverlap', 'tipLaborWithGuid'];
 
 // One device. DB = the shared database rows by store (business_date → data). LOCAL = this device's own tip_labor copies.

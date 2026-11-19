@@ -3934,6 +3934,28 @@ function toastAliasCatchUp(){
   _toastAliasCatchQ=p.catch(function(){});
   return p;
 }
+/* v1192：DB の 1 日の勤怠（hyper-worker が保存した Toast の一覧）から、その日の勤怠の表（名前 → 時間）を作る。
+   syncTipLaborFromDB から取り出した（中身は同じ）。関数 secure-state の人件費の合計（経理・AM の端末に時給を送らない）も、この関数をそのまま使う */
+function tipLaborBuildDay(storeId, _bdA, list, staff, _aidx){
+  var labor = {}, _conf = {};
+  list.forEach(emp=>{
+    /* Order Only（注文専用アカウント）はレイバー/チップから除外（getTipLabor が名前で外す）。
+       v1175（Codex #173 の指摘）：勤怠の写しには Toast の名前のまま残す（従業員には結ばない）。Toast から直接取ったときと同じ形。
+       総労働時間の KPI が、業務用アカウントの一覧（4A）で「外すのをやめた」Order Only を数えられるように。給与・Tip は変わらない */
+    if (isOrderOnlyAccount(emp.name)) {
+      var _oos = emp.shifts||[], _ooh = _oos.length ? tipHoursFromShifts(storeId, _oos) : { lunch: emp.lunchHours||0, dinner: emp.dinnerHours||0 };
+      tipLaborPut(labor, _conf, String(emp.name), tipLaborWithGuid({ lunch: _ooh.lunch, dinner: _ooh.dinner, rawLunch: emp.lunchHours||0, rawDinner: emp.dinnerHours||0, shifts: _oos, toastName: emp.name }, emp), { conf:true });
+      return;
+    }
+    var m = staff.find(s=>s.name===emp.name || (emp.name&&s.name.toLowerCase()===emp.name.toLowerCase()) || (emp.name&&s.name.includes(emp.name)) || (emp.name&&emp.name.includes(s.name)));
+    var _r = toastAliasResolve(m, emp.name, _bdA, _aidx, storeId);   /* v1111：別名（店ごとの別名はこの店だけ）・同じ日の 2 つを足す */
+    var key = _r.emp ? _r.emp.name : emp.name;
+    var shifts = emp.shifts||[];
+    var hrs = shifts.length ? tipHoursFromShifts(storeId, shifts) : { lunch: emp.lunchHours||0, dinner: emp.dinnerHours||0 };
+    tipLaborPut(labor, _conf, key, tipLaborWithGuid({ lunch: hrs.lunch, dinner: hrs.dinner, rawLunch: emp.lunchHours||0, rawDinner: emp.dinnerHours||0, shifts: shifts, toastName: emp.name }, emp), _r);   /* v1153：Toast のアカウント ID（hyper-worker は前から保存していた） */
+  });
+  return labor;
+}
 async function syncTipLaborFromDB(storeId, guid, days, opts) {
   if (!guid) return { updated: 0, diag:'GUID未設定' };
   var _seq = ++_tipLaborSeq;
@@ -3963,23 +3985,7 @@ async function syncTipLaborFromDB(storeId, guid, days, opts) {
     }
     if (!Array.isArray(list) || !list.length) { emptyData++; if (typeof _tipNtRecordDay === 'function') _tipNtRecordDay(storeId, _bdA, {}, _seq, _ntTk); return; }   /* v1187：DB に勤怠の無い日＝シフト 0 */
     var _skipL = _tipLaborNewer(storeId, _bdA, 'L', _seq);   /* あとから始めた読み込みがもう勤怠を保存した日（v1187：表は作って No Tip の数えに使う・端末には書かない） */
-    var labor = {}, _conf = {};
-    list.forEach(emp=>{
-      /* Order Only（注文専用アカウント）はレイバー/チップから除外（getTipLabor が名前で外す）。
-         v1175（Codex #173 の指摘）：勤怠の写しには Toast の名前のまま残す（従業員には結ばない）。Toast から直接取ったときと同じ形。
-         総労働時間の KPI が、業務用アカウントの一覧（4A）で「外すのをやめた」Order Only を数えられるように。給与・Tip は変わらない */
-      if (isOrderOnlyAccount(emp.name)) {
-        var _oos = emp.shifts||[], _ooh = _oos.length ? tipHoursFromShifts(storeId, _oos) : { lunch: emp.lunchHours||0, dinner: emp.dinnerHours||0 };
-        tipLaborPut(labor, _conf, String(emp.name), tipLaborWithGuid({ lunch: _ooh.lunch, dinner: _ooh.dinner, rawLunch: emp.lunchHours||0, rawDinner: emp.dinnerHours||0, shifts: _oos, toastName: emp.name }, emp), { conf:true });
-        return;
-      }
-      var m = staff.find(s=>s.name===emp.name || (emp.name&&s.name.toLowerCase()===emp.name.toLowerCase()) || (emp.name&&s.name.includes(emp.name)) || (emp.name&&emp.name.includes(s.name)));
-      var _r = toastAliasResolve(m, emp.name, _bdA, _aidx, storeId);   /* v1111：別名（店ごとの別名はこの店だけ）・同じ日の 2 つを足す */
-      var key = _r.emp ? _r.emp.name : emp.name;
-      var shifts = emp.shifts||[];
-      var hrs = shifts.length ? tipHoursFromShifts(storeId, shifts) : { lunch: emp.lunchHours||0, dinner: emp.dinnerHours||0 };
-      tipLaborPut(labor, _conf, key, tipLaborWithGuid({ lunch: hrs.lunch, dinner: hrs.dinner, rawLunch: emp.lunchHours||0, rawDinner: emp.dinnerHours||0, shifts: shifts, toastName: emp.name }, emp), _r);   /* v1153：Toast のアカウント ID（hyper-worker は前から保存していた） */
-    });
+    var labor = tipLaborBuildDay(storeId, _bdA, list, staff, _aidx);   /* v1192：関数 secure-state の人件費の合計も同じ関数で作る */
     // business_date を YYYY-MM-DD に正規化（タイムスタンプ/YYYYMMDD等に対応）
     var bd = normalizeBusinessDate(row.business_date);
     if (typeof _tipNtRecordDay === 'function') _tipNtRecordDay(storeId, bd, labor, _seq, _ntTk);   /* v1187：No Tip を数えるための DB の勤怠（このログインのあいだだけ） */
@@ -6027,6 +6033,10 @@ function mcScopeStores() {
    ・対象は AM（mcRole()==='am'）だけ。GM・CEO はもともと全店。AM 全員には広げない。
    ============================================================ */
 function mdAllViewers() {
+  /* v1192（Codex 6986713362 の P2-1）：GM・CEO だけが書ける写し（md_all_viewers_gm）があればそれだけを見る。
+     md_all_viewers（app_settings・公開の鍵で書ける）は、写しがまだ無いとき（SQL 20261210090000 の前）だけ */
+  var g = ls('md_all_viewers_gm', null);
+  if (g && typeof g === 'object' && !Array.isArray(g)) return g;
   var m = ls('md_all_viewers', {});
   return (m && typeof m === 'object' && !Array.isArray(m)) ? m : {};
 }
@@ -6150,14 +6160,59 @@ function mdPickedStore() {
   return (v && mdViewStores().indexOf(v) >= 0) ? v : '';
 }
 function mdSetStore(sid) { mdState.store = sid || ''; renderPage('dashboard'); try { window.scrollTo(0, 0); } catch (e) { } }
+/* v1192（PR #197 の Codex 6996221251 の P2-2）：全店を見る AM の写し（md_all_viewers_gm）は、この端末で GM・CEO が変えた人の記録だけを送る。
+   前は端末の写しを丸ごと合流して送ったので、SQL（1b）で捨てた許可や、ほかの端末で外した許可が、古い端末の写しから戻った（書く人が GM でも防げない）。
+   変えた人とその記録の時刻（_at）を、この端末だけの印（_mdav_dirty_v1・localStorage・同期しない）に残す。送るとき・取り込むときは、
+   クラウドの写しを正本にして、印のある記録（端末の記録の時刻が印と同じで、クラウドより新しい）だけを重ねる。印の無い端末の記録は使わない。
+   クラウドがその時刻以降の記録を持ったら（書けたあと・クラウドがもう持っていたとき）印を消す。その後に取り込んで端末の記録の時刻が変われば、印は使わない */
+var MDAV_DIRTY_KEY = '_mdav_dirty_v1';
+function mdavDirty() { try { var o = JSON.parse(localStorage.getItem(MDAV_DIRTY_KEY) || 'null'); return (o && typeof o === 'object' && !Array.isArray(o)) ? o : {}; } catch (e) { return {}; } }
+function mdavDirtySave(o) { try { if (Object.keys(o).length) localStorage.setItem(MDAV_DIRTY_KEY, JSON.stringify(o)); else localStorage.removeItem(MDAV_DIRTY_KEY); return true; } catch (e) { return false; } }
+function mdavMark(k, at) { var o = mdavDirty(); o[String(k)] = Number(at) || 0; return mdavDirtySave(o) && mdavDirty()[String(k)] === (Number(at) || 0); }
+function _mdavMap(v) { return (v && typeof v === 'object' && !Array.isArray(v)) ? v : {}; }
+/* 端末の写しのうち、この端末で変えてまだ送れていない記録 */
+function _mdavPending(local) {
+  var d = mdavDirty(), l = _mdavMap(local), out = {};
+  Object.keys(d).forEach(function (k) {
+    var r = l[k], at = Number(d[k]) || 0;
+    if (r && typeof r === 'object' && _recAt(r) === at && at > 0) out[k] = r;
+  });
+  return out;
+}
+function mdavMerge(cloud, local) {
+  var c = _mdavMap(cloud), out = {};
+  Object.keys(c).forEach(function (k) { out[k] = c[k]; });
+  var p = _mdavPending(local);
+  Object.keys(p).forEach(function (k) { if (!(c[k] && typeof c[k] === 'object') || _recAt(c[k]) < _recAt(p[k])) out[k] = p[k]; });
+  return out;
+}
+function mdavCovers(cloud, local) {
+  var c = _mdavMap(cloud), p = _mdavPending(local);
+  return Object.keys(p).every(function (k) { return !!(c[k] && typeof c[k] === 'object' && _recAt(c[k]) >= _recAt(p[k])); });
+}
+/* クラウドに書けた・クラウドがもう持っていた：その時刻以降の記録がクラウドにある人の印を消す */
+function mdavSent(v) {
+  var d = mdavDirty(), c = _mdavMap(v), ch = false;
+  Object.keys(d).forEach(function (k) { if (c[k] && typeof c[k] === 'object' && _recAt(c[k]) >= (Number(d[k]) || 0)) { delete d[k]; ch = true; } });
+  if (ch) mdavDirtySave(d);
+}
 /* 付け外し（GM・CEO だけ）。記録は従業員 ID ごと。外すときも記録を残して on:false にする（合流で古い「付ける」に負けない） */
 function mdSetAllViewer(empId, name, on) {
-  if (['gm', 'ceo'].indexOf(curRole) < 0) { showToast('この設定は GM・CEO のみです', 'warning'); return false; }
-  if (empId == null || empId === '' || String(empId).charAt(0) === '_') { showToast('従業員マスターに登録された人だけ選べます', 'warning'); return false; }
-  var m = mdAllViewers(), k = String(empId), prev = m[k] || {};
-  m[k] = { on: !!on, name: String(name || ''), by: (typeof _actorName === 'function' ? _actorName() : (curUserName || '')),
-           at: (typeof nowJP === 'function' ? nowJP() : new Date().toISOString()), _at: Math.max(Date.now(), (Number(prev._at) || 0) + 1) };
-  lsSet('md_all_viewers', m);
+  var T = function (ja, en) { return (typeof t === 'function') ? t(ja, en) : ja; };   /* PR #195 の Codex 6996697297：英語の画面でも分かるように */
+  if (['gm', 'ceo'].indexOf(curRole) < 0) { showToast(T('この設定は GM・CEO のみです', 'Only the GM or CEO can change this'), 'warning'); return false; }
+  if (empId == null || empId === '' || String(empId).charAt(0) === '_') { showToast(T('従業員マスターに登録された人だけ選べます', 'Choose someone registered in the staff master'), 'warning'); return false; }
+  var k = String(empId), m = mdAllViewers(), prev = m[k] || {};
+  var old = ls('md_all_viewers', {}); old = (old && typeof old === 'object' && !Array.isArray(old)) ? old : {};
+  var g = ls('md_all_viewers_gm', null); g = (g && typeof g === 'object' && !Array.isArray(g)) ? g : {};
+  var at = Math.max(Date.now(), (Number(prev._at) || 0) + 1, (Number((old[k] || {})._at) || 0) + 1, (Number((g[k] || {})._at) || 0) + 1);
+  var rec = { on: !!on, name: String(name || ''), by: (typeof _actorName === 'function' ? _actorName() : (curUserName || '')),
+              at: (typeof nowJP === 'function' ? nowJP() : new Date().toISOString()), _at: at };
+  /* v1192：GM・CEO だけが書ける写し（関数で書く）と、前の版の端末が読む md_all_viewers の両方に同じ記録 */
+  g[k] = rec; old[k] = Object.assign({}, rec);
+  /* PR #197 の Codex P2-2：送るのは、この端末で変えたこの人の記録だけ（印を先に残す。残せなければ保存しない） */
+  if (typeof mdavMark === 'function' && !mdavMark(k, at)) { showToast(T('保存できませんでした（この端末に印を残せません）', 'Not saved (this device could not keep a record of the change)'), 'danger'); return false; }
+  if (lsSet('md_all_viewers_gm', g) === false) { showToast(T('保存できませんでした', 'Not saved'), 'danger'); return false; }
+  lsSet('md_all_viewers', old);
   return true;
 }
 
@@ -9138,7 +9193,7 @@ var answer=typeof window.FUNERGY_WEB_OFFICE_EMPLOYEE_SOURCE==='function'?window.
     if(e.coef===undefined) e.coef = 1.0;
   });
   /* セキュリティ#2: 給与・メール・電話は emp-private(サーバー)から取得した分のみ上書き（権限者のみ） */
-  if (window._empPrivate) { emps.forEach(function(e){ var pr=window._empPrivate[e.id]; if(pr){ e.wage=pr.wage; e.email=pr.email; e.phone=pr.phone; if(pr.monthlySalary!==undefined && pr.monthlySalary!==null) e.monthlySalary=pr.monthlySalary; } }); }
+  if (window._empPrivate) { emps.forEach(function(e){ var pr=window._empPrivate[e.id]; if(pr){ if(pr.wage!==undefined) e.wage=pr.wage; else if(pr.ms===true) _empSrvMs(e); e.email=pr.email; e.phone=pr.phone; if(pr.monthlySalary!==undefined && pr.monthlySalary!==null) e.monthlySalary=pr.monthlySalary; } }); }   /* v1192：経理・AM には時給・月給が来ない（月給の人の印 ms だけ） */
   /* v1144：生年月日・カード・保険は関数（secure-state）から読んだ分を重ねる（関数が v1144 で、今のログインで読めたとき） */
   if (typeof piiOverlay==='function') piiOverlay(emps);
   return emps;
@@ -9152,12 +9207,17 @@ var answer=typeof window.FUNERGY_WEB_OFFICE_EMPLOYEE_SOURCE==='function'?window.
     if(e.coef===undefined) e.coef = 1.0;
   });
   /* セキュリティ#2: 給与・メール・電話は emp-private(サーバー)から取得した分のみ上書き（権限者のみ） */
-  if (window._empPrivate) { emps.forEach(function(e){ var pr=window._empPrivate[e.id]; if(pr){ e.wage=pr.wage; e.email=pr.email; e.phone=pr.phone; if(pr.monthlySalary!==undefined && pr.monthlySalary!==null) e.monthlySalary=pr.monthlySalary; } }); }
+  if (window._empPrivate) { emps.forEach(function(e){ var pr=window._empPrivate[e.id]; if(pr){ if(pr.wage!==undefined) e.wage=pr.wage; else if(pr.ms===true) _empSrvMs(e); e.email=pr.email; e.phone=pr.phone; if(pr.monthlySalary!==undefined && pr.monthlySalary!==null) e.monthlySalary=pr.monthlySalary; } }); }   /* v1192：経理・AM には時給・月給が来ない（月給の人の印 ms だけ） */
   /* v1144：生年月日・カード・保険は関数（secure-state）から読んだ分を重ねる（関数が v1144 で、今のログインで読めたとき） */
   if (typeof piiOverlay==='function') piiOverlay(emps);
   return emps;
 }).call(this);}).call(this,function(key){return key==='m_employees'?answer:originalStoreGet(key);});
 }
+/* v1192：emp-private v1192 は経理・AM に時給・月給を返さず、月給の人（月給の額が入っている人）かどうかの印 ms だけを返す。
+   empPayType がその人を月給と見る（CEO・GM の端末で月給の額があるのと同じ答え）。端末の保存（m_employees）には残さない（数えない欄） */
+function _empSrvMs(e){ try{ Object.defineProperty(e, '_srvMs', { value:true, enumerable:false, configurable:true, writable:true }); }catch(err){} }
+/* 月給の額が分かっている人か（CEO・GM の端末の empMonthlyOf(e)>0 と同じ人。経理・AM の端末では額は分からないが印で分かる） */
+function empMonthlyKnown(e){ return !!e && ((typeof empMonthlyOf==='function' && empMonthlyOf(e)>0) || e._srvMs===true); }
 /* 機微情報（給与/メール/電話）を権限者だけサーバーから取得して上書き用に保持 */
 async function fetchEmpPrivate(){
   try{
@@ -9171,8 +9231,20 @@ async function fetchEmpPrivate(){
     var _ask = async function(body){ var r = await fetch(SUPABASE_URL+'/functions/v1/emp-private', { method:'POST', headers:supaHeaders(), body:JSON.stringify(body) }); try{ return await r.json(); }catch(e){ return null; } };
     var j = await _ask(_mlTok ? {action:'pull', name:curUserName, token:_mlTok} : {action:'pull', name:curUserName, pin:window._sessionPin});
     if(_mlTok && !(j && j.ok && j.private) && window._sessionPin) j = await _ask({action:'pull', name:curUserName, pin:window._sessionPin});
-    if(j && j.ok && j.private){ window._empPrivate = j.private; }
+    if(j && j.ok && j.private){
+      /* v1192：emp-private v1192 は経理・AM に時給・月給を返さない（scope:'contacts'）。保存のときに使う（数えない欄・ログアウトで _empPrivate ごと消える） */
+      try{ Object.defineProperty(j.private, '_scope', { value:String(j.scope||''), enumerable:false, configurable:true }); }catch(e){}
+      window._empPrivate = j.private;
+    }
   }catch(e){ console.warn('fetchEmpPrivate', e); }
+}
+/* v1192：この保存で時給・月給を送ってよいか。CEO・GM はいつも（今までどおり）。
+   経理：emp-private v1192（scope:'contacts'）なら連絡先だけ／前の emp-private（全員の時給が来る）なら今までどおり／
+   読めていない（_empPrivate が無い）なら送らない（送ると端末の古い時給で上書きする） */
+function empPrivSaveMode(role, pv){
+  if(role==='ceo' || role==='gm') return 'full';
+  if(!pv) return 'none';
+  return (pv._scope==='contacts') ? 'contacts' : 'full';
 }
 /* 従業員編集時、機微情報を保護テーブル(employees_private)へ保存 */
 /* v1137（「保存しました」が実際と合わない所）：前は答えを見ず、送れなくても「従業員情報を更新しました」と出していた。
@@ -9193,14 +9265,26 @@ function saveEmpPrivate(empId, wage, email, phone, monthlySalary){
     if((!window._sessionPin && !_mlTok) || !curUserName) return Promise.resolve(null);
     if(['ceo','gm','office'].indexOf(curRole)<0) return Promise.resolve(null);
     var args=arguments;
-    var _send=function(cred){ return fetch(SUPABASE_URL+'/functions/v1/emp-private', { method:'POST', headers:supaHeaders(), body:JSON.stringify(Object.assign({action:'save', name:curUserName}, cred, {empId:empId, wage:wage, email:email, phone:phone, monthlySalary:monthlySalary})) })
+    var _mode=empPrivSaveMode(curRole, window._empPrivate);
+    if(_mode==='none'){
+      try{ showToast(t('連絡先は保存していません（今の給与・連絡先を読めていません）。画面を更新して、もう一度開いて保存してください。','Contact was not saved (the current pay and contact were not loaded). Refresh, then open and save again.'),'warning'); }catch(e){}
+      return Promise.resolve('failed');
+    }
+    /* v1192：経理は連絡先だけを送る（emp-private v1192 は経理の保存で時給・月給を変えない。新しい人の行は時給 0 で作る＝前と同じ） */
+    var _payload = (_mode==='contacts') ? {empId:empId, contactsOnly:true, email:email, phone:phone} : {empId:empId, wage:wage, email:email, phone:phone, monthlySalary:monthlySalary};
+    var _send=function(cred){ return fetch(SUPABASE_URL+'/functions/v1/emp-private', { method:'POST', headers:supaHeaders(), body:JSON.stringify(Object.assign({action:'save', name:curUserName}, cred, _payload)) })
       .then(function(r){ return r.json().catch(function(){ return null; }).then(function(j){ return _empPrivOk(r, j); }); }); };
     var _pin=window._sessionPin;
     var p=(_mlTok ? _send({token:_mlTok}).then(function(ok){ return (ok || !_pin) ? ok : _send({pin:_pin}); }) : _send({pin:_pin}))
       .then(function(ok){
         if(!ok) return 'failed';
         if(!window._empPrivate) window._empPrivate={};
-        window._empPrivate[empId]={wage:Number(wage)||0,email:email||'',phone:phone||'',monthlySalary:(monthlySalary==null?null:Number(monthlySalary))};
+        if(_mode==='contacts'){
+          /* 連絡先だけを重ねる（月給の人の印 ms はそのまま。時給・月給はこの端末に来ない） */
+          var _o=Object.assign({}, window._empPrivate[empId]||{}); _o.email=email||''; _o.phone=phone||''; window._empPrivate[empId]=_o;
+        } else {
+          window._empPrivate[empId]={wage:Number(wage)||0,email:email||'',phone:phone||'',monthlySalary:(monthlySalary==null?null:Number(monthlySalary))};
+        }
         return true;
       }, function(){ return 'failed'; });
     try{ if(window.FUNERGY_UX && FUNERGY_UX._track) FUNERGY_UX._track('emp_private_'+empId, p, { direct:true, label:t('給与・連絡先','Pay and contact'), retry:function(){ return saveEmpPrivate.apply(null, args); } }); }catch(e){}
@@ -9760,7 +9844,9 @@ function getAttOverride(storeId, date) {
 function setAttOverride(storeId, date, rec){
   var k=attFixKey(storeId, date), m=ls(k, null); m=(m && typeof m==='object' && !Array.isArray(m)) ? m : {};
   m[date]=_lrStamp(m[date], rec ? rec : { _deleted:true, by:(typeof myName==='function' ? myName() : ''), at:nowJP() });
-  return lsSet(k, m);
+  var _r=lsSet(k, m);
+  try{ if(typeof ltDirty==='function'){ var _ym=String(date).slice(0, 7); ltDirty(storeId, _ym); setTimeout(function(){ ltDirty(storeId, _ym); }, 20000); } }catch(e){}   /* v1192：手動修正がクラウドに届いてから読み直す（3 秒後と、送るのが遅れたときのために 20 秒後にもう一度） */
+  return _r;
 }
 /* 日別チップ用勤怠（Lunch/Dinner別hours）の保存 */
 function getTipLabor(storeId, date) {
@@ -9786,7 +9872,9 @@ function getTipLabor(storeId, date) {
 }
 function setTipLabor(storeId, date, data) {
   var _k='tip_labor_'+storeId+'_'+date;
+  var _ltPrev=null; try{ _ltPrev=_lsRawStr(_k); }catch(e){}
   lsSet(_k, data);
+  try{ if(typeof ltDirty==='function' && _ltPrev!==JSON.stringify(data)) ltDirty(storeId, String(date).slice(0, 7)); }catch(e){}   /* v1192：勤怠が変わった月は、経理・AM の端末で人件費の合計を読み直す */
   /* v713: lsSet は容量オーバーを握り潰すため、保存できたかを必ず確認する。
      失敗時は古い月の勤怠キャッシュを解放して1回だけ再試行し、それでも駄目なら明示的に知らせる。 */
   try{
@@ -13565,6 +13653,7 @@ var OP_SYNC_KEYS = ['initiatives','handbook_tests','ojt_enroll',
   'invoices','notifications','approval_routing','notip_config','tip_notify_state','order_lists','order_templates','ot_requests','tip_requests','tip_history','shift_changes',
   'skills','skills_v2','skill_requests','skill_history','skill_snapshots','lss_requests','lss_history','lss_scores',
   'ec_log','ec_resolutions',
+  'md_all_viewers_gm',
   'my_vacations','mileage_requests','mileage_config','expense_requests','lost_receipts','tasks_all','crew_education','career_history','career_track','menu_log','reject_log','inv_templates','store_ingredients','train_master','grade_ojt','benefit_adjust',
   'dev_pipe','dev_pipe_start',
   'offboardings','offboard_template','store_fixed_costs','m_ingredients_v2','ing_v2_seq','ing_migration_mode','ing_v2_backfill_done','ing_v2_storeprice_fix','dev_nominations','order_catalog','supply_orders','order_config','prep_history','trainees','trainee_checklists','prep_positions','prep_level_method','prep_cfg','prep_tables','prep_certs','ojt_gate_criteria','growth_karte','karte_bonus_config','bonus_rules','grade_hist','cs_criteria','bonus_coef','bonus_track','bonus_coef_rng','karte_pin','bonus_eval_rule','bonus_eval_ovr','bonus_eval','bonus_store_q','bonus_pool_extra','cs_strength_rule','cs_guide','career_cfg','reimbursements','checks','office_reports','ojt_def_g2','pl_config','pl_overrides','pl_expense_class','benefit_manual','hq_budget','hq_actions','tip_hours_config','resp_matrix','totoya_g2_matrix','handbook_chapters','handbook_reads','handbook_log','shift_trainee_pos','shift_sections','shift_headcount','shift_postime','shift_secrole','shift_ld_head','p4_fixavail','store_closures','meeting_minutes','ingredient_transfers','vendor_merges','meeting_reviews','meeting_kpi_thresholds','meeting_kgi_edits','q_budgets','fv_config','lunch_challenge','funergy_times'];
@@ -13835,7 +13924,7 @@ function outboxLabel(key){
     ['grade_hist','グレード履歴','Grade history'],['mileage_config','ガソリン代の設定','Mileage settings'],['career_cfg','Score管理の設定','Score settings'],['cs_criteria','スコア基準','Score criteria'],
     ['bonus_coef_rng','賞与の係数の幅','Bonus coefficient ranges'],['bonus_coef','賞与の係数','Bonus coefficients'],['bonus_track','G3 の職種','G3 track'],['bonus_eval_rule','賞与の 4 項目の設定','Bonus four-item settings'],
     ['bonus_eval_ovr','賞与の個人設定','Bonus personal settings'],['cs_strength_rule','強みの決まり','Strength rules'],['cs_guide','評価基準・例','Scoring guide'],
-    ['prep_tables','プレップの時給の表','Prep wage tables'],['prep_certs','プレップの認定','Prep certifications'],['pl_expense_class','PL の科目の区分','PL account classes'],['funergy_times','FUNERGY TIMES の設定','FUNERGY TIMES settings']];   /* v1146 */   /* v1137：右上の「保存」の中身で読める名前。v1145：決めた人だけが書ける設定（サーバーが断ったものを外す画面に出す） */
+    ['prep_tables','プレップの時給の表','Prep wage tables'],['prep_certs','プレップの認定','Prep certifications'],['pl_expense_class','PL の科目の区分','PL account classes'],['funergy_times','FUNERGY TIMES の設定','FUNERGY TIMES settings'],['md_all_viewers_gm','ダッシュボードで全店を見る人','Who sees every store on the dashboard']];   /* v1146 */   /* v1137：右上の「保存」の中身で読める名前。v1145：決めた人だけが書ける設定（サーバーが断ったものを外す画面に出す） */
   var en=(typeof curLang!=='undefined' && curLang==='en');   /* v1137（独立レビュー P3-10）：英語の画面では英語の名前 */
   if(k.indexOf('spl_tip_requests_')===0 && k.length>17) return 'Tip Rate（'+k.slice(17)+'）';   /* v1146：だれの Tip Rate か（断られたものを外す画面で見分ける） */
   for(var i=0;i<map.length;i++){ if(k.indexOf(map[i][0])===0) return (en && map[i][2]) ? map[i][2] : map[i][1]; }
@@ -15853,7 +15942,12 @@ function sw2IsKey(k){ return typeof k==='string' && Object.prototype.hasOwnPrope
    関数が v1144 以前（答えに ghfn:1 が無い）なら、今までどおり REST で書く（前の版は「知らないキー」と断るだけで何も書かない） */
 var GH_KEYS = { grade_hist:1 };
 function ghIsKey(k){ return typeof k==='string' && Object.prototype.hasOwnProperty.call(GH_KEYS, k); }
-function swIsKey(k){ return typeof k==='string' && (Object.prototype.hasOwnProperty.call(SW_KEYS, k) || sw2IsKey(k) || ghIsKey(k)); }
+/* v1192（Codex 6986713362 の P2-1）：ダッシュボードで全店を見る AM の、GM・CEO だけが書ける写し（md_all_viewers_gm・社員 ID → 記録の地図）。
+   サーバーは人件費の合計（labor）を全店で返すかをこれだけで決める（app_settings の md_all_viewers は公開の鍵で書けるので見ない）。
+   書くのは関数だけ（GM・CEO）。読むのは今までどおり REST。関数が v1191 以前（答えに ltfn:1 が無い）なら、今までどおり REST で書く */
+var LV_KEYS = { md_all_viewers_gm:1 };
+function lvIsKey(k){ return typeof k==='string' && Object.prototype.hasOwnProperty.call(LV_KEYS, k); }
+function swIsKey(k){ return typeof k==='string' && (Object.prototype.hasOwnProperty.call(SW_KEYS, k) || sw2IsKey(k) || ghIsKey(k) || lvIsKey(k)); }
 /* v1146（Moto さん 11/10「Tip Rate とプレップから」・docs/SECURE_TIP_PREP_V1146_JA.md）：Tip Rate の申請・決定（spl_tip_requests_<名前>・前の統合行 tip_requests）と
    プレップの時給の表・認定（prep_tables・prep_certs）も、書くのは関数だけ（決められる人だけ＝今の画面と同じ。サーバーが決める）。読むのは今までどおり REST
    （どの端末もチップの配分と人件費を計算する）。関数が v1145 以前（答えに tpfn:1 が無い）なら、今までどおり REST で書く */
@@ -15866,6 +15960,7 @@ function swOldNow(S){ var L=_ss.swOld; return !!(L && S && L.id===S.id && Date.n
 function sw2OldNow(S){ var L=_ss.sw2Old; return !!(L && S && L.id===S.id && Date.now()-L.at<600000); }
 function ghOldNow(S){ var L=_ss.ghOld; return !!(L && S && L.id===S.id && Date.now()-L.at<600000); }
 function tpOldNow(S){ var L=_ss.tpOld; return !!(L && S && L.id===S.id && Date.now()-L.at<600000); }
+function lvOldNow(S){ var L=_ss.lvOld; return !!(L && S && L.id===S.id && Date.now()-L.at<600000); }
 /* このキーの書き込みを関数に頼むか（読むのは今までどおり REST） */
 function swRouted(key){
   if(!gwIsKey(key)) return false;
@@ -15873,6 +15968,7 @@ function swRouted(key){
   if(sw2IsKey(key) && sw2OldNow(S)) return false;   /* v1143：関数が v1142 以前 */
   if(ghIsKey(key) && ghOldNow(S)) return false;     /* v1145：関数が v1144 以前 */
   if(tpIsKey(key) && tpOldNow(S)) return false;     /* v1146：関数が v1145 以前 */
+  if(lvIsKey(key) && lvOldNow(S)) return false;     /* v1192：関数が v1191 以前 */
   return true;
 }
 /* ============================================================
@@ -16292,6 +16388,200 @@ function piiAfterLogin(){
 }
 function piiOnLogout(){ _pii={ tid:'', lv:'', map:null, at:0, p:null }; _piiCard={}; _piiEnsureAt=0; piiPurgeLocal(); }
 
+/* ============================================================
+   v1192（Moto さん 11/18「サーバーで合計を出す」）：経理・AM の端末の人件費は、関数 secure-state の合計（頼み labor・ltfn:1）。
+   emp-private v1192 は経理・AM に全員の時給・月給を返さない（月給の人かどうかの印 ms と連絡先だけ）。
+   人件費の「お金」の部分（時給×時間・週 40h 超の OT・プレップの認定の時給・月給の日割り・有給・1 日の人件費・L/D）だけを
+   店 × 月でサーバーから受け取る。人ごとの時間・売上・手入力・給与税・保険は今までどおり端末で数える（_laborCoreForYmRaw の残り）。
+   CEO・GM（全員の時給を持つ）・店長・G4 など（前から自分の分だけ）は今までどおり端末で計算する。
+   受け取るまでは端末の計算（時給が届いていない人は役職の時給）＝仮の値。画面の上に帯を出し、届いたら描き直す。
+   ============================================================ */
+var LT_TTL = 600000, LT_MAX = 40, LT_ZERO = { c:0, ml:0, md:0, ll:0, ld:0 };
+var _LT = { map:{}, need:{}, busy:false, timer:null, paintT:null, dirtyT:null, dirty:{}, off:null, fail:null, tid:'', missAt:0, noHit:{} };
+function ltTid(){ var tk=ssToken(); return tk.g+'|'+tk.u+'|'+tk.st+'|'+tk.id; }
+/* 経理・AM の個人のログイン（店のタブレットでない） */
+function ltRole(){
+  try{
+    if(typeof curStoreLogin!=='undefined' && curStoreLogin) return false;
+    var r=(typeof curRealRole!=='undefined' && curRealRole) ? curRealRole : '';
+    return r==='office' || r==='am';
+  }catch(e){ return false; }
+}
+/* 時給がこの端末に届いているか（emp-private が前の版＝全員の時給を返す。ほかの人の時給が 1 つでもあれば） */
+function ltHaveWages(){
+  try{
+    var P=window._empPrivate; if(!P || typeof P!=='object') return false;
+    var me=(getEmployees()||[]).find(function(x){ return x && x.name===curUserName; }), meId=me ? String(me.id) : '';
+    return Object.keys(P).some(function(id){ return id!==meId && P[id] && P[id].wage!==undefined; });
+  }catch(e){ return false; }
+}
+function ltReset(tid){
+  if(_LT.timer){ try{ clearTimeout(_LT.timer); }catch(e){} }
+  if(_LT.dirtyT){ try{ clearTimeout(_LT.dirtyT); }catch(e){} }
+  _LT={ map:{}, need:{}, busy:false, timer:null, paintT:null, dirtyT:null, dirty:{}, off:null, fail:null, tid:tid||'', missAt:0, noHit:{} };
+}
+function ltKey(sid, ym){ return String(sid)+'|'+String(ym); }
+function ltSplit(k){ var i=k.lastIndexOf('|'); return { s:k.slice(0, i), m:k.slice(i+1) }; }
+/* 勤怠の手動修正（att_fix）の文字。頼んだときと変わっていたら読み直す（ほかの端末の修正が同期で届いたときも） */
+function ltAttFp(sid, ym){ try{ var v=_lsRawStr('att_fix_'+sid+'_'+ym); return v==null ? '' : String(v); }catch(e){ return ''; } }
+function ltMiss(){ _LT.missAt=Date.now(); if(!_LT.paintT) _LT.paintT=setTimeout(ltPaint, 0); }
+function ltSchedule(){ if(!_LT.timer && !_LT.busy) _LT.timer=setTimeout(function(){ _LT.timer=null; ltFlush(false); }, 40); }
+/* 店 × 月の答え。無ければ頼んで null（今までの端末の計算＝仮の値）。null の時は呼ぶ側が今までどおり計算する */
+function ltEntry(sid, ym){
+  if(!ltRole() || !sid || !/^20\d\d-\d\d$/.test(String(ym||''))) return null;
+  var tid=_mdMemo('lt', 'tid', ltTid);
+  if(_LT.tid!==tid) ltReset(tid);
+  if(!_LT.off && !ssSess()) _LT.off={ why:'none', at:Date.now() };
+  if(_LT.off){ if(Date.now()-_LT.off.at<LT_TTL || _LT.off.why==='none'){ ltMiss(); return null; } _LT.off=null; }
+  var k=ltKey(sid, ym), e=_LT.map[k];
+  if(!e){ _LT.need[k]=1; ltMiss(); ltSchedule(); return null; }
+  if(e.no){ _LT.noHit[String(sid)]=1; ltMiss(); return null; }
+  _mdMemo('ltchk', k, function(){
+    if(e.att!==ltAttFp(sid, ym)){ e.att=ltAttFp(sid, ym); ltDirty(sid, ym); }
+    else if(Date.now()-e.at>LT_TTL || (ym===curYm() && e.to!==bizToday())){ _LT.need[k]=1; ltSchedule(); }   /* 古い答えは使ったまま、裏で読み直す */
+    return 1;
+  });
+  return e;
+}
+/* 勤怠が変わった（Toast の勤怠を取り込んだ・手動修正を保存した）：少し待ってから読み直す（取り込みのあいだに何度も頼まない） */
+function ltDirty(sid, ym){
+  try{
+    if(!ltRole() || !sid || !ym) return;
+    var k=ltKey(sid, ym); if(!_LT.map[k]) return;
+    _LT.dirty[k]=1;
+    if(_LT.dirtyT) clearTimeout(_LT.dirtyT);
+    _LT.dirtyT=setTimeout(function(){ _LT.dirtyT=null; Object.keys(_LT.dirty).forEach(function(x){ _LT.need[x]=1; }); _LT.dirty={}; ltSchedule(); }, 3000);
+  }catch(e){}
+}
+/* 共通コア（_laborCoreForYmRaw）が呼ぶ：お金の部分だけを置き換える（人ごとの時間・週・締めの日は端末のまま） */
+function ltServerParts(storeId, ym, opts, P){
+  if(opts && opts.endBefore!==undefined) return P;
+  var e=ltEntry(storeId, ym); if(!e) return P;
+  var q=(opts && opts.weekSun) ? (e.w||{})[opts.weekSun] : e.p;
+  if(!q || typeof q!=='object') return P;
+  var o={}; Object.keys(P).forEach(function(x){ o[x]=P[x]; });
+  o.hourly=Number(q.hourly)||0; o.leave=Number(q.leave)||0; o.leaveDays=Number(q.leaveDays)||0; o.salary=Number(q.salary)||0;
+  return o;
+}
+/* 1 日の人件費（{c, ml, md, ll, ld}）。読めた月に無い日は 0（サーバーの勤怠に無い日） */
+function ltServerDay(storeId, date){
+  var ym=String(date||'').slice(0, 7);
+  var e=ltEntry(storeId, ym); if(!e) return null;
+  var x=(e.d||{})[date];
+  return (x && typeof x==='object') ? x : LT_ZERO;
+}
+/* 店の月給の合計（いまの在籍の人。月によらない）：読めたいちばん新しい答えを使う */
+function ltServerSalary(storeId){
+  if(!ltRole()) return null;
+  var best=null;
+  Object.keys(_LT.map).forEach(function(k){ var s=ltSplit(k), e=_LT.map[k]; if(s.s===String(storeId) && e && !e.no && (!best || e.at>best.at)) best=e; });
+  var cur=ltEntry(storeId, curYm());
+  var e=best || cur;
+  return e ? (Number(e.sal)||0) : null;
+}
+function ltServerGrade(sid, ym){
+  var e=ltEntry(sid, ym); if(!e || !e.g) return null;
+  return { g1:Number(e.g.g1)||0, g2:Number(e.g.g2)||0, has:!!e.g.has };
+}
+function ltRedraw(){
+  try{ mdCacheClear(); }catch(e){}
+  try{ var ux=window.FUNERGY_UX;
+    if(ux && typeof ux.noteDataChange==='function') ux.noteDataChange();
+    if(ux && typeof ux.bgRefresh==='function') ux.bgRefresh();
+    else if(typeof renderPage==='function' && typeof curPage!=='undefined') renderPage(curPage);
+  }catch(e){}
+  ltPaint();
+}
+async function ltFlush(force){
+  if(_LT.busy) return;
+  if(!ltRole()){ _LT.need={}; return; }
+  if(!force && _LT.fail && Date.now()-_LT.fail.at<_LT.fail.wait){ ltPaint(); return; }
+  var keys=Object.keys(_LT.need).slice(0, LT_MAX); if(!keys.length) return;
+  keys.forEach(function(k){ delete _LT.need[k]; });
+  var asks=keys.map(ltSplit), tk=ssToken(), tid=_LT.tid, to=bizToday(), att={};
+  asks.forEach(function(a){ att[ltKey(a.s, a.m)]=ltAttFp(a.s, a.m); });
+  _LT.busy=true; ltPaint();
+  var r; try{ r=await ssCall({ action:'labor', asks:asks, to:to, ms:45000 }); }catch(e){ r={ net:true }; }
+  _LT.busy=false;
+  if(ssStale(tk) || _LT.tid!==tid){ return; }   /* 頼んだあとにログインが変わった：前の人の答えは置かない */
+  if(r.none){ _LT.off={ why:'none', at:Date.now() }; _LT.need={}; ltRedraw(); return; }
+  if(r.legacy || (r.ok && !(r.j && r.j.ltfn===1)) || (r.status===400 && r.error==='unknown_action')){   /* 関数が前の版（labor を知らない）：10 分は今までどおり端末で */
+    _LT.off={ why:'old', at:Date.now() }; _LT.need={}; ltRedraw(); return; }
+  if(r.status===403){ _LT.off={ why:'forbidden', at:Date.now() }; _LT.need={}; ltRedraw(); return; }
+  if(!r.ok){
+    keys.forEach(function(k){ _LT.need[k]=1; });
+    var w=_LT.fail ? Math.min(300000, _LT.fail.wait*2) : 30000;
+    _LT.fail={ at:Date.now(), wait:w, why:(r.net ? (r.timeout ? 'timeout' : 'net') : String(r.error || r.status || '')) };
+    ltPaint(); return;
+  }
+  _LT.fail=null;
+  var res=(r.j.r && typeof r.j.r==='object') ? r.j.r : {}, no=Array.isArray(r.j.no) ? r.j.no : [], changed=false, miss=[];
+  keys.forEach(function(k){
+    var prev=_LT.map[k], nx=null;
+    if(no.indexOf(k)>=0) nx={ no:true, at:Date.now(), to:to, att:att[k] };
+    else { var v=res[k]; if(!v || typeof v!=='object' || !v.p || typeof v.p!=='object'){ miss.push(k); return; }
+      nx={ p:v.p, w:(v.w && typeof v.w==='object') ? v.w : {}, d:(v.d && typeof v.d==='object') ? v.d : {}, sal:v.sal, g:v.g, at:Date.now(), to:to, att:att[k] }; }
+    var a='', b=''; try{ a=prev ? JSON.stringify([prev.no, prev.p, prev.w, prev.d, prev.sal, prev.g]) : ''; b=JSON.stringify([nx.no, nx.p, nx.w, nx.d, nx.sal, nx.g]); }catch(e){ a=''; b='?'; }
+    if(a!==b) changed=true;
+    _LT.map[k]=nx;
+  });
+  if(miss.length){ miss.forEach(function(k){ _LT.need[k]=1; }); _LT.fail={ at:Date.now(), wait:30000, why:'missing' }; }   /* 答えに無かった店・月：読めなかったのと同じ（毎回の描画で頼み続けない） */
+  else if(Object.keys(_LT.need).length) ltSchedule();
+  if(changed) ltRedraw(); else ltPaint();
+}
+function ltRetry(){ _LT.fail=null; if(_LT.off && _LT.off.why!=='none') _LT.off=null; ltFlush(true); }
+/* 画面の上の帯：受け取るまで・読めないとき・関数が前の版・担当外のとき。数字は今までの端末の計算（仮の値）のまま見せる */
+function ltBandHtml(){
+  if(!ltRole() || !_LT.missAt || Date.now()-_LT.missAt>5000) return '';
+  var T=function(ja, en){ return t(ja, en); }, esc=escapeHtml, msg='', btn='';
+  var wages=ltHaveWages();
+  if(_LT.off){
+    if(wages) return '';   /* 時給が届いている（emp-private が前の版）：端末の計算は今までどおり正しい */
+    msg=_LT.off.why==='forbidden' ? T('この権限では人件費の合計をサーバーで読めません（AM は GM・CEO の「承認・閲覧の権限の確かめ」のあと）。表示は役職の時給で出した仮の値です','This account cannot read labor totals from the server (an AM needs the GM/CEO check first). Figures use title wages and are provisional')
+      : _LT.off.why==='none' ? T('ログインの印が無いため人件費の合計を読めません。ログインし直してください（表示は役職の時給で出した仮の値）','No login session to read labor totals. Please log in again (figures use title wages and are provisional)')
+      : T('人件費の合計を出す関数が前の版です。表示は役職の時給で出した仮の値です（10 分後にもう一度確かめます）','The labor totals function is an older version. Figures use title wages and are provisional (checking again in 10 minutes)');
+    btn=_LT.off.why==='none' ? '' : 'retry';
+  } else if(_LT.fail){
+    var why=_LT.fail.why==='net' ? T('通信できませんでした','could not connect') : _LT.fail.why==='timeout' ? T('時間内に答えがありませんでした','no answer in time') : T('サーバーのエラー','server error')+(_LT.fail.why ? '（'+esc(_LT.fail.why)+'）' : '');
+    msg=T('人件費の合計を読めませんでした：','Could not read labor totals: ')+why+T('。表示は役職の時給で出した仮の値です','. Figures use title wages and are provisional');
+    btn='retry';
+  } else if(_LT.busy || Object.keys(_LT.need).length || Object.keys(_LT.dirty).length){
+    if(wages) return '';
+    msg=T('人件費を読み込み中です（今の表示は役職の時給で出した仮の値）','Loading labor totals (figures shown now use title wages and are provisional)');
+  } else if(Object.keys(_LT.noHit).length && !wages){
+    var names=Object.keys(_LT.noHit).map(function(id){ var s=(typeof STORES!=='undefined' ? STORES : []).find(function(x){ return x && x.id===id; }); return s ? ((typeof _bStoreAbbr==='function' ? _bStoreAbbr(s) : s.name) || id) : id; });
+    msg=T('担当外の店（','Stores outside your scope (')+esc(names.join('・'))+T('）の人件費は、役職の時給で出した仮の値です',') show provisional labor figures based on title wages');
+  }
+  if(!msg) return '';
+  var icon=(_LT.fail || _LT.off) ? 'ti-alert-triangle' : 'ti-loader';
+  return '<div id="lt-band" role="status" aria-live="polite" style="position:sticky;top:0;z-index:5;display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:0 0 8px;padding:7px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface);font-size:12px;line-height:1.5;color:'+((_LT.fail || _LT.off) ? 'var(--yellow)' : 'var(--muted)')+'">'
+    +'<i class="ti '+icon+'"></i><span style="flex:1;min-width:200px;color:var(--tm)">'+msg+'</span>'
+    +(btn ? '<button class="btn btn-secondary btn-sm" style="padding:2px 8px" onclick="ltRetry()"'+(_LT.busy ? ' disabled' : '')+'><i class="ti ti-refresh"></i> '+T('もう一度','Retry')+'</button>' : '')
+    +'</div>';
+}
+function ltPaint(){
+  _LT.paintT=null;
+  try{
+    var m=document.getElementById('main-content'); if(!m) return;
+    var old=document.getElementById('lt-band'), h=ltBandHtml();
+    if(!h){ if(old && old.parentNode) old.parentNode.removeChild(old); _LT.noHit={}; return; }
+    if(old){ old.outerHTML=h; }
+    else { var tmp=document.createElement('div'); tmp.innerHTML=h; var el=tmp.firstChild; if(el) m.insertBefore(el, m.firstChild); }
+    _LT.noHit={};
+  }catch(e){}
+}
+/* ログインのあと：見られる店の今月をまとめて頼む（待たない） */
+function ltAfterLogin(){
+  try{
+    if(!ltRole()) return;
+    ltReset(ltTid());
+    var ym=curYm();
+    (getVisibleStores()||[]).forEach(function(s){ if(s && s.id && s.id!=='ALL') _LT.need[ltKey(s.id, ym)]=1; });
+    ltSchedule();
+  }catch(e){}
+}
+function ltOnLogout(){ ltReset(''); try{ var el=document.getElementById('lt-band'); if(el && el.parentNode) el.parentNode.removeChild(el); }catch(e){} }
+
 /* v1141（Codex #135 の P2）：この 2 つの設定をどの道で書いたかを「設定 › 診断と記録」に残す（手順.md の B-5 の確かめ）。
    fn＝関数 secure-state（v1141）が決めた人として書いた／same＝関数は書かなかった（このログインの役割では変えられない。クラウドと同じ値だったので止めなかった）／
    rest＝公開の鍵（REST）で書いた（関数が前の版・ログインの印が無い）。「保存済み」だけでは道が分からないため */
@@ -16302,12 +16592,13 @@ function swNote(key, how, by){
     cs_criteria:['スコア基準','Score criteria'], bonus_coef:['賞与の係数','Bonus coefficients'], bonus_coef_rng:['賞与の係数の幅','Bonus coefficient ranges'],
     bonus_track:['G3 の職種','G3 track'], bonus_eval_rule:['賞与の 4 項目の設定','Bonus 4-item settings'], bonus_eval_ovr:['賞与の個人設定','Bonus personal settings'],
     cs_strength_rule:['強みの決まり','Strength rule'], cs_guide:['評価基準・例','Evaluation guide'], grade_hist:['グレード履歴','Grade history'],
-    prep_tables:['プレップの時給の表','Prep wage tables'], prep_certs:['プレップの認定','Prep certifications'], tip_requests:['Tip Rate（前の統合行）','Tip Rate (old combined row)'] }[key]
+    prep_tables:['プレップの時給の表','Prep wage tables'], prep_certs:['プレップの認定','Prep certifications'], tip_requests:['Tip Rate（前の統合行）','Tip Rate (old combined row)'],
+    md_all_viewers_gm:['ダッシュボードで全店を見る人','Who sees every store on the dashboard'] }[key]
     || (String(key).indexOf(TP_TIP_PRE)===0 ? ['Tip Rate（'+String(key).slice(TP_TIP_PRE.length)+'）', 'Tip Rate ('+String(key).slice(TP_TIP_PRE.length)+')']
     : (scIsKey(key) ? (function(p){ return p.kind==='tip' ? ['Tip の期間の確定（'+(p.store||'?')+'）', 'Tip period confirmation ('+(p.store||'?')+')'] : ['注意ログ（'+p.store+'）', 'Warning log ('+p.store+')']; })(scParse(key)) : [key, key]));   /* v1147 */
   var rl={ ceo:'CEO', gm:'GM', office:['経理','Accounting'], office_crew:['事務Crew','Office Crew'], am:'AM', staff:['スタッフ','staff'] }[by];
   var rj=Array.isArray(rl) ? rl[0] : (rl || by || '?'), re=Array.isArray(rl) ? rl[1] : (rl || by || '?');
-  var fv=scIsKey(key) ? 'v1147' : (tpIsKey(key) ? 'v1146' : (ghIsKey(key) ? 'v1145' : (sw2IsKey(key) ? 'v1143' : 'v1141')));
+  var fv=lvIsKey(key) ? 'v1192' : (scIsKey(key) ? 'v1147' : (tpIsKey(key) ? 'v1146' : (ghIsKey(key) ? 'v1145' : (sw2IsKey(key) ? 'v1143' : 'v1141'))));
   var m = how==='fn'   ? [nm[0]+'：サーバー（secure-state '+fv+'）が書きました（役割 '+rj+'）', nm[1]+': written by the server (secure-state '+fv+', role '+re+')']
         : how==='same' ? [nm[0]+'：サーバー（secure-state '+fv+'）は書きませんでした（このログインの役割では変えられません。クラウドと同じ値だったので止めませんでした）', nm[1]+': the server (secure-state '+fv+') did not write (this sign-in may not change it; the cloud already had the same value)']
         : how==='none' ? [nm[0]+'：クラウドにもう入っているので書きませんでした（新しい変更なし）', nm[1]+': not written (the cloud already has it; nothing new)']
@@ -16460,6 +16751,7 @@ function ssOnLogout(){
   try{ if(typeof hrOnLogout==='function') hrOnLogout(); }catch(e){}   /* v1142：採用・お悩み相談室も */
   try{ if(typeof piiOnLogout==='function') piiOnLogout(); }catch(e){}   /* v1144：従業員の個人の欄も */
   try{ if(typeof ntOnLogout==='function') ntOnLogout(); }catch(e){}   /* v1152：通知も（受け取った分は残さない） */
+  try{ if(typeof ltOnLogout==='function') ltOnLogout(); }catch(e){}   /* v1192：人件費の合計も（前の人の答えを残さない） */
 }
 /* 関数を呼ぶ。返す：{ok, j}／{legacy}／{none}（ログインの印が無い）／{net}／{status, error} */
 async function ssCall(payload, retried){
@@ -16516,6 +16808,9 @@ async function ssCall(payload, retried){
   /* v1146：Tip Rate・プレップを扱う関数か（tpfn:1）。v1145 以前の関数なら、今までどおり REST で書く（前の版は「知らないキー」と断るだけで何も書かない） */
   if(j.tpfn===1) _ss.tpOld=null;
   else { _ss.tpOld={ id:S.id, at:Date.now() }; if(payload.key && tpIsKey(payload.key)) return { legacy:true }; }
+  /* v1192：全店を見る AM の写し（md_all_viewers_gm）を扱う関数か（ltfn:1）。v1191 以前の関数なら、今までどおり REST で書く */
+  if(j.ltfn===1) _ss.lvOld=null;
+  else { _ss.lvOld={ id:S.id, at:Date.now() }; if(payload.key && lvIsKey(payload.key)) return { legacy:true }; }
   /* v1147：Tip の期間の確定・注意ログを扱う関数か（scfn:1）。v1146 以前の関数なら、今までどおり REST で読み書きする */
   if(j.scfn===1) _ss.scOld=null;
   else { _ss.scOld={ id:S.id, at:Date.now() }; if((payload.key && scIsKey(payload.key)) || payload.action==='tcf_status') return { legacy:true }; }
@@ -16751,6 +17046,8 @@ async function ssPutRow(key, value, expect){
       'The server refused the bonus / Career Score settings (a record has the wrong shape; kept in the unsent list).');
     else if(ghIsKey(key)) ssWarnOnce('bad_gh', 'グレード履歴をサーバーが断りました（形の合わない記録があります。送信待ちに残しています。Claude に）',
       'The server refused the grade history (a record has the wrong shape; kept in the unsent list).');
+    else if(lvIsKey(key)) ssWarnOnce('bad_lv', 'ダッシュボードで全店を見る人の設定をサーバーが断りました（形の合わない記録があります。送信待ちに残しています。Claude に）',
+      'The server refused the "see every store on the dashboard" setting (a record has the wrong shape; kept in the unsent list).');   /* v1192 */
     else if(tpIsKey(key)) ssWarnOnce('bad_tp', (key.indexOf('prep_')===0 ? 'プレップの表・認定' : 'Tip Rate の記録')+'をサーバーが断りました（形の合わない記録があります。送信待ちに残しています。Claude に）',
       'The server refused the '+(key.indexOf('prep_')===0 ? 'prep tables / certifications' : 'Tip Rate records')+' (a record has the wrong shape; kept in the unsent list).');
     else if(scIsKey(key)) ssWarnOnce('bad_sc', (key.indexOf(SC_TIP_PRE)===0 ? 'Tip の期間の確定' : '注意ログ')+'をサーバーが断りました（形の合わない記録があります。送信待ちに残しています。Claude に）',
@@ -16767,6 +17064,8 @@ async function ssPutRow(key, value, expect){
       'Only the GM or CEO can change the bonus / Career Score settings (the server refused; kept in the unsent list — if you do not need the change, remove it with “Remove refused” under Save at the top right).');
     else if(ghIsKey(key)) ssWarnOnce('forbidden_gh', 'グレード履歴を変えられるのは GM・CEO です（サーバーが断りました。送信待ちに残しています。要らない変更なら、右上の「保存」の「断られたものを外す」で外せます）',
       'Only the GM or CEO can change the grade history (the server refused; kept in the unsent list — if you do not need the change, remove it with “Remove refused” under Save at the top right).');
+    else if(lvIsKey(key)) ssWarnOnce('forbidden_lv', 'ダッシュボードで全店を見る人を決められるのは GM・CEO です（サーバーが断りました。送信待ちに残しています。要らない変更なら、右上の「保存」の「断られたものを外す」で外せます）',
+      'Only the GM or CEO can decide who sees every store on the dashboard (the server refused; kept in the unsent list — if you do not need the change, remove it with “Remove refused” under Save at the top right).');   /* v1192 */
     else if(key==='prep_tables') ssWarnOnce('forbidden_tp_tbl', 'プレップの時給の表を変えられるのは GM・CEO です（サーバーが断りました。送信待ちに残しています。要らない変更なら、右上の「保存」の「断られたものを外す」で外せます）',
       'Only the GM or CEO can change the prep wage tables (the server refused; kept in the unsent list — if you do not need the change, remove it with “Remove refused” under Save at the top right).');
     else if(key==='prep_certs') ssWarnOnce('forbidden_tp_cert', 'プレップの認定を決められるのは GM・CEO です（経理は「反映した」の印だけ。サーバーが断りました。送信待ちに残しています。要らない変更なら、右上の「保存」の「断られたものを外す」で外せます）',
@@ -17756,6 +18055,7 @@ var OP_MERGE = {
   karte_bonus_config: { merge: mergeStamped,   covers: _coversStamped },
   bonus_rules:        { merge: mergeMapByTime, covers: _coversMapByTime },   /* v1042: 原資率の表とメモ。片方の保存がもう片方を消さない */
   grade_hist:         { merge: mergeMapByTime, covers: _coversMapByTime, cas: true },   /* v1145：GM・CEO だけが関数で書く（読んだ行が変わっていないときだけ書く） */
+  md_all_viewers_gm:  { merge: mdavMerge, covers: mdavCovers, cas: true, sent: mdavSent },   /* v1192：全店を見る AM の写し（GM・CEO だけが関数で書く・クラウドが正本で、この端末で変えた人の記録だけを重ねる＝PR #197 の Codex P2-2） */
   cs_criteria:        { merge: mergeMapByTime, covers: _coversMapByTime, cas: true },   /* v1058: スコア基準。目標（G2・G3 の 3 職種・G4・G5）ごとに新しいほう */
   career_cfg:         { merge: mergeMapByTime, covers: _coversMapByTime, cas: true },   /* v1103: 専門職 × グレードの権限（'<部門>|<G>' ごとに新しいほう）。
                          v1141（Codex #135 の P1）：読んだ行が変わっていないときだけ書く（2 台が同じ古い行に足して書くと、先の変更・権限の取り消しが消えた） */
@@ -18997,10 +19297,11 @@ function opMergePush(key, localVal, table){
              合流で値の見た目だけが変わる（4 項目の設定・個人設定の hist の並びなど）と、GM・CEO でない端末の送り直しが「違う値」として断られ、送信待ちに残り続けるため */
           if(row.exists && typeof swIsKey==='function' && swIsKey(key) && def.covers(row.value, desired)){
             if(typeof swNote==='function') swNote(key, 'none');
+            try{ if(def.sent) def.sent(row.value); }catch(e){}   /* v1192（PR #197 Codex P2-2）：クラウドがもう持っている＝送れた */
             desired=cm; _ok=true; break;
           }
           var w = await _opCasWrite(key, cm, row);
-          if(w==='ok'){ desired=cm; _ok=true; break; }
+          if(w==='ok'){ try{ if(def.sent) def.sent(cm); }catch(e){} desired=cm; _ok=true; break; }
           if(w==='badts'){ _ok=false; _why='badts'; _err='クラウドの更新時刻の形を読めなかったので送っていません（未送信に残します）'; break; }
           if(w==='stale'){ _ok=false; _why='stale'; _err='書き込みましたが、クラウドの更新時刻が読んだ時刻より進んだのを確かめられなかったので、ほかの端末の保存と重なっていないか分かりません（未送信に残して送り直します）'; break; }
           if(w!=='conflict'){ _ok=false; _why='fail'; _err='クラウドへの書き込みに失敗しました'; break; }
@@ -19035,6 +19336,7 @@ function opMergePush(key, localVal, table){
           /* v1174（PR #172 Codex P2）：pullBack のキー（pl_public）は、クラウドが残したもの（ほかの端末が先に入れた確定の月など）を手元にも入れる。
              covers は「書きたいものがクラウドに残ったか」だけを見るので、クラウドのほうが強い値（確定）を持っていても通る。そのままだと手元は暫定のまま */
           if(def.pullBack && check && typeof check==='object'){ try{ merged = _opWriteBack(key, def, def.merge(check, merged)); }catch(e){} }
+          try{ if(def.sent && check && typeof check==='object') def.sent(check); }catch(e){}   /* v1192（PR #197 Codex P2-2）：クラウドで確かめられたときだけ */
           desired=merged; _ok=true; break;
         }
         desired = def.merge(check, merged); // 誰かに上書きされた→取り込んで再試行
@@ -22848,6 +23150,7 @@ async function enterAppWithSync(){
   try { if (window._uxMastersP) uxLoginOpsStart(window._uxMastersP); } catch(e){}   /* v1127 */
   try { await fetchEmpPrivate(); } catch(e){}
   try { if (typeof piiAfterLogin === 'function') piiAfterLogin(); } catch(e){}   /* v1144：個人の欄と保険料の合計（待たない） */
+  try { if (typeof ltAfterLogin === 'function') ltAfterLogin(); } catch(e){}   /* v1192：経理・AM の人件費の合計（待たない） */
   hideSyncSplash();
   try { var _fm = document.getElementById('login-forced-msg'); if (_fm) _fm.style.display = 'none'; } catch(e){}
   var lsEl=document.getElementById('login-screen'); if(lsEl) lsEl.style.display='none';
@@ -27308,6 +27611,28 @@ function checkRangeSub(scopeStores, days){
     +_kpiMiniChip(t('最高 /日','Max /day'), '$'+hi.toFixed(2), md(hiD), true)
     +'</div>';
 }
+/* v1192：1 店の G2 以上／G1 の賃金（laborGradeSub の 1 店ぶん。core は laborCoreForYm か _laborWageParts の答え。経理・AM の端末はサーバーの合計） */
+function _laborGradeSplit(sid, ym, core, emps){
+  var _sv=(typeof ltServerGrade==='function') ? ltServerGrade(sid, ym) : null;
+  if(_sv) return _sv;
+  var g1=0, g2=0, has=false;
+  var gradeOf=function(n){ var e=emps.find(function(x){return x.name===n && x.store===sid;})||emps.find(function(x){return x.name===n;}); return e?(empGradeNum(e)||0):0; };
+  var mNames={};
+  var mStaff=(typeof storeMonthlyStaff==='function')?(storeMonthlyStaff(sid)||[]):[];
+  mStaff.forEach(function(e){
+    var m=(typeof empMonthlyOf==='function')?empMonthlyOf(e):0; if(!(m>0)) return;
+    mNames[e.name]=1;
+    var cost=(core.dim>0)?(m*core.periodDays/core.dim):0;
+    if(cost>0){ has=true; if((empGradeNum(e)||0)>=2) g2+=cost; else g1+=cost; }
+  });
+  Object.keys(core.byName||{}).forEach(function(n){
+    if(mNames[n]) return;
+    var a=core.byName[n]; var cost=0;
+    try{ cost=laborForEmployee(n,{regular:a.reg,ot:a.ot,pay:a.pay}).total; }catch(e){}
+    if(cost>0){ has=true; if(gradeOf(n)>=2) g2+=cost; else g1+=cost; }
+  });
+  return {g1:g1, g2:g2, has:has};
+}
 /* 人件費率: G2以上 / G1 の人件費(賃金＝時給＋月給按分)内訳。税・保険・手入力は含まない */
 function laborGradeSub(scopeStores, days){
   var ym=(days&&days[0])?days[0].date.slice(0,7):''; if(!ym) return '';
@@ -27316,21 +27641,8 @@ function laborGradeSub(scopeStores, days){
   (scopeStores||[]).forEach(function(s){
     var core; try{ core=laborCoreForYm(s.id, ym); }catch(e){ return; }
     if(!core) return;
-    var gradeOf=function(n){ var e=emps.find(function(x){return x.name===n && x.store===s.id;})||emps.find(function(x){return x.name===n;}); return e?(empGradeNum(e)||0):0; };
-    var mNames={};
-    var mStaff=(typeof storeMonthlyStaff==='function')?(storeMonthlyStaff(s.id)||[]):[];
-    mStaff.forEach(function(e){
-      var m=(typeof empMonthlyOf==='function')?empMonthlyOf(e):0; if(!(m>0)) return;
-      mNames[e.name]=1;
-      var cost=(core.dim>0)?(m*core.periodDays/core.dim):0;
-      if(cost>0){ has=true; if((empGradeNum(e)||0)>=2) g2+=cost; else g1+=cost; }
-    });
-    Object.keys(core.byName||{}).forEach(function(n){
-      if(mNames[n]) return;
-      var a=core.byName[n]; var cost=0;
-      try{ cost=laborForEmployee(n,{regular:a.reg,ot:a.ot,pay:a.pay}).total; }catch(e){}
-      if(cost>0){ has=true; if(gradeOf(n)>=2) g2+=cost; else g1+=cost; }
-    });
+    var x=_laborGradeSplit(s.id, ym, core, emps);
+    if(x.has) has=true; g1+=x.g1; g2+=x.g2;
   });
   if(!has) return '';
   return '<div style="margin-top:6px;display:flex;gap:4px">'
@@ -27829,6 +28141,8 @@ function canEditBudget(b, ym) {
    今日までの日次予算と日次実績を積み上げ、現在地を返す */
 /* 指定日のToast実績人件費($) = Σ(従業員の(lunch+dinner)時間 × 時給)。Order Onlyは除外済み(getTipLabor)。 */
 function toastLaborCostForDate(storeId, dateISO){
+  var _sv = (typeof ltServerDay==='function') ? ltServerDay(storeId, dateISO) : null;   /* v1192：経理・AM の端末はサーバーの合計（全員の時給を持たない） */
+  if (_sv) return _sv.c;
   var labor = getTipLabor(storeId, dateISO);
   if(!labor) return 0;
   var cost = 0;
@@ -27880,6 +28194,8 @@ function storeInsuranceDaily(storeId, ym){
 }
 /* その店舗に在籍する月給制スタッフ（退職除く）の 月額給与 合計 */
 function storeSalaryMonthly(storeId){
+  var _sv = (typeof ltServerSalary==='function') ? ltServerSalary(storeId) : null;   /* v1192：経理・AM の端末はサーバーの合計（月給を持たない） */
+  if (_sv!=null) return _sv;
   var sum = 0;
   getEmployees().forEach(function(e){
     if (!e || e.store!==storeId) return;
@@ -34187,19 +34503,26 @@ function _meetLaborLD(storeId, ym){
   days.forEach(function(d){
     var ov=salesActualForDay(storeId,d.date,da[d.date]);
     lsv+=Number(ov.lunchSales)||0; dsv+=Number(ov.dinnerSales)||0;
-    var lab=null; try{ lab=getTipLabor(storeId, d.date); }catch(e){}
-    if(!lab) return;
-    Object.keys(lab).forEach(function(n){
-      var e=lab[n]; if(!e) return;
-      var rL=Number(e.rawLunch)||0, rD=Number(e.rawDinner)||0;
-      var wL=Number(e.lunch)||0,    wD=Number(e.dinner)||0;
-      /* _laborHrs と同じ選び方（合計が大きい側を採用）にそろえる */
-      var useRaw=(rL+rD)>=(wL+wD);
-      var w=0; try{ w=empWageAt(n, storeId, d.date)||0; }catch(e2){}   /* v1106 */
-      lc+=(useRaw?rL:wL)*w; dc+=(useRaw?rD:wD)*w;
-    });
+    var x=_meetLaborLDDay(storeId, d.date); lc+=x.lc; dc+=x.dc;
   });
   return {lunchCost:lc, dinnerCost:dc, lunchSales:lsv, dinnerSales:dsv};
+}
+/* v1192：1 日のランチ／ディナーの時給×時間（_meetLaborLD の 1 日ぶん。経理・AM の端末はサーバーの合計） */
+function _meetLaborLDDay(storeId, date){
+  var _sv=(typeof ltServerDay==='function') ? ltServerDay(storeId, date) : null;
+  if(_sv) return {lc:_sv.ml, dc:_sv.md};
+  var lc=0, dc=0, lab=null; try{ lab=getTipLabor(storeId, date); }catch(e){}
+  if(!lab) return {lc:0, dc:0};
+  Object.keys(lab).forEach(function(n){
+    var e=lab[n]; if(!e) return;
+    var rL=Number(e.rawLunch)||0, rD=Number(e.rawDinner)||0;
+    var wL=Number(e.lunch)||0,    wD=Number(e.dinner)||0;
+    /* _laborHrs と同じ選び方（合計が大きい側を採用）にそろえる */
+    var useRaw=(rL+rD)>=(wL+wD);
+    var w=0; try{ w=empWageAt(n, storeId, date)||0; }catch(e2){}   /* v1106 */
+    lc+=(useRaw?rL:wL)*w; dc+=(useRaw?rD:wD)*w;
+  });
+  return {lc:lc, dc:dc};
 }
 /* 中間MTG: 区分別内訳（客数L/D/TO・客単価L/D/TO・ドリンク酒/ソフト）を目標差リンクで表示 */
 function _meetSegExtra(k, key, storeId, ym, paceFrac, unit){
@@ -39255,6 +39578,8 @@ function ldLaborDay(storeId, date){
     var useRaw=(rL+rD)>=(wL+wD), hL=useRaw?rL:wL, hD=useRaw?rD:wD, w=0; try{ w=(pmHasAt(n, storeId)?empWageAt(n, storeId, date):_ldWage(n))||0; }catch(e2){}   /* v1048・v1106: プレップの認定はその日の時給 */
     r.hL+=hL; r.hD+=hD; r.cL+=hL*w; r.cD+=hD*w;
   });
+  var _sv=(typeof ltServerDay==='function') ? ltServerDay(storeId, date) : null;   /* v1192：時間は端末で数えたまま、お金だけサーバーの合計 */
+  if(_sv){ r.cL=_sv.ll; r.cD=_sv.ld; }
   return r;
 }
 /* v1048: 時給の表（1回の描画で1回だけ作る。empWage(名前) と同じ答え） */
@@ -47725,6 +48050,7 @@ var LS_NEVER_FREE = ['initiatives',   /* v956: 施策の定義。手入力なの
   'ec_resolutions',    /* v1088: エラーの解除（誰が・いつ・どの理由で。手で決めたもの・再生不可） */
   'sl_config','sl_manual_','ocs_asg_','ocs_ev_','ocs_cfg',   /* v1050: オフィス用 Career Score（手入力・再生不可） */
   'md_all_viewers',   /* v1090: ダッシュボードで全店を見る人（手で決めたもの・再生不可） */
+  'md_all_viewers_gm',   /* v1192: その GM・CEO だけが書ける写し（サーバーが人件費の合計の範囲に使う） */
   'funergy_times',    /* v1191: FUNERGY TIMES の設定と前の設定（CEO・GM が決めたもの・再生不可） */
   'warnings_',   /* v832: 注意ログ（手入力・再生不可） */
   'att_fix_','tip_cf_','kpi_man_','dev_pipe',   /* v1136：勤怠の手動修正・Tip の確定・手入力 KPI・育成の記録（手入力・再生不可） */
@@ -48085,7 +48411,7 @@ function laborHoursData(storeId) {
     if (actualH<=0 && sales<=0 && plannedH<=0) return;
     if (d.date<=todayStr) { cumHours+=actualH; cumSales+=sales; cumPlanned+=plannedH; }
     var laborCost = 0;
-    if (labor) Object.keys(labor).forEach(n=>{ var w=empWageAt(n, storeId, d.date)||0; var h=_laborHrs(labor[n]); laborCost += w*h; });   /* v1106 */
+    laborCost = toastLaborCostForDate(storeId, d.date);   /* v1106：Σ（時間×その日の時給）。v1192：同じ式を 1 か所に（経理・AM の端末はサーバーの合計） */
     if (actualH>0) laborCost += storeSalaryDaily(storeId, d.date.slice(0,7)); // 月給制の日割り（生・税なし＝時給と同扱い）
     rows.push({date:d.date, dow:d.dow, sales, plannedH, actualH, diff:actualH-plannedH,
       laborCost, laborRate: sales?Math.round(laborCost/sales*1000)/10:0,
@@ -48171,13 +48497,13 @@ function laborBreakdownForPeriod(storeId, days){
     var rows = Object.keys(_core.byName).map(function(n){
       var a=_core.byName[n]; var calc=laborForEmployee(n,{regular:a.reg,ot:a.ot,pay:a.pay});
       return { name:n, hours:a.hours, reg:a.reg, ot:a.ot, wage:calc.wage, amount:Math.round(calc.total*100)/100 };
-    }).filter(function(r){ return r.hours>0 && !((storeMonthlyStaff(storeId)||[]).some(function(e){return e.name===r.name && empMonthlyOf(e)>0;})); })
+    }).filter(function(r){ return r.hours>0 && !((storeMonthlyStaff(storeId)||[]).some(function(e){return e.name===r.name && empMonthlyKnown(e);})); })   /* v1192：経理・AM の端末は月給の額が無い（印で） */
       .sort(function(x,y){ return (y.amount-x.amount)||(y.hours-x.hours); });
     var salaryRows = (storeMonthlyStaff(storeId)||[]).map(function(e){
       var monthly=empMonthlyOf(e);
       var amount=_core.dim>0?Math.round(monthly*_core.periodDays/_core.dim*100)/100:0;
-      return { name:e.name, monthly:true, monthlySalary:monthly, hours:0, wage:0, amount:amount };
-    }).filter(function(r){ return r.monthlySalary>0; }).sort(function(x,y){return y.amount-x.amount;});
+      return { name:e.name, monthly:true, monthlySalary:monthly, hours:0, wage:0, amount:amount, _known:empMonthlyKnown(e) };
+    }).filter(function(r){ return r._known; }).sort(function(x,y){return y.amount-x.amount;});
     return {
       rows: rows, salaryRows: salaryRows,
       totalHours: Math.round(rows.reduce(function(s,r){return s+r.hours;},0)*100)/100,
@@ -48222,8 +48548,8 @@ function laborBreakdownForPeriod(storeId, days){
   var salaryRows = storeMonthlyStaff(storeId).map(function(e){
     var monthly = empMonthlyOf(e);
     var amount = _bkFrozen ? monthly : (dim>0 ? Math.round((monthly/dim)*daysWithData*100)/100 : 0);
-    return { name:e.name, monthly:true, monthlySalary:monthly, hours:0, wage:0, amount:amount };
-  }).filter(function(r){ return r.monthlySalary>0; }).sort(function(x,y){return y.amount-x.amount;});
+    return { name:e.name, monthly:true, monthlySalary:monthly, hours:0, wage:0, amount:amount, _known:empMonthlyKnown(e) };
+  }).filter(function(r){ return r._known; }).sort(function(x,y){return y.amount-x.amount;});   /* v1192 */
   var salaryTotal = Math.round(salaryRows.reduce(function(s,r){return s+r.amount;},0)*100)/100;
   var base = Math.round((wageBase + salaryTotal)*100)/100; // 賃金（時給＋月給日割り）
   var tax = Math.round(base*PAYROLL_TAX_RATE*100)/100;     // 月給にも給与税17%を適用
@@ -48401,7 +48727,8 @@ function sumWeekStats(storeId, dates) {
     if (ov.foodCost!=null) food += ov.foodCost;
     var labor = getTipLabor(storeId, date);
     var hadH=false;   /* v1057: 実働（Labor 集計と同じ _laborHrs）。lunch/dinner は Tip の対象時間で、営業時間のみの店は窓の外が抜ける */
-    if (labor) Object.keys(labor).forEach(n=>{ var h=_laborHrs(labor[n]); if(h>0)hadH=true; hours+=h; laborCost+=h*(empWageAt(n, storeId, date)||0); });   /* v1106 */
+    if (labor) Object.keys(labor).forEach(n=>{ var h=_laborHrs(labor[n]); if(h>0)hadH=true; hours+=h; });
+    if (labor) laborCost += toastLaborCostForDate(storeId, date);   /* v1106：Σ（時間×その日の時給）。v1192：同じ式を 1 か所に（経理・AM の端末はサーバーの合計） */
     if (hadH) laborCost += storeSalaryDaily(storeId, date.slice(0,7)); // 月給制の日割り（生）
   });
   return {sales, guests, hours, laborCost, food,
@@ -48532,7 +48859,10 @@ function laborCoreForYm(storeId, ym, opts){
   if(opts && (opts.endBefore !== undefined || opts.weekSun)) return _laborCoreForYmRaw(storeId, ym, opts);
   return _mdMemo('labor', String(storeId) + '|' + ym, function(){ return _laborCoreForYmRaw(storeId, ym, opts); });
 }
-function _laborCoreForYmRaw(storeId, ym, opts){
+/* v1192：共通コアのうち、時給・月給に関わる部分（人ごとの時間・時給の合計（丸める前）・月給の日割り・有給）。
+   CEO・GM の端末はここで計算する。全員の時給を持たない経理・AM の端末は、関数 secure-state がこの関数をそのまま動かした答え
+   （時給の合計・月給・有給のお金だけ）を使い、人ごとの時間は端末で数える（_laborCoreForYmRaw）。中身は v1191 の _laborCoreForYmRaw の前半と同じ */
+function _laborWageParts(storeId, ym, opts){
   opts = opts||{};
   var cutoff = (opts.endBefore!==undefined) ? opts.endBefore : (ym===curYm() ? bizToday() : null);
   var weeks = laborMonthWeeks(ym).filter(function(w){ return !opts.weekSun || w.sun===opts.weekSun; });
@@ -48588,6 +48918,20 @@ function _laborCoreForYmRaw(storeId, ym, opts){
   } catch(e){}
   leavePay = Math.round(leavePay*100)/100;
   var dim = daysInMonthOf(ym);
+  var periodDays=0, seen={};
+  weeks.forEach(function(w){ laborWeekDays(w.sun).forEach(function(dt){ if(!inRange(dt) || seen[dt]) return; seen[dt]=1; periodDays++; }); });
+  var salary = 0;
+  mStaff.forEach(function(e){ var m=(typeof empMonthlyOf==='function')?empMonthlyOf(e):0; if(m>0 && dim>0) salary += m*periodDays/dim; });
+  salary = Math.round(salary*100)/100;
+  return { cutoff:cutoff, weeks:weeks, byName:byName, hourly:hourly, leave:leavePay, leaveDays:leaveDays, salary:salary, periodDays:periodDays, dim:dim };
+}
+function _laborCoreForYmRaw(storeId, ym, opts){
+  opts = opts||{};
+  var P = _laborWageParts(storeId, ym, opts);
+  /* v1192：経理・AM の端末（全員の時給を持たない）は、お金の部分だけ関数 secure-state の答えに置き換える（人ごとの時間は端末で数えたまま） */
+  if (typeof ltServerParts==='function') P = ltServerParts(storeId, ym, opts, P);
+  var cutoff=P.cutoff, weeks=P.weeks, byName=P.byName, hourly=P.hourly, leavePay=P.leave, leaveDays=P.leaveDays, dim=P.dim;
+  var inRange = function(dt){ return String(dt).slice(0,7)===ym && (!cutoff || dt<cutoff); };
   var periodDays=0, sales=0, manual=0, daysWithActual=0, seen={};
   var laborDays=0, noLaborDays=[];   /* v1067（Codex レビュー R3）：勤怠の記録（Toast の打刻を取得した日・手入力の人件費）がある日／売上はあるのに勤怠が無い日（未取得） */
   var acts = _daRO(storeId);
@@ -48603,9 +48947,7 @@ function _laborCoreForYmRaw(storeId, ym, opts){
       else if((Number(v.actual)||0)>0) noLaborDays.push(dt);           /* チップの画面の「勤怠なし」と同じ考え方 */
     });
   });
-  var salary = 0;
-  mStaff.forEach(function(e){ var m=(typeof empMonthlyOf==='function')?empMonthlyOf(e):0; if(m>0 && dim>0) salary += m*periodDays/dim; });
-  salary = Math.round(salary*100)/100;
+  var salary = P.salary;
   var ins = Math.round(((typeof storeInsuranceDaily==='function')?storeInsuranceDaily(storeId, ym):0)*periodDays*100)/100;
   var wage = Math.round((hourly+salary+leavePay)*100)/100;
   var tax = Math.round(wage*PAYROLL_TAX_RATE*100)/100;
@@ -49274,7 +49616,7 @@ function renderLaborDetail(storeId, store) {
   var _mStaff = (typeof storeMonthlyStaff==='function')?storeMonthlyStaff(storeId):[];
   _mStaff.forEach(function(e){
     var _msal = (typeof empMonthlyOf==='function')?empMonthlyOf(e):0;
-    if(!(_msal>0)) return;
+    if(!(typeof empMonthlyKnown==='function' ? empMonthlyKnown(e) : _msal>0)) return;   /* v1192：経理・AM の端末は額が無い（印で行を出す。額は見せない） */
     var _amt = (_dimM>0) ? Math.round(_msal*_periodDaysM/_dimM*100)/100 : 0;
     var a = agg[e.name]||{reg:0,ot:0};
     totalCost += _amt; totalReg += (a.reg||0); totalOt += (a.ot||0); shownCount++;
@@ -49652,7 +49994,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1191';
+const APP_VERSION = '1192';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -49843,6 +50185,7 @@ function setTitleWageTable(tbl) { lsSet('m_titlewage', tbl); }
 function empPayType(e){
   if (e && e.payTypeOverride) return e.payTypeOverride; // 個別上書き（例: 事務Crewは時給）
   if (e && e.monthlySalary!=null && e.monthlySalary!=='' && parseFloat(e.monthlySalary)>0) return 'monthly'; // 月給額が設定されていれば月給者（固定給を人件費に反映）
+  if (e && e._srvMs===true) return 'monthly';   /* v1192：経理・AM の端末。額は来ないが、月給の額が入っている人（emp-private の印） */
   return isMonthlyTitle(e.title) ? 'monthly' : 'hourly';
 }
 /* v915: 月給者が現場に出たぶんを、打刻した店の人件費へ配賦する単価。
@@ -67670,7 +68013,12 @@ function officeCalcHours(rec){
   var mins=gross-(rec.breakMin||0);
   return Math.max(0, Math.round(mins/60*100)/100);
 }
-function officeHourly(emp){ return !!(emp && (emp.wage||0)>0); } // wage>0=時給 / 0=月給
+function officeHourly(emp){
+  if(!emp) return false;
+  /* v1192：emp-private v1192 は経理・AM の端末にほかの人の時給を返さない（wage が無い）。そのときは月給の印と肩書きで決める（empPayType） */
+  if(emp.wage===undefined && window._empPrivate && window._empPrivate._scope==='contacts') return (typeof empPayType==='function') ? empPayType(emp)!=='monthly' : false;
+  return (emp.wage||0)>0;
+} // wage>0=時給 / 0=月給
 function officeEmpByName(n){ return getEmployees().find(function(e){return e.name===n;})||null; }
 /* 現在開いている勤務（出勤済・未退勤）を日付に依存せず取得。日跨ぎ・海外(端末ローカル時刻)対応 */
 function officeOpenRec(arr){ if(!arr) return null; for(var i=arr.length-1;i>=0;i--){ if(arr[i].in && !arr[i].out) return arr[i]; } return null; }
@@ -67937,7 +68285,7 @@ function officeTimesheet(name, ym, canEdit){
     +'<div style="flex:1;background:var(--surface);border-radius:8px;padding:8px;text-align:center"><div style="font-size:11px;color:var(--muted)">総勤務時間</div><div style="font-size:18px;font-weight:700">'+(Math.round(totalH*10)/10)+'h</div></div>'
     +'<div style="flex:1;background:var(--surface);border-radius:8px;padding:8px;text-align:center"><div style="font-size:11px;color:var(--muted)">勤務日数</div><div style="font-size:18px;font-weight:700">'+days+'日</div></div>'
     +'<div style="flex:1;background:var(--surface);border-radius:8px;padding:8px;text-align:center"><div style="font-size:11px;color:var(--muted)">休憩計</div><div style="font-size:18px;font-weight:700;color:'+(overDays>0?'var(--red)':'var(--tm)')+'">'+totalBreak+'分</div>'+(overDays>0?'<div style="font-size:9px;color:var(--red)">上限超過 '+overDays+'日</div>':'')+'</div>'
-    +(hourly?'<div style="flex:1;background:var(--surface);border-radius:8px;padding:8px;text-align:center"><div style="font-size:11px;color:var(--muted)">概算給与</div><div style="font-size:18px;font-weight:700">$'+Math.round(totalH*(emp.wage||0)).toLocaleString()+'</div></div>':'<div style="flex:1;background:var(--surface);border-radius:8px;padding:8px;text-align:center"><div style="font-size:11px;color:var(--muted)">給与形態</div><div style="font-size:14px;font-weight:700;margin-top:3px">月給</div></div>')
+    +((hourly && (emp.wage||0)>0 && (typeof canViewWageOf!=='function' || canViewWageOf(emp)))?'<div style="flex:1;background:var(--surface);border-radius:8px;padding:8px;text-align:center"><div style="font-size:11px;color:var(--muted)">概算給与</div><div style="font-size:18px;font-weight:700">$'+Math.round(totalH*(emp.wage||0)).toLocaleString()+'</div></div>':'<div style="flex:1;background:var(--surface);border-radius:8px;padding:8px;text-align:center"><div style="font-size:11px;color:var(--muted)">給与形態</div><div style="font-size:14px;font-weight:700;margin-top:3px">'+(hourly?'時給':'月給')+'</div></div>')   /* v1192：時給が分からない（経理の端末）・本人とCEO・GM 以外には概算給与を出さない（v1191 の 2A） */
     +'</div>';
   if(canEdit){
     html+='<div style="display:flex;gap:8px;align-items:center;margin-top:10px;flex-wrap:wrap">'

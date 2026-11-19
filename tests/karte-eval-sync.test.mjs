@@ -353,7 +353,7 @@ test('R3: a store-month without purchases/inventory or attendance is "missing" w
 
 // The real PL / food cost / labor functions with synthetic sources (no purchases, attendance only on some days, …)
 function realPl(c, src) {
-  install(c, 'plComputeStore', 'foodCostOf', '_laborCoreForYmRaw', 'laborWeekDays', 'laborMonthWeeks', 'laborWeekRange', '_laborHrs', 'isoLocalDate', 'isoOf');
+  install(c, 'plComputeStore', 'foodCostOf', '_laborCoreForYmRaw', '_laborWageParts', 'laborWeekDays', 'laborMonthWeeks', 'laborWeekRange', '_laborHrs', 'isoLocalDate', 'isoOf');
   c.SRC = src;
   vm.runInContext(`
     var PL_VC_CATS = [], PL_FIX_CATS = [], PAYROLL_TAX_RATE = 0.17;

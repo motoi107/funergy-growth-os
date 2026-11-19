@@ -60,7 +60,7 @@ test('R2: an offline stale device cannot finalize an obsolete completed evaluati
 
 test('R3: absent cost and attendance records are missing, not an excellent FL result', t => {
   const c = company();
-  install(c, 'plComputeStore', 'foodCostOf', '_laborCoreForYmRaw', 'laborWeekDays', 'laborMonthWeeks', 'laborWeekRange', '_laborHrs', 'isoLocalDate', 'isoOf');
+  install(c, 'plComputeStore', 'foodCostOf', '_laborCoreForYmRaw', '_laborWageParts', 'laborWeekDays', 'laborMonthWeeks', 'laborWeekRange', '_laborHrs', 'isoLocalDate', 'isoOf');
   // Revenue/budget exists in the fixture. All cost, inventory and attendance
   // sources below are empty; the real PL and labor calculations consume them.
   vm.runInContext(`

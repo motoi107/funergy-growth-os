@@ -429,7 +429,7 @@ test('給与：PIN なしで入った人はログインの印で頼む／読め�
   let refuseToken = false;
   ctx.window = ctx;
   vm.createContext(ctx);
-  vm.runInContext(fnSrc('fetchEmpPrivate') + fnSrc('_empPrivOk') + fnSrc('saveEmpPrivate'), ctx);
+  vm.runInContext(fnSrc('fetchEmpPrivate') + fnSrc('_empPrivOk') + fnSrc('empPrivSaveMode') + fnSrc('saveEmpPrivate'), ctx);   // v1192：保存のしかたを決める関数も
   ctx._mlSignedIn = true; ctx._hwSession = 'mark:E2:1';
   assert.equal(await ctx.saveEmpPrivate('S1', 0, '', '', null), 'failed');
   assert.equal(sent.filter(x => x[0] === 'fetch').length, 0, '読めていないときは送らない');
