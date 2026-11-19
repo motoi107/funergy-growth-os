@@ -218,3 +218,9 @@ Codex が要修正とした 3 つ。関連 150 試験は成功していたが、
 - 関連 10 ファイル（md-all-viewers-gm・client・labor-totals・deploy・unified-ui・times-sync・pay-detail・secure-settings-client・merge-whole-v1149・handbook-progress）176/176・static release pass/1192・`build-labor-core.mjs --check` OK。
 - わざと壊す 6 通り（印を見ずに全部持ち込む・印と記録の時刻の確かめを外す・クラウドが新しいときも重ねる・`sent` を呼ばない・印を書けなくても保存する・送れても印を消さない）すべてで落ちる（1 回目 5/6 → 印を書けない端末の試験を足した）。
 - 関数 secure-state は変えていない（入れる一式の 1 ファイルはそのまま）。
+
+### 7b. 再レビュー（Codex 6996697297・Claude のルーティン 6996644402・`5886604`）と小さな直し
+
+- どちらも、7 の場面は解消・新しい P1・P2 なし（Codex は blocked／manual＝非公開の emp-private・本番・実機の確かめが残るため）。
+- 直した（Codex の推奨）：付け外しの知らせ 4 つを英語の画面でも英語に（`mdSetAllViewer`）。試験 client に英語の確かめ（9 件のまま）。
+- 記録だけ（ルーティンの P3）：印はログインに結ばれていない（共有の端末で送れないままログアウトすると、次の GM・CEO の送信で送られる／GM・CEO 以外なら断られて印が残る）・IndexedDB を読み直す道では古い写しが手元に残る（次の送信でクラウドが正になる）・前の `md_all_viewers` には古い値が入りうる（前の版の端末の表示用）。
