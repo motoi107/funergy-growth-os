@@ -1,5 +1,15 @@
 # Claude / Codex 共通記録
 
+## 2026-11-18 夜 v1195：所属の確認（段階 2 の ①・Claude・ブランチ `claude/unified-stage2-1195`・#199（v1194・`3dc833c`）の上・SQL `20261212090000`・関数 secure-state・アプリ・本番未反映）
+
+- 依頼：UI案96 の答え（Moto さん 11/18 19:54 HST「1 B・2 A・3 A・4 A・5 B・6 B・7 B」）。入れる順 ① 所属の確認とサーバーの写し → ② 左上と前の値 → ③ 大タブを 1 つの木に → ④ 経理センターの入口。仕様・限界：`docs/UNIFIED_UI_V1191_JA.md` の 18。入れる一式：`deploy/unified-stage2-v1195/`（① → ② SQL → ③ → ④ secure-state → マージと全部の端末を 1195 に → GM・CEO が「所属の確認」で保存）。
+- 2 つの版に分けた（Claude が決めた・Moto さんに伝える）：v1195＝① だけ（左上の店・メニュー・ログイン直後は変えない）／v1196＝②③④（アプリだけの見込み）。先にだれが本部かを確かめ終えていないと、②〜④ を入れても全員が「今の見え方」のままのため。
+- サーバー：表 `aff_people`（人ごとの所属・人ごとの版）・`aff_log`（記録）・関数 `aff_save`（サーバーの鍵だけ・1 人でも版が違えば何も書かない）。secure-state の `aff_get`（自分の行）・`aff_full`／`aff_save`（GM・CEO だけ）・答えに `affn:1`。
+- アプリ v1195（`FUNERGY_AFF`）：従業員マスターの上のカード → 確認が必要／決めた人／全員・おすすめ・人ごとの「変わること」・サーバー → 従業員マスターの順に保存（本部は所属 `OFFICE`）・先に変わった人がいれば何も保存しない・マスターに書けなければやり直せる。`OFFICE` は「特定の店ではない」所（既定の店に戻す所・表示）だけ ALL と同じ。全店の一覧に入れる所は ALL だけ。
+- **AM の見える範囲は広げない**（Claude が決めた・Moto さんに確かめる）：本部（OFFICE）の人は AM には応援が担当の店のときだけ見える（`piiScope` は ALL＝全店のまま）。ALL → OFFICE にするとその人を見られる人は狭くなる（画面の「変わること」に出る）。
+- 試験（合成データ）：aff-server 6・aff-app 12・aff-deploy 4（わざと壊す 19/19・37/37・5/5）。v1192・v1193 の 1 ファイルの試験は `affn` を除いて比べるように直した（v1193 の 1 ファイルは sha256 で固定）。static release pass/1195。CI（`.github/workflows` の手順を手元で流した・fetch と npm ci の 2 段は除く）：走る 83 段すべて成功。前の試験の直し：答えを丸ごと比べる 2 つ（secure-state-server・secure-grade-bonus-read-server）に `affn:1`・`saveEmp` を切り出す 2 つ（career-criteria・employee-resign-sync）に `empOfficeStore`・`empAnyStore`（直す前は 3 段が落ちた）。`tests/specialist-career.test.mjs` の 2 件は前から落ちる（`e8bb902` の index.html でも同じ・CI に入っていない）。独立レビュー（Claude の別エージェント）は無し。Codex のレビューはまだ。
+- 次：PR → Codex → #199 → この PR の順にマージ → Moto さんが `deploy/unified-stage2-v1195/手順.md`（① の表は Claude との会話にだけ）→ GM・CEO が保存。そのあと v1196（②③④）。
+
 ## 2026-11-18 夜 v1194：見るだけの棚卸しの「自動保存」の表示と、検索の欄を戻す件（P3 2 つ・Claude・ブランチ `claude/pv-p3-1194`・main `2be71c2`＋#198 の記録の上・アプリだけ・本番未反映）
 
 - Moto さん 11/18 18:56 HST：「小さな直しは終わらせてください / １１９３になってます、EmpーPrivateも差し替え済みです / 次進めてください」＝全部の端末が 1193・emp-private v1192（非公開・`a20ca44ab8e7`）を差し替えた（Moto さんの報告・Claude は未確認）。全店を見る AM の付け直しと「画面の表示」の初めての保存は、報告に無い（未確認）。

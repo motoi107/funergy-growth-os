@@ -16,7 +16,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const rd = p => fs.readFileSync(path.join(ROOT, p), 'utf8');
 const sha = p => crypto.createHash('sha256').update(fs.readFileSync(path.join(ROOT, p))).digest('hex');
 const D = 'deploy/labor-totals-v1192/';
-// v1193 から build() は deploy/page-view-v1193/ に書く。v1192 の 1 ファイルは Moto さんに渡したときのまま（sha256 で固定）
+// v1193 から build() は別のフォルダ（v1195 からは deploy/unified-stage2-v1195/）に書く。v1192 の 1 ファイルは Moto さんに渡したときのまま（sha256 で固定）
 const ONE = D + '4_関数_secure-state_index.ts';
 const ONE_SHA = '86df77ff4a2d66b83574eab2ffab76687dacddcee5776aa848581382a12bdb6c';
 
@@ -69,6 +69,7 @@ test('the one-file secure-state answers the same as the module handler', async (
     const b = await ask(createHandler({ env, fetch: fetchStub, now }));
     assert.equal(a[0], 200);
     delete b[1].pvfn;   // v1193 の handler は答えに pvfn:1 も付ける（v1192 の 1 ファイルは付けない）
+    delete b[1].affn;   // v1195 の handler は答えに affn:1 も付ける
     assert.deepEqual(a, b);
     assert.ok(a[1].r['F01|2026-11'].p.hourly > 0 && a[1].r['F01|2026-11'].p.salary > 0);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
