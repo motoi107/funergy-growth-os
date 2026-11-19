@@ -16779,6 +16779,7 @@ function ssOnLogout(){
   try{ if(typeof ntOnLogout==='function') ntOnLogout(); }catch(e){}   /* v1152：通知も（受け取った分は残さない） */
   try{ if(typeof ltOnLogout==='function') ltOnLogout(); }catch(e){}   /* v1192：人件費の合計も（前の人の答えを残さない） */
   try{ if(window.FUNERGY_PV) FUNERGY_PV.onLogout(); }catch(e){}   /* v1193：画面の表示の設定も */
+  try{ if(window.FUNERGY_AFF) FUNERGY_AFF.onLogout(); }catch(e){}   /* v1195：所属の確認も（待っている答えは使わない・Codex #200 P2-2） */
 }
 /* 関数を呼ぶ。返す：{ok, j}／{legacy}／{none}（ログインの印が無い）／{net}／{status, error} */
 async function ssCall(payload, retried){
@@ -23250,7 +23251,7 @@ function resolveLoginIdentity(){
   _applyRole(emp.role || curRealRole || 'crew');
   curUserName = emp.name;
   if (loginLocation==='OFFICE') curStore = 'ALL';
-  else curStore = (emp.store && emp.store!=='ALL') ? emp.store : loginLocation;
+  else curStore = (emp.store && !empAnyStore(emp.store)) ? emp.store : loginLocation;   /* v1195：所属が本部（OFFICE）の人も全店と同じく選んだ店（Codex・Claude #200 P2-3） */
   if (['ceo','gm','office'].includes(curRole)) curStore = 'ALL';
 }
 /* ログイン画面表示前に、クラウドから従業員・店舗・PINだけ先読みする（軽量）。
@@ -50899,6 +50900,9 @@ function empIsHq(e) { return empHqState(e) === 'hq'; }
 function empOfficeStore(v) { return v != null && String(v).trim().toUpperCase() === 'OFFICE'; }
 function empAnyStore(v) { return v === 'ALL' || empOfficeStore(v); }
 function empStoreLabel(v) { return v === 'ALL' ? '全店' : (empOfficeStore(v) ? '本部' : ''); }
+/* ログインの場所（登録した端末・パスキーで、場所を選ばずに入ったとき）：本部の役割・所属が空・全店・本部（OFFICE・大文字小文字は見ない）は Office、
+   ほかは所属の店。v1195（Codex #200 7002734955 の P2-3）：2 か所に書いていた決め方を 1 つに（前は OFFICE をちょうどの文字だけで見ていた） */
+function empLoginLoc(emp) { return (!emp || ['ceo', 'gm', 'am', 'office', 'chef', 'office_crew'].indexOf(emp.role) >= 0 || !emp.store || empAnyStore(emp.store)) ? 'OFFICE' : emp.store; }
 /* 店舗のスキルマトリクスに出す人（在籍・店舗の役職・プレップでない・その店で働く・本部所属でない）。表示の個別設定より先に外す */
 function skillMatrixStaffAt(storeId) {
   return visibleStaffForManager().filter(function (e) { return isStoreStaff(e) && !e.prep && !empIsHq(e) && empWorksAt(e, storeId); });
@@ -67104,7 +67108,7 @@ function ecDetEmpMaster(){
   emps.forEach(function(e){
     var nm=e.name||e.id, fix={label:'編集',action:"openEmpModal('"+e.id+"')"};
     /* v1088: 解除のための印（key＝どの人のどの不備か・fp＝中身。中身が変われば解除していてもまた出す） */
-    var sid=(e.store && e.store!=='ALL') ? e.store : '';
+    var sid=(e.store && !empAnyStore(e.store)) ? e.store : '';   /* v1195：本部（OFFICE）も店ではない */
     function add(type, sev, title, detail, fp){ issues.push({sev:sev,cat:'従業員',title:title,detail:detail,fix:fix,key:'emp|'+type+'|'+(e.id||nm),fp:String(fp==null?'':fp),store:sid,who:nm}); }
     // ステータス不整合
     if(!e.status) add('status','mid',nm+'：ステータス未設定','在籍状況（在籍/研修中/休職/退職）が未設定です。','');
@@ -117475,7 +117479,15 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       return String((typeof curRealRole !== 'undefined' && curRealRole) || curRole) + '|' + String(curUserName);
     }catch(e){ return ''; }
   }
-  function sync(){ var k = who(); if (E.k !== k) { E = fresh(); E.k = k; } }
+  /* Codex（#200 7002734955）P2-2：答えを待つあいだにログアウト・ログインし直し（同じ人でも）があったら、その答えは使わない。
+     世代は、ログインが変わったとき（sync）とログアウト（ssOnLogout → onLogout）で進める。ログインの印（PIN の印など）は
+     30 分ごとに取り替わるので比べない（取り替わっても同じログインのまま） */
+  var GEN = 0;
+  function sync(){ var k = who(); if (E.k !== k) { GEN++; E = fresh(); E.k = k; } }
+  function ssG(){ try{ return typeof _ssGen !== 'undefined' ? _ssGen : 0; }catch(e){ return 0; } }
+  function tok(){ return { g:GEN, s:ssG(), k:E.k, e:E }; }
+  function stale(t0){ return t0.g !== GEN || t0.s !== ssG() || t0.e !== E || who() !== t0.k || E.k !== t0.k; }
+  function onLogout(){ GEN++; E = fresh(); }
   /* GM・CEO だけ（従業員マスターの GM・CEO の確かめと同じ。関数も確かめる） */
   function mgr(){
     try{
@@ -117603,10 +117615,10 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   /* ---------------------------------------------------------------- 読む */
   async function load(keepBand){
     sync();
-    var k0 = E.k; E.load = 'loading'; if (!keepBand) E.band = ''; paintAll();
+    var t0 = tok(); E.load = 'loading'; if (!keepBand) E.band = ''; paintAll();
     var r = null;
     try{ r = await ssCall({ action:'aff_full', ms:20000 }); }catch(x){ r = { net:true }; }
-    if (k0 !== E.k) return;
+    if (stale(t0)) return false;
     E.code = '';
     if (r && r.ok && r.j) {
       if (r.j.nosql) { E.load = 'err'; E.code = 'nosql'; }
@@ -117625,6 +117637,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     else if (r && r.none) { E.load = 'err'; E.code = 'nosign'; }
     else { E.load = 'err'; E.code = 'net'; }
     paintAll();
+    return E.load === 'ok';
   }
   function errMsg(c){
     return c === 'nosql' ? T('所属の確認の SQL がまだ入っていません（手順の ②）。入るまで今までどおりです','The affiliation SQL is not installed yet (step 2). Nothing changes until it is')
@@ -117711,7 +117724,12 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   }
   function rootEl(){ var el = document.getElementById('aff-root'); return el && E.open ? el : null; }
   function paint(){ var el = rootEl(); if (el) el.innerHTML = inner(); }
-  function paintList(){ var el = document.getElementById('aff-list'); if (el && E.open) el.innerHTML = listHtml(); else paint(); var tb = document.getElementById('aff-tabs'); if (tb && E.open) tb.innerHTML = tabsHtml(); }
+  function paintList(){
+    var el = document.getElementById('aff-list'); if (!el || !E.open) { paint(); return; }
+    el.innerHTML = listHtml();
+    var tb = document.getElementById('aff-tabs'); if (tb) tb.innerHTML = tabsHtml();
+    var bar = document.getElementById('aff-bar'); if (bar) bar.innerHTML = barHtml();
+  }
   function paintCard(){ var el = document.getElementById('aff-card'); if (el) el.innerHTML = cardInner(); }
   function paintAll(){ paintCard(); paint(); }
   function inner(){
@@ -117750,7 +117768,6 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     });
   }
   function mainHtml(){
-    var nd = Object.keys(E.draft).length;
     return bandHtml()
       + '<div style="font-size:12px;color:var(--muted);margin-bottom:6px">' + T('本部か店かと応援の店を決めて、下の「内容を確かめて保存」。保存するまで何も変わりません。左上の店・メニューの見え方は v1196 から（この版では変わりません）','Choose head office or store, plus support stores, then "Review and save". Nothing changes until you save. The store switcher and menus change from v1196') + '</div>'
       + '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
@@ -117760,10 +117777,15 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       + '</div>'
       + '<div id="aff-list">' + listHtml() + '</div>'
       + logHtml()
-      + '<div class="aff-bar"><span style="font-size:12.5px">' + (nd ? T('変える人 ','To change: ') + '<b>' + nd + '</b>' + T(' 人・保存するまで何も変わりません',' · nothing changes until you save') : T('変える人はまだいません','Nothing to change yet')) + '</span>'
+      + '<div class="aff-bar" id="aff-bar">' + barHtml() + '</div>';
+  }
+  /* 下の帯（変える人の数・「内容を確かめて保存」）。1 人ずつ変えたとき（paintList）も描き直す（Codex #200 7002734955 P2-1） */
+  function barHtml(){
+    var nd = Object.keys(E.draft).length;
+    return '<span style="font-size:12.5px">' + (nd ? T('変える人 ','To change: ') + '<b>' + nd + '</b>' + T(' 人・保存するまで何も変わりません',' · nothing changes until you save') : T('変える人はまだいません','Nothing to change yet')) + '</span>'
       + '<span style="flex:1"></span>'
       + (nd ? '<button class="btn btn-secondary btn-sm" onclick="FUNERGY_AFF.h.discard()">' + T('選び直す','Reset') + '</button>' : '')
-      + '<button class="btn btn-primary btn-sm"' + (nd && !E.busy ? '' : ' disabled') + ' onclick="FUNERGY_AFF.h.review()">' + T('内容を確かめて保存','Review and save') + '</button></div>';
+      + '<button class="btn btn-primary btn-sm"' + (nd && !E.busy ? '' : ' disabled') + ' onclick="FUNERGY_AFF.h.review()">' + T('内容を確かめて保存','Review and save') + '</button>';
   }
   function listHtml(){
     var ps = visiblePeople(); E.ix = ps.map(function(e){ return String(e.id); });
@@ -117887,9 +117909,10 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     var its = itemsOf(); if (typeof its === 'string') { toast(its, 'warning'); E.view = 'list'; paint(); return; }
     if (!its.length) { toast(T('変える人がいません','Nobody to change'), 'info'); E.view = 'list'; paint(); return; }
     E.busy = true; paint();
-    var k0 = E.k, r = null;
+    var t0 = tok(), r = null;
     try{ r = await ssCall({ action:'aff_save', items:its.map(function(it){ return { emp:it.emp, aff:it.aff, store:it.store, support:it.support, expect:it.expect }; }), reason:String(E.reason || '').trim().slice(0, 500), ms:20000 }); }catch(x){ r = { net:true }; }
-    if (k0 !== E.k) return;
+    /* ログアウト・ログインし直しのあとに届いた答え：従業員マスターに書かない・知らせない（サーバーに書けていれば、次に開いたとき「合わない」に出る） */
+    if (stale(t0)) { if (t0.e === E) E = fresh(); return; }
     E.busy = false;
     if (r && r.ok && r.j && r.j.ok) {
       var fail = writeMaster(its);
@@ -117902,9 +117925,27 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       return;
     }
     if (r && r.status === 409) {
-      E.conflict = (r.ids || []).map(String); E.band = 'conflict'; E.view = 'list';
-      toast(T('ほかの人が先に変えた人がいます。何も保存していません','Someone else changed some people first. Nothing was saved'), 'warning');
-      await load(true);
+      var cf = (r.ids || []).map(String);
+      E.conflict = cf; E.band = 'conflict'; E.view = 'list';
+      var ok = await load(true);
+      if (stale(t0)) return;
+      /* Claude のルーティン（7002642425）P3-3：サーバーの今の値が、この保存で送った値と同じ人は「先に入っていた」
+         （前に押した保存の答えが届かなかったときなど）。版が古いので 409 になっても、ほかの人が変えたのではない。
+         その人は従業員マスターにも書いて、色を付けない。ほかの人の変更はまだ保存していない（1 人でも違えば何も書かない） */
+      var got = ok ? its.filter(function(it){ var row = E.rows[it.emp]; return cf.indexOf(it.emp) >= 0 && row && sameVal(row, { aff:it.aff, store:it.store, support:it.support }); }) : [];
+      if (got.length) {
+        var gotIds = got.map(function(it){ return it.emp; });
+        got.forEach(function(it){ delete E.draft[it.emp]; });
+        E.conflict = E.conflict.filter(function(id){ return gotIds.indexOf(id) < 0; });
+        var mf = writeMaster(got);
+        if (mf.length) { E.mfail = mf; E.band = 'master'; }
+        else if (!E.conflict.length) E.band = '';
+        afterMaster();
+        toast(T('同じ内容がもうサーバーに入っていた人がいます（前に押した保存の答えが届かなかったときなど）：','Already saved on the server (for example, an earlier save whose answer did not arrive): ') + got.map(function(it){ return it.name; }).join('、')
+          + (Object.keys(E.draft).length ? T('。ほかの変更はまだ保存していません。もう一度「内容を確かめて保存」を押してください','. Your other changes are not saved yet. Press "Review and save" again') : ''), 'info');
+      }
+      if (E.conflict.length) toast(T('ほかの人が先に変えた人がいます。何も保存していません','Someone else changed some people first. Nothing was saved'), 'warning');
+      paintAll();
       return;
     }
     E.view = 'list';
@@ -117963,7 +118004,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     reason: function(v){ E.reason = String(v || '').slice(0, 500); },
     save: function(){ save(); }
   };
-  W.FUNERGY_AFF = { cardHtml:cardHtml, h:h, _t:{ E:function(){ return E; }, reasons:reasons, suggest:suggest, changes:changes, matches:matches, itemsOf:itemsOf, writeMaster:writeMaster, load:load, counts:counts, reset:function(){ E = fresh(); } } };
+  W.FUNERGY_AFF = { cardHtml:cardHtml, h:h, onLogout:onLogout, _t:{ E:function(){ return E; }, reasons:reasons, suggest:suggest, changes:changes, matches:matches, itemsOf:itemsOf, writeMaster:writeMaster, load:load, counts:counts, reset:function(){ E = fresh(); } } };
 })();
 /* ==== FUNERGY_AFF end ==== */
 </script>
@@ -122497,7 +122538,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     if (!emp) { hide(); loginNote(T('名簿にこの人が見つかりませんでした。いつもの PIN でログインしてください。', 'Could not find you in the staff list. Log in with your PIN.')); return false; }
     if (typeof empBlocked === 'function' && empBlocked(emp)) { hide(); loginNote(msg({ error: 'inactive' })); return false; }
     loginPerson = emp; loginStoreMode = false;
-    loginLocation = (['ceo', 'gm', 'am', 'office', 'chef', 'office_crew'].indexOf(emp.role) >= 0 || !emp.store || emp.store === 'OFFICE' || emp.store === 'ALL') ? 'OFFICE' : emp.store;
+    loginLocation = empLoginLoc(emp);   /* v1195：決め方を 1 つに（empLoginLoc） */
     W._hwSession = r.token; W._hwSessionWarned = false; W._sessionPin = (typeof pin === 'string' && pin) ? pin : null; W._dlSignedIn = true;
     var x = rec(); if (x) { x.name = r.name || x.name; x.emp = r.emp_id; recSet(x); }
     S.last = Date.now(); S.gen++; schedule();
@@ -123576,7 +123617,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     if (typeof empBlocked === 'function' && empBlocked(emp)) { call({ action: 'pk_logout', session: r.session }); note(msg('inactive')); return false; }
     sessPut({ v: 1, s: r.session, emp: String(r.emp_id), name: r.name || emp.name, exp: r.session_exp, keep: !!keep }, !!keep);
     loginPerson = emp; loginStoreMode = false;
-    if (!keepLoc || !loginLocation) loginLocation = (['ceo', 'gm', 'am', 'office', 'chef', 'office_crew'].indexOf(emp.role) >= 0 || !emp.store || emp.store === 'OFFICE' || emp.store === 'ALL') ? 'OFFICE' : emp.store;
+    if (!keepLoc || !loginLocation) loginLocation = empLoginLoc(emp);   /* v1195：決め方を 1 つに（empLoginLoc） */
     W._hwSession = r.token; W._hwSessionWarned = false; W._sessionPin = null; W._pkSignedIn = true;
     S.last = Date.now(); S.gen++; S.busy = false; S.emp = null; schedule();
     var el = $('login-step-pk'); if (el) { el.style.display = 'none'; el.innerHTML = ''; }

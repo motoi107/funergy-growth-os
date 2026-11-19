@@ -293,6 +293,7 @@ test('GM and CEO save with the version they read per person; a stale version is 
     [{ items: [IT('E-1', 'store', 'S1', ['S2', 'S2'], 1)] }, 'support twice'], [{ items: [IT('E-1', 'store', 'S1', 'S2', 1)] }, 'support not a list'],
     [{ items: [IT('E-1', 'store', 'S 1', [], 1)] }, 'odd store id'], [{ items: [IT('E-1', 'store', 'S1', [], -1)] }, 'expect -1'],
     [{ items: [IT('E-1', 'store', 'S1', [], 1.5)] }, 'expect 1.5'], [{ items: [IT('E-1', 'store', 'S1', [], '1')] }, 'expect string'],
+    [{ items: [IT('E-1', 'store', 'S1', [], 2147483648)] }, 'expect beyond the SQL integer (P3-2)'], [{ items: [IT('E-1', 'store', 'S1', [], Number.MAX_SAFE_INTEGER)] }, 'expect far beyond'],
     [{ items: [IT('E-1', 'store', 'S9', [], 1)] }, 'store not in the store master'], [{ items: [IT('E-1', 'store', 'S1', ['S9'], 1)] }, 'support not in the store master'],
     [{ items: [IT('E-1', 'store', 'S1', [], 1)], reason: 3 }, 'reason not text'], [{ items: [IT('E-1', 'store', 'S1', [], 1)], reason: 'x'.repeat(501) }, 'reason too long'],
   ];
@@ -300,6 +301,9 @@ test('GM and CEO save with the version they read per person; a stale version is 
     const r = await S.pin('gm', { action: 'aff_save', ...b });
     assert.equal(r.status, 400, why); assert.equal(r.j.error, 'bad_value', why);
   }
+  // 版の上限（SQL の integer）ちょうどは形として受ける：違う版なので 409（500 にならない）
+  const top = await S.pin('gm', { action: 'aff_save', items: [IT('E-1', 'store', 'S1', ['S2'], 2147483647)] });
+  assert.equal(top.status, 409); assert.deepEqual(top.j.ids, ['E-1']);
   // 在籍でない人・知らない人（端末の名簿が古くても）：書かない
   for (const emp of ['E-OUT', 'E-OS', 'E-NOBODY']) {
     const r = await S.pin('gm', { action: 'aff_save', items: [IT('E-1', 'store', 'S1', ['S2'], 1), IT(emp, 'store', 'S2', [], 0)] });

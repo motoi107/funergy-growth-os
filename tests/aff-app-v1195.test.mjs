@@ -51,7 +51,15 @@ function app(o = {}) {
     var ELS = {};
     var document = {
       getElementById(id){
-        if (id === 'aff-root' || id === 'aff-list' || id === 'aff-tabs' || id === 'aff-card') { if (!ELS[id]) ELS[id] = { innerHTML:'' }; return (id === 'aff-card' || MODAL.open) ? ELS[id] : null; }
+        if (id === 'aff-card') { if (!ELS[id]) ELS[id] = { innerHTML:'' }; return ELS[id]; }
+        if (!MODAL.open) return null;
+        if (id === 'aff-root') { if (!ELS[id]) ELS[id] = { innerHTML:'' }; return ELS[id]; }
+        /* 中の部分は、いまの箱の HTML にその id があるときだけある（本物の DOM と同じ）。描き直した部分は ELS に残る */
+        if (id === 'aff-list' || id === 'aff-tabs' || id === 'aff-bar') {
+          if (!ELS['aff-root'] || ELS['aff-root'].innerHTML.indexOf('id="' + id + '"') < 0) return null;
+          if (!ELS[id] || ELS[id].root !== ELS['aff-root'].innerHTML) ELS[id] = { innerHTML:'', root:ELS['aff-root'].innerHTML };
+          return ELS[id];
+        }
         return null;
       }
     };
@@ -69,6 +77,7 @@ function app(o = {}) {
     function lsSet(k, v){ if (LSFAIL) return false; WRITES.push([k, JSON.parse(JSON.stringify(v))]); if (k === 'm_employees') EMPS = JSON.parse(JSON.stringify(v)); return true; }
     function renderPage(p){ RENDERS.push(p); }
     var confirm = function(){ return true; };
+    var _ssGen = 0;   /* ssOnLogout が進める世代（本物と同じ名前） */
     async function ssCall(p){ CALLS.push(JSON.parse(JSON.stringify(p))); return SS ? SS(p) : { status:400, error:'unknown_action' }; }
     ${HQ}
     ${AFF}
@@ -371,4 +380,186 @@ test('the staff master shows the card for GM/CEO, the default-store places treat
   assert.ok(ss.indexOf('j.affn!==1') < ss.indexOf('if(!r.ok){'), 'checked before the error path (an old function says unknown_action)');
   // membership of the store lists keeps ALL only (no widening for AM): a few fixed spots
   assert.ok(!/empAnyStore\(e\.store\)\s*\|\|\s*S\.includes/.test(src));
+});
+
+// ---- Codex（#200 7002734955）・Claude のルーティン（7002642425）の直し ----
+// いまの帯（下の「変える人」と「内容を確かめて保存」）：描き直した帯があればそれ、無ければ箱の HTML の中の帯
+function barNow(c) {
+  return run(c, `(function(){ var r = ELS['aff-root'] ? ELS['aff-root'].innerHTML : ''; var b = ELS['aff-bar'];
+    if (b && b.root === r && b.innerHTML) return b.innerHTML;
+    var i = r.indexOf('id="aff-bar">'); return i < 0 ? null : r.slice(i + 'id="aff-bar">'.length, r.indexOf('</div>', i)); })()`);
+}
+function reviewDisabled(c) {
+  const m = String(barNow(c) || '').match(/<button class="btn btn-primary btn-sm"( disabled)? onclick="FUNERGY_AFF\.h\.review\(\)"/);
+  assert.ok(m, 'the review button is in the bar'); return !!m[1];
+}
+
+test('P2-1: changing one person turns the bar on (count and the review button) without redrawing everything; undo turns it off again', async () => {
+  for (const phone of [false, true]) {
+    const c = app({ ss: full([]), phone });
+    run(c, 'FUNERGY_AFF.h.open()'); await settle();
+    assert.equal(reviewDisabled(c), true, 'nobody to change at first');
+    assert.match(barNow(c), /変える人はまだいません/);
+    const ix = id => E(c).ix.indexOf(id);
+    const before = run(c, 'ELS["aff-root"].innerHTML');
+    run(c, `FUNERGY_AFF.h.sugg(${ix('E-GM')})`);
+    assert.equal(run(c, 'ELS["aff-root"].innerHTML'), before, 'only the parts are redrawn (the search box keeps focus)');
+    assert.deepEqual(Object.keys(E(c).draft), ['E-GM']);
+    assert.equal(reviewDisabled(c), false, 'the review button is on after one change (' + (phone ? 'phone' : 'PC') + ')');
+    assert.match(barNow(c), /変える人 <b>1<\/b>/);
+    assert.match(barNow(c), /FUNERGY_AFF\.h\.discard\(\)/, 'the reset button appears too');
+    // each control: head office / store, store, support add / remove
+    run(c, `FUNERGY_AFF.h.aff(${ix('E-2')}, 'store')`); run(c, `FUNERGY_AFF.h.store(${ix('E-2')}, 'S3')`);
+    assert.match(barNow(c), /変える人 <b>2<\/b>/);
+    run(c, `FUNERGY_AFF.h.supAdd(${ix('E-OF')}, 'S2')`);   // E-OF has no draft and a suggestion: support goes on top of it
+    assert.match(barNow(c), /変える人 <b>3<\/b>/);
+    run(c, `FUNERGY_AFF.h.undo(${ix('E-GM')})`); run(c, `FUNERGY_AFF.h.undo(${ix('E-2')})`); run(c, `FUNERGY_AFF.h.undo(${ix('E-OF')})`);
+    assert.equal(reviewDisabled(c), true, 'off again when nobody is left');
+    // pressing the (now enabled) button goes to the confirm view: the real flow, not a direct call
+    run(c, `FUNERGY_AFF.h.sugg(${ix('E-GM')})`);
+    assert.equal(reviewDisabled(c), false);
+    run(c, 'FUNERGY_AFF.h.review()');
+    assert.equal(E(c).view, 'confirm');
+  }
+});
+
+test('P2-2: an answer that arrives after a sign-out (even the same person signing in again) is not used: no staff master write, no toast; load too', async () => {
+  for (const how of ['onLogout', 'ssGen', 'sameAgain', 'other']) {
+    let resolve;
+    const c = app({ ss: p => p.action === 'aff_full' ? { ok: true, j: { affn: 1, rows: [], log: [] } } : new Promise(r => { resolve = r; }) });
+    run(c, 'FUNERGY_AFF.h.open()'); await settle();
+    E(c).draft['E-GM'] = { aff: 'hq', store: '', support: [] };
+    run(c, 'FUNERGY_AFF.h.save()'); await settle();
+    assert.equal(E(c).busy, true, how);
+    const toasts = c.TOASTS.length;
+    if (how === 'onLogout') run(c, 'FUNERGY_AFF.onLogout()');                     // doLogout → ssOnLogout → this (the card is not redrawn)
+    if (how === 'ssGen') run(c, '_ssGen++');                                        // only the shared sign-out generation moved
+    if (how === 'sameAgain') { run(c, 'FUNERGY_AFF.onLogout()'); run(c, 'FUNERGY_AFF.cardHtml()'); await settle(); }   // the same GM signs in again (its own load runs)
+    if (how === 'other') { c.curUserName = 'Cal E'; c.curRole = 'ceo'; c.curRealRole = 'ceo'; }     // no redraw at all
+    const fulls = c.CALLS.filter(p => p.action === 'aff_full').length;
+    resolve({ ok: true, j: { affn: 1, ok: true, rows: [], same: 0 } }); await settle();
+    assert.equal(c.WRITES.length, 0, how + ': no staff master write');
+    assert.equal(c.TOASTS.length, toasts, how + ': no toast');
+    assert.equal(E(c).busy, false, how + ': nothing is left busy');
+    assert.equal(c.CALLS.filter(p => p.action === 'aff_full').length, fulls, how + ': not reloaded for the old login');
+  }
+  // load: a late answer of the old login does not fill the rows of the new one
+  for (const how of ['onLogout', 'ssGen']) {
+    let resolve;
+    const c = app({ ss: p => p.action === 'aff_full' ? new Promise(r => { resolve = r; }) : { status: 400 } });
+    run(c, 'FUNERGY_AFF.cardHtml()'); await settle();
+    if (how === 'onLogout') run(c, 'FUNERGY_AFF.onLogout()'); else run(c, '_ssGen++');
+    resolve({ ok: true, j: { affn: 1, rows: [ROW('E-GM', 'hq', '', [], 1)], log: [] } }); await settle();
+    assert.deepEqual(Object.keys(E(c).rows), [], how + ': rows not filled');
+    assert.notEqual(E(c).load, 'ok', how);
+  }
+  // the hook is in ssOnLogout (both copies of doLogout call it)
+  const so = src.slice(src.indexOf('function ssOnLogout(){'), src.indexOf('\n}', src.indexOf('function ssOnLogout(){')));
+  assert.match(so, /if\(window\.FUNERGY_AFF\) FUNERGY_AFF\.onLogout\(\);/);
+  assert.equal(src.split("if(typeof ssOnLogout==='function') ssOnLogout();").length - 1, 2, 'both doLogout copies');
+});
+
+test('P2-2: a sign-in key that is rotated during the save (same login) does not drop the answer', async () => {
+  let resolve;
+  const c = app({ ss: p => p.action === 'aff_full' ? { ok: true, j: { affn: 1, rows: [], log: [] } } : new Promise(r => { resolve = r; }) });
+  run(c, 'FUNERGY_AFF.h.open()'); await settle();
+  E(c).draft['E-GM'] = { aff: 'hq', store: '', support: [] };
+  run(c, 'FUNERGY_AFF.h.save()'); await settle();
+  run(c, 'window._hwSession = "rotated-token"; FUNERGY_AFF.cardHtml()');
+  resolve({ ok: true, j: { affn: 1, ok: true, rows: [], same: 0 } }); await settle();
+  assert.equal(c.WRITES.length, 1, 'written');
+});
+
+test('P3-3: a 409 where the server already has what was sent (an earlier save whose answer was lost) writes the master and is not shown as someone else', async () => {
+  // E-GM: the server already has head office (our lost save). E-OF: really changed by someone else. E-2: not in the conflict.
+  let rows = [ROW('E-OF', 'hq', '', [], 1)];
+  const c = app({ ss: p => {
+    if (p.action === 'aff_full') return { ok: true, j: { affn: 1, rows, log: [] } };
+    if (p.action === 'aff_save') { rows = [ROW('E-GM', 'hq', '', [], 1), ROW('E-OF', 'store', 'S2', [], 2)]; return { status: 409, error: 'conflict', ids: ['E-GM', 'E-OF'] }; }
+    return { status: 400 };
+  }, page: 'staff_master' });
+  run(c, 'FUNERGY_AFF.h.open()'); await settle();
+  E(c).draft['E-GM'] = { aff: 'hq', store: '', support: [] };
+  E(c).draft['E-OF'] = { aff: 'store', store: 'S1', support: [] };
+  E(c).draft['E-2'] = { aff: 'store', store: 'S3', support: [] };
+  run(c, 'FUNERGY_AFF.h.save()'); await settle();
+  assert.equal(c.WRITES.length, 1, 'the master is written for the person already on the server only');
+  const m = c.WRITES[0][1];
+  assert.equal(m.find(e => e.id === 'E-GM').store, 'OFFICE');
+  assert.equal(m.find(e => e.id === 'E-OF').store, 'ALL', 'the real conflict is not written');
+  assert.equal(m.find(e => e.id === 'E-2').store, 'ALL', 'others were not saved (all or nothing)');
+  assert.deepEqual(Array.from(E(c).conflict), ['E-OF']);
+  assert.equal(E(c).band, 'conflict');
+  assert.deepEqual(Object.keys(E(c).draft).sort(), ['E-2', 'E-OF']);
+  assert.ok(c.TOASTS.some(x => /同じ内容がもうサーバーに入っていた人がいます.*Gina M.*ほかの変更はまだ保存していません/.test(x[0])), JSON.stringify(c.TOASTS));
+  assert.ok(c.TOASTS.some(x => /ほかの人が先に変えた人がいます/.test(x[0])));
+  const root = run(c, 'ELS["aff-root"].innerHTML');
+  assert.match(root, /何も保存していません：Ofelia/);
+  assert.ok(!/何も保存していません：[^<]*Gina M/.test(root), 'not listed as changed by someone else');
+  assert.deepEqual(Array.from(T(c).reasons(emp(c, 'E-GM'))), [], 'E-GM is confirmed and the master matches');
+  // only the lost save: no conflict band at all
+  let rows2 = [];
+  const d = app({ ss: p => p.action === 'aff_full' ? { ok: true, j: { affn: 1, rows: rows2, log: [] } }
+    : p.action === 'aff_save' ? (rows2 = [ROW('E-GM', 'hq', '', [], 1)], { status: 409, error: 'conflict', ids: ['E-GM'] }) : { status: 400 } });
+  run(d, 'FUNERGY_AFF.h.open()'); await settle();
+  E(d).draft['E-GM'] = { aff: 'hq', store: '', support: [] };
+  run(d, 'FUNERGY_AFF.h.save()'); await settle();
+  assert.equal(E(d).band, ''); assert.deepEqual(Array.from(E(d).conflict), []);
+  assert.ok(!d.TOASTS.some(x => /ほかの人が先に変えた/.test(x[0])));
+  assert.ok(d.TOASTS.some(x => /同じ内容がもうサーバーに入っていた人がいます.*Gina M$/.test(x[0])), JSON.stringify(d.TOASTS));
+  assert.equal(d.WRITES.length, 1);
+});
+
+test('P2-3: a store role set to head office (OFFICE) who signs in at a support store keeps that store (PIN, passkey with the chosen place); OFFICE acts like ALL did', () => {
+  const RLI = between('function resolveLoginIdentity(){', '\n/* ログイン画面表示前に');
+  const FSL = between('function finishStaffLogin() {', '\n/* ===== ログイン時に最新データへ同期してから入る');
+  const c = { EMPS: [], Object, Array, String, JSON };
+  vm.createContext(c);
+  vm.runInContext(`
+    var curRole = '', curRealRole = '', curUserName = '', curStore = '', curStoreLogin = false, loginPerson = null, loginLocation = null, ENTERED = 0;
+    function getEmployees(){ return EMPS; }
+    function getStoresAll(){ return [{ id:'S1' }, { id:'S2' }]; }
+    function _applyRole(r){ curRole = r; curRealRole = r; }
+    function enterAppWithSync(){ ENTERED++; }
+    ${HQ}
+    ${FSL}
+    ${RLI}
+    /* PIN：場所を選ぶ → 名前 → PIN（finishStaffLogin）→ 同期のあと（resolveLoginIdentity） */
+    function pin(emp, loc){ EMPS = [emp]; loginPerson = emp; loginLocation = loc; finishStaffLogin(); var a = curStore; resolveLoginIdentity(); return [a, curStore]; }
+    /* 登録した端末・場所を選ばないパスキー：場所は empLoginLoc */
+    function auto(emp){ return pin(emp, empLoginLoc(emp)); }
+  `, c);
+  const P = (e, loc) => JSON.parse(JSON.stringify(vm.runInContext(`pin(${JSON.stringify(e)}, ${JSON.stringify(loc)})`, c)));
+  const A = e => JSON.parse(JSON.stringify(vm.runInContext(`auto(${JSON.stringify(e)})`, c)));
+  const crew = store => ({ id: 'E-1', name: 'Kai', role: 'crew', store, support: ['S2'] });
+  // the reported case: crew in head office signs in at the support store S2 → S2 (was OFFICE, not a store)
+  assert.deepEqual(P(crew('OFFICE'), 'S2'), ['S2', 'S2']);
+  for (const v of ['Office', ' office ', 'ALL']) assert.deepEqual(P(crew(v), 'S2'), ['S2', 'S2'], v);
+  // a real home store stays as before (the home store, not the chosen support store)
+  assert.deepEqual(P(crew('S1'), 'S2'), ['S2', 'S1']);
+  // OFFICE place, managers: all stores as before
+  assert.deepEqual(P(crew('OFFICE'), 'OFFICE'), ['ALL', 'ALL']);
+  assert.deepEqual(P({ id: 'E-G', name: 'Gina', role: 'gm', store: 'S1' }, 'S1'), ['ALL', 'ALL']);
+  // OFFICE behaves exactly like ALL for every role and place (PIN) and for the automatic place (device, passkey)
+  for (const role of ['ceo', 'gm', 'am', 'office', 'chef', 'office_crew', 'g4', 'sl', 'g2', 'crew']) {
+    for (const loc of ['OFFICE', 'S1', 'S2']) {
+      const e = s => ({ id: 'E-9', name: 'N', role, store: s, support: ['S2'] });
+      assert.deepEqual(P(e('OFFICE'), loc), P(e('ALL'), loc), role + ' ' + loc);
+      assert.ok(!P(e('OFFICE'), loc).includes('OFFICE'), 'never OFFICE as the store: ' + role + ' ' + loc);
+    }
+    const e = s => ({ id: 'E-9', name: 'N', role, store: s, support: ['S2'] });
+    assert.deepEqual(A(e('OFFICE')), A(e('ALL')), 'auto ' + role);
+    assert.deepEqual(A(e('Office')), A(e('ALL')), 'auto lower-case ' + role);
+  }
+  // the automatic place itself
+  const L = e => vm.runInContext(`empLoginLoc(${JSON.stringify(e)})`, c);
+  assert.equal(L(crew('S1')), 'S1'); assert.equal(L(crew('OFFICE')), 'OFFICE'); assert.equal(L(crew('office')), 'OFFICE');
+  assert.equal(L(crew('ALL')), 'OFFICE'); assert.equal(L(crew('')), 'OFFICE');
+  assert.equal(L({ role: 'am', store: 'S1' }), 'OFFICE');
+  // both automatic sign-ins use the one rule (device login, passkey)
+  assert.equal(src.split('loginLocation = empLoginLoc(emp);').length - 1, 2);
+  assert.ok(!src.includes("emp.store === 'OFFICE' || emp.store === 'ALL'"), 'the old copies are gone');
+  assert.match(RLI, /curStore = \(emp\.store && !empAnyStore\(emp\.store\)\) \? emp\.store : loginLocation;/);
+  // the error center tags an employee issue with a store only for a real store (not ALL / OFFICE)
+  assert.ok(src.includes("var sid=(e.store && !empAnyStore(e.store)) ? e.store : '';"));
 });

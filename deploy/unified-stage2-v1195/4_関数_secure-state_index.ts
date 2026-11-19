@@ -3316,7 +3316,8 @@ export function createHandler(deps) {
       if (x.aff === 'hq' ? store !== '' : !affStoreOk(store)) throw bad();
       const sup = x.support === undefined || x.support === null ? [] : x.support;
       if (!Array.isArray(sup) || sup.length > 20 || sup.some(s => !affStoreOk(s) || s === store) || new Set(sup).size !== sup.length) throw bad();
-      if (!Number.isSafeInteger(x.expect) || x.expect < 0) throw bad();
+      /* 版は SQL で integer（(it->>'expect')::integer）。範囲の外は 500 ではなく 400 で断る（Claude のルーティン 7002642425 の P3-2） */
+      if (!Number.isSafeInteger(x.expect) || x.expect < 0 || x.expect > 2147483647) throw bad();
       out.push({ emp, aff: x.aff, store, support: sup, expect: x.expect });
     }
     // 人は在籍していること・店は店舗マスターにあること（端末の名簿が古くても、サーバーで確かめる）
