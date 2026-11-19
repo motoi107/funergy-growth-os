@@ -179,7 +179,7 @@ test('B: HQ sees and saves the store setting (not the all-store list); "saved" o
 });
 
 /* ---- Codex #173 の指摘の直し（v1175） ---- */
-const IMPORT_FNS = ['syncTipLaborFromDB', 'tipLaborPut', 'tipLaborWithGuid', 'toastAliasIndex', 'toastAliasResolve', 'toastAliasFind', 'empToastAliases', '_toastAliasRec', 'toastAliasField', 'toastNameKey', '_toastShiftsOverlap', 'normalizeBusinessDate', '_tipLaborNewer', '_tipLaborMark'];
+const IMPORT_FNS = ['syncTipLaborFromDB', 'tipLaborBuildDay', 'tipLaborPut', 'tipLaborWithGuid', 'toastAliasIndex', 'toastAliasResolve', 'toastAliasFind', 'empToastAliases', '_toastAliasRec', 'toastAliasField', 'toastNameKey', '_toastShiftsOverlap', 'normalizeBusinessDate', '_tipLaborNewer', '_tipLaborMark'];
 function importWorld(rows, kpi, opts = {}) {
   const w = world({ kpi, stores: [{ id: 'F06' }] });
   const LS = {};

@@ -21,7 +21,7 @@ function app() {
   vm.createContext(c);
   vm.runInContext(['TIP_HOURS_FIX_FROM', 'TIP_BIZDAY_END_H', 'ATT_THRESHOLD', 'DOW_SHIFT', 'SHIFT_HOURS'].map(constant).join('\n') + '\n' +
     ['_laborHrs', '_thToMin', 'tipHoursFixOn', '_hstMidnightMs', '_tipOverlapBizH', '_thOverlapH', 'applyTipHoursClip', 'applyTipSplit', 'tipHoursWindowFor',
-     'getTipLabor', 'actualHoursForDate', 'attendanceForDate', 'sumWeekStats', 'cyclePayHours', 'mondayMDof'].map(fn).join('\n') + `
+     'getTipLabor', 'toastLaborCostForDate', 'actualHoursForDate', 'attendanceForDate', 'sumWeekStats', 'cyclePayHours', 'mondayMDof'].map(fn).join('\n') + `
     function ls(k, d){ return Object.prototype.hasOwnProperty.call(STORE, k) ? JSON.parse(JSON.stringify(STORE[k])) : d; }
     function getTipHoursCfg(sid){ return CFG[sid] || { mode:'all' }; }
     function tipSplitHourFor(sid){ var v=Number((getTipHoursCfg(sid)||{}).splitHour); return (v>=0&&v<=24)?v:16; }

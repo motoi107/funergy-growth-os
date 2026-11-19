@@ -190,6 +190,7 @@ test('the module is in index.html; the entry is wired; nothing of the review goe
 
 const fnSrc = name => { const st = html.indexOf('function ' + name + '('); assert.ok(st >= 0, name); const a = html.lastIndexOf('\n', st) + 1; return html.slice(a, html.indexOf('\n}', st) + 2); };
 const constSrc = name => { const st = html.indexOf('const ' + name + ' = ['); assert.ok(st >= 0, name); const en = html.indexOf('\n]', st); return html.slice(st, en + 2).replace('const ', 'var ') + ';'; };
+const guardSrc = () => { const st = html.indexOf('var PAGE_GUARD = {'); assert.ok(st >= 0, 'PAGE_GUARD'); return html.slice(st, html.indexOf('\n};', st) + 3) + '\n' + fnSrc('pageRoleAllowed'); };   /* v1191 */
 
 test('menu: CEO, GM, AM, Corporate Chef, G4 and G3 get the entry (the server decides what they see); G2, office, crew and store logins do not', () => {
   for (const [real, role, store, want] of [['ceo', 'ceo', 'ALL', true], ['gm', 'gm', 'ALL', true], ['am', 'am', 'ALL', true], ['chef', 'chef', 'OFFICE', true], ['g4', 'am', 'F01', true],
@@ -197,7 +198,7 @@ test('menu: CEO, GM, AM, Corporate Chef, G4 and G3 get the entry (the server dec
     const c = { curRealRole: real, curRole: role, curStore: store, curStoreLogin: false, mcCanOpen: () => true, mdCanOpen: () => true, _gradeHideApplies: () => false,
       canAccessStaffMaster: () => true, canAccessKpiMaster: () => true, canSeeDashboard: () => true, console };
     vm.createContext(c);
-    vm.runInContext(['NAV_ITEMS', 'MENU_GROUPS', 'OFFICE_GROUPS', 'ACCT_GROUPS', 'CHEF_GROUPS', 'CREW_GROUPS', 'STORE_GROUPS'].map(constSrc).join('\n') + '\n' + MOD + '\n' + fnSrc('groupsForRole') + '\n' + fnSrc('navChildAllowed') + '\n' + fnSrc('firstAllowedChild'), c);
+    vm.runInContext(['NAV_ITEMS', 'MENU_GROUPS', 'OFFICE_GROUPS', 'ACCT_GROUPS', 'CHEF_GROUPS', 'CREW_GROUPS', 'STORE_GROUPS'].map(constSrc).join('\n') + '\n' + MOD + '\n' + fnSrc('groupsForRole') + '\n' + guardSrc() + '\n' + fnSrc('navChildAllowed') + '\n' + fnSrc('firstAllowedChild'), c);
     assert.equal(vm.runInContext('mrCanSee()', c), want, real);
     const has = vm.runInContext('groupsForRole()', c).some(g => g.children.includes('mid_review'));
     assert.equal(has, want, real);

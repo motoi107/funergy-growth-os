@@ -132,6 +132,8 @@ async function world(opts = {}) {
   win.showManagerSecure = async () => { calls.secure++; win._secureMode = true; win._karteUnlocked = true; win.curRole = win._authSession.role; win.curRealRole = win._authSession.role; win.curStore = 'ALL'; win.curUserName = 'from-secure'; node('manager-secure-screen').style.display = 'block'; };
   vm.createContext(win);
   vm.runInContext(fnSrc('invInSessionRefresh'), win, { filename: 'invInSessionRefresh.js' });
+  // v1191：管理者セキュアページは CEO・GM だけ（経理はメールでアプリに入れるが、セキュアページは開かない）
+  { const sm = HTML.indexOf('var SECURE_ONLY_MSG = ['); vm.runInContext(fnSrc('secureRoleAllowed') + fnSrc('secureSessionAllowed') + HTML.slice(sm, HTML.indexOf('\n', sm)), win, { filename: 'secure.js' }); }
   vm.runInContext(fnSrc('authPinCheck') + fnSrc('doStaffLogin'), win, { filename: 'doStaffLogin.js' });
   vm.runInContext(mlBlock(), win, { filename: 'FUNERGY_ML.js' });
   const ML = win.FUNERGY_ML;
@@ -370,6 +372,9 @@ test('ログアウト：メールのログインをサーバー側でも閉じ�
   w.pick('E2', 'GM Sample', 'gm'); w.type('gm@x.test', 'pw-gm');
   const card = w.ML.myCardHtml();
   assert.match(card, /すべての端末からログアウト/); assert.match(card, /管理者セキュアページを開く/); assert.match(card, /gm@x\.test/);
+  { const keep = w.win._authSession; w.win._authSession = { ...keep, role: 'office' };   /* v1191：経理のログインにはセキュアページのボタンを出さない */
+    assert.doesNotMatch(w.ML.myCardHtml(), /管理者セキュアページを開く/); assert.match(w.ML.myCardHtml(), /すべての端末からログアウト/);
+    w.win._authSession = keep; }
   await w.ML.logoutAll();
   assert.equal(w.closed.at(-1).scope, 'global');
   assert.equal(w.tokens.size, 0, 'このアカウントの鍵はすべて使えない');
@@ -408,6 +413,12 @@ test('管理者セキュアページをアプリの中から開く・アプリ�
   await w.ML.openSecure();
   assert.equal(w.calls.secure, 2);
   assert.match(w.calls.toast.at(-1)[0], /メールとパスワードでログインしたとき/);
+  // v1191：経理のメールのログインでは開かない（アプリには入れる）
+  w.pick('E3', 'Office Sample', 'office'); w.type('office@x.test', 'pw-office'); await w.ML.login();
+  assert.equal(w.win._mlSignedIn, true);
+  await w.ML.openSecure();
+  assert.equal(w.calls.secure, 2, '経理はセキュアページを開かない');
+  assert.match(w.calls.toast.at(-1)[0], /CEO・GM だけ/);
 });
 
 test('給与：PIN なしで入った人はログインの印で頼む／読めていないときは保存しない（空の給与で上書きしない）', async () => {
@@ -418,7 +429,7 @@ test('給与：PIN なしで入った人はログインの印で頼む／読め�
   let refuseToken = false;
   ctx.window = ctx;
   vm.createContext(ctx);
-  vm.runInContext(fnSrc('fetchEmpPrivate') + fnSrc('_empPrivOk') + fnSrc('saveEmpPrivate'), ctx);
+  vm.runInContext(fnSrc('fetchEmpPrivate') + fnSrc('_empPrivOk') + fnSrc('empPrivSaveMode') + fnSrc('saveEmpPrivate'), ctx);   // v1192：保存のしかたを決める関数も
   ctx._mlSignedIn = true; ctx._hwSession = 'mark:E2:1';
   assert.equal(await ctx.saveEmpPrivate('S1', 0, '', '', null), 'failed');
   assert.equal(sent.filter(x => x[0] === 'fetch').length, 0, '読めていないときは送らない');

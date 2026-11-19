@@ -1326,7 +1326,7 @@ test('④ the 食材管理「発注」 tab is gone; old links go to 棚卸し; i
   // navResolvePage sends the old page to inventory, or home when inventory is not open to the role.
   const nav = { budgetTab: 'daily', workTab: 'today', allowed: { inventory: true } };
   vm.createContext(nav);
-  vm.runInContext(varSrc('NAV_RETIRED') + '\n' + fnSrc('navResolvePage') + '\nfunction navPageAllowed(p){ return !!allowed[p]; }\nfunction navHomePage(){ return "home"; }', nav);
+  vm.runInContext(varSrc('NAV_RETIRED') + '\n' + fnSrc('navResolvePage') + '\nfunction navPageAllowed(p){ return !!allowed[p]; }\nfunction navHomePage(){ return "home"; }\nfunction navGuardPage(p){ return p; }', nav);   /* v1191：行き先の守り（navGuardPage）は tests/unified-ui-v1191 で確かめる */
   assert.equal(vm.runInContext('navResolvePage("order")', nav), 'inventory');
   assert.equal(vm.runInContext('navResolvePage("supply_order")', nav), 'inventory');
   nav.allowed = {};
