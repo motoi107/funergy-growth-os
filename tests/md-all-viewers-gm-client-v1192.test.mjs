@@ -264,4 +264,8 @@ test('Codex P2-2: a device that cannot keep the mark (storage refused) does not 
   assert.deepEqual(W.get(KEY), {}, 'the cloud copy is unchanged');
   assert.ok(c.__toasts.some(m => /印を残せません/.test(m)), 'the device says it could not keep the mark');
   assert.equal(c.MEM.has(KEY) ? JSON.parse(c.MEM.get(KEY))['E-AM2'] : undefined, undefined, 'this device does not show it as ON either');
+  // the English screen (Codex 6996697297): the same message in English
+  c.t = (ja, en) => en; c.__toasts.length = 0;
+  assert.equal(c.mdSetAllViewer('E-AM2', 'Other Am', true), false);
+  assert.ok(c.__toasts.some(m => /Not saved \(this device could not keep a record of the change\)/.test(m)), 'English message');
 });
