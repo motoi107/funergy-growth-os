@@ -194,8 +194,8 @@ test('the old Office buttons (出勤中・承認待ち・今月・給与CSV（Of
     run(c, `officeMgrTab=${JSON.stringify(tab)}; acFromOfficeTab()`);
     assert.deepEqual(state(c), want, tab); assert.equal(run(c, 'officeMgrTab'), 'dash', 'reset so the next visit is home');
   }
-  const cases = SRC.match(/curPage = 'acct_center'; acFromOfficeTab\(\);/g) || [];
-  assert.equal(cases.length, 2, 'both renderPage copies');
+  const cases = SRC.match(/var _wasAc = \(curPage === 'acct_center'\); curPage = 'acct_center'; acFromOfficeTab\(_wasAc\);/g) || [];
+  assert.equal(cases.length, 2, 'both renderPage copies (and they tell whether it came from inside the accounting center)');
   assert.ok(!/curPage = 'acct_center'; _acCat = 'dash'; _acSub = 'dash';/.test(SRC));
 });
 
@@ -221,4 +221,16 @@ test('English screen: every middle tab and sub tab has an English name, and the 
   const html = run(c, 'renderAcctCenter()');
   assert.match(html, />Masters &amp; settings</); assert.match(html, /acSetSub\('dsettings'\)">Invoice intake settings/); assert.ok(!/取り込みの設定/.test(html));
   const ja = app(); run(ja, "acSetCat('master')"); assert.match(run(ja, 'renderAcctCenter()'), /acSetSub\('dsettings'\)">Invoice 取り込みの設定/);
+});
+
+test('Codex #204: a redraw from inside the accounting center (HQ time card month / person, clocking, the close marks) keeps the open tab; an explicit old Office button still moves', () => {
+  const c = app();
+  run(c, "acSetCat('attend')");
+  run(c, "officeMgrTab='dash'; acFromOfficeTab(true)"); assert.deepEqual(state(c), ['attend', 'attend'], 'month changed in 本部タイムカード: stays');
+  run(c, "acSetCat('reports'); acSetSub('export'); acFromOfficeTab(true)"); assert.deepEqual(state(c), ['reports', 'export']);
+  run(c, "officeMgrTab='attend'; acFromOfficeTab(true)"); assert.deepEqual(state(c), ['attend', 'attend'], 'the 給与CSV（Office） button inside still moves');
+  assert.equal(run(c, 'officeMgrTab'), 'dash');
+  run(c, "acSetCat('tip'); officeMgrTab='dash'; acFromOfficeTab(false)"); assert.deepEqual(state(c), ['dash', 'dash'], 'coming from outside: home');
+  // the time card functions redraw through office_mgr (so the router decides)
+  for (const f of ['officeAttendShiftMonth', 'officeClockIn', 'toggleOfficeClose']) assert.match(fnSrc(f), /renderPage\('office_mgr'\)/, f);
 });

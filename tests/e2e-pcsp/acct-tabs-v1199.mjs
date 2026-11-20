@@ -81,6 +81,15 @@ for (const [W, lang] of [[1440, 'ja'], [390, 'ja'], [390, 'en'], [1440, 'en']]) 
       if (id === 'review' && W === 390) await shot(page, role + '-' + W + '-' + lang + '-review');
       if (id === 'master' && W === 1440) await shot(page, role + '-' + W + '-' + lang + '-master');
     }
+    // Codex #204：本部タイムカードで月を変えても本部タイムカードのまま（前は経理ホームへ戻っていた）
+    await page.click('.ac-main .ac-btn[onclick="acSetCat(\'attend\')"]'); await sleep(600);
+    const mb = page.locator('#main-content [onclick="officeAttendShiftMonth(-1)"]');
+    if (await mb.count()) {
+      await mb.first().click(); await sleep(700);
+      b = await bar(page);
+      ok(tag + ': 本部タイムカードで月を変えても本部タイムカード（Codex #204）', b.page === 'acct_center' && b.cat === 'attend' && !b.fail, [b.cat, b.sub]);
+      await page.locator('#main-content [onclick="officeAttendShiftMonth(1)"]').first().click(); await sleep(500);
+    } else ok(tag + ': 本部タイムカードに月の切り替えがある', false);
     // 経理ホームの「出勤中」のタイル → 本部タイムカード（前は経理ホームに戻るだけだった）
     await page.click('.ac-main .ac-btn[onclick="acSetCat(\'dash\')"]'); await sleep(600);
     await page.locator('#main-content [onclick="setOfficeMgrTab(\'attend\')"]').first().click(); await sleep(700);

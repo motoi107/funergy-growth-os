@@ -25700,7 +25700,7 @@ if(typeof window.FUNERGY_WEB_OFFICE_RENDER==='function')return window.FUNERGY_WE
          ナビだけ新しくなって中身が古い画面に取り残される。経理センターへ回す。
          ページ自体は残すので、店舗側や直リンクからは今までどおり開ける。 */
       if (['ceo','gm','office','office_crew'].indexOf(curRole) >= 0) {
-        curPage = 'acct_center'; acFromOfficeTab();   /* v1199：前の画面のボタン（出勤中・承認待ち・今月 など）はその中タブへ */
+        var _wasAc = (curPage === 'acct_center'); curPage = 'acct_center'; acFromOfficeTab(_wasAc);   /* v1199：前の画面のボタン（出勤中・承認待ち・今月 など）はその中タブへ。経理センターの中からの描き直しは今の中タブのまま（Codex #204） */
         el.innerHTML = renderAcctCenter(); break;
       }
       el.innerHTML = renderOfficeMgr(); break;
@@ -25840,7 +25840,7 @@ case 'acct_center':
          ナビだけ新しくなって中身が古い画面に取り残される。経理センターへ回す。
          ページ自体は残すので、店舗側や直リンクからは今までどおり開ける。 */
       if (['ceo','gm','office','office_crew'].indexOf(curRole) >= 0) {
-        curPage = 'acct_center'; acFromOfficeTab();   /* v1199：前の画面のボタン（出勤中・承認待ち・今月 など）はその中タブへ */
+        var _wasAc = (curPage === 'acct_center'); curPage = 'acct_center'; acFromOfficeTab(_wasAc);   /* v1199：前の画面のボタン（出勤中・承認待ち・今月 など）はその中タブへ。経理センターの中からの描き直しは今の中タブのまま（Codex #204） */
         el.innerHTML = renderAcctCenter(); break;
       }
       el.innerHTML = renderOfficeMgr(); break;
@@ -60462,10 +60462,15 @@ function acOpenSub(id){
 }
 /* v1199：Office管理の小タブ（前の画面のボタン：出勤中・承認待ち・今月・給与CSV（Office）・締めの「勤怠」）を経理センターの中タブへ。
    前は経理センターの経理ダッシュボードへ戻るだけで、押しても何も変わらなかった */
-function acFromOfficeTab(){
-  var m = { attend:['attend','attend'], report:['review','all'], export:['reports','ohub'] }[(typeof officeMgrTab !== 'undefined') ? officeMgrTab : ''] || ['dash','dash'];
+/* v1199（Codex #204）：stay＝経理センターの中から描き直しただけ（本部タイムカードの月・人を変えた・打刻した・締めの印 など。前の Office管理の関数は
+   renderPage('office_mgr') で描き直す）。そのときは今の中タブのまま（前は経理ホームへ戻っていた） */
+function acFromOfficeTab(stay){
+  var tab = (typeof officeMgrTab !== 'undefined') ? officeMgrTab : '';
   try { officeMgrTab = 'dash'; } catch(e){}
-  _acCat = m[0]; _acSub = m[1];
+  var m = { attend:['attend','attend'], report:['review','all'], export:['reports','ohub'] }[tab];   /* v1200（3A）：承認待ち → 確認する */
+  if (m) { _acCat = m[0]; _acSub = m[1]; return; }
+  if (stay) return;
+  _acCat = 'dash'; _acSub = 'dash';
 }
 /* v1199（5）：経理センターから外した入口（エラーセンター・業務Bot・人材）の件数と行き先。① 経理ホームに出す */
 function acWorkLinksHtml(){
