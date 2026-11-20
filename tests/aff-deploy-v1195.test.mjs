@@ -17,10 +17,13 @@ const sha = p => crypto.createHash('sha256').update(fs.readFileSync(path.join(RO
 const D = 'deploy/unified-stage2-v1195/';
 const ONE = D + '4_関数_secure-state_index.ts';
 
-test('the one-file secure-state (v1195) is what the build script makes now and has no private part', () => {
-  assert.equal(OUT, ONE, 'the build writes into the v1195 folder');
+// v1197 から build() は deploy/page-view-tab-v1197/ に書く。v1195 の 1 ファイルは Moto さんに渡したときのまま（sha256 で固定）
+const ONE_SHA = 'b47740ea32ca07855e4f92aae8f9b0471246793ce7bd8a1613b06cb619db2915';
+test('the one-file secure-state (v1195) stays as it was given and has no private part', () => {
+  assert.notEqual(OUT, ONE, 'the build now writes into a later folder');
+  assert.ok(build().length > 0);
   const one = rd(ONE);
-  assert.equal(one, build(), 'the one file is up to date with the sources (run node scripts/build-secure-state-one.mjs)');
+  assert.equal(sha(ONE), ONE_SHA, 'the v1195 one file stays as it was given');
   assert.ok(one.endsWith(TAIL));
   assert.ok(!/^import\s/m.test(one), 'no import left');
   assert.ok(!/verifyPin/.test(one), 'no private part');

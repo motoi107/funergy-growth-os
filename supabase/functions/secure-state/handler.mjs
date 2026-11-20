@@ -663,9 +663,10 @@ export function ntVisible(n, c) {
 // ================================================================ v1193：画面の表示（UI案95・docs/PAGE_VIEW_V1193_JA.md）
 // 中身：{ v:1, off:bool, cols:{ <列>:{ <ノード>:'s'|'h' } }, people:{ <社員ID>:{ <ノード>:'s'|'h' } }, only:{ 'p:<画面>':[社員ID…] } }
 //   列：g1〜g6（店の人のグレード）・am・chef（Head Chef）・acct（経理・事務共通）。CEO・GM はいつも全部（固定）なので列が無い。
+//   v1197（UI案96 の 6B）：tab（店のタブレット＝店舗の PIN の共有ログイン）。中タブ（p:）だけ。人の例外・指定スタッフ限定は無い（人ではないため）。
 //   ノード：p:<画面の ID>（中タブ）・c:<カードの ID>（マイページのカード）・g1:<グループの ID>（G1 の画面の大タブ。g1 の列と人の例外だけ）。
 //   固定のもの（承認・閲覧設定・成長カルテ・中間レビュー・承認センター・セキュアページのカード）は中身に入れられない（画面がいつもの決まりで出す）。
-export const PV_COLS = ['g1', 'g2', 'g3', 'g4', 'g5', 'g6', 'am', 'chef', 'acct'];
+export const PV_COLS = ['g1', 'g2', 'g3', 'g4', 'g5', 'g6', 'am', 'chef', 'acct', 'tab'];
 export const PV_NEVER = ['p:ar_settings', 'p:growth_karte', 'p:mid_review', 'p:approval', 'c:secure'];
 export const PV_NODE_RE = /^(?:p|c|g1):[a-z][a-z0-9_]{0,48}$/;
 export const PV_EMP_RE = /^[A-Za-z0-9_.:-]{1,64}$/;
@@ -693,7 +694,7 @@ export function pvCheck(doc) {
   const out = { v: 1, off: doc.off === true, cols: {}, people: {}, only: {} };
   for (const c of Object.keys(cols)) {
     if (!PV_COLS.includes(c)) return null;
-    const n = pvNodes(cols[c], c === 'g1' ? (t => t === 'g1' || t === 'c') : (t => t === 'p' || t === 'c'));
+    const n = pvNodes(cols[c], c === 'g1' ? (t => t === 'g1' || t === 'c') : c === 'tab' ? (t => t === 'p') : (t => t === 'p' || t === 'c'));
     if (!n) return null;
     out.cols[c] = n;
   }
@@ -2248,6 +2249,16 @@ export function createHandler(deps) {
     if (x.doc.off) return { pv: null, off: true, ver: x.row.ver };
     return { pv: { ver: x.row.ver, at: x.row.updated_at, ...pvProject(x.doc, a.emp || '') } };
   }
+  // v1197（UI案96 の 6B）：店のタブレットの列だけ（ログインを確かめない・ins_totals と同じ）。店舗の PIN のタブレットはこの関数を自分で呼べない（ログインの印が無い）。
+  // どの画面をどの列に出すかは秘密ではない（pv_get もログインした人に列を全部返す）。人の例外・指定スタッフ限定・記録・だれが保存したかは返さない
+  async function pvTab() {
+    const x = await pvRead();
+    if (x.nosql) return { pv: null, nosql: true };
+    if (!x.row) return { pv: null };
+    if (!x.doc) return { pv: null, broken: true };
+    if (x.doc.off) return { pv: null, off: true, ver: x.row.ver };
+    return { pv: { ver: x.row.ver, at: x.row.updated_at, col: x.doc.cols.tab || {} } };
+  }
   async function pvMgr(a) {
     if (levelOf(a) !== 'full') throw err('forbidden', 403);
     if (a.emp) {
@@ -2260,9 +2271,10 @@ export function createHandler(deps) {
     await pvMgr(a);
     const x = await pvRead();
     if (x.nosql) return { pv: null, nosql: true };
-    if (!x.row) return { pv: null, ver: 0 };
+    // tabok:1＝店のタブレットの列（v1197）を受け取れる関数（アプリは無い答えのとき、その列を出さない・保存に入れない）
+    if (!x.row) return { pv: null, ver: 0, tabok: 1 };
     return { pv: x.doc ? { ver: x.row.ver, at: x.row.updated_at, by_name: x.row.by_name || '', by_role: x.row.by_role || '', doc: x.doc } : null,
-      ver: x.row.ver, broken: !x.doc };
+      ver: x.row.ver, broken: !x.doc, tabok: 1 };
   }
   async function pvSave(a, b) {
     await pvMgr(a);
@@ -2393,6 +2405,10 @@ export function createHandler(deps) {
     // v1144：店ごとの保険料の合計は、ログインを確かめずに返す（店舗の PIN のタブレットでも人件費が今と同じに。人ごとの額は返さない）
     if (body.action === 'ins_totals') {
       try { return json(await insTotals()); } catch (e) { console.error('secure-state', 'ins_totals', safeErr(e)); return json({ error: 'error' }, 500); }
+    }
+    // v1197（UI案96 の 6B）：店のタブレットの列（画面の表示）は、ログインを確かめずに返す（店舗の PIN のタブレットのため・列だけ）
+    if (body.action === 'pv_tab') {
+      try { return json(await pvTab()); } catch (e) { console.error('secure-state', 'pv_tab', safeErr(e)); return json({ error: 'error' }, 500); }
     }
     // v1152：通知。ログインを確かめられない端末（店舗の PIN のタブレット・PIN が初期の人）は足すだけ（読めない・印を付けられない）
     if (body.action === 'nt') {

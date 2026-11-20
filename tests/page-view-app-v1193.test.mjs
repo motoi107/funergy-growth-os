@@ -398,5 +398,5 @@ test('wiring: the nav, guards, writes, server calls, settings, sign-in and sign-
   assert.match(src, /if \(A\.tab === 'pv' && W\.FUNERGY_PV\) return tabsBar/);
   assert.match(src, /'そのほか':'Other','画面の表示':'Screen visibility'/);
   // the module keeps nothing but its own copy on the device
-  assert.ok(!/localStorage\.setItem\((?!CACHE_KEY)/.test(PV_BLOCK));
+  assert.ok(!/localStorage\.setItem\((?!CACHE_KEY|TAB_CACHE)/.test(PV_BLOCK));   // v1197：店のタブレットの列の写し（秘密ではない）も
 });
