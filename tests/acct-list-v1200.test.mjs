@@ -206,7 +206,7 @@ test('the review body counts this list as its page (confirm / return redraws her
   const c = open();
   assert.equal(run(c, 'arOnPage()'), true);
   run(c, "_acSub='purchase'"); assert.equal(run(c, 'arOnPage()'), false);
-  assert.match(SRC, /_acCat = 'review'; _acSub = 'all'; \} catch\(e\)\{\} page = 'acct_center';/);
+  assert.match(SRC, /curPage === 'acct_center' && _acCat === 'review'\)\) \{ _acCat = 'review'; _acSub = 'all'; \}/, 'from outside: the one list (inside the review: the open tab stays; tests/unified-ui-v1191.test.mjs)');
   assert.equal(run(c, 'acrOnPage()'), false); run(c, "_acSub='all'"); assert.equal(run(c, 'acrOnPage()'), true);
   run(c, "curPage='tasks'"); assert.equal(run(c, 'acrOnPage()'), false);
 });

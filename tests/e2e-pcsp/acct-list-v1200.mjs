@@ -92,6 +92,11 @@ for (const [W, lang] of [[1440, 'ja'], [390, 'ja'], [1440, 'en'], [390, 'en']]) 
     await page.evaluate(() => acSetSub('acctrev')); await sleep(900);
     b = await bar(page);
     ok(tag + ': 区分・承認も今までどおり', b.sub === 'acctrev' && !b.fail && b.len > 40);
+    // 区分・承認の中の「申請（GM 承認済み）」のタブを押しても区分・承認のまま（v1200 で「確認する」へ飛んでいた）
+    const rq = page.locator('#main-content .phase-tab', { hasText: /申請（GM 承認済み）|Requests \(GM-approved\)/ });
+    if (await rq.count()) { await rq.first().click(); await sleep(800); b = await bar(page); ok(tag + ': 区分・承認の中のタブを押しても区分・承認', b.sub === 'acctrev', b.sub);
+      await page.locator('#main-content .phase-tab').first().click(); await sleep(500); }
+    else ok(tag + ': 区分・承認に申請のタブがある', false);
     ok(tag + ': pageerror なし', errors.length === 0, errors.slice(0, 3));
     await ctx.close();
   }
