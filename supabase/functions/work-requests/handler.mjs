@@ -152,7 +152,7 @@ const REV = v => { if (!Number.isInteger(v) || v < 1 || v > 1e9) throw bad(); re
 const ID = v => (typeof v === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v) ? v.toLowerCase() : null);
 const CODE = v => (typeof v === 'string' && /^[A-Z]{2}-\d{4}-\d{4,6}$/.test(v) ? v : null);
 
-export const KINDS = ['mileage', 'reimburse', 'expense_pre'];
+export const KINDS = ['mileage', 'reimburse', 'expense_pre', 'lost'];   // v1202：紛失届（lost）。SQL は段 9（20261213090000_wr_lost.sql）から
 // v1132：評価の変更（G4 → GM）。スキル Lv・Career Score・Tip Rate
 export const EVAL_KINDS = ['skill', 'cs', 'tiprate'];
 // v1155：段階 2。前の「承認」タブの種類と予算（前の画面で申請したとき、その記録をここに写す）
@@ -223,6 +223,12 @@ export function normPayload(kind, p) {
     const n = p.participants == null ? null : (Number.isInteger(p.participants) && p.participants > 0 && p.participants <= 1000 ? p.participants : (() => { throw bad(); })());
     return { date: DT(p.date), dept: TS(p.dept, 60), project: TS(p.project, L.text), purpose, description: TS(p.description, L.long), location: TS(p.location, L.text),
       participants: n, per_person_cents: pp, total_cents: CENTS(p.total_cents), memo: TS(p.memo, L.long) };
+  }
+  // v1202：紛失届。今の画面と同じ中身（買った日・店（業者）・金額・カードを使った人・品目・メモ）。カードの番号は受けない。SQL（wr_norm）がもう一度確かめる
+  if (kind === 'lost') {
+    const vendor = TS(p.vendor, L.text), cardholder = TS(p.cardholder, L.name);
+    if (!vendor || !cardholder) throw bad();
+    return { date: DT(p.date), vendor, amount_cents: CENTS(p.amount_cents), cardholder, items: TS(p.items, L.long), memo: TS(p.memo, L.long) };
   }
   // v1132：評価の変更。対象の人・今の値 → 申請する値・理由（必ず）。対象・店・グレードはサーバー（wr_norm_eval）がもう一度確かめる。
   if (EVAL_KINDS.includes(kind)) {
@@ -404,9 +410,10 @@ export function createHandler(deps) {
     // v1169 から fn 11（キー付きのグループを 1 つの取引で＝chat_create_group_k・経理の「処理済み（今月）」＝acct_done。SQL は chat 5 から。申請の段 sql は変えない＝wr_acct_done が無ければ done_old）
     // v1184 から fn 12（経費の申請の権限：exp_grant_list・exp_grant_save。SQL は 20261204090000 から＝whoami の exp_grants。無ければ grant_old）
     // v1190 から fn 13（承認・閲覧の共通ルール：ar_*・bulk_approve。SQL は 20261209090000 から＝whoami の ar・sql 8。無ければ ar_old）
+    // v1202 から fn 14（紛失届 lost を受ける。SQL は 20261213090000 から＝sql 9。SQL が前の版なら SQL が lost を bad_value で断る）
     whoami: async w => {
       const [me, st, cs] = await Promise.all([db.rpc('wr_whoami', w), db.rpc('wr_stage', {}).catch(() => null), db.rpc('chat_stage', {}).catch(() => null)]);
-      return { ...me, fn: 13, push: pushReady, sql: (st && Number.isInteger(st.stage)) ? st.stage : 1, chat: (cs && Number.isInteger(cs.chat)) ? cs.chat : 0 };
+      return { ...me, fn: 14, push: pushReady, sql: (st && Number.isInteger(st.stage)) ? st.stage : 1, chat: (cs && Number.isInteger(cs.chat)) ? cs.chat : 0 };
     },
     // v1184：G2 より下の人の経費の申請の権限（ガソリン代・立替経費）。GM・CEO だけ（SQL が確かめる）。
     // save：mileage・reimburse は true／false／null（＝初期値）。expect_rev は見ていた設定の番号（無ければ 0）。同じ設定なら何もしない（same）
