@@ -36,7 +36,7 @@ test('the approval rules work end to end through the PostgREST adapter', async (
   const ok = async (who, body) => { const r = await call(who, body); assert.equal(r.status, 200, body.action + ' ' + JSON.stringify(r.body)); return r.body; };
 
   const me = await ok('E2', { action: 'whoami' });
-  assert.equal(me.fn, 13); assert.equal(me.sql, 8); assert.ok(me.ar && me.ar.admin === true);
+  assert.equal(me.fn, 14); assert.equal(me.sql, 8);   // v1202：fn 14（紛失届）・SQL は v1190 まで assert.ok(me.ar && me.ar.admin === true);
   let st = await ok('E2', { action: 'ar_state' });
   assert.equal(st.kinds.length, 16);
   for (const k of st.kinds) if (k.draft) await ok('E2', { action: 'ar_rule_activate', kind: k.kind, expect_ver: k.draft.ver, expect_rev: k.draft.rev, note: '確かめた' });

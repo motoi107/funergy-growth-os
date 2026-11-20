@@ -7,7 +7,7 @@ import { setup, AR, ROLLBACK, KINDS16, G, C, AMm, STAGE, ALLS } from './approval
 test('v1190 installing changes nothing: roles come from the employee master and accounts, drafts follow the answers, the switch is off, the old GM proxy still works', async () => {
   const s = await setup({ twice: true });
   const w = await s.ok('E8', { action: 'whoami' });
-  assert.equal(w.fn, 13); assert.equal(w.sql, 8); assert.equal(w.ar.live, false); assert.equal(w.ar.admin, false);
+  assert.equal(w.fn, 14); assert.equal(w.sql, 8);   // v1202：fn 14（紛失届）・SQL は v1190 まで assert.equal(w.ar.live, false); assert.equal(w.ar.admin, false);
   assert.equal((await s.ok('E2', { action: 'whoami' })).ar.admin, true);
   assert.deepEqual((await s.ok('E5', { action: 'whoami' })).ar.roles, ['am']);
   const rl = await s.ok('E2', { action: 'ar_role_list' });
