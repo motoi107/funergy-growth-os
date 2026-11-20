@@ -334,3 +334,36 @@ $$;
 
 create or replace function public.wr_stage(p jsonb) returns jsonb
 language sql stable security invoker set search_path = public, pg_temp as $$ select jsonb_build_object('stage', 9) $$;
+
+create or replace function public.wr_whoami(p jsonb) returns jsonb
+language plpgsql stable security invoker set search_path = public, pg_temp as $$
+declare v jsonb := public.wr_whoami_v0(p); s public.ar_settings;
+begin
+ select * into s from public.ar_settings where id = 1;
+ return v || jsonb_build_object('ar', jsonb_strip_nulls(jsonb_build_object('live', coalesce(s.live, false), 'rev', coalesce(s.rev, 1), 'live_at', s.live_at,
+  'lost_rule', exists (select 1 from public.ar_rules x where x.kind = 'lost' and x.status = 'active'),   -- v1202（Codex #207）
+  'admin', (v->'me'->>'role') in ('ceo','gm'),
+  'roles', (select jsonb_agg(distinct g.role) from public.ar_role_rows() g where g.emp_id = v->'me'->>'emp' and public.ar_emp_ok(g.emp_id)))));
+end $$;
+
+-- Codex #207/#209（P1）：紛失届の承認ルールは「下書き」だけを用意する（20261209090000 の初めの下書きと同じ形＝GM・CEO の 1 段・閲覧者は担当 AM と経理の 3 役・本人は GM）。
+-- 有効にはしない（承認の経路は CEO・GM が 設定 › 承認・閲覧設定 で確かめて有効にする）。共通ルールで動かしているあいだ、有効にするまでアプリは新しい紛失届を出さない（今の紛失届の画面）。
+-- もう lost の行があれば何もしない（2 回流しても同じ）。回数は今の作り方（ar_rule_rev_next）で。
+do $$
+declare
+ v_gmo jsonb := jsonb_build_object('t', 'role', 'role', 'gm', 'scope', 'all');
+ v_ceo jsonb := jsonb_build_object('t', 'role', 'role', 'ceo', 'scope', 'all');
+ v_amo jsonb := jsonb_build_object('t', 'role', 'role', 'am', 'scope', 'mine');
+ v_view jsonb; d jsonb;
+begin
+ perform pg_advisory_xact_lock(hashtext('ar_rule:lost'));
+ if exists (select 1 from public.ar_rules x where x.kind = 'lost') then return; end if;
+ v_view := jsonb_build_array(jsonb_build_object('who', v_amo, 'from', 'submit'),
+  jsonb_build_object('who', jsonb_build_object('t', 'role', 'role', 'acct_mgr', 'scope', 'all'), 'from', 'submit'),
+  jsonb_build_object('who', jsonb_build_object('t', 'role', 'role', 'acct_lead', 'scope', 'all'), 'from', 'submit'),
+  jsonb_build_object('who', jsonb_build_object('t', 'role', 'role', 'office_crew', 'scope', 'all'), 'from', 'submit'));
+ d := jsonb_build_object('default', jsonb_build_object('label', 'GM・CEO', 'stages', jsonb_build_array(jsonb_build_object('mode', 'any', 'slots', jsonb_build_array(v_gmo, v_ceo)))))
+  || jsonb_build_object('viewers', v_view, 'self', 'gm');
+ insert into public.ar_rules(kind, ver, status, def, note, rev, created_by, updated_by)
+  values ('lost', 1, 'draft', d, '初めの下書き（v1202・紛失届）', public.ar_rule_rev_next('lost'), 'sql', 'sql');
+end $$;
