@@ -50116,7 +50116,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1201';
+const APP_VERSION = '1202';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -55217,6 +55217,11 @@ function renderLostReceipt(){
   var h = '<div class="section-header"><div><div class="section-title">'+t('レシート紛失届','Lost Receipt Affidavit')+'</div>'
     + '<div class="section-sub">'+t('会社カードのレシートを出せないときの届出（GM承認）','Company card receipts that cannot be provided (GM approval)')+'</div></div>'
     + '<button class="btn btn-primary btn-sm" onclick="openLostReceiptForm()"><i class="ti ti-plus"></i> '+t('新規','New')+'</button></div>';
+  /* v1202（8B）：サーバーの申請で出せるとき（ワークセンター › 申請の「紛失届」）。ここは前からの紛失届の確かめ・承認・差し戻しだけ */
+  var _lrWr = null; try{ _lrWr = (typeof wrLostReady === 'function') ? wrLostReady() : null; }catch(e){ _lrWr = null; }
+  if(_lrWr) h += '<div class="alert alert-info lr-wr" style="padding:8px 10px;margin-bottom:10px;display:flex;align-items:center;gap:8px;flex-wrap:wrap"><i class="ti ti-info-circle"></i><div style="font-size:12.5px;flex:1;min-width:200px">'
+    + t('新しい紛失届は「新規」からワークセンターの申請（番号 LR-…）で出します。GM が承認し、経理が確認して完了です。ここにあるのは前からの紛失届です。','New lost receipts are sent as Work Center requests (LR-…) from “New”. The GM approves and accounting checks them. This list has the earlier ones.')
+    + '</div><button class="btn btn-secondary btn-sm" onclick="wrOpenMine()">'+t('自分の申請','My requests')+'</button></div>';
 
   if(canApp && pend>0){
     h += '<div class="alert alert-warning" style="padding:8px 10px;margin-bottom:10px"><i class="ti ti-clock"></i>'
@@ -113909,8 +113914,8 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   var W = window;
   var FN = '/functions/v1/work-requests';
   var LIVE_KEY = '_wr_live_v1';   /* この端末で最後に見た「使い始めた」の印（ログインの直後の行き先と前の画面の案内に使う・サーバーが正） */
-  var KINDS = ['mileage', 'reimburse', 'expense_pre'];
-  var KIND_L = { mileage:['ガソリン代','Mileage'], reimburse:['建て替え経費','Reimbursement'], expense_pre:['事前経費','Pre-approval'],
+  var KINDS = ['mileage', 'reimburse', 'expense_pre', 'lost'];   /* v1202：紛失届（lost）。出せるかは lostOk（SQL 段 9・関数 fn 14）。経費の申請の権限（exp_kinds）にはかけない */
+  var KIND_L = { mileage:['ガソリン代','Mileage'], reimburse:['建て替え経費','Reimbursement'], expense_pre:['事前経費','Pre-approval'], lost:['紛失届','Lost receipt'],
     skill:['スキルレベル','Skill level'], cs:['Career Score','Career Score'], tiprate:['Tip Rate','Tip Rate'],
     budget:['予算','Budget'], leave:['休暇','Leave'], shift:['シフト変更','Shift change'], hire:['採用','Hiring'], resign:['退職','Offboarding'],
     promo:['Leadership（昇格・Tip Rate）','Leadership (promotion / Tip Rate)'], tip_self:['Tip Rate（本人の申請）','Tip Rate (own request)'], skill_self:['スキル（本人の申請）','Skill (own request)'],
@@ -114176,6 +114181,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     if (r.kind === 'mileage') return esc(purposeL(p.purpose || '') + (p.miles != null ? ' ' + p.miles + ' mi' : ''));
     if (r.kind === 'reimburse') return esc(purposeL(p.purpose || '') + (p.vendor ? '（' + p.vendor + '）' : ''));
     if (r.kind === 'expense_pre') return esc(p.purpose || '');
+    if (r.kind === 'lost') return esc((p.vendor || '') + (p.cardholder ? ' · ' + p.cardholder : ''));   /* v1202 */
     return '';
   }
   /* v1165（UI案77 の 2）：一覧の 1 行に 対象日・月／金額（変更前後）／添付の有無 */
@@ -114720,6 +114726,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       if (p.receipt && p.receipt.chat_file) o.push([T('領収書','Receipt'), chatRcLink(r)]);   /* v1161（8B）：申請のチャットの写真・PDF */
       else if (p.receipt && (p.receipt.path || p.receipt.drive_url)) o.push([T('領収書','Receipt'), p.receipt.path && /^[A-Za-z0-9_\-./]+$/.test(p.receipt.path) ? '<a href="#" data-a="' + esc(p.receipt.path) + '" onclick="wrReceipt(this.dataset.a);return false">' + T('開く','Open') + '</a>' : /^https:\/\/(drive|docs)\.google\.com\//.test(p.receipt.drive_url || '') ? '<a href="' + esc(p.receipt.drive_url) + '" target="_blank" rel="noopener" data-a="' + esc(p.receipt.drive_url) + '" onclick="wrAttSeen(\'u:\'+this.dataset.a)">' + T('開く','Open') + '</a>' : '<span style="color:var(--muted)">' + T('記録なし','no record') + '</span>']);
       else o.push([T('領収書','Receipt'), '<span style="color:var(--muted)">' + T('なし','none') + '</span>']);
+    } else if (r.kind === 'lost') { add(T('買った日','Date of purchase'), p.date); add(T('店（業者）','Store / vendor'), p.vendor); add(T('カードを使った人','Card used by'), p.cardholder); add(T('品目','Items'), p.items); add(T('メモ','Memo'), p.memo);   /* v1202 */
     } else { add(T('部門','Dept'), p.dept); add(T('プロジェクト','Project'), p.project); add(T('目的','Purpose'), p.purpose); add(T('内容','Description'), p.description); add(T('場所','Place'), p.location); add(T('人数','People'), p.participants); if (p.per_person_cents) o.push([T('1 人あたり','Per person'), money(p.per_person_cents)]); add(T('メモ','Memo'), p.memo); }
     return o;
   }
@@ -115486,6 +115493,9 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   function expKindsNow(){ if (!S.me) return []; return S.expKinds ? S.expKinds.slice() : oldKinds(S.me); }
   function myHomeStore(){ try { return (typeof curStore !== 'undefined' && curStore && curStore !== 'ALL') ? String(curStore) : ''; } catch(e) { return ''; } }
   W.wrExpKinds = function(){ return S.me ? expKindsNow() : null; };
+  /* v1202（8B）：紛失届をサーバーの申請で出せるか（使い始めている・SQL 段 9・関数 fn 14）。前の版のあいだは今の紛失届の画面のまま */
+  function lostOk(){ return !!(S.me && S.live && (S.fn || 0) >= 14 && (S.sql || 0) >= 9); }
+  W.wrLostReady = function(){ checkAuth(); return S.me ? lostOk() : null; };
   /* 前の画面（1130 以前の端末・使い始める前に開いていた画面）に残った経費の申請を、GM・CEO のログインで写す（何度流しても同じ・写すのは無いものだけ） */
   var legacyTried = '';
   function legacyAuto(){
@@ -115499,6 +115509,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   /* 入口：kind＝mileage・reimburse・expense_pre。pre＝{ p:中身, store, file, carried }（前の画面で入れた内容） */
   W.wrStartExpense = function(kind, pre){
     checkAuth();
+    if (kind === 'lost' && !pinTok()) { oldEntry('lost'); return; }   /* v1202：PIN のログインでない（店のタブレットなど）は今の紛失届の画面 */
     if (!pinTok()) { showToast(errText('signin'), 'error'); return; }
     if (!S.me) {
       S.pendingNew = { kind:kind, from:null, pre:pre || null, start:true };
@@ -115507,6 +115518,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       return;
     }
     if (!S.live) { closeModalDirect(); return oldEntry(kind); }
+    if (kind === 'lost') { if (!lostOk()) { closeModalDirect(); return oldEntry('lost'); } S.view = 'mine'; W.wrNew('lost', null, pre || null); return; }   /* v1202：だれでも（exp_kinds にはかけない） */
     var ks = expKindsNow();
     if (kind && ks.indexOf(kind) < 0) {
       closeModalDirect();
@@ -115521,6 +115533,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   var OLD_OPEN = {};
   function oldEntry(kind){
     try {
+      if (kind === 'lost') { if (OLD_OPEN.openLostReceiptForm) OLD_OPEN.openLostReceiptForm(); else if (typeof openLostReceiptForm === 'function') openLostReceiptForm(); return; }   /* v1202 */
       if (kind === 'mileage') { go('mileage'); if (OLD_OPEN.openMileageModal) OLD_OPEN.openMileageModal(); return; }
       if (kind === 'expense_pre') { go('expense'); if (OLD_OPEN.openExpenseModal) OLD_OPEN.openExpenseModal(); return; }
       go('invoice'); if (typeof invoiceDocType !== 'undefined') invoiceDocType = 'Reimburse'; if (OLD_OPEN.openInvoiceModal) OLD_OPEN.openInvoiceModal();
@@ -115642,6 +115655,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     if (!S.live && !from) { showToast(errText('not_live'), 'error'); return; }
     /* v1164：新しい申請は、この人が出せる種類だけ（サーバーの exp_kinds）。1 つも無ければ開かない */
     var ks = expKindsNow();
+    if (kind === 'lost' || (from && from.kind === 'lost')) ks = ['lost'];   /* v1202：紛失届は種類 1 つ（経費の申請の権限にはかけない） */
     if (!from && !ks.length) { showToast(T('出せる経費の申請がありません（G2 より下の人は、GM・CEO が人ごとに決めます。事前経費は G2 以上）','You have no expense requests to send (below G2 the GM or CEO sets them per person; pre-approval is G2 and above)'), 'error'); return; }
     var p = from ? (rawLegacy(from) ? legacyForm(from.kind, from.payload || {}) : Object.assign({}, from.payload)) : {};
     var pr = (!from && pre && typeof pre === 'object') ? pre : {};
@@ -115680,7 +115694,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     var f = S.form, p = f.p, me = S.me || {};
     var h = '<div style="font-size:15px;font-weight:700">' + (f.from ? (f.from.status === 'returned' ? T('直して出し直す','Fix and resubmit') : T('直す（新しい版）','Edit (new version)')) + ' · ' + esc(f.from.code) : T('新しい申請','New request')) + '</div>';
     if (f.carried) h += '<div class="alert alert-info" style="font-size:11.5px;margin-top:8px">' + T('前の画面で入れた内容を写しました。確かめて「申請する」を押してください（まだ送っていません）。','What you entered on the earlier screen was copied here. Check it and press “Submit” (not sent yet).') + '</div>';
-    if (!f.from) h += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">' + expKindsNow().map(function(k){ return '<button class="btn btn-sm ' + (f.kind === k ? 'btn-primary' : 'btn-secondary') + '" onclick="wrPick(\'' + k + '\')">' + esc(kindL(k)) + '</button>'; }).join('') + '</div>';
+    if (!f.from && f.kind !== 'lost') h += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">' + expKindsNow().map(function(k){ return '<button class="btn btn-sm ' + (f.kind === k ? 'btn-primary' : 'btn-secondary') + '" onclick="wrPick(\'' + k + '\')">' + esc(kindL(k)) + '</button>'; }).join('') + '</div>';
     if (!f.kind) { el.innerHTML = h + '<div style="font-size:12px;color:var(--muted);margin-top:10px">' + T('種類を選んでください','Choose a kind') + '</div>'; return; }
     if (f.from && f.from.status === 'returned' && f.from.returned) h += '<div class="alert alert-warning" style="font-size:12px;margin-top:8px">' + T('差し戻しの理由：','Returned because: ') + esc(f.from.returned.reason || '') + '</div>';
     var so = storeOpts();
@@ -115698,6 +115712,11 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
         + inp('pmemo', T('用途のメモ','Note'), p.purpose_memo, 'text', 'maxlength="600"') + inp('amount', T('金額（$）','Amount ($)'), cents2(p.amount_cents), 'number', 'step="0.01" min="0.01"')
         + '<label style="display:block;font-size:11.5px;margin-top:6px">' + T('領収書（写真・PDF）','Receipt (photo / PDF)') + (p.receipt && (p.receipt.path || p.receipt.chat_file) ? ' <span style="color:var(--muted)">' + T('（今のまま。差し替えるときだけ選ぶ）','(kept; choose only to replace)') + '</span>' : '') + (f.file && f.carried ? ' <span style="color:var(--muted)">' + T('（前の画面で選んだ「','(chosen on the earlier screen: “') + esc(f.file.name || '') + T('」を送ります。差し替えるときだけ選ぶ）','” will be sent; choose only to replace)') + '</span>' : '') + '<input id="wrf-file" type="file" accept="image/*,application/pdf" style="width:100%"></label>'
         + inp('memo', T('メモ','Memo'), p.memo, 'text', 'maxlength="600"');
+    } else if (f.kind === 'lost') {   /* v1202（8B）：紛失届。今の画面と同じ中身。カードの番号は聞かない */
+      h += '<div style="font-size:11px;color:var(--muted);margin-top:6px">' + T('会社のカードで買ったのにレシートを無くしたときに出します。GM が承認し、経理が確認して完了です。','For a company-card purchase whose receipt was lost. The GM approves and accounting checks it.') + '</div>'
+        + inp('date', T('買った日','Date of purchase'), p.date || hstToday(), 'date') + inp('vendor', T('店（業者）','Store / vendor'), p.vendor, 'text', 'maxlength="200"')
+        + inp('amount', T('金額（$）','Amount ($)'), cents2(p.amount_cents), 'number', 'step="0.01" min="0.01"') + inp('cardholder', T('カードを使った人','Card used by'), p.cardholder || me.name, 'text', 'maxlength="80"')
+        + inp('items', T('品目','Items'), p.items, 'text', 'maxlength="600"') + inp('memo', T('メモ','Memo'), p.memo, 'text', 'maxlength="600"');
     } else {
       /* v1164：事前経費は買う前に分かることだけ（用途・予定額・予定日。領収書・実費は要らない＝あとで建て替え経費などで） */
       h += '<div style="font-size:11px;color:var(--muted);margin-top:6px">' + T('買う前の申請です。用途と予定額を書いてください（領収書・実費はまだ要りません）。','Before buying: write the purpose and the planned amount (no receipt or actual cost yet).') + '</div>'
@@ -115740,6 +115759,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     if (val('date') !== undefined) p.date = val('date');
     if (f.kind === 'mileage') { p.purpose = val('purpose'); p.origin = val('origin'); p.destination = val('destination'); p.one_way_miles = parseFloat(val('miles')); p.round_trip = !!(document.getElementById('wrf-round') || {}).checked; p.memo = val('memo'); }
     else if (f.kind === 'reimburse') { p.payer = val('payer'); p.payer_is_employee = !!(document.getElementById('wrf-emp') || {}).checked; p.vendor = val('vendor'); p.purpose = val('purpose'); p.purpose_memo = val('pmemo'); p.amount_cents = toCents(val('amount')); p.memo = val('memo'); var fe = document.getElementById('wrf-file'); if (fe && fe.files && fe.files[0]) f.file = fe.files[0]; }
+    else if (f.kind === 'lost') { p.vendor = val('vendor'); p.amount_cents = toCents(val('amount')); p.cardholder = val('cardholder'); p.items = val('items'); p.memo = val('memo'); }   /* v1202 */
     else if (f.kind === 'expense_pre') { p.dept = val('dept'); p.project = val('project'); p.purpose = val('purpose'); p.description = val('desc'); p.location = val('location'); var n = parseInt(val('people'), 10); p.participants = n > 0 ? n : null; p.per_person_cents = toCents(val('pp')); p.total_cents = toCents(val('total')); p.memo = val('memo'); }
     if (val('note') !== undefined) f.note = val('note');
     var dr = document.getElementById('wrf-dupreason'); if (dr) f.dupReason = dr.value;
@@ -115748,6 +115768,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     var o = {};
     var keys = kind === 'mileage' ? ['date','purpose','origin','destination','one_way_miles','round_trip','memo']
       : kind === 'reimburse' ? ['date','payer','payer_is_employee','vendor','purpose','purpose_memo','amount_cents','receipt','memo']
+      : kind === 'lost' ? ['date','vendor','amount_cents','cardholder','items','memo']   /* v1202 */
       : ['date','dept','project','purpose','description','location','participants','per_person_cents','total_cents','memo'];
     keys.forEach(function(k){ if (p[k] !== undefined && p[k] !== null && !(typeof p[k] === 'number' && !isFinite(p[k]))) o[k] = typeof p[k] === 'string' ? p[k].trim() : p[k]; });
     return o;
@@ -116859,6 +116880,10 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
    'approveReimburse','markReimbursePaid','undoReimbursePaid'].forEach(function(n){ wrap(n); });
   var openNew = { openMileageModal:'mileage', openExpenseModal:'expense_pre' };
   Object.keys(openNew).forEach(function(n){ var o = W[n]; if (typeof o !== 'function') return; OLD_OPEN[n] = o; W[n] = function(){ if (liveSeen()) return W.wrStartExpense(openNew[n]); return o.apply(this, arguments); }; });
+  /* v1202（8B）：紛失届を新しく出すのは、サーバーで出せるならワークセンターの申請（紛失届・LR-…）。前の版の SQL・関数のあいだ・使い始める前・PIN のログインでないときは今の画面
+     （wrStartExpense が読んでから決めて、だめなら oldEntry で今の画面を開く）。前からの紛失届を直す（id あり）・承認・差し戻しは今の画面のまま */
+  (function(){ var o = W.openLostReceiptForm; if (typeof o !== 'function') return; OLD_OPEN.openLostReceiptForm = o;
+    W.openLostReceiptForm = function(id){ if (!id) return W.wrStartExpense('lost'); return o.apply(this, arguments); }; })();   /* 使い始めの印（liveSeen）を待たない：読んでから決める */
   /* v1164：レシート管理の「建て替え経費」。使い始めたら、種別を選んだ時点で入口へ（店は選んでいた店）。
      前の画面で入れて「申請する」を押した（開いていた画面）ときは、入れた中身（支払った人・金額・支払先・用途・メモ・領収書）を写して入口へ（前は捨てていた） */
   (function(){

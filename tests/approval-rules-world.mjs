@@ -83,7 +83,7 @@ export async function setup({ ar = true, twice = false } = {}) {
   };
   const retire = async emp => { await pg.exec('reset role'); await pg.query(`update employees set status = '退職', data = data || '{"status":"退職"}' where id = $1`, [emp]); await pg.exec('set role service_role'); };
   const q = async (sql, args = []) => { await pg.exec('reset role'); try { return (await pg.query(sql, args)).rows; } finally { await pg.exec('set role service_role'); } };
-  return { pg, db, call, ok, key, sub, subOk, get, fresh, act, approve, state, activate, live, saveRule, setRule, retire, q, today };
+  return { pg, db, handler, call, ok, key, sub, subOk, get, fresh, act, approve, state, activate, live, saveRule, setRule, retire, q, today };   // v1202：handler も（アプリの試験が使う）
 }
 export const G = { t: 'role', role: 'gm', scope: 'all' }, C = { t: 'role', role: 'ceo', scope: 'all' }, AMm = { t: 'role', role: 'am', scope: 'mine' };
 export const STAGE = (...slots) => ({ mode: 'any', slots });
