@@ -115493,8 +115493,11 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   function expKindsNow(){ if (!S.me) return []; return S.expKinds ? S.expKinds.slice() : oldKinds(S.me); }
   function myHomeStore(){ try { return (typeof curStore !== 'undefined' && curStore && curStore !== 'ALL') ? String(curStore) : ''; } catch(e) { return ''; } }
   W.wrExpKinds = function(){ return S.me ? expKindsNow() : null; };
-  /* v1202（8B）：紛失届をサーバーの申請で出せるか（使い始めている・SQL 段 9・関数 fn 14）。前の版のあいだは今の紛失届の画面のまま */
-  function lostOk(){ return !!(S.me && S.live && (S.fn || 0) >= 14 && (S.sql || 0) >= 9); }
+  /* v1202（8B）：紛失届をサーバーの申請で出せるか（使い始めている・SQL 段 9・関数 fn 14）。前の版のあいだは今の紛失届の画面のまま。
+     Codex #207/#209 の P1：承認・閲覧の共通ルールで動かしている（ar.live）ときは、紛失届の有効なルールがあるときだけ（無いと申請は no_route で送れない）。
+     ルールは SQL が下書きだけを作る＝CEO・GM が 設定 › 承認・閲覧設定 で確かめて有効にするまで、新しい紛失届は今の画面のまま */
+  function lostRouteOk(){ var ar = S.ar; return !(ar && ar.live) || ar.lost_rule === true; }
+  function lostOk(){ return !!(S.me && S.live && (S.fn || 0) >= 14 && (S.sql || 0) >= 9 && lostRouteOk()); }
   W.wrLostReady = function(){ checkAuth(); return S.me ? lostOk() : null; };
   /* 前の画面（1130 以前の端末・使い始める前に開いていた画面）に残った経費の申請を、GM・CEO のログインで写す（何度流しても同じ・写すのは無いものだけ） */
   var legacyTried = '';
@@ -115620,6 +115623,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       var eb = typeof me.exp_base === 'string' ? me.exp_base : '';
       var ch = JSON.stringify(ks) !== JSON.stringify(S.expKinds) || (me.exp_hq === true) !== S.expHq || eb !== (S.expBase || '');
       S.expKinds = ks; S.expHq = me.exp_hq === true; S.expGrants = me.exp_grants === true; S.expBase = eb;
+      if (me.ar && typeof me.ar === 'object') S.ar = me.ar;   /* v1202（Codex #207）：紛失届のルールを有効にしたら、ログインし直さなくても新しい紛失届に（60 秒ごとの whoami） */
       if (ch) paintMyExp();
     }, function(){ EXPR.busy = false; EXPR.at = Date.now(); });
   }
@@ -118733,7 +118737,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   function onPage(){ return typeof curPage !== 'undefined' && curPage === 'ar_settings'; }
 
   var GROUPS = [
-    ['お金', 'Money', ['mileage','reimburse','expense_pre','budget']],
+    ['お金', 'Money', ['mileage','reimburse','expense_pre','lost','budget']],   /* v1202（Codex #207）：紛失届も CEO・GM が確かめて有効にする */
     ['評価', 'Evaluation', ['skill','cs','tiprate','tip_self','skill_self','prep']],
     ['人・シフト', 'People & shifts', ['leave','shift','hire','resign','promo','plan']]
   ];

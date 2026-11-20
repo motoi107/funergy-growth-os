@@ -155,3 +155,26 @@ test('Codex #207 P1: a G1 who cannot open the Work Center sees own lost receipts
   assert.deepEqual(g.pages, ['go:tasks']);
   assert.equal(g.dom.els['wr-mine-sheet'], undefined, 'no sheet');
 });
+
+test('Codex #207/#209 P1: approval rules live and no active lost rule → “New” stays on the earlier lost receipt form (no request that would fail with no_route); after the CEO/GM activates the draft → the request form; the settings screen lists 紛失届 under Money', async () => {
+  const s = await setup();
+  await s.activate(); await s.live();
+  await s.pg.exec('reset role'); await s.pg.exec(LOST); await s.pg.exec('set role service_role');
+  const a = await app(s, 'E8');
+  a.ctx.openLostReceiptForm(); await a.settle();
+  assert.equal(a.ctx.wrLostReady(), false, 'the lost route is not ready');
+  assert.deepEqual(a.oldOpened, ['new'], 'the earlier form');
+  assert.doesNotMatch((a.dom.els['wr-form'] || {}).innerHTML || '', /会社のカードで買ったのに/, 'no request form');
+  assert.equal(a.modal(), '', 'the loading box is closed');
+  const st = await s.state(); const k = st.kinds.find(x => x.kind === 'lost');
+  await s.ok('E2', { action: 'ar_rule_activate', kind: 'lost', expect_ver: k.draft.ver, expect_rev: k.draft.rev, note: '確かめた' });
+  const b = await app(s, 'E8');
+  b.ctx.openLostReceiptForm(); await b.settle();
+  assert.equal(b.ctx.wrLostReady(), true);
+  assert.equal(b.oldOpened.length, 0);
+  assert.match(b.dom.els['wr-form'].innerHTML, /会社のカードで買ったのにレシートを無くしたとき/);
+  fill(b, { store: 'S1', vendor: 'Costco', amount: '42.50', items: 'ice', memo: 'lost it' });
+  await b.ctx.wrSend(); await b.settle();
+  assert.equal((await s.q("select count(*)::int n from wr_requests where kind = 'lost' and status = 'pending'"))[0].n, 1);
+  assert.match(html, /\['お金', 'Money', \['mileage','reimburse','expense_pre','lost','budget'\]\]/, 'the settings screen (FUNERGY_AR) lists 紛失届 so the CEO/GM can activate it');
+});
