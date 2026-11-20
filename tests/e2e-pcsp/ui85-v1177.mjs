@@ -211,7 +211,9 @@ for (const [W, lang] of [[1440, 'ja'], [1024, 'en'], [390, 'ja'], [390, 'en']]) 
   /* v1203（UI案98）：管理者のマイページも 6 つの段（PC は 2 列 .mp-pc6・前の「証明と PIN を横に」は無い）。tests/e2e-pcsp/mypage-v1203.mjs */
   const my = await page.evaluate(() => ({ pos: !!document.querySelector('table.pgd-pos'), pc6: !!document.querySelector('.mp-pc6'), multi: (function(){ try { return empStoresOf(getEmployees().find(e => e.name === curUserName) || {}).length; } catch (e) { return -1; } })() }));
   if (pc) {
-    ok(tag + '：PC：店が 2 つ以上なら店ごとの表', my.multi < 2 || my.pos, my);
+    /* v1205（UI案98・5A）：本部の GM の自分のマイページは所属・応援の店だけ（合成データの GM は本部所属で応援なし＝表もカードも無い）。
+       店が 2 つ以上の人（AM）の PC の表は tests/e2e-pcsp/mypage-fold-v1205.mjs */
+    ok(tag + '：PC：本部の GM に全店の対応可能ポジションの表を出さない（v1205）', !my.pos, my);
     ok(tag + '：PC：管理者のマイページは 2 列の段（v1203）', my.pc6, my);
   } else ok(tag + '：スマホ：マイページは 1 列（表・2 列なし）', !my.pos && !my.pc6, my);
   ok(tag + '：マイページで横にはみ出さない', (await over(page)) <= 1, await over(page));
@@ -312,6 +314,7 @@ for (const W of [1440, 390]) {
     ok(tag + '：PC：マイページは 2 列（左 ①②③・右 ④⑤⑥）', my.pcv && my.cols === 2 && my.lefts[0] < my.lefts[1] && /今日やること/.test(my.heads[0]) && /成長/.test(my.heads[1]), my);
   } else {
     ok(tag + '：スマホ：マイページは 1 列', !my.pcv && my.cards > 2, my);
+    await page.evaluate(() => { try { mpFoldSet(4, false); } catch (e) { } }); await sleep(300);   /* v1205（6A）：スマホの ④ 成長 はたたんであるので開いてから測る */
     const sk = await svgText(page, '#main-content svg[data-phw]');
     ok(tag + '：スマホ：スキルのグラフの文字は 11px 以上', sk.length >= 1 && sk.every(x => x.minFs >= 10.95), sk);
   }
