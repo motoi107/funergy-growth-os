@@ -101,3 +101,44 @@ test('rollback: with no lost request it goes back to the earlier functions (sql 
   await t.pg.exec('set role service_role');
   assert.equal((await t.ok('E2', { action: 'whoami' })).sql, 9);
 });
+
+test('Codex #207/#209 P1: with the approval rules already live (16 kinds active), the lost SQL adds only a DRAFT rule; whoami says lost_rule false and a lost request is refused (no_route, nothing saved) until the CEO/GM activates the draft; then it goes to the GM', async () => {
+  const s = await world({ lost: false });
+  await s.activate(); await s.live();   // 前からの環境：共通ルールで動いている（紛失届の SQL の前）
+  await s.pg.exec('reset role'); await s.pg.exec(LOST); await s.pg.exec('set role service_role');
+  const rules = await s.q("select ver, status, def from ar_rules where kind = 'lost'");
+  assert.equal(rules.length, 1); assert.equal(rules[0].status, 'draft', 'a draft only (not made active by the SQL)');
+  assert.deepEqual(rules[0].def.default.stages[0].slots.map(x => x.role), ['gm', 'ceo'], 'the same first draft as the other expense kinds (GM or CEO)');
+  assert.equal(rules[0].def.self, 'gm');
+  let w = await s.ok('E6', { action: 'whoami' });
+  assert.equal(w.ar.live, true); assert.equal(w.ar.lost_rule, false, 'the app can tell the lost route is not ready');
+  const r = await s.lost('E6', 'S1');
+  assert.equal(r.status, 409); assert.equal(r.body.error, 'no_route');
+  assert.equal((await s.q("select count(*)::int n from wr_requests where kind = 'lost'"))[0].n, 0, 'nothing saved');
+  // CEO・GM が下書きを確かめて有効にする（設定 › 承認・閲覧設定）
+  const st = await s.state(); const k = st.kinds.find(x => x.kind === 'lost');
+  assert.ok(k && k.draft, 'the settings screen lists the lost draft');
+  const act = await s.call('E2', { action: 'ar_rule_activate', kind: 'lost', expect_ver: k.draft.ver, expect_rev: k.draft.rev, note: '確かめた' });
+  assert.equal(act.status, 200, JSON.stringify(act.body));
+  w = await s.ok('E6', { action: 'whoami' });
+  assert.equal(w.ar.lost_rule, true);
+  const ok = await s.lost('E6', 'S1');
+  assert.equal(ok.status, 200, JSON.stringify(ok.body));
+  const [row] = await s.q("select status, route from wr_requests where kind = 'lost'");
+  assert.equal(row.status, 'pending'); assert.ok(row.route, 'routed by the active rule');
+  // 2 回流しても同じ（有効なルールはそのまま・下書きを作り直さない）
+  await s.pg.exec('reset role'); await s.pg.exec(LOST); await s.pg.exec('set role service_role');
+  assert.deepEqual((await s.q("select status from ar_rules where kind = 'lost' order by ver")).map(x => x.status), ['active']);
+});
+
+test('Codex #207/#209 P1: approval rules not live → no rule is needed (the earlier GM approval); a DB that had the earlier v1202 SQL (no draft) gets the draft when the SQL runs again; the rollback removes the lost rules', async () => {
+  const s = await world();
+  const w = await s.ok('E6', { action: 'whoami' });
+  assert.equal(w.ar.live, false); assert.equal(w.ar.lost_rule, false);
+  assert.equal((await s.lost('E6', 'S1')).status, 200, 'not live: the earlier route (GM) works without a rule');
+  await s.pg.exec('reset role'); await s.pg.exec("delete from public.wr_requests where kind = 'lost'; delete from public.ar_rules where kind = 'lost'"); await s.pg.exec(LOST); await s.pg.exec('set role service_role');
+  assert.deepEqual((await s.q("select status from ar_rules where kind = 'lost'")).map(x => x.status), ['draft']);
+  await s.pg.exec('reset role'); await s.pg.exec(DROP); await s.pg.exec('set role service_role');
+  assert.equal((await s.q("select count(*)::int n from ar_rules where kind = 'lost'"))[0].n, 0);
+  assert.equal((await s.ok('E2', { action: 'whoami' })).ar.lost_rule, undefined, 'the earlier whoami (no lost_rule)');
+});

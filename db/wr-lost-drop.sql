@@ -10,6 +10,9 @@ alter table public.wr_requests drop constraint if exists wr_requests_kind_check;
 alter table public.wr_requests add constraint wr_requests_kind_check check (kind in ('mileage','reimburse','expense_pre','skill','cs','tiprate',
   'budget','leave','shift','hire','resign','promo','tip_self','skill_self','prep','plan'));
 
+-- 紛失届の承認ルール（下書き・有効・前の版）も外す（申請が 0 件のときだけここまで来る）
+delete from public.ar_rules where kind = 'lost';
+
 create or replace function public.wr_prefix(p_kind text) returns text
 language sql immutable security invoker set search_path = public, pg_temp as $$
  select case p_kind when 'mileage' then 'GS' when 'reimburse' then 'RB' when 'expense_pre' then 'EX' when 'skill' then 'SK' when 'cs' then 'CS' when 'tiprate' then 'TR'
@@ -316,3 +319,13 @@ $$;
 
 create or replace function public.wr_stage(p jsonb) returns jsonb
 language sql stable security invoker set search_path = public, pg_temp as $$ select jsonb_build_object('stage', 8) $$;
+
+create or replace function public.wr_whoami(p jsonb) returns jsonb
+language plpgsql stable security invoker set search_path = public, pg_temp as $$
+declare v jsonb := public.wr_whoami_v0(p); s public.ar_settings;
+begin
+ select * into s from public.ar_settings where id = 1;
+ return v || jsonb_build_object('ar', jsonb_strip_nulls(jsonb_build_object('live', coalesce(s.live, false), 'rev', coalesce(s.rev, 1), 'live_at', s.live_at,
+  'admin', (v->'me'->>'role') in ('ceo','gm'),
+  'roles', (select jsonb_agg(distinct g.role) from public.ar_role_rows() g where g.emp_id = v->'me'->>'emp' and public.ar_emp_ok(g.emp_id)))));
+end $$;
