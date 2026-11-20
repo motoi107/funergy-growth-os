@@ -233,5 +233,8 @@ test('Codex #204: a redraw from inside the accounting center (HQ time card month
   assert.equal(run(c, 'officeMgrTab'), 'dash');
   run(c, "acSetCat('tip'); officeMgrTab='dash'; acFromOfficeTab(false)"); assert.deepEqual(state(c), ['dash', 'dash'], 'coming from outside: home');
   // the time card functions redraw through office_mgr (so the router decides)
-  for (const f of ['officeAttendShiftMonth', 'officeClockIn', 'toggleOfficeClose']) assert.match(fnSrc(f), /renderPage\('office_mgr'\)/, f);
+  for (const f of ['officeAttendShiftMonth', 'toggleOfficeClose']) assert.match(fnSrc(f), /renderPage\('office_mgr'\)/, f);
+  // v1204：打刻はマイページ ① からも押す。経理センターからは今までどおり office_mgr、マイページからはマイページのまま（officePunchRerender）
+  assert.match(fnSrc('officeClockIn'), /officePunchRerender\(\)/);
+  assert.match(fnSrc('officePunchRerender'), /curPage === 'mypage'\) \{ renderPage\('mypage'\); return; \}\n  renderPage\('office_mgr'\);/);
 });
