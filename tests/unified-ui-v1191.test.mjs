@@ -87,7 +87,12 @@ test('store tablet (shared store sign-in) is unchanged for its own pages and can
 test('accounting (office at HQ): the old 経理レビュー tab opens 経理センター › 経理レビュー; CEO/GM-only pages do not open', () => {
   const c = navApp('office', { store: 'OFFICE' });
   assert.equal(run(c, "navResolvePage('acct_review')"), 'acct_center');
-  assert.equal(c._acCat, 'review'); assert.equal(c._acSub, 'acctrev');
+  assert.equal(c._acCat, 'review'); assert.equal(c._acSub, 'all');   // v1200（UI案97 の 3A）：確認する（1 つの一覧）から
+  // v1200：経理レビューの中からの描き直し（区分・承認の「書類／申請」のタブなど・renderPage('acct_review')）は今の小タブのまま
+  run(c, "curPage='acct_center'; _acCat='review'; _acSub='acctrev'");
+  assert.equal(run(c, "navResolvePage('acct_review')"), 'acct_center'); assert.equal(c._acSub, 'acctrev');
+  run(c, "_acCat='drive'; _acSub='dlist'"); run(c, "navResolvePage('acct_review')"); assert.deepEqual([c._acCat, c._acSub], ['review', 'all'], 'from another accounting tab: the one list');
+  run(c, "curPage='dashboard'; _acCat='review'; _acSub='acctrev'"); run(c, "navResolvePage('acct_review')"); assert.equal(c._acSub, 'all', 'from outside: the one list');
   for (const p of ['ar_settings', 'growth_karte']) assert.notEqual(run(c, `navResolvePage(${JSON.stringify(p)})`), p, p);
   assert.equal(run(c, "navResolvePage('acct_export')"), 'acct_export');
   assert.equal(run(c, "navResolvePage('store_master')"), 'store_master');
