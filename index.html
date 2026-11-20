@@ -93743,7 +93743,7 @@ function mpMyShifts(me, meEmp){
   try {
     var st = meEmp && meEmp.store;
     if (!st || empAnyStore(st) || !STORES.some(function(s){ return s.id === st; })) return out;
-    var week = getWeekStr();
+    var week = mpThisWeekStr();   /* Codex #208 の P2：シフト画面で選んだ週（_shiftWeekOff）ではなく営業日の今週 */
     try { if (typeof maybePullStaffShift === 'function') maybePullStaffShift(st, week); } catch(e) {}
     var plan = getShiftPlan(st, week);
     if (!plan || plan.status !== '公開済' || !plan.cells) return out;
@@ -93752,6 +93752,12 @@ function mpMyShifts(me, meEmp){
     out.go = navGuardAllows('shift_staff') ? "go('shift_staff')" : navGuardAllows('shift_admin') ? "go('shift_admin')" : '';
   } catch(e) {}
   return out;
+}
+/* v1203（Codex #208 の P2）：マイページの「今日のシフト」「今週のシフト」は、シフトの画面で選んだ週（_shiftWeekOff・先週・翌週）を
+   マイページに戻っても使わない。いつも営業日（ハワイ）の今週の日曜で決める（getWeekStr と同じ形「M/D」） */
+function mpThisWeekStr(){
+  try { var sun = new Date(getWeekSundayISO(0) + 'T00:00:00'); if (!isNaN(sun)) return (sun.getMonth()+1) + '/' + sun.getDate(); } catch(e) {}
+  return getWeekStr();
 }
 /* シフトの印（曜日_時間帯_ポジション）から今日の分 */
 function mpTodayShiftLabels(keys){
@@ -93973,7 +93979,7 @@ function renderMypage() {
 
   /* ===== Crew My Dashboard（優先順位順） ===== */
   var emp = getEmployees().find(e=>e.name===me);
-  var week = getWeekStr();
+  var week = mpThisWeekStr();   /* Codex #208 の P2：今週のシフト・① 今日のシフトは営業日の今週（シフト画面で選んだ週ではない） */
 
   // 言語切替（Crew画面内）
   html += _mp('t',30);
@@ -115805,10 +115811,50 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     } catch(e) {}
   }
   W.wrOpenMine = function(code){
-    checkAuth(); try { workTab = 'wr'; } catch(e) {}
-    S.view = 'mine'; S.openCode = (typeof code === 'string' && /^[A-Za-z0-9-]{1,40}$/.test(code)) ? code : ''; S.rows = null; if (S.load === 'done') S.load = '';
+    checkAuth();
+    var c = (typeof code === 'string' && /^[A-Za-z0-9-]{1,40}$/.test(code)) ? code : '';
+    /* v1202（Codex #207 の P1）：ワークセンター（tasks）を開けない人（G1 など）は、ワークセンターへ行くとマイページへ戻される。
+       ワークセンターの権限は広げずに、自分の申請の一覧を窓で開く（番号があればその申請をそのまま開く・直す／出し直す／取り下げは詳しい画面から） */
+    if (!canOpenTasks()) { mineSheet(c); return; }
+    try { workTab = 'wr'; } catch(e) {}
+    S.view = 'mine'; S.openCode = c; S.rows = null; if (S.load === 'done') S.load = '';
     try { go('tasks'); } catch(e) { rerender(); }
   };
+  function canOpenTasks(){ try { return typeof navGuardAllows !== 'function' || !!navGuardAllows('tasks'); } catch(e) { return true; } }
+  /* 自分の申請の窓（ワークセンターを開けない人だけ）。読み込みごとに番号（古い答えは使わない）・ログインが変わったら使わない */
+  var MINE_SHEET = { tok:0, rows:null };
+  function mineSheet(code){
+    var k = authKey(), tok = ++MINE_SHEET.tok;
+    MINE_SHEET.rows = null;
+    openModal('<div id="wr-mine-sheet" style="width:100%">' + T('読み込み中…','Loading…') + '</div>');
+    api({ action:'list', scope:'mine', state:'all', limit:100 }, k).then(function(j){
+      if (tok !== MINE_SHEET.tok || authKey() !== k) return;
+      var rows = (j && j.rows) || [];
+      if (code) { var hit = rows.find(function(x){ return x && x.code === code; }); if (hit) { W.wrOpen(hit.id); return; } }
+      MINE_SHEET.rows = rows; drawMineSheet();
+    }, function(e){
+      if (tok !== MINE_SHEET.tok || authKey() !== k) return;
+      var el = document.getElementById('wr-mine-sheet'); if (!el) return;
+      el.innerHTML = '<div class="alert alert-danger" style="font-size:12px">' + esc(String(e && e.message || e)) + '</div>'
+        + '<div style="display:flex;gap:6px;margin-top:8px"><button class="btn btn-secondary btn-sm" onclick="wrOpenMine()">' + T('もう一度','Retry') + '</button>'
+        + '<button class="btn btn-secondary btn-sm" onclick="closeModalDirect()">' + T('閉じる','Close') + '</button></div>';
+    });
+  }
+  function drawMineSheet(){
+    var el = document.getElementById('wr-mine-sheet'); if (!el) return;
+    var rows = MINE_SHEET.rows || [];
+    var h = '<div style="font-size:15px;font-weight:700"><i class="ti ti-files"></i> ' + T('自分の申請','My requests') + '</div>'
+      + '<div style="font-size:11px;color:var(--muted);margin:4px 0 8px">' + T('押すと中身・今の状態・差し戻しの理由が出ます。差し戻されたものはそこから直して出し直せます。','Tap one to see its details, status and any return reason. A returned request can be fixed and sent again from there.') + '</div>';
+    if (!rows.length) h += '<div style="font-size:12px;color:var(--muted);padding:12px 0">' + T('まだありません','None yet') + '</div>';
+    else h += rows.map(function(r){
+      var st = r.kind === 'expense_pre' && r.status === 'done' ? T('事前承認済み','Pre-approved') : ST_L[r.status] ? T(ST_L[r.status][0], ST_L[r.status][1]) : r.status;
+      return '<div class="approval-item" style="cursor:pointer" data-wr-sheet="' + esc(r.code) + '" data-a="' + esc(r.id) + '" onclick="wrOpen(this.dataset.a)"><div class="approval-header"><div class="approval-title">' + esc(r.code) + ' · ' + esc(kindL(r.kind)) + '</div>'
+        + '<span class="tag ' + (/^(paid|done|applied)$/.test(r.status) ? 'tag-green' : /^(rejected|apply_error|returned)$/.test(r.status) ? 'tag-red' : /^withdrawn$/.test(r.status) ? 'tag-gray' : 'tag-yellow') + '">' + esc(st) + '</span></div>'
+        + '<div class="approval-meta">' + money(r.amount_cents) + (nextPlain(r) ? ' · ' + esc(nextPlain(r)) : '') + '</div></div>';
+    }).join('');
+    h += '<div style="display:flex;justify-content:flex-end;margin-top:10px"><button class="btn btn-secondary btn-sm" onclick="closeModalDirect()">' + T('閉じる','Close') + '</button></div>';
+    el.innerHTML = h;
+  }
   function nextPlain(r){
     var n = r && r.next; if (!n) return '';
     var who = n.who === 'am' ? (n.name || 'AM') : n.who === 'gm' ? 'GM' : n.who === 'acct' ? T('経理','Accounting') : n.who === 'requester' ? T('あなた','You') : '';
@@ -115858,11 +115904,37 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     var cn = (mine && MY.counts) || S.counts; var c = cn ? (Number(cn.todo) || 0) : 0;
     var h = '';
     if (c > 0) h += mpTodayRow(T('申請の対応待ち ' + c + ' 件', c + (c > 1 ? ' requests' : ' request') + ' to handle'), T('あなたの番の申請（承認・確認・精算・直して出し直す）', 'Your turn: approve, check, pay or resubmit'), 'wrGoTodo()', T('開く','Open'));
-    ((mine && MY.rows) || []).filter(function(r){ return r.status === 'returned'; }).slice(0, 3).forEach(function(r){
+    /* Codex #208 の P2：② のカード用の一覧（経費の種類だけ・新しい 5 件）から選ぶと、新しい申請が 5 件以上あるときや経費以外の差し戻しが漏れる。
+       ① の分は別に読む（自分のまだ終わっていない申請・全部の種類）→ 差し戻し中だけ → 新しい 3 件 */
+    var rl = retLoadIfStale();
+    rl.filter(function(r){ return r && r.status === 'returned'; }).slice(0, 3).forEach(function(r){
       h += mpTodayRow(T('戻ってきた申請','Returned request'), kindL(r.kind) + ' · ' + money(r.amount_cents) + (nextPlain(r) ? ' · ' + nextPlain(r) : ''), 'wrOpenMine(this.dataset.a)', T('直す','Fix'), r.code);
     });
     return h;
   };
+  /* ① 今日やること の「戻ってきた申請」用：自分のまだ終わっていない申請（state open・全部の種類・300 件まで・新しい順）。
+     読み込みごとに番号・ログインが変わった答えは使わない・失敗したら前の値のまま 30 秒待つ。読み終わったら ① だけ描き直す */
+  var RET = { key:'', rows:null, at:0, busy:false, req:0, err:false };
+  function retLoadIfStale(){
+    var k = authKey();
+    if (RET.key !== k) RET = { key:k, rows:null, at:0, busy:false, req:0, err:false };
+    var age = Date.now() - RET.at;
+    if (!RET.busy && (RET.err ? age > 30000 : (!RET.rows || age > 10000))) retLoad();
+    return RET.rows || [];
+  }
+  function retLoad(){
+    var k = authKey(), g = S.gen, n = ++RET.req; RET.busy = true;
+    api({ action:'list', scope:'mine', state:'open', limit:300 }, k).then(function(j){
+      if (RET.key !== k || RET.req !== n) return;
+      RET.busy = false; RET.at = Date.now();
+      if (g !== S.gen) { RET.at = 0; try { if (typeof mpTodayPaint === 'function') mpTodayPaint(); } catch(e) {} return; }   /* 世代が変わった：使わずに読み直す */
+      RET.err = false; RET.rows = (j && Array.isArray(j.rows)) ? j.rows : [];
+      try { if (typeof mpTodayPaint === 'function') mpTodayPaint(); } catch(e) {}
+    }, function(){
+      if (RET.key !== k || RET.req !== n) return;
+      RET.busy = false; RET.at = Date.now(); RET.err = true;
+    });
+  }
   W.wrGoTodo = function(){
     checkAuth(); try { workTab = 'wr'; } catch(e) {}
     S.view = 'todo'; S.rows = null; if (S.load === 'done') S.load = '';
@@ -115908,6 +115980,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     }).join('');
   }
   function myExpLoad(){
+    try { retLoadIfStale(); } catch(e) {}   /* Codex #208 の P2：① の「戻ってきた申請」も一緒に読む（別の一覧） */
     var k = authKey(), g = S.gen, n = ++myReq; MY.busy = true; MY.req = n;
     api({ action:'list', scope:'mine', state:'all', limit:20 }, k).then(function(j){
       if (MY.key !== k || MY.req !== n) return;   /* 前の人・前の読み込みの答え：使わない（今の読み込みの busy は触らない） */
