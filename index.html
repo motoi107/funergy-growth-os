@@ -93670,7 +93670,7 @@ function mpMyShifts(me, meEmp){
   try {
     var st = meEmp && meEmp.store;
     if (!st || empAnyStore(st) || !STORES.some(function(s){ return s.id === st; })) return out;
-    var week = getWeekStr();
+    var week = mpThisWeekStr();   /* Codex #208 の P2：シフト画面で選んだ週（_shiftWeekOff）ではなく営業日の今週 */
     try { if (typeof maybePullStaffShift === 'function') maybePullStaffShift(st, week); } catch(e) {}
     var plan = getShiftPlan(st, week);
     if (!plan || plan.status !== '公開済' || !plan.cells) return out;
@@ -93679,6 +93679,12 @@ function mpMyShifts(me, meEmp){
     out.go = navGuardAllows('shift_staff') ? "go('shift_staff')" : navGuardAllows('shift_admin') ? "go('shift_admin')" : '';
   } catch(e) {}
   return out;
+}
+/* v1203（Codex #208 の P2）：マイページの「今日のシフト」「今週のシフト」は、シフトの画面で選んだ週（_shiftWeekOff・先週・翌週）を
+   マイページに戻っても使わない。いつも営業日（ハワイ）の今週の日曜で決める（getWeekStr と同じ形「M/D」） */
+function mpThisWeekStr(){
+  try { var sun = new Date(getWeekSundayISO(0) + 'T00:00:00'); if (!isNaN(sun)) return (sun.getMonth()+1) + '/' + sun.getDate(); } catch(e) {}
+  return getWeekStr();
 }
 /* シフトの印（曜日_時間帯_ポジション）から今日の分 */
 function mpTodayShiftLabels(keys){
@@ -93897,7 +93903,7 @@ function renderMypage() {
 
   /* ===== Crew My Dashboard（優先順位順） ===== */
   var emp = getEmployees().find(e=>e.name===me);
-  var week = getWeekStr();
+  var week = mpThisWeekStr();   /* Codex #208 の P2：今週のシフト・① 今日のシフトは営業日の今週（シフト画面で選んだ週ではない） */
 
   // 言語切替（Crew画面内）
   html += _mp('t',30);
@@ -115782,11 +115788,37 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     var cn = (mine && MY.counts) || S.counts; var c = cn ? (Number(cn.todo) || 0) : 0;
     var h = '';
     if (c > 0) h += mpTodayRow(T('申請の対応待ち ' + c + ' 件', c + (c > 1 ? ' requests' : ' request') + ' to handle'), T('あなたの番の申請（承認・確認・精算・直して出し直す）', 'Your turn: approve, check, pay or resubmit'), 'wrGoTodo()', T('開く','Open'));
-    ((mine && MY.rows) || []).filter(function(r){ return r.status === 'returned'; }).slice(0, 3).forEach(function(r){
+    /* Codex #208 の P2：② のカード用の一覧（経費の種類だけ・新しい 5 件）から選ぶと、新しい申請が 5 件以上あるときや経費以外の差し戻しが漏れる。
+       ① の分は別に読む（自分のまだ終わっていない申請・全部の種類）→ 差し戻し中だけ → 新しい 3 件 */
+    var rl = retLoadIfStale();
+    rl.filter(function(r){ return r && r.status === 'returned'; }).slice(0, 3).forEach(function(r){
       h += mpTodayRow(T('戻ってきた申請','Returned request'), kindL(r.kind) + ' · ' + money(r.amount_cents) + (nextPlain(r) ? ' · ' + nextPlain(r) : ''), 'wrOpenMine(this.dataset.a)', T('直す','Fix'), r.code);
     });
     return h;
   };
+  /* ① 今日やること の「戻ってきた申請」用：自分のまだ終わっていない申請（state open・全部の種類・300 件まで・新しい順）。
+     読み込みごとに番号・ログインが変わった答えは使わない・失敗したら前の値のまま 30 秒待つ。読み終わったら ① だけ描き直す */
+  var RET = { key:'', rows:null, at:0, busy:false, req:0, err:false };
+  function retLoadIfStale(){
+    var k = authKey();
+    if (RET.key !== k) RET = { key:k, rows:null, at:0, busy:false, req:0, err:false };
+    var age = Date.now() - RET.at;
+    if (!RET.busy && (RET.err ? age > 30000 : (!RET.rows || age > 10000))) retLoad();
+    return RET.rows || [];
+  }
+  function retLoad(){
+    var k = authKey(), g = S.gen, n = ++RET.req; RET.busy = true;
+    api({ action:'list', scope:'mine', state:'open', limit:300 }, k).then(function(j){
+      if (RET.key !== k || RET.req !== n) return;
+      RET.busy = false; RET.at = Date.now();
+      if (g !== S.gen) { RET.at = 0; try { if (typeof mpTodayPaint === 'function') mpTodayPaint(); } catch(e) {} return; }   /* 世代が変わった：使わずに読み直す */
+      RET.err = false; RET.rows = (j && Array.isArray(j.rows)) ? j.rows : [];
+      try { if (typeof mpTodayPaint === 'function') mpTodayPaint(); } catch(e) {}
+    }, function(){
+      if (RET.key !== k || RET.req !== n) return;
+      RET.busy = false; RET.at = Date.now(); RET.err = true;
+    });
+  }
   W.wrGoTodo = function(){
     checkAuth(); try { workTab = 'wr'; } catch(e) {}
     S.view = 'todo'; S.rows = null; if (S.load === 'done') S.load = '';
@@ -115832,6 +115864,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     }).join('');
   }
   function myExpLoad(){
+    try { retLoadIfStale(); } catch(e) {}   /* Codex #208 の P2：① の「戻ってきた申請」も一緒に読む（別の一覧） */
     var k = authKey(), g = S.gen, n = ++myReq; MY.busy = true; MY.req = n;
     api({ action:'list', scope:'mine', state:'all', limit:20 }, k).then(function(j){
       if (MY.key !== k || MY.req !== n) return;   /* 前の人・前の読み込みの答え：使わない（今の読み込みの busy は触らない） */

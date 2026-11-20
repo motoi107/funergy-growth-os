@@ -255,3 +255,37 @@ test('① request rows are empty when the server requests are not in use, for th
   assert.ok(gm.paints.length >= 1);
   assert.match(gm.today(), /申請の対応待ち 1 件/, 'the work-center count is used when my requests were not read');
 });
+
+test('Codex #208 P2: today’s shift and “This week’s shifts” read this business week, not the week picked on the shift screen (_shiftWeekOff stays after going back to My Page)', () => {
+  const thisWeek = { status: '公開済', cells: { '木_Lunch_Server': 'Wes Doi' } };
+  const nextWeek = { status: '公開済', cells: { '木_Dinner_Cook': 'Wes Doi' } };   // 11/22 の週の木曜（11/26）
+  const { ctx } = blk({ getShiftPlan: (st, w) => (w === '11/15' ? thisWeek : w === '11/22' ? nextWeek : null) });
+  // シフトの画面の週の選び方（本物と同じ：off を省くと _shiftWeekOff）
+  ctx._shiftWeekOff = 1;
+  ctx.getWeekSundayISO = off => ((off === undefined ? ctx._shiftWeekOff : off) === 1 ? '2026-11-22' : '2026-11-15');
+  ctx.getWeekStr = () => { const d = new Date(ctx.getWeekSundayISO() + 'T00:00:00'); return (d.getMonth() + 1) + '/' + d.getDate(); };
+  assert.equal(ctx.getWeekStr(), '11/22', 'the shift screen picked next week');
+  const r = ctx.mpMyShifts('Wes Doi', { store: 'F02' });
+  assert.deepEqual(r.keys, ['木_Lunch_Server'], 'this week’s plan, not next week’s');
+  assert.deepEqual(r.today, ['Lunch Server']);
+  assert.deepEqual(ctx._pulls, ['F02|11/15']);
+  // G1〜G3 の「今週のシフト」と ① も、マイページでは営業日の今週
+  assert.match(MYPAGE, /var emp = getEmployees\(\)\.find\(e=>e\.name===me\);\n  var week = mpThisWeekStr\(\);/);
+  assert.doesNotMatch(MYPAGE, /var week = getWeekStr\(\);/, 'My Page never uses the picked week');
+});
+
+test('Codex #208 P2: ① “Returned request” is read on its own (all my open requests, every kind), so a returned one is not lost behind 5 newer requests', async () => {
+  const s = await setup();
+  const r1 = await s.subOk('E6', 'reimburse', 'S1');
+  const back = await s.act('E2', await s.fresh(r1), 'return', { note: '領収書を付けて' });
+  assert.equal(back.status, 200, JSON.stringify(back.body));
+  for (let i = 0; i < 5; i++) await s.subOk('E6', i % 2 ? 'mileage' : 'reimburse', 'S1');   // あとから新しい 5 件（② のカードは新しい 5 件だけ）
+  const me = wrApp(s, 'E6');
+  await me.load();
+  me.today(); await me.settle();
+  const h = me.today();
+  assert.equal(me.ctx._wrState().me != null, true);
+  assert.match(h, /戻ってきた申請/, 'the returned one is still in ① even though it is not among the 5 newest');
+  assert.match(h, new RegExp('data-a="' + r1.code + '"'));
+  assert.match(h, /申請の対応待ち 1 件/, 'the count was right before, too');
+});
