@@ -518,6 +518,10 @@ Moto さんの答え「はい」＝Tip の個人額・シフトリーダー手�
   - 前の試験の直し：`tests/store-switch-v1129.test.mjs` は `switchStore` を切り出すので `locTopHtml` を足した（直す前は 4 件が `locTopHtml is not defined`）。`_navBaseGroups`・`navHomePage`・`navAcctLanding` は、1 つずつ切り出す試験でも動くように `typeof` で呼ぶ（`tests/mid-review-ui.test.mjs` が `_locMode is not defined` で落ちたため）。
   - CI に `tests/loc-app-v1196.test.mjs` を足した。static release pass/1196。CI（手元で流した・checkout・setup・fetch・npm ci の段は除く）：node と python の 78 段（複数行の個人情報の段を含む）＋複数行の 6 段（skip 0 の確かめも）すべて成功。
   - CI に入っていない前からの失敗（main `f21a3f8` でも同じ）：ingredient-transfers 1・next-v1090 1・bot-center 2・error-center-v1088 2・pin-admin-email 5（`empAnyStore is not defined`）。
+- Codex（PR #201・manual/blocked）の直し（11/19）：
+  - 所属の答えがアプリを出したあとに届いたとき、前は入力の途中（箱が開いている・欄で打っている）でも左上の店（＝保存先）を先に変えていた → 入力の途中は答えを使わない（見え方も左上の店も今のまま）。1 秒ごとに見て、入力が終わってから使う。ログインが変わったら使わない。
+  - 見え方が変わっても、左上の店が同じだと今の画面を描き直していなかった（見える店・名前が古いまま）→ 見え方が変わったら左上・ナビ・今の画面を描き直す。見え方が変わらない答えでは何も描き直さない。
+  - 試験：`tests/loc-app-v1196.test.mjs` に足した（12）。
 - 確かめていないこと：本番のデータ・実機（iPhone のホーム画面のアプリ）・実通信。独立レビュー（Claude の別エージェント）は無し。
 
 ## 20. v1197：「画面の表示」に店のタブレットの列（段階 2 の 6B・11/19・Claude（Cowork のセッション・会社の Team と推定）・ブランチ `claude/pv-tablet-1197`・v1196（`a331a9f`）の上・関数 secure-state・アプリ・本番未反映）

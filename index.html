@@ -118214,7 +118214,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   function uniq(a){ var m = {}, o = []; (a || []).forEach(function(x){ x = String(x == null ? '' : x).trim(); if (x && !m[x]) { m[x] = 1; o.push(x); } }); return o; }
 
   /* ---------------------------------------------------------------- 状態（メモリだけ） */
-  function fresh(){ return { k:'', state:'', row:null, entered:false }; }
+  function fresh(){ return { k:'', state:'', row:null, entered:false, pend:null }; }
   var S = fresh(), GEN = 0, MEMO = { key:'', at:0, v:null };
   function who(){
     try{
@@ -118232,20 +118232,38 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   /* 自分の行を読む（ログインのたび）。返す：答えを置いたか */
   async function load(){
     var k = who(), g = ++GEN;
-    S.k = k; S.row = null; S.state = k ? 'loading' : ''; MEMO.at = 0;
+    S.k = k; S.row = null; S.state = k ? 'loading' : ''; S.pend = null; MEMO.at = 0;
     if (!k || typeof ssCall !== 'function') { S.state = ''; return false; }
     var r = null;
     try{ r = await ssCall({ action:'aff_get', ms:8000 }); }catch(e){ r = { net:true }; }
     if (g !== GEN || who() !== k) return false;   /* 待つあいだにログインが変わった：前の人の答えは置かない */
-    MEMO.at = 0;
-    if (r && r.ok && r.j && r.j.affn === 1) { S.row = r.j.nosql ? null : goodRow(r.j.row); S.state = r.j.nosql ? 'nosql' : 'ok'; }
-    else S.state = (r && r.legacy) ? 'old' : 'err';
+    var res = (r && r.ok && r.j && r.j.affn === 1) ? { row: r.j.nosql ? null : goodRow(r.j.row), state: r.j.nosql ? 'nosql' : 'ok' } : { row:null, state: (r && r.legacy) ? 'old' : 'err' };
+    /* v1196（Codex #201）：アプリを出したあとに届いた答えは、すぐには使わない（S.pend）。入力の途中（開いている箱・打っている欄）に
+       見え方（mode）・左上の店（curStore＝保存先）が変わらないように、入力が終わってから settle が使う */
+    if (S.entered) S.pend = res; else commit(res);
     return true;
+  }
+  function commit(res){ S.row = res.row; S.state = res.state; S.pend = null; MEMO.at = 0; }
+  /* 入力の途中か：箱（modal）が開いている・画面の欄（input・textarea・select）で打っている */
+  function busy(){
+    try{
+      var mo = document.getElementById('modal-overlay'); if (mo && mo.classList && mo.classList.contains('open')) return true;
+      var ae = document.activeElement, mc = document.getElementById('main-content');
+      return !!(ae && mc && mc.contains && mc.contains(ae) && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName));
+    }catch(e){ return false; }
+  }
+  /* 遅れて届いた答えを、入力が終わってから使う（1 秒ごとに見る・ログインが変わったらやめる）。見え方が変わったら左上・ナビ・今の画面を描き直す */
+  function settle(g){
+    if (g !== GEN || !S.pend) return;
+    if (busy()) { try{ setTimeout(function(){ settle(g); }, 1000); }catch(e){} return; }
+    var before = JSON.stringify(mode());
+    commit(S.pend);
+    if (JSON.stringify(mode()) !== before) apply();
   }
   function afterLogin(){
     S = fresh(); MEMO.at = 0;
-    var p = load();
-    p.then(function(put){ if (put && S.entered) apply(); }).catch(function(){});
+    var p = load(), g = GEN;
+    p.then(function(put){ if (put && S.entered) settle(g); }).catch(function(){});
     return p;
   }
   function onLogout(){ GEN++; S = fresh(); MEMO = { key:'', at:0, v:null }; }
@@ -118339,30 +118357,28 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     var cs = m.kind === 'hq' ? 'ALL' : resolve(curStore);
     if (cs !== curStore) { curStore = cs; try{ if (typeof pageStoresFollow === 'function') pageStoresFollow(cs); }catch(e){} }
   }
-  /* 答えがアプリを出したあとに届いた：左上・ナビを描き直す（開いている画面とログイン直後の画面はそのまま。開けない画面になったらホーム） */
+  /* 答えがアプリを出したあとに届いて、見え方が変わった（settle が入力の終わりを待ってから呼ぶ）：左上の店を決め直し、左上・ナビ・今の画面を描き直す。
+     開けない画面になったらホーム。v1196（Codex #201）：前は左上の店が変わったときだけ画面を描き直していた（見える店・名前が変わっても古いまま）。
+     また前は入力の途中でも左上の店（保存先）を先に変えていた */
   function apply(){
     try{
       if (!S.entered || typeof curRole === 'undefined' || !curRole) return;
       MEMO.at = 0;
-      var before = curStore, cs = resolve(curStore);
+      var cs = resolve(curStore);
       if (cs !== curStore) { curStore = cs; try{ if (typeof pageStoresFollow === 'function') pageStoresFollow(cs); }catch(e){} }
       var tb = document.getElementById('topbar-store'); if (tb && typeof locTopHtml === 'function') tb.innerHTML = locTopHtml(curStore);
       if (!document.getElementById('nav-bar') || typeof buildNav !== 'function') return;
       buildNav();
       var cp = (typeof curPage !== 'undefined') ? curPage : '';
       if (!cp) return;
-      var mo = document.getElementById('modal-overlay'), modal = !!(mo && mo.classList && mo.classList.contains('open'));
-      var ae = document.activeElement, mc = document.getElementById('main-content');
-      var typing = !!(ae && mc && mc.contains && mc.contains(ae) && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName));
-      if (modal || typing) return;
       var bad = (typeof navGuardAllows === 'function' && !navGuardAllows(cp)) || (typeof isPageHiddenForMe === 'function' && isPageHiddenForMe(cp));
       if (bad && typeof go === 'function') go(navHomePage());
-      else if (curStore !== before && typeof renderPage === 'function') renderPage(cp);
+      else if (typeof renderPage === 'function') renderPage(cp);
     }catch(e){}
   }
 
   W.FUNERGY_LOC = { afterLogin:afterLogin, onLogout:onLogout, mode:mode, resolve:resolve, label:label, storeOpts:storeOpts, openSwitcher:openSwitcher, enter:enter, apply:apply,
-    _t:{ S:function(){ return S; }, load:load, calc:calc, hqIds:hqIds, reset:function(){ GEN++; S = fresh(); MEMO = { key:'', at:0, v:null }; } } };
+    _t:{ S:function(){ return S; }, load:load, calc:calc, hqIds:hqIds, settle:settle, busy:busy, reset:function(){ GEN++; S = fresh(); MEMO = { key:'', at:0, v:null }; } } };
 })();
 /* ==== FUNERGY_LOC end ==== */
 </script>
