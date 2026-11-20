@@ -44,3 +44,4 @@
 - `tests/e2e-pcsp/acct-intake-v1201.mjs`（v1201）：③ インボイス取り込みの明細・前の経路の書類と、経理センターの中の画面の描き直し（`docs/UNIFIED_UI_V1191_JA.md` の 24）。経理・事務Crew・GM × 1440・390 × 日英。`SHOTS=<フォルダ>` で画像も撮る。
 - `tests/e2e-pcsp/mypage-v1203.mjs`（v1203）：マイページの 6 つの段（`docs/UNIFIED_UI_V1191_JA.md` の 27）を、模擬サーバーで確かめる（G1・G2・G3・G4・AM・GM・Head Chef・経理・事務Crew × 1440・390 × 日英。G1 は今のまま・段の順・PC の 2 列・帯の従業員証明・② の 1 つの申請のカード・公開済みのシフトの ① と ③・幅をまたいだ描き直し）。データは loc-v1196.mjs と同じ。`SHOTS=<フォルダ>` で画像も撮る。`ONLY=gm,sl` で人を絞れる。
 - `tests/e2e-pcsp/mypage-punch-v1204.mjs`（v1204）：マイページ ① の本部の打刻（`docs/UNIFIED_UI_V1191_JA.md` の 27b）。Head Chef・経理・事務Crew（と出さない GM・AM・G3）× 1440・390 × 日英。押してもマイページのまま・サーバーの同じ記録・新しい端末でも 2 つ目の出勤を作らない・経理の端末で Head Chef の本部タイムカード。データは loc-v1196.mjs と同じ。
+- `tests/e2e-pcsp/mypage-fold-v1205.mjs`（v1205）：スマホのマイページの ④ ⑤ ⑥ をたたむ・本部の人の対応可能ポジション（`docs/UNIFIED_UI_V1191_JA.md` の 27c）。G3・GM・経理・Head Chef・事務Crew・AM × 390 日英・1440。たたんだ形と全部開いた形の縦の長さを出す。データは loc-v1196.mjs と同じ。

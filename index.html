@@ -1847,6 +1847,12 @@ i.ti-loader, i.ti-loader-2 { display:inline-block; animation:uxSpin 1s linear in
 .mp-req #wr-myexp > .card-title { font-size:12px; color:var(--muted); margin-bottom:6px; }
 .mp-req-more { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; padding-top:8px; border-top:1px solid var(--border); }
 .mp-req > .mp-req-more:first-child { margin-top:0; padding-top:0; border-top:0; }
+.mp-fold { all:unset; box-sizing:border-box; display:flex; align-items:center; gap:6px; width:100%; min-height:44px; cursor:pointer; font:inherit; color:inherit; }
+.mp-fold:focus-visible { outline:2px solid var(--accent); outline-offset:2px; border-radius:8px; }
+.mp-sec-f .mp-sech { margin:2px 2px 4px; border-bottom:1px solid var(--border); }
+.mp-fold-i { margin-left:auto; font-size:16px; transition:transform .15s ease; }
+.mp-fold[aria-expanded="true"] .mp-fold-i { transform:rotate(180deg); }
+.mp-sec-f .mp-secb { padding-top:6px; }
 .mypage-header .mp-pass { background:#fff; color:var(--accent); border:0; font-weight:700; flex-shrink:0; align-self:center; min-height:40px; }
 @media (max-width:767px) {
   .mp-head6 { flex-wrap:wrap; row-gap:12px; }
@@ -50135,7 +50141,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1204';
+const APP_VERSION = '1205';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -90755,7 +90761,11 @@ function renderPGD(empName, isManagerView) {
      今までは配属店1つぶんしか見えず、応援先のスキルは本人にも見えなかった。
      店舗別の記録は getEmpSkillsStore が持っている。 */
   var _pgStores = empStoresOf(emp);
-  if (!_pgStores.length) _pgStores = [STORES[0].id];
+  /* v1205（UI案98・5A）：本部の人（GM・CEO・経理・事務Crew・Head Chef）の自分のマイページは、所属・応援の店だけ（前は全店＝スマホで 9 枚・店の無い人は先頭の店）。
+     店が無ければ出さない。ほかの人の画面（isManagerView）・AM（担当の店）・店の人は今のまま */
+  var _pgHq = !isManagerView && ['gm','ceo','office','office_crew','chef'].indexOf(emp.role) >= 0;
+  if (_pgHq) _pgStores = [emp.store].concat(emp.support || []).filter(function (id, i, a) { return id && a.indexOf(id) === i && STORES.some(function (s) { return s.id === id; }); });
+  else if (!_pgStores.length) _pgStores = [STORES[0].id];
   /* v1177（UI案85-4A・Moto さん 11/15 15:46 HST「４ A」）：PC（1024px 以上）のマイページで店が 2 つ以上なら、店ごとのカードの代わりに
      1 つの表（店・できる・次に覚える・推奨教育・承認）。中身は下のカードと同じ数え方（getStorePositions・getEmpSkillsStore・SKILL_TRAINING）。
      スマホ・1 店だけ・ほかの人の画面（isManagerView）は今のカードのまま */
@@ -93662,9 +93672,16 @@ function mpSecLayout(html){
   var one = function(sec){
     var a = secs[sec]; if (!a.length) return '';
     a.sort(function(x, y){ return (x.o - y.o) || (x.n - y.n); });
-    var nm = MP_SEC_NAME[sec];
+    var nm = MP_SEC_NAME[sec], body = a.map(function(x){ return x.h; }).join('');
+    /* v1205（UI案98・6A）：スマホ（1 列）では ④ ⑤ ⑥ は見出しだけ。押すと開く（開いたかはこの端末が覚える・mpFoldOpen）。PC はいつも開いている */
+    if (!pc && sec >= 4) {
+      var open = mpFoldOpen(sec);
+      return '<section class="mp-sec mp-sec-f" data-mps="' + sec + '"><h2 class="mp-sech"><button type="button" class="mp-fold" aria-expanded="' + open + '" aria-controls="mp-secb-' + sec + '" onclick="mpFoldToggle(' + sec + ')">'
+        + '<span class="mp-secn">' + MP_SEC_NUM[sec] + '</span>' + t(nm[0], nm[1]) + '<i class="ti ti-chevron-down mp-fold-i"></i></button></h2>'
+        + '<div class="mp-secb" id="mp-secb-' + sec + '"' + (open ? '' : ' hidden') + '>' + body + '</div></section>';
+    }
     return '<section class="mp-sec" data-mps="' + sec + '"><h2 class="mp-sech"><span class="mp-secn">' + MP_SEC_NUM[sec] + '</span>' + t(nm[0], nm[1]) + '</h2>'
-      + a.map(function(x){ return x.h; }).join('') + '</section>';
+      + body + '</section>';
   };
   if (pc) return pre + '<div class="mp-pc mp-pc6" data-pcv="pc"><div class="mp-col">' + [1,2,3].map(one).join('') + '</div><div class="mp-col">' + [4,5,6].map(one).join('') + '</div></div>';
   return pre + [1,2,3,4,5,6].map(one).join('');
@@ -93705,6 +93722,16 @@ function mpTodayShow(){
   if (none) none.style.display = has ? 'none' : '';
   c.style.display = (!has && helps) ? 'none' : '';
 }
+/* スマホの ④ ⑤ ⑥ を開いたか（この端末だけ・同期しない） */
+var MP_FOLD_KEY = 'mp_open_v1205';
+function mpFoldOpen(sec){ try { var o = JSON.parse(localStorage.getItem(MP_FOLD_KEY) || '{}') || {}; return o[sec] === 1; } catch(e) { return false; } }
+function mpFoldSet(sec, folded){
+  sec = Number(sec);
+  try { var o = JSON.parse(localStorage.getItem(MP_FOLD_KEY) || '{}') || {}; if (folded) delete o[sec]; else o[sec] = 1; localStorage.setItem(MP_FOLD_KEY, JSON.stringify(o)); } catch(e) {}
+  var b = document.getElementById('mp-secb-' + sec); if (b) b.hidden = !!folded;
+  var btn = document.querySelector('.mp-sec[data-mps="' + sec + '"] .mp-fold'); if (btn) btn.setAttribute('aria-expanded', folded ? 'false' : 'true');
+}
+function mpFoldToggle(sec){ var b = document.getElementById('mp-secb-' + Number(sec)); mpFoldSet(sec, !!(b && !b.hidden)); }
 function mpGoSec(sec){
   var el = document.querySelector('.mp-sec[data-mps="' + Number(sec) + '"]'); if (!el) return;
   try { if (typeof mpFoldSet === 'function') mpFoldSet(sec, false); } catch(e) {}

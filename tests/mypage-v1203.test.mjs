@@ -40,7 +40,8 @@ function blk(over = {}) {
 }
 const M = (c, o) => '<!--MPC:' + c + ':' + o + '-->', S = (s, o) => '<!--MPS:' + s + ':' + o + '-->';
 const card = n => '<div class="card">' + n + '</div>';
-const secsOf = h => [...h.matchAll(/<section class="mp-sec" data-mps="(\d)"><h2 class="mp-sech"><span class="mp-secn">.<\/span>([^<]*)<\/h2>([\s\S]*?)<\/section>/g)]
+// v1205 から：スマホの ④⑤⑥ は見出しがボタン（たたむ）。どちらの形でも段の番号・名前・カードを読む
+const secsOf = h => [...h.matchAll(/<section class="mp-sec[^"]*" data-mps="(\d)"><h2 class="mp-sech">(?:<button[^>]*>)?<span class="mp-secn">.<\/span>([^<]*)(?:<i[^>]*><\/i><\/button>)?<\/h2>([\s\S]*?)<\/section>/g)]
   .map(m => ({ n: Number(m[1]), name: m[2], cards: [...m[3].matchAll(/<div class="card">([^<]*)<\/div>/g)].map(x => x[1]) }));
 
 test('six sections: the current marks go to their section and order; an unknown mark stays (end of ⑤); empty sections are left out; the header stays first', () => {

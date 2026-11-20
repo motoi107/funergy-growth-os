@@ -1,5 +1,10 @@
 # Claude / Codex 共通記録
 
+## 2026-11-20 v1205：スマホのマイページの ④⑤⑥ をたたむ・本部の人のポジション（UI案98 の 5A・6A・Claude（Cowork・Team）・ブランチ `claude/mypage-1205`・アプリだけ・本番未反映）
+
+- スマホ（`empSmIsPc()` が false）では ④⑤⑥ は見出しのボタン（`mpFoldToggle`）。開いたかは `localStorage` の `mp_open_v1205`（この端末だけ・同期しない）。PC はたたまない。
+- 守ること：マイページの ④⑤⑥ に入れたカードの中のグラフ・幅を測る処理は、たたんであると幅 0 になる（開いたときに描き直すか、viewBox で幅に合わせる）。`renderPGD` の本部の人（gm・ceo・office・office_crew・chef）は自分のマイページでは所属・応援の店だけ。中身は `docs/UNIFIED_UI_V1191_JA.md` の 27c。
+
 ## 2026-11-20 v1204：マイページ ① に本部の打刻（UI案98 の 3A・Claude（Cowork・Team）・ブランチ `claude/mypage-1204`・アプリだけ・本番未反映）
 
 - 経理・事務Crew・Head Chef のマイページ ① に経理ホームと同じ打刻のカード（同じ記録 `office_attend_<名前>`・同じ関数）。押したあとは `officePunchRerender`（マイページならマイページ）。

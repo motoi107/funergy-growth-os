@@ -103,7 +103,7 @@ for (const [W, lang] of [[1440, 'ja'], [390, 'ja'], [1440, 'en'], [390, 'en']]) 
       else ok(tag + ': ① 今日やること（何も無ければ「ありません」）', L.today && L.today.sec === 1 && L.today.shown && /今日やることはありません|Nothing to do today/.test(L.today.text), L.today);
       ok(tag + ': ② 1 つの申請のカード（休暇・紛失届は開ける人だけ）', L.req && L.req.sec === 2 && L.req.vac && L.req.lost === lostOk, L.req);
       ok(tag + ': 前の「休暇申請」のカードは無い（② にまとめた・4A）', !L.titles.some(x => /^(休暇申請|Time Off)/.test(x)), L.titles.filter(x => /休暇|Time Off/.test(x)));
-      if (['g4', 'am', 'gm', 'chef', 'office', 'oc'].includes(key)) ok(tag + ': 名前は今のまま（Personal Growth Dashboard・7B）', await page.evaluate(() => /Personal Growth Dashboard/.test(document.getElementById('main-content').innerText)));
+      if (['g4', 'am', 'gm', 'chef', 'office', 'oc'].includes(key)) ok(tag + ': 名前は今のまま（Personal Growth Dashboard・7B）', await page.evaluate(() => /Personal Growth Dashboard/.test(document.getElementById('main-content').textContent)));   /* v1205 からスマホの ④ はたたむ（innerText に出ない）ので textContent */
       // 従業員証明のボタン
       await page.click('.mypage-header .mp-pass'); await sleep(700);
       const pass = await page.evaluate(() => !!document.getElementById('fypass-overlay'));
