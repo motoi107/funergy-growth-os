@@ -60548,6 +60548,12 @@ function acrRows(){
 }
 function acrSet(k, v){ if (!Object.prototype.hasOwnProperty.call(_acr, k) || k === 'map') return; _acr[k] = (k === 'old') ? !!v : (k === 'limit' ? (Number(v) || ACR_PAGE) : String(v || '')); if (k !== 'limit') _acr.limit = ACR_PAGE; renderPage('acct_center'); }
 function acrMore(){ _acr.limit += ACR_PAGE; renderPage('acct_center'); }
+/* Codex #205：［最新］＝GM が承認した申請と書類をどちらも読み直す（新しく承認された申請も一覧に入る） */
+function acrRefresh(){
+  try { if (typeof wrAcctRefresh === 'function') wrAcctRefresh(); } catch(e) {}
+  try { if (typeof arPullLatest === 'function') arPullLatest(true); } catch(e) {}
+  renderPage('acct_center');
+}
 function acrOpen(key){
   var r = _acr.map[key]; if (!r) return;
   if (r.src === 'req') { if (typeof wrOpen === 'function') wrOpen(r.id); return; }
@@ -60557,7 +60563,7 @@ function acrOpen(key){
 }
 function acrBody(){
   var e = escapeHtml, A = acrRows(), feed = A.feed;
-  try { setTimeout(function(){ try { if (typeof arPullLatest === 'function') arPullLatest(false); } catch(err) {} }, 0); } catch(err) {}   /* 書類も開いたら読み直す（60 秒に 1 回まで・v1095 と同じ） */
+  try { setTimeout(function(){ try { if (typeof arPullLatest === 'function') arPullLatest(false); } catch(err) {} }, 0); } catch(err) {}   /* 書類も開いたら読み直す（今の経理レビューと同じ arPullLatest の間隔） */
   var forceOld = feed.state === 'not_live', showOld = _acr.old || forceOld;
   var kinds = {}, stores = {}, oldN = 0;
   A.rows.forEach(function(r){ if (r.src === 'old' && !showOld) { oldN++; return; } kinds[r.kind] = r.kindL; if (r.store) stores[r.store] = r.storeL; });
@@ -60577,8 +60583,14 @@ function acrBody(){
     not_live:t('申請の仕組みをまだ使っていないので、前の画面の記録を今の申請として出しています','Requests are not live yet, so the earlier screens are shown as the current requests'),
     err:t('申請を読めませんでした：','Could not read the requests: ') + (feed.msg || ''), none:t('申請の画面を読み込めませんでした','Could not load the requests') }[feed.state];
   if (fm) h += '<div class="alert ' + (feed.state === 'err' || feed.state === 'none' ? 'alert-danger' : 'alert-warning') + ' acr-feed" style="font-size:12px;padding:8px 11px;margin-bottom:8px"><i class="ti ti-info-circle"></i><div style="flex:1">' + e(fm) + '</div>'
-    + (feed.state === 'err' && typeof wrAcctRefresh === 'function' ? '<button class="btn btn-secondary btn-sm" onclick="wrAcctRefresh()"><i class="ti ti-refresh"></i> ' + t('最新','Latest') + '</button>' : '') + '</div>';
+    + '</div>';   /* 読み直しは下の［最新］（Codex #205） */
   else if (feed.viewOnly) h += '<div style="font-size:11.5px;color:var(--muted);margin:0 2px 6px">' + t('申請は見るだけ（確認・精算は経理）','Requests are view only (accounting checks and pays)') + '</div>';
+  /* Codex #205：いつの申請・書類かと［最新］。書類が読めなかった・この端末の古い写しのときは今の経理レビューと同じ知らせ（arFreshHtml） */
+  var hm = function(ts){ var d = new Date(ts); return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); };
+  var reqL = feed.state !== 'ok' ? '' : feed.busy ? t('申請を読み直しています…','Reading the requests again…') : feed.at ? t('申請の最終取得 ','Requests read at ') + hm(feed.at) : '';
+  h += '<div class="acr-fresh" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:11.5px;color:var(--muted);margin:0 2px 6px">'
+    + (reqL ? '<span class="acr-reqat">' + e(reqL) + '</span>' : '') + '<button class="btn btn-secondary btn-sm acr-refresh" style="margin-left:auto" onclick="acrRefresh()"><i class="ti ti-refresh"></i> ' + t('最新','Latest') + '</button></div>';
+  try { if (typeof arFreshHtml === 'function') h += '<div class="acr-docfresh">' + arFreshHtml() + '</div>'; } catch(err) {}
   /* 状態（3A：初めは確認待ち） */
   var chip = function(id, label){ var on = st === id; return '<button class="acr-st' + (on ? ' on' : '') + '" onclick="acrSet(\'st\',\'' + id + '\')" style="font:inherit;cursor:pointer;padding:7px 12px;border-radius:10px;border:1px solid ' + (on ? 'var(--accent)' : 'var(--border)') + ';background:' + (on ? 'var(--accent)' : 'var(--surface)') + ';color:' + (on ? '#fff' : 'var(--text)') + ';font-size:12.5px;font-weight:700">' + e(label) + ' <span style="font-weight:800">' + cnt[id] + '</span></button>'; };
   h += '<div class="acr-sts" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">' + chip('ck', t('確認待ち','To check')) + chip('pay', t('精算待ち','To pay')) + chip('ret', t('差し戻し','Returned')) + chip('all', t('すべて','All')) + '</div>';
@@ -115291,10 +115303,12 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     if (!S.me) return S.load === 'err' ? { state:'err', msg:String(S.err || ''), rows:[] } : { state:'loading', msg:'', rows:[] };
     if (!S.live) return { state:'not_live', msg:errText('not_live'), rows:[] };
     if (!S.acct) S.acct = { rows:null, load:'', tab:'ck', done:null, dload:'' };
-    if (S.acct.load === '') acctLoad();
-    var a = S.acct;
+    var a = S.acct, now = Date.now();
+    /* Codex #205：開いたら読み直す（1 分に 1 回まで）。読み直しが 30 秒たっても終わらなければもう一度。［最新］は wrAcctRefresh */
+    if (a.load === '' || (a.load === 'done' && a.at && now - a.at > 60000) || (a.load === 'loading' && a.t0 && now - a.t0 > 30000)) { a.t0 = now; acctLoad(); }
     if (!a.rows) return a.load === 'err' ? { state:'err', msg:String(a.err || ''), rows:[] } : { state:'loading', msg:'', rows:[] };
-    return { state: a.load === 'err' ? 'err' : 'ok', msg: a.load === 'err' ? String(a.err || '') : '', viewOnly: ['ceo','gm'].indexOf(S.me.role) >= 0, rows: a.rows.map(function(r){
+    return { state: a.load === 'err' ? 'err' : 'ok', msg: a.load === 'err' ? String(a.err || '') : '', viewOnly: ['ceo','gm'].indexOf(S.me.role) >= 0,
+      at: a.at || 0, busy: a.load === 'loading', rows: a.rows.map(function(r){
       var cash = (KINDS.indexOf(r.kind) >= 0 || r.kind === 'budget') && r.amount_cents != null;
       return { id:String(r.id), code:String(r.code || ''), kind:String(r.kind || ''), kindL:kindL(r.kind), status:r.status, st: r.status === 'checked' ? 'pay' : 'ck',
         amount: cash ? (Number(r.amount_cents) || 0) / 100 : null, who:String(r.requester_name || ''), store:String(r.store_id || ''), storeL:storeName(r.store_id),

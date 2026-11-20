@@ -303,6 +303,18 @@ test('v1200（UI案97 の 3A）: wrAcctFeed gives the accounting one list the sa
   ac.ctx.wrAcctFeed(); await ac.settle(); f = ac.ctx.wrAcctFeed();   // 一覧を描くたびに読む（読み終えたら描き直す）
   assert.equal(f.rows.find(r => r.id === a.id).st, 'pay');
   assert.ok(!f.rows.some(r => r.id === ex.id && r.st === 'pay'));
+  assert.ok(f.at > 0); assert.equal(f.busy, false);
+  // Codex #205：あとから GM が承認した申請も入る（開いたら 1 分に 1 回まで読み直す・［最新］は wrAcctRefresh）
+  const late = await s.approved('E7', 1200);
+  f = ac.ctx.wrAcctFeed(); assert.ok(!f.rows.some(r => r.id === late.id), 'not yet (read less than a minute ago)');
+  ac.ctx._wrState().acct.at -= 61000;
+  f = ac.ctx.wrAcctFeed(); assert.equal(f.busy, true, 'older than a minute: read again (the rows stay while reading)'); assert.ok(f.rows.length > 0);
+  await ac.settle(); f = ac.ctx.wrAcctFeed();
+  assert.ok(f.rows.some(r => r.id === late.id && r.st === 'ck'), 'the newly approved request is in the list');
+  // 読み直しが返ってこない（30 秒）ときはもう一度
+  const st = ac.ctx._wrState().acct; st.load = 'loading'; st.t0 = Date.now() - 31000; const at0 = st.at;
+  ac.ctx.wrAcctFeed(); await ac.settle();
+  assert.equal(ac.ctx._wrState().acct.load, 'done'); assert.ok(ac.ctx._wrState().acct.at >= at0);
   // GM・CEO は見るだけ
   const gm = await app(s, 'E2', { page: 'acct_center' });
   gm.ctx.wrAcctFeed(); await gm.settle(); gm.ctx.wrAcctFeed(); await gm.settle();

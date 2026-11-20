@@ -59,7 +59,7 @@ function lineFn(name) { const m = new RegExp('^function ' + name + '\\(.*$', 'm'
 const plain = v => JSON.parse(JSON.stringify(v));
 
 
-const FNS = ['acrOnPage', 'acrDocSt', 'acrRows', 'acrSet', 'acrMore', 'acrOpen', 'acrBody', 'acSubsOf', 'acResolve', 'acOpenSub', 'acSetCat', 'acSetSub',
+const FNS = ['acrOnPage', 'acrDocSt', 'acrRows', 'acrSet', 'acrMore', 'acrRefresh', 'acrOpen', 'acrBody', 'acSubsOf', 'acResolve', 'acOpenSub', 'acSetCat', 'acSetSub',
   'renderAcctCenter', '_acStatus', '_acDate', '_acStoreName', 'arOnPage', 'arReviewList', 'invIsIntake'];
 
 function app(opt = {}) {
@@ -84,8 +84,10 @@ function app(opt = {}) {
     function getLostReceipts(){ return ls('lost_receipts', []).filter(function(x){ return x && !x._deleted; }); }
     var FEED = ${JSON.stringify(opt.feed === undefined ? { state: 'ok', rows: [] } : opt.feed)};
     ${opt.noFeed ? '' : 'function wrAcctFeed(){ return JSON.parse(JSON.stringify(FEED)); }'}
+    var FRESH = ${JSON.stringify(opt.fresh || '<div class="DOCFRESH">最終取得 10:00</div>')}; function arFreshHtml(){ return FRESH; }
+    var REFRESHED = 0;
     function wrOpen(id){ OPENED.push('wr:' + id); } function arOpenBox(id){ OPENED.push('box:' + id); } function openCheckReview(id){ OPENED.push('check:' + id); }
-    function wrAcctRefresh(){}
+    function wrAcctRefresh(){ REFRESHED++; }
     function _acPend(){ return [{ sub:'gas', n:1 }]; } function _acPendHtml(){ return '<div class="PENDCHIPS"></div>'; }
     function invInPendingReview(){ return 0; }
     ['renderInvoice','renderReimburseCard','renderLostReceipt','renderMileage','renderVacation','renderExpense','renderPurchaseDetail','renderAcctReview','renderApproval']
@@ -165,7 +167,7 @@ test('pressing a row opens the same one-item screen as before: request → wrOpe
 });
 
 test('requests that cannot be read: the documents still show, with a note (loading, sign-in, error with 最新); not live → the earlier screens are the requests', () => {
-  for (const [state, re] of [['loading', /読み込んでいます/], ['signin', /サインインすると出ます/], ['err', /申請を読めませんでした：boom[^]*wrAcctRefresh\(\)/]]) {
+  for (const [state, re] of [['loading', /読み込んでいます/], ['signin', /サインインすると出ます/], ['err', /申請を読めませんでした：boom[^]*acrRefresh\(\)/]]) {
     const c = open({ feed: { state, msg: state === 'err' ? 'boom' : '', rows: [] } });
     const h = run(c, 'acrBody()');
     assert.match(h, re, state); assert.ok(rowKeys(h).includes('d:i1'), state);
@@ -207,4 +209,20 @@ test('the review body counts this list as its page (confirm / return redraws her
   assert.match(SRC, /_acCat = 'review'; _acSub = 'all'; \} catch\(e\)\{\} page = 'acct_center';/);
   assert.equal(run(c, 'acrOnPage()'), false); run(c, "_acSub='all'"); assert.equal(run(c, 'acrOnPage()'), true);
   run(c, "curPage='tasks'"); assert.equal(run(c, 'acrOnPage()'), false);
+});
+
+test('Codex #205: a [最新] button reads both the GM-approved requests and the documents again; it says when the requests were read or that they are being read again; the document warnings show here too', () => {
+  const c = open({ feed: Object.assign({}, BASE.feed, { at: Date.UTC(2026, 10, 19, 20, 5), busy: false }) });
+  let h = run(c, 'acrBody()');
+  assert.match(h, /onclick="acrRefresh\(\)"><i class="ti ti-refresh"><\/i> 最新/);
+  assert.match(h, /申請の最終取得 \d\d:\d\d/);
+  assert.match(h, /<div class="acr-docfresh"><div class="DOCFRESH">/, 'the document freshness line of the review (arFreshHtml)');
+  const p0 = c.PULLS, r0 = c.RENDERS.length;
+  run(c, 'acrRefresh()');
+  assert.equal(run(c, 'REFRESHED'), 1, 'requests read again (wrAcctRefresh)'); assert.ok(c.PULLS > p0, 'documents read again (arPullLatest(true))'); assert.equal(c.RENDERS.at(-1), 'acct_center'); assert.ok(c.RENDERS.length > r0);
+  const busy = open({ feed: Object.assign({}, BASE.feed, { busy: true }) });
+  assert.match(run(busy, 'acrBody()'), /申請を読み直しています…/);
+  const warn = open({ fresh: '<div class="alert alert-warning">クラウドから読み直せませんでした。この端末の写し（09:00 に取得）を出しています<button onclick="arPullLatest(true)">取り直す</button></div>' });
+  h = run(warn, 'acrBody()');
+  assert.match(h, /クラウドから読み直せませんでした。この端末の写し（09:00 に取得）を出しています/, 'a failed document read is said'); assert.ok(rowKeys(h).includes('d:i1'), 'the device copy is still listed');
 });
