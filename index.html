@@ -25642,6 +25642,7 @@ if(typeof window.FUNERGY_WEB_OFFICE_RENDER==='function')return window.FUNERGY_WE
   try{ mdCacheClear(); }catch(e){}   /* v859: 描画のたびに集計キャッシュを捨てる */
   try{ if(typeof tipLivePill==='function') tipLivePill(false); }catch(e){}   /* v1091: 描き直せば新しい Tip Rate で出るので「表示を更新」の帯は消す */
   /* v1084: 廃止・移動した画面の古い行き先は今の画面へ（go を通らずに来たとき。ナビの表示もそろえる） */
+  try { if (typeof acPageInCenter === 'function') page = acPageInCenter(page); } catch(e){}   /* v1201：経理センターの中の画面の描き直しは経理センターのまま */
   try { var _np = navResolvePage(page); if (_np !== page) { page = _np; curPage = _np; curGroup = groupOfPage(_np).id; buildNav(); } } catch(e){}
   if (typeof isPageHiddenForMe==='function' && isPageHiddenForMe(page)) { var _ga=groupsForRole()[0]; page = (_ga && _ga.children && _ga.children[0]) || 'mypage'; }
   try{ if(page!=='lala' && _lalaPollTimer && typeof lalaRealtimeStop==='function') lalaRealtimeStop(); }catch(e){}   /* v1098：LaLa 以外を描くときは LaLa の見張りを止める（go を通らない道でも） */
@@ -25782,6 +25783,7 @@ case 'acct_center':
   try{ mdCacheClear(); }catch(e){}   /* v859: 描画のたびに集計キャッシュを捨てる */
   try{ if(typeof tipLivePill==='function') tipLivePill(false); }catch(e){}   /* v1091: 描き直せば新しい Tip Rate で出るので「表示を更新」の帯は消す */
   /* v1084: 廃止・移動した画面の古い行き先は今の画面へ（go を通らずに来たとき。ナビの表示もそろえる） */
+  try { if (typeof acPageInCenter === 'function') page = acPageInCenter(page); } catch(e){}   /* v1201：経理センターの中の画面の描き直しは経理センターのまま */
   try { var _np = navResolvePage(page); if (_np !== page) { page = _np; curPage = _np; curGroup = groupOfPage(_np).id; buildNav(); } } catch(e){}
   if (typeof isPageHiddenForMe==='function' && isPageHiddenForMe(page)) { var _ga=groupsForRole()[0]; page = (_ga && _ga.children && _ga.children[0]) || 'mypage'; }
   try{ if(page!=='lala' && _lalaPollTimer && typeof lalaRealtimeStop==='function') lalaRealtimeStop(); }catch(e){}   /* v1098：LaLa 以外を描くときは LaLa の見張りを止める（go を通らない道でも） */
@@ -50114,7 +50116,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1200';
+const APP_VERSION = '1201';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -60409,7 +60411,6 @@ var AC_TABS = [
   ]},
   { id:'review', label:'経理レビュー', labelEn:'Accounting review', icon:'ti-file-check', subs:[
       { id:'all',      label:'確認する', labelEn:'To check',       fn:'acrBody' },   /* v1200（段階 3 の 2 歩目・3A・4A）：申請・書類・前の画面の記録を 1 つの一覧に（読むだけで並べる） */
-      { id:'invoice',  label:'Invoice', labelEn:'Invoices',       list:'invoice', more:'renderInvoice' },
       { id:'receipt',  label:'レシート', labelEn:'Receipts',       list:'receipt' },
       { id:'reimb',    label:'建て替え', labelEn:'Reimbursements',       list:'reimb',   more:'renderReimburseCard' },
       { id:'check',    label:'チェック', labelEn:'Checks',       list:'check' },   /* v1030: 行を押すと openCheckReview */
@@ -60417,7 +60418,6 @@ var AC_TABS = [
       { id:'gas',      label:'ガソリン代', labelEn:'Mileage',     list:'gas',     more:'renderMileage' },
       { id:'vac',      label:'休暇申請', labelEn:'Time off',       fn:'renderVacation' },
       { id:'exp',      label:'事前経費', labelEn:'Pre-approved expenses',       fn:'renderExpense' },
-      { id:'purchase', label:'仕入明細', labelEn:'Purchase lines',       fn:'renderPurchaseDetail' },
       { id:'acctrev',  label:'区分・承認', labelEn:'Classify & approve',     fn:'renderAcctReview' },
       { id:'appr',     label:'報告・承認', labelEn:'Reports & approvals',     fn:'renderApproval' }   /* v1199：前の記録。② の「前の画面の記録」（段階 3 の 2 歩目）までは今のまま */
   ]},
@@ -60426,7 +60426,13 @@ var AC_TABS = [
       { id:'dlist',     label:'一覧', labelEn:'List',     fn:'invInList' },
       { id:'dreview',   label:'要確認', labelEn:'Needs review',   fn:'invInReview' },
       { id:'drecon',    label:'照合', labelEn:'Reconcile',     fn:'invInRecon' },
-      { id:'dhealth',   label:'取込状況', labelEn:'Intake status', fn:'invInHealth' }
+      { id:'dhealth',   label:'取込状況', labelEn:'Intake status', fn:'invInHealth' },
+      /* v1201（段階 3 の 3 歩目・UI案97・9A）：② から移した。中身は同じ（明細＝今の仕入明細・前の経路の書類＝② の「Invoice」の一覧）。
+         前の経路の書類は読むだけ（登録・承認の画面は出さない：確認・差し戻しは ② 経理レビュー › 確認する、登録は今の「Invoice管理」） */
+      { id:'purchase',  label:'明細', labelEn:'Purchase lines', fn:'renderPurchaseDetail' },
+      { id:'invoice',   label:'前の経路の書類', labelEn:'Earlier-route documents', list:'invoice',
+        note:['アプリで登録した書類（前の経路）です。ここは読むだけです。確認・差し戻しは 経理レビュー › 確認する、登録は Invoice管理 で。Drive から取り込んだ書類は「一覧」にあります（ここには出しません）。',
+              'Documents registered in the app (the earlier route). Read only here: check / return them in Accounting review › To check; register in Invoice management. Documents taken in from Drive are under List (not shown here).'] }
   ]},
   { id:'tip', label:'Tip＆シフトリーダー', labelEn:'Tips & shift leaders', icon:'ti-coin', subs:[
       { id:'tip',   label:'Tip管理', labelEn:'Tips',        fn:'renderTipMgmt' },
@@ -60501,6 +60507,19 @@ function acWorkLinksHtml(){
   return h + '</div>';
 }
 function acGoWork(tab){ try { workTab = tab; } catch(e){} go('tasks'); }
+/* v1201：経理センターの中に出している画面は、自分のページの名前で描き直す（例：仕入明細の月・店 → renderPage('purchase_detail')、
+   経理出力の月 → renderPage('acct_export')、業者マスター → renderPage('vendor_master')）。前はそのまま経理センターの外の画面になった
+   （中タブの帯が消える・前の承認は ワークセンターへ）。経理センターを開いていて、今の小タブの画面の名前のときだけ経理センターを描き直す。
+   go() は先に curPage を変えるので、ほかの画面へ行くときは変わらない。Office管理（office_mgr）は今までどおり acFromOfficeTab */
+var AC_SUB_PAGES = { all:['acct_review'], acctrev:['acct_review'], reimb:['acct_review','invoice'], lost:['lost_receipt'], gas:['mileage'], vac:['vacation'], exp:['expense'],
+  appr:['approval'], purchase:['purchase_detail'], invoice:['invoice'], tip:['tip'], tipsl:['tip'], export:['acct_export'], ohub:['office_export'], vendor:['vendor_master'] };
+function acPageInCenter(page){
+  try {
+    if (typeof curPage === 'undefined' || curPage !== 'acct_center' || page === 'acct_center' || typeof _acSub === 'undefined') return page;
+    var ps = AC_SUB_PAGES[_acSub];
+    return (ps && ps.indexOf(page) >= 0) ? 'acct_center' : page;
+  } catch(e) { return page; }
+}
 /* ==== v1200：経理レビュー › 確認する（1 つの一覧・段階 3 の 2 歩目・UI案97 の 3A・4A・Moto さん 11/19）====
    GM が承認した申請（ワークセンターの申請・wrAcctFeed）・承認の要らない書類（Invoice・レシート・チェック）・前の画面の記録（前の一覧のガソリン代・
    事前経費・休暇・建て替え）を 1 つの一覧に並べる。読むだけ：保存先・処理は変えない。行を押すと今までの 1 件の画面（申請＝wrOpen・書類＝arOpenBox・
@@ -60685,6 +60704,7 @@ function renderAcctCenter(){
         }).join('') + '</div>';
   }
   h += '</div>';
+  if (sub.note) h += '<div class="ac-note" style="font-size:11.5px;color:var(--muted);line-height:1.7;margin:0 2px 8px"><i class="ti ti-info-circle"></i> ' + escapeHtml(t(sub.note[0], sub.note[1])) + '</div>';   /* v1201 */
   /* v881: 未処理の一覧は帯の下に置く（押せばその中タブへ飛ぶ）。 */
   if(cat.id==='review' && sub.id!=='all'){ try{ h += _acPendHtml(); }catch(e){} }   /* v1200：確認する（1 つの一覧）は一覧そのものが未処理 */
   /* v875: 絞り込み一覧。従来の画面は下に畳んで残す（登録・承認はそちらで行う）。 */
