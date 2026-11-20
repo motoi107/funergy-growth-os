@@ -119,7 +119,7 @@ test('3A: 経理レビュー opens on 確認する with 確認待ち: GM-approve
   const c = open();
   assert.deepEqual([run(c, '_acCat'), run(c, '_acSub'), run(c, '_acr.st')], ['review', 'all', 'ck']);
   const subs = plain(run(c, "acSubsOf(AC_TABS.find(function(x){ return x.id==='review'; })).map(function(s){ return s.id; })"));
-  assert.equal(subs[0], 'all'); assert.ok(subs.includes('acctrev') && subs.includes('invoice'), 'the kind tabs are still there');
+  assert.equal(subs[0], 'all'); assert.ok(subs.includes('acctrev') && subs.includes('gas'), 'the kind tabs are still there (v1201: Invoice・仕入明細 moved to ③)');
   const h = run(c, 'renderAcctCenter()');
   assert.match(h, /acSetSub\('all'\)">確認する/);
   assert.deepEqual(rowKeys(h).sort(), ['c:k1', 'd:i1', 'd:i2', 'd:r1', 'r:a', 'r:c'].sort());

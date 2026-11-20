@@ -138,8 +138,9 @@ test('the 区分・承認 tab shows the same body as the independent page (same 
   assert.match(page, /3 件 ・ 合計 \$194\.70/);
   const subs = plain(run(a, "AC_TABS.find(function(x){ return x.id==='review'; }).subs.map(function(s){ return s.id + ':' + s.label; })"));
   // v1199（UI案97）：業者マスターは マスター・設定へ、エラーセンターはワークセンター › エラーへ（tests/acct-tabs-v1199.test.mjs）
-  assert.deepEqual(subs, ['all:確認する', 'invoice:Invoice', 'receipt:レシート', 'reimb:建て替え', 'check:チェック', 'lost:紛失届', 'gas:ガソリン代', 'vac:休暇申請', 'exp:事前経費',
-    'purchase:仕入明細', 'acctrev:区分・承認', 'appr:報告・承認']);
+  assert.deepEqual(subs, ['all:確認する',   // v1201：Invoice（前の経路）・仕入明細は ③ インボイス取り込みへ
+    'receipt:レシート', 'reimb:建て替え', 'check:チェック', 'lost:紛失届', 'gas:ガソリン代', 'vac:休暇申請', 'exp:事前経費',
+    'acctrev:区分・承認', 'appr:報告・承認']);
   run(a, "acSetCat('drive')"); assert.equal(run(a, '_acSub'), 'dlist', 'other categories open on their first tab as before');
   // the pending chip for unconfirmed invoices opens the review body
   run(a, "acSetCat('review'); acSetSub('acctrev')");

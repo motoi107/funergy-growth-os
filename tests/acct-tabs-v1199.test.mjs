@@ -98,8 +98,8 @@ const state = c => [run(c, '_acCat'), run(c, '_acSub')];
 test('the 7 middle tabs in Moto’s order: home (clock stays), review, intake, Tip & shift leaders (own tab), HQ time card (kept), records, masters', () => {
   const c = app();
   assert.deepEqual(cats(c), ['dash:経理ホーム', 'review:経理レビュー', 'drive:インボイス取り込み', 'tip:Tip＆シフトリーダー', 'attend:本部タイムカード', 'reports:履歴・帳票', 'master:マスター・設定']);
-  assert.deepEqual(subsOf(c, 'review'), ['all', 'invoice', 'receipt', 'reimb', 'check', 'lost', 'gas', 'vac', 'exp', 'purchase', 'acctrev', 'appr']);   // v1200：確認する（1 つの一覧）が先頭
-  assert.deepEqual(subsOf(c, 'drive'), ['dlist', 'dreview', 'drecon', 'dhealth']);
+  assert.deepEqual(subsOf(c, 'review'), ['all', 'receipt', 'reimb', 'check', 'lost', 'gas', 'vac', 'exp', 'acctrev', 'appr']);   // v1200：確認する（1 つの一覧）が先頭・v1201：Invoice・仕入明細は ③ へ
+  assert.deepEqual(subsOf(c, 'drive'), ['dlist', 'dreview', 'drecon', 'dhealth', 'purchase', 'invoice']);   // v1201（9A）
   assert.deepEqual(subsOf(c, 'tip'), ['tip', 'tipsl']);
   assert.deepEqual(subsOf(c, 'attend'), ['attend']);
   assert.deepEqual(subsOf(c, 'reports'), ['ohub', 'export']);
@@ -128,7 +128,8 @@ test('nothing is lost: every screen of v1198 is still here, or moved out to a sc
   // every function a tab calls exists
   for (const k of now) if (!/^(invoice|receipt|reimb|check|lost|gas)$/.test(k)) assert.match(SRC, new RegExp('^(async )?function ' + k + '\\(', 'm'), k);
   // the pending badges still point at review tabs (v886 rule)
-  for (const s of ['invoice', 'check', 'lost', 'gas', 'exp', 'vac']) assert.ok(subsOf(c, 'review').includes(s), s);
+  for (const s of ['check', 'lost', 'gas', 'exp', 'vac']) assert.ok(subsOf(c, 'review').includes(s), s);
+  assert.ok(subsOf(c, 'drive').includes('invoice'), 'v1201: the no-image chip (invoice) points at ③ 前の経路の書類');
 });
 
 test('old pairs open the new place: Invoice settings → マスター・設定; removed tabs → the first tab; bad tab → home', () => {
@@ -165,8 +166,8 @@ test('badges: review counts its own tabs, the intake counts 要確認; the tab b
   const html = run(c, 'renderAcctCenter()');
   const bar = html.slice(0, html.indexOf('</div>'));
   assert.equal((bar.match(/class="ac-btn/g) || []).length, 7);
-  assert.match(bar, /acSetCat\('review'\)[^]*?経理レビュー<span class="ac-n">7<\/span>/);
-  assert.match(bar, /acSetCat\('drive'\)[^]*?インボイス取り込み<span class="ac-n">3<\/span>/);
+  assert.match(bar, /acSetCat\('review'\)[^]*?経理レビュー<span class="ac-n">5<\/span>/);   // v1201：invoice（画像なし）は ③ へ
+  assert.match(bar, /acSetCat\('drive'\)[^]*?インボイス取り込み<span class="ac-n">5<\/span>/);   // 要確認 3 ＋ 画像なし 2
   assert.ok(!/acSetCat\('(bot|hr|export)'\)/.test(html), 'no removed tabs');
   assert.equal(run(c, '_acSub'), 'all', 'v1200 (3A): review opens on 確認する');
   assert.ok(!/PENDLIST/.test(html), 'the one list is the pending view');
