@@ -49348,12 +49348,14 @@ function ceWeekBadge(ce, name, sun){
   if(b.warn>0)  return '<span class="tag tag-yellow" style="font-size:9px;margin-left:4px">要確認'+b.warn+'件</span>';
   return '';
 }
+/* v1198：英語の画面の札（勤怠の確認の決まり＝bot/clock-detector.mjs に写す範囲の外に置く）（前は英語でも日本語の札が出ていた：エラーセンター・業務Bot の勤怠の確認。tests/bot-center.test.mjs が落ちていた） */
+var CE_KIND_LABEL_EN = { auto:'Possible auto clock-out', reverse:'In/out reversed', bad:'Invalid time', long:'Long shift', short:'Very short shift', overlap:'Overlapping shifts' };
 function _ceKindTags(kinds, level){
   return (kinds||[]).map(function(k){
     var isErr = CE_ERROR_KINDS.indexOf(k)>=0;
     var col = isErr ? 'var(--red)' : 'var(--yellow)';
     return '<span class="tag" style="font-size:9px;border:1px solid '+col+';color:'+col
-      + ';background:transparent;margin-left:3px">'+escapeHtml(CE_KIND_LABEL[k]||k)+'</span>';
+      + ';background:transparent;margin-left:3px">'+escapeHtml(((typeof curLang!=='undefined' && curLang==='en') ? CE_KIND_LABEL_EN[k] : CE_KIND_LABEL[k])||k)+'</span>';
   }).join('');
 }
 function _ceHistHtml(hist, cfg){
@@ -50101,7 +50103,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1197';
+const APP_VERSION = '1198';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -118118,7 +118120,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
         if (mf.length) { E.mfail = mf; E.band = 'master'; }
         else if (!E.conflict.length) E.band = '';
         afterMaster();
-        toast(T('同じ内容がもうサーバーに入っていた人がいます（前に押した保存の答えが届かなかったときなど）：','Already saved on the server (for example, an earlier save whose answer did not arrive): ') + got.map(function(it){ return it.name; }).join('、')
+        toast(T('同じ内容がもうサーバーに入っていた人がいます（前に押した保存の答えが届かなかった・ほかの GM・CEO が同じ内容で先に保存した）：','Already saved on the server with the same values (an earlier save whose answer did not arrive, or another GM/CEO saved the same first): ') + got.map(function(it){ return it.name; }).join('、')
           + (Object.keys(E.draft).length ? T('。ほかの変更はまだ保存していません。もう一度「内容を確かめて保存」を押してください','. Your other changes are not saved yet. Press "Review and save" again') : ''), 'info');
       }
       if (E.conflict.length) toast(T('ほかの人が先に変えた人がいます。何も保存していません','Someone else changed some people first. Nothing was saved'), 'warning');

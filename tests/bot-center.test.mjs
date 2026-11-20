@@ -21,6 +21,11 @@ function context(labor={}){
   vm.createContext(ctx);
   const start=source.indexOf('/* FUNERGY_BOT_CENTER_BEGIN'),end=source.indexOf('/* FUNERGY_BOT_CENTER_END */',start);
   assert.ok(start>=0&&end>start);
+  // v1088 から、一覧の種類の札（_ceKindTags）と名前（CE_KIND_LABEL・CE_ERROR_KINDS）はエラーセンターと共通（ブロックの外）
+  const lab=source.indexOf('var CE_KIND_LABEL = {'),labEnd=source.indexOf('\n',source.indexOf('var CE_ERROR_KINDS',lab));
+  const kt=source.indexOf('var CE_KIND_LABEL_EN'),ktEnd=source.indexOf('\n}',source.indexOf('function _ceKindTags(',kt))+2;
+  assert.ok(lab>=0&&labEnd>lab&&kt>=0&&ktEnd>kt);
+  vm.runInContext(source.slice(lab,labEnd)+'\n'+source.slice(kt,ktEnd),ctx);
   vm.runInContext(source.slice(start,end),ctx); return ctx;
 }
 test('generated bot rules equal current app source byte-for-byte',()=>{

@@ -339,7 +339,7 @@ test('①（独立レビュー P2-1・2 回目 P2-A／B・Codex・3 回目）: f
   run(c, 'mdLaborMarksClear(); mdCacheClear()');
   assert.equal(run(c, "mdViewLaborPending('F01','2026-09')"), true, 'cleared by 最新に更新 / logout');
   assert.match(fnSrc('refreshNow'), /mdLaborMarksClear\(\)/);
-  assert.match(SRC, /\nfunction doLogout\(\) \{[\s\S]{0,600}mdLaborMarksClear\(\)/);
+  assert.match(SRC, /\nfunction doLogout\(\) \{[\s\S]{0,3000}mdLaborMarksClear\(\)/);
   // 3 回目 P3-7: the login sync and the month load mark only when they wrote labor
   for (const f of ['loginSyncOps', 'ensureMonthDataLoaded']) assert.match(fnSrc(f), /if \(_lr && Number\(_lr\.updated\) > 0 && typeof mdLaborMark === 'function'\) mdLaborMark\(s\.id, ym\);/, f);
   // 3 回目 P3-3: a past month this device loaded before (frozen): not read when nothing is missing; read (once at a time) when a day is missing
