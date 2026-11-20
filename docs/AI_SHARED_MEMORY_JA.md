@@ -1,5 +1,15 @@
 # Claude / Codex 共通記録
 
+## 2026-11-20 v1203：マイページの 6 つの段（段階 4・UI案98 の 1A・2A・4A・7B・8A・Claude（Cowork・Team）・ブランチ `claude/mypage-1203`・アプリだけ・本番未反映）
+
+- G1（crew）と店のアカウントは今の `mpLayout` のまま。ほかは `mpSecLayout`（今の印 `MPC:c:o` を表 `MP_SEC_OF` で段に振り分ける・新しいカードは `MPS:段:順`）。
+- 守ること：マイページにカードを足すときは、印（`_mp` か `_ms`）を付け、新しい印なら `MP_SEC_OF` に段を足す（無いと ⑤ の最後に出る）。カードの名前は変えない（7B）。① の申請の行は `wrMyTodayHtml`（読み込みのあと `paintMyExp` → `mpTodayPaint`）。中身は `docs/UNIFIED_UI_V1191_JA.md` の 27。
+
+## 2026-11-20 段階 4 の UI 案（UI案98・マイページ・Claude（Cowork・Team）・コードの変更なし）
+
+- 案：https://claude.ai/artifact/JVGkGZS5dhLf5KzRiRdyV5 （5 枚）。G2〜CEO・本部のマイページを 6 つの段（① 今日やること・② 申請・③ 仕事・④ 成長・⑤ 会社から・⑥ 自分の設定）に。G1 は今のまま。中身・決めてほしいこと 8 つは `docs/UNIFIED_UI_V1191_JA.md` の 26。
+- 守ること（作るとき）：出るカードは今と同じ人だけ（足すのは ① と本部の打刻）。本部の打刻は経理ホームと同じ関数・同じ記録（`officeClockIn`・`officeClockOut`）。「画面の表示」のカード（times・exp）はそのまま効く。
+
 ## 2026-11-19 v1202：紛失届をサーバーの申請へ（8B・Claude（Cowork・Team）・ブランチ `claude/lost-wr-1202`・v1201 の上・SQL・関数・アプリ・本番未反映）
 
 - 種類 lost（LR-…）。SQL は `scripts/gen-wr-lost.py` が前の SQL から作る（手で直さない。前の SQL の関数を変えたら作り直す）。SQL 段 9・関数 fn 14 がそろうまでアプリは今の紛失届の画面。

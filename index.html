@@ -1833,6 +1833,25 @@ i.ti-loader, i.ti-loader-2 { display:inline-block; animation:uxSpin 1s linear in
   .mp-col { min-width:0; }
   .mp-colh { font-size:12px; font-weight:700; color:var(--muted); display:flex; align-items:center; gap:6px; margin:2px 2px 8px; }
 }
+/* v1203（UI案98・段階 4）：G2〜CEO・本部のマイページの 6 つの段（mpSecLayout）。PC は .mp-pc の 2 列（左＝①②③・右＝④⑤⑥） */
+.mp-sec { margin:0 0 6px; }
+.mp-sech { font-size:13px; font-weight:700; color:var(--muted); display:flex; align-items:center; gap:6px; margin:6px 2px 8px; }
+.mp-secn { color:var(--accent); font-size:14px; }
+.mp-today { border:1.5px solid var(--accent); }
+.mp-trow { display:flex; align-items:center; gap:10px; padding:9px 0; border-top:1px solid var(--border); }
+.mp-today > .mp-trow:first-child, #mp-today-wr:first-child > .mp-trow:first-child { border-top:0; padding-top:2px; }
+.mp-trow-t { font-size:13px; font-weight:700; }
+.mp-trow-s { font-size:11.5px; color:var(--muted); }
+.mp-today-none { font-size:12.5px; color:var(--muted); }
+.mp-req #wr-myexp { border:0; box-shadow:none; background:none; padding:0; margin:0 0 4px; }
+.mp-req #wr-myexp > .card-title { font-size:12px; color:var(--muted); margin-bottom:6px; }
+.mp-req-more { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; padding-top:8px; border-top:1px solid var(--border); }
+.mp-req > .mp-req-more:first-child { margin-top:0; padding-top:0; border-top:0; }
+.mypage-header .mp-pass { background:#fff; color:var(--accent); border:0; font-weight:700; flex-shrink:0; align-self:center; min-height:40px; }
+@media (max-width:767px) {
+  .mp-head6 { flex-wrap:wrap; row-gap:12px; }
+  .mp-head6 .mp-pass { flex-basis:100%; justify-content:center; }
+}
 /* v1177（UI案85-5A）：月間行動計画 › 設定の PC の 1 つの表（指標 × 店） */
 .cc-mx { font-size:12px; }
 .cc-mx th, .cc-mx td { white-space:nowrap; }
@@ -50116,7 +50135,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1202';
+const APP_VERSION = '1203';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -93572,11 +93591,170 @@ function u11Tyg2Open(ri){
   u11Box(r[3] || t('業務','Task'), b, '<button type="button" class="btn btn-secondary u10-red" onclick="closeModalDirect();tyg2DelRow(' + ri + ')">' + t('この行を削除','Delete this row') + '</button><button type="button" class="btn btn-primary" onclick="u11BoxClose()">' + t('閉じる','Close') + '</button>');
 }
 /* FUNERGY_U11_END */
+/* ===== v1203（UI案98・段階 4・Moto さんの答え 1A・2A・4A・7B・8A）：G2〜CEO・本部のマイページを 6 つの段に =====
+   ① 今日やること ② 申請 ③ 仕事 ④ 成長 ⑤ 会社から ⑥ 自分の設定。PC は 2 列（左＝①②③・右＝④⑤⑥）、スマホは 1 列。
+   カードの中身・押したときの動き・だれに出るかは変えない（今の印 MPC:c:o を段に振り分けるだけ）。G1（crew）は今の mpLayout のまま。 */
+var MP_SEC_NAME = { 1:['今日やること','Today'], 2:['申請','Requests'], 3:['仕事','Work'], 4:['成長','Growth'], 5:['会社から','From the company'], 6:['自分の設定','My settings'] };
+var MP_SEC_NUM = { 1:'①', 2:'②', 3:'③', 4:'④', 5:'⑤', 6:'⑥' };
+/* 今の印（c:o）→ [段, 段の中の順]。載っていない印は ⑤ の最後（カードを落とさない） */
+var MP_SEC_OF = {
+  't:10':[5,20], 't:20':[6,10], 't:30':[6,20], 't:40':[5,10],
+  'w:10':[3,10], 'w:15':[1,30], 'w:30':[3,30], 'w:40':[3,40], 'w:50':[2,30], 'w:60':[2,40],
+  'g:10':[3,50], 'g:20':[5,30], 'g:30':[5,40], 'g:35':[4,10], 'g:40':[4,70], 'g:45':[4,60],
+  'g:50':[4,20], 'g:60':[4,30], 'g:70':[4,40], 'g:80':[4,50], 'g:90':[5,50]
+};
+function mpSecLayout(html){
+  var parts = String(html || '').split(/<!--MP([CS]):([a-z0-9]+):(\d+)-->/), pre = parts[0], secs = { 1:[], 2:[], 3:[], 4:[], 5:[], 6:[] }, n = 0;
+  for (var i = 1; i < parts.length; i += 4) {
+    var ty = parts[i], k = parts[i+1], o = Number(parts[i+2]) || 0, h = parts[i+3] || '';
+    if (!h.replace(/<!--[\s\S]*?-->/g, '').trim()) continue;
+    var m = ty === 'S' ? [Number(k), o] : (MP_SEC_OF[k + ':' + o] || [5, 900]);
+    var sec = secs[m[0]] ? m[0] : 5;
+    secs[sec].push({ o:m[1], n:n++, h:h });
+  }
+  var pc = false; try { pc = typeof empSmIsPc === 'function' && empSmIsPc(); } catch(e) {}
+  try { if (typeof uiPcWatch1177 === 'function') uiPcWatch1177(); } catch(e) {}
+  var one = function(sec){
+    var a = secs[sec]; if (!a.length) return '';
+    a.sort(function(x, y){ return (x.o - y.o) || (x.n - y.n); });
+    var nm = MP_SEC_NAME[sec];
+    return '<section class="mp-sec" data-mps="' + sec + '"><h2 class="mp-sech"><span class="mp-secn">' + MP_SEC_NUM[sec] + '</span>' + t(nm[0], nm[1]) + '</h2>'
+      + a.map(function(x){ return x.h; }).join('') + '</section>';
+  };
+  if (pc) return pre + '<div class="mp-pc mp-pc6" data-pcv="pc"><div class="mp-col">' + [1,2,3].map(one).join('') + '</div><div class="mp-col">' + [4,5,6].map(one).join('') + '</div></div>';
+  return pre + [1,2,3,4,5,6].map(one).join('');
+}
+/* ① の 1 行（申請のモジュールも使う）。onclick はこのファイルが書く決まった式だけ（人の書いた文字は title・sub・a で、エスケープする） */
+function mpTodayRow(title, sub, onclick, label, a){
+  return '<div class="mp-trow"><div style="flex:1;min-width:0"><div class="mp-trow-t">' + escapeHtml(String(title || '')) + '</div>'
+    + (sub ? '<div class="mp-trow-s">' + escapeHtml(String(sub)) + '</div>' : '') + '</div>'
+    + (onclick ? '<button class="btn btn-secondary btn-sm" style="flex-shrink:0"' + (a != null ? ' data-a="' + escapeHtml(String(a)) + '"' : '') + ' onclick="' + onclick + '">' + escapeHtml(String(label || '')) + '</button>' : '')
+    + '</div>';
+}
+/* ① 今日やること：今日のシフト・相談の返事・（申請のモジュールが読んだあと）申請の対応待ちと戻ってきた自分の申請。
+   何も無ければ「今日やることはありません」。ヘルプ募集だけのときは、このカードは出さない（ヘルプ募集のカードが ① にある） */
+function mpTodayHtml(o){
+  o = o || {};
+  var rows = '';
+  if (o.shifts && o.shifts.length) rows += mpTodayRow(t('今日のシフト', "Today's shift"), o.shifts.join(' · '), o.shiftGo || '', t('シフト','Shifts'));
+  if (o.consult) rows += mpTodayRow(t('相談に返事があります', 'You have a reply'), t('お悩み相談室・これまでの相談', 'Consultation room · past consultations'), 'mpGoSec(5)', t('見る','View'));
+  var wr = ''; try { if (typeof wrMyTodayHtml === 'function') wr = wrMyTodayHtml() || ''; } catch(e) { wr = ''; }
+  var has = !!(rows || wr.trim());
+  return '<div class="card mp-today" id="mp-today" data-rows="' + (rows ? 1 : 0) + '" data-helps="' + (o.helps ? 1 : 0) + '"' + (!has && o.helps ? ' style="display:none"' : '') + '>'
+    + rows + '<div id="mp-today-wr">' + wr + '</div>'
+    + '<div class="mp-today-none" id="mp-today-none"' + (has ? ' style="display:none"' : '') + '>' + t('今日やることはありません', 'Nothing to do today') + '</div></div>';
+}
+/* 申請の行が読み終わったら（申請のモジュールの paintMyExp から）描き直す。画面ぜんたいは描き直さない（入力を消さない） */
+function mpTodayPaint(){
+  var el = document.getElementById('mp-today-wr'); if (!el) return;
+  var h = ''; try { if (typeof wrMyTodayHtml === 'function') h = wrMyTodayHtml() || ''; } catch(e) { h = ''; }
+  if (el.innerHTML !== h) el.innerHTML = h;
+  mpTodayShow();
+}
+function mpTodayShow(){
+  var c = document.getElementById('mp-today'); if (!c) return;
+  var wr = document.getElementById('mp-today-wr'), none = document.getElementById('mp-today-none');
+  var has = c.getAttribute('data-rows') === '1' || !!(wr && wr.innerHTML.trim());
+  var helps = c.getAttribute('data-helps') === '1';
+  if (none) none.style.display = has ? 'none' : '';
+  c.style.display = (!has && helps) ? 'none' : '';
+}
+function mpGoSec(sec){
+  var el = document.querySelector('.mp-sec[data-mps="' + Number(sec) + '"]'); if (!el) return;
+  try { if (typeof mpFoldSet === 'function') mpFoldSet(sec, false); } catch(e) {}
+  try { el.scrollIntoView({ behavior:'smooth', block:'start' }); } catch(e) { try { el.scrollIntoView(); } catch(e2) {} }
+}
+/* 自分のシフト（今週・公開済み・自分の店）：G4 以上（8A）。店の無い人（本部・全店）は出さない */
+function mpMyShifts(me, meEmp){
+  var out = { keys:[], today:[], go:'' };
+  try {
+    var st = meEmp && meEmp.store;
+    if (!st || empAnyStore(st) || !STORES.some(function(s){ return s.id === st; })) return out;
+    var week = mpThisWeekStr();   /* Codex #208 の P2：シフト画面で選んだ週（_shiftWeekOff）ではなく営業日の今週 */
+    try { if (typeof maybePullStaffShift === 'function') maybePullStaffShift(st, week); } catch(e) {}
+    var plan = getShiftPlan(st, week);
+    if (!plan || plan.status !== '公開済' || !plan.cells) return out;
+    out.keys = Object.keys(plan.cells).filter(function(k){ return plan.cells[k] === me; });
+    out.today = mpTodayShiftLabels(out.keys);
+    out.go = navGuardAllows('shift_staff') ? "go('shift_staff')" : navGuardAllows('shift_admin') ? "go('shift_admin')" : '';
+  } catch(e) {}
+  return out;
+}
+/* v1203（Codex #208 の P2）：マイページの「今日のシフト」「今週のシフト」は、シフトの画面で選んだ週（_shiftWeekOff・先週・翌週）を
+   マイページに戻っても使わない。いつも営業日（ハワイ）の今週の日曜で決める（getWeekStr と同じ形「M/D」） */
+function mpThisWeekStr(){
+  try { var sun = new Date(getWeekSundayISO(0) + 'T00:00:00'); if (!isNaN(sun)) return (sun.getMonth()+1) + '/' + sun.getDate(); } catch(e) {}
+  return getWeekStr();
+}
+/* シフトの印（曜日_時間帯_ポジション）から今日の分 */
+function mpTodayShiftLabels(keys){
+  var dow = ''; try { dow = DOW_SHIFT[new Date((typeof bizToday === 'function' ? bizToday() : isoDateStr(new Date())) + 'T12:00:00').getDay()]; } catch(e) { return []; }
+  return (keys || []).filter(function(k){ return String(k).split('_')[0] === dow; }).map(function(k){ var p = String(k).split('_'); return p[1] + (p[2] ? ' ' + p[2] : ''); });
+}
+/* G4 以上の「今週のシフト」（8A）：スタッフのカードと同じ並び。「詳細」は開ける画面だけ */
+function mpShiftCardHtml(keys){
+  var go = navGuardAllows('shift_staff') ? 'shift_staff' : navGuardAllows('shift_admin') ? 'shift_admin' : '';
+  var h = '<div class="card" id="mp-shift"><div class="card-title"><i class="ti ti-calendar-check"></i>' + t('今週のシフト', "This Week's Shifts")
+    + (go ? '<button class="btn btn-secondary btn-sm" style="margin-left:auto" onclick="go(\'' + go + '\')">' + t('詳細','Details') + '</button>' : '') + '</div>';
+  (keys || []).forEach(function(k){ var p = String(k).split('_');
+    h += '<div style="display:flex;justify-content:space-between;font-size:13px;padding:4px 0;border-bottom:1px solid var(--border)"><span>' + escapeHtml(p[0]) + t('曜','') + ' ' + escapeHtml(p[1] || '') + '</span><span style="color:var(--muted)">' + escapeHtml(p[2] || '') + '</span></div>'; });
+  return h + '</div>';
+}
+/* ② 申請（4A）：経費の申請（サーバー・出せる種類はサーバー）か前の入口・紛失届・休暇と、自分の休暇（新しい 2 件）を 1 枚に */
+function mpReqCardHtml(me){
+  var body = '';
+  var wr = ''; try { if (typeof wrMyExpCard === 'function' && (!window.FUNERGY_PV || FUNERGY_PV.cardShown('exp'))) wr = wrMyExpCard('mypage') || ''; } catch(e) { wr = ''; }
+  var sc = function(st){ return st === '承認' ? 'tag-green' : st === '却下' ? 'tag-red' : 'tag-yellow'; };
+  if (wr) body += wr;
+  else {
+    var ex = false, mi = false;
+    try { ex = typeof canSubmitExpense === 'function' && canSubmitExpense(); } catch(e) {}
+    try { mi = typeof canSubmitMileage === 'function' && canSubmitMileage(); } catch(e) {}
+    if (ex) {
+      body += '<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0"><div style="font-size:13px;font-weight:600"><i class="ti ti-file-invoice" style="color:var(--accent)"></i> ' + t('事前経費申請','Pre-Approval Expense') + '</div>'
+        + '<button class="btn btn-secondary btn-sm" onclick="go(\'expense\')">' + t('申請・確認','Open') + '</button></div>';
+      var myExp = []; try { myExp = getExpenseRequests().filter(function(r){ return r.employee === me; }); } catch(e) {}
+      myExp.slice(-2).reverse().forEach(function(r){
+        body += '<div class="approval-item"><div class="approval-header"><div class="approval-title">' + escapeHtml(r.project || '') + '</div><span class="tag ' + sc(r.status) + '">' + escapeHtml(tStatus(r.status)) + '</span></div><div class="approval-meta">$' + (Number(r.total) || 0).toFixed(2) + '</div></div>';
+      });
+    }
+    if (mi) {
+      body += '<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0' + (ex ? ';border-top:1px solid var(--border);margin-top:4px' : '') + '"><div style="font-size:13px;font-weight:600"><i class="ti ti-gas-station" style="color:var(--accent2)"></i> ' + t('ガソリン代','Mileage') + '</div>'
+        + '<button class="btn btn-secondary btn-sm" onclick="go(\'mileage\')">' + t('申請・確認','Open') + '</button></div>';
+      var myMile = []; try { myMile = getMileageRequests().filter(function(r){ return r.employee === me; }); } catch(e) {}
+      myMile.slice(-2).reverse().forEach(function(r){
+        body += '<div class="approval-item"><div class="approval-header"><div class="approval-title">' + escapeHtml(r.date || '') + ' ' + escapeHtml(r.purpose || '') + '</div><span class="tag ' + sc(r.status) + '">' + escapeHtml(tStatus(r.status)) + '</span></div></div>';
+      });
+    }
+  }
+  var more = [];
+  try { if (navGuardAllows('lost_receipt')) more.push('<button class="btn btn-secondary btn-sm" data-mp-req="lost" onclick="openLostReceiptForm()"><i class="ti ti-receipt-off"></i> ' + t('紛失届','Lost receipt') + '</button>'); } catch(e) {}
+  var vac = false; try { vac = navGuardAllows('vacation'); } catch(e) {}
+  if (vac) more.push('<button class="btn btn-secondary btn-sm" data-mp-req="vacation" onclick="go(\'vacation\')"><i class="ti ti-beach"></i> ' + t('休暇','Time off') + '</button>');
+  var vh = '';
+  if (vac) {
+    var myVac = []; try { myVac = (ls('my_vacations', []) || []).filter(function(v){ return v && v.employee === me; }); } catch(e) {}
+    myVac.slice(-2).reverse().forEach(function(v){
+      vh += '<div class="approval-item"><div class="approval-header"><div class="approval-title">' + escapeHtml(v.startDate || '') + '〜' + escapeHtml(v.endDate || '') + '</div><span class="tag ' + sc(v.status) + '">' + escapeHtml(tStatus(v.status)) + '</span></div><div class="approval-meta">' + escapeHtml(v.type || '') + '</div></div>';
+    });
+  }
+  if (!body && !more.length) return '';
+  return '<div class="card mp-req" id="mp-req">'   /* 名前は段の見出し「② 申請」 */
+    + body
+    + (more.length ? '<div class="mp-req-more">' + more.join('') + '</div>' : '')
+    + (vh ? '<div class="mp-req-vac"><div style="font-size:12px;font-weight:700;margin:8px 0 2px">' + t('自分の休暇','My time off') + '</div>' + vh + '</div>' : '')
+    + '</div>';
+}
+
 function renderMypage() {
   try{ if(typeof tipLivePullSoon==='function') tipLivePullSoon(); }catch(e){}   /* v1091: 自分の Tip Rate */
   var rc = ROLE_CONFIG[curRole];
   if (!rc) return '';   /* v1189：ログアウトのあとに遅れて届いた読み込みが描き直しても落ちない（前から・e2e で見つけた） */
   var isCrewView = (curRole==='crew' || curRole==='sl');
+  /* v1203（UI案98・段階 4・Moto さんの答え 1A）：G2〜CEO・本部の全員は 6 つの段の形（mpSecLayout）。G1（crew）と店のアカウントは今のまま（mpLayout）。
+     出るカードは今と同じ人だけ。足すのは ① 今日やること・② の 1 つの申請のカード（4A）・G4 以上の自分のシフト（8A）。カードの名前は変えない（7B） */
+  var _newF = curRole !== 'crew' && !(typeof curStoreLogin !== 'undefined' && curStoreLogin);
+  var _ms = function(sec, o){ return '<!--MPS:'+sec+':'+o+'-->'; };
   var storeId = curStore === 'ALL' ? STORES[0].id : curStore;
   var store = STORES.find(s=>s.id===storeId) || STORES[0];
   // ログイン中の本人名（個人ログイン）。なければ役職名にフォールバック
@@ -93607,7 +93785,7 @@ function renderMypage() {
     heroNext = t('習得ポジション '+apCount+'/'+allPos.length, apCount+'/'+allPos.length+' positions');
   }
 
-  var html = `<div class="mypage-header">
+  var html = `<div class="mypage-header${_newF?' mp-head6':''}">
     <div class="mypage-avatar">${me[0]}</div>
     <div style="flex:1">
       <div class="fy-label">Funergy You</div>
@@ -93616,6 +93794,7 @@ function renderMypage() {
       ${isCrewView?`<div style="display:flex;align-items:baseline;gap:8px;margin-top:9px"><span style="font-size:13px;font-weight:700;color:#fff">${heroLevel}</span><span style="font-size:11px;color:rgba(255,255,255,.85)">${heroNext}</span></div>
       <div class="fy-levelbar"><i style="width:${heroPct}%"></i></div>`:''}
     </div>
+    ${_newF?`<button class="btn btn-sm mp-pass" onclick="openStaffPass()"><i class="ti ti-id-badge-2"></i> ${t('従業員証明','Staff ID')}</button>`:''}
   </div>`;
 
   /* v1177（UI案85-3A）：PC（1024px 以上）はスタッフのマイページを 2 列（左＝仕事・右＝成長）。各カードの前に印を付け、最後に mpLayout が並べる。
@@ -93631,7 +93810,8 @@ function renderMypage() {
 
   // ===== 従業員証明（食事割引の提示用・全スタッフ共通） =====
   html += _mp('t',10);
-  html += `<div class="card" style="display:flex;align-items:center;gap:10px;padding:12px;cursor:pointer" onclick="openStaffPass()">
+  /* v1203（UI案98・2A）：新しい形では従業員証明は名前の帯のボタン（カードは出さない） */
+  if (!_newF) html += `<div class="card" style="display:flex;align-items:center;gap:10px;padding:12px;cursor:pointer" onclick="openStaffPass()">
     <div style="width:36px;height:36px;border-radius:10px;background:var(--accent);color:#fff;display:flex;align-items:center;justify-content:center;flex-shrink:0"><i class="ti ti-id-badge-2" style="font-size:18px"></i></div>
     <div style="flex:1;min-width:0">
       <div style="font-weight:600;font-size:13px">${t('従業員証明','Staff ID')}</div>
@@ -93640,6 +93820,7 @@ function renderMypage() {
     <button class="btn btn-primary btn-sm" onclick="event.stopPropagation();openStaffPass()"><i class="ti ti-eye"></i> ${t('表示','Show')}</button>
   </div>`;
   /* v1191：FUNERGY TIMES の入口（全員・従業員証明のすぐ下・同じ段に入れるので PC の 2 列の並びは変わらない） */
+  if (_newF) html += _ms(5,20);   /* v1203：新しい形では ⑤ 会社から */
   try { if (!window.FUNERGY_PV || FUNERGY_PV.cardShown('times')) html += timesCardHtml(); } catch(e) {}   /* v1193（UI案95）：「画面の表示」のカード */
 
   // ===== スキルレベル（全Crew: レーダー＋各Lv）=====
@@ -93708,19 +93889,21 @@ function renderMypage() {
   html += _mp('g',45);
   html += (typeof ocsMyCardHtml==='function') ? ocsMyCardHtml() : '';   /* v1050: オフィス用 Career Score（本人・正式運用後・担当設定が有効なときだけ） */
   if (!isCrewView) {
-    /* v1164：G4・AM・GM・CEO・経理もマイページから経費の申請（前は管理者の側に入口が無かった） */
-    try { if (typeof wrMyExpCard==='function' && (!window.FUNERGY_PV || FUNERGY_PV.cardShown('exp'))) html += wrMyExpCard('mypage'); } catch(e) {}   /* v1193（UI案95） */
-    // 管理者は従来のPGD中心
-    html += renderCompanyMessageCard();
-  html += renderPriceAlertCard();
-    html += `<div class="section-header" style="margin-bottom:8px"><div class="section-title" style="font-size:15px"><i class="ti ti-rocket" style="color:var(--accent)"></i> Personal Growth Dashboard</div></div>`;
+    /* v1203（UI案98）：管理者の側（G4 以上・本部）も 6 つの段。前は「経費の申請・会社メッセージ・価格のお知らせ・Personal Growth Dashboard」を 1 列（mpLayout(html, true)）。
+       経費の申請は ② の 1 つの申請のカード（紛失届・休暇も・4A）、自分のシフトはシフト表に名前があるときだけ ③（8A） */
+    html += _ms(2,10) + mpReqCardHtml(me);
+    html += _ms(5,10) + renderCompanyMessageCard() + renderPriceAlertCard();
+    var _mgSh = mpMyShifts(me, meEmp);
+    if (_mgSh.keys.length) html += _ms(3,5) + mpShiftCardHtml(_mgSh.keys);
+    html += _ms(1,10) + mpTodayHtml({ shifts:_mgSh.today, shiftGo:_mgSh.go, helps:helps.length });
+    html += _ms(4,80) + `<div class="section-header" style="margin-bottom:8px"><div class="section-title" style="font-size:15px"><i class="ti ti-rocket" style="color:var(--accent)"></i> Personal Growth Dashboard</div></div>`;
     html += renderPGD(me, false);
-    return mpLayout(html, true);   /* v1177：管理者の側は 1 列のまま（PC は従業員証明と PIN を横に並べるだけ） */
+    return mpSecLayout(html);
   }
 
   /* ===== Crew My Dashboard（優先順位順） ===== */
   var emp = getEmployees().find(e=>e.name===me);
-  var week = getWeekStr();
+  var week = mpThisWeekStr();   /* Codex #208 の P2：今週のシフト・① 今日のシフトは営業日の今週（シフト画面で選んだ週ではない） */
 
   // 言語切替（Crew画面内）
   html += _mp('t',30);
@@ -94022,6 +94205,9 @@ function renderMypage() {
   }
   _attCard += '</div>';
 
+  /* v1203（UI案98・4A）：新しい形では休暇・経費の申請・紛失届を ② の 1 つの申請のカードに（mpReqCardHtml）。G1 は今の 2 枚 */
+  if (_newF) html += _ms(2,10) + mpReqCardHtml(me);
+  if (!_newF) {
   html += _mp('w',50);
   // 9. 休暇申請（本人の申請のみ表示。他人の申請は見せない）
   var myVac = ls('my_vacations', []).filter(function(v){ return v.employee===me; });
@@ -94078,6 +94264,8 @@ function renderMypage() {
     html += '</div>';
   }
 
+  }
+
   html += _mp('g',90);
   // 9. Growth Hub（My Page内に埋め込み）
   var posts = ls('growthhub', []);
@@ -94107,6 +94295,13 @@ function renderMypage() {
   html = html.replace('<!--TOP_OPS-->', (_shiftCard||'') + (_attCard||''));
   /* ★v996: 相談室をバッジの直後へ。★差し替え漏れで印が画面に出ないよう、必ず replace する。 */
   html = html.replace('<!--VOICE-->', (_voiceCard||''));
+  if (_newF) {
+    /* v1203（UI案98・2A）：① 今日やること＝今日のシフト・相談の返事（管理者の返事が最後で、まだ解決していない）・ヘルプ募集・申請（読み込んだあとで足す） */
+    var _todayKeys = mpTodayShiftLabels(myShifts);
+    var _consult = posts.filter(function(p){ var rs = p.replies || []; return p.author===me && (p.status||'未対応')!=='解決' && rs.length && rs[rs.length-1].byMgr; }).length;
+    html += _ms(1,10) + mpTodayHtml({ shifts:_todayKeys, shiftGo:(navGuardAllows('shift_staff')?"go('shift_staff')":''), consult:_consult, helps:helps.length });
+    return mpSecLayout(html);
+  }
   html = mpLayout(html);   /* v1177（UI案85-3A） */
 
   return html;
@@ -115628,6 +115823,56 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     }, function(){ EXPR.busy = false; EXPR.at = Date.now(); });
   }
   W.wrMyExpRetry = function(){ MY.at = 0; MY.err = ''; paintMyExp(); };
+  /* v1203（UI案98・2A）：マイページ ① 今日やること の申請の行。サーバーの申請を使っていて、読み終わってから。
+     対応待ちの件数（承認・確認・精算・直して出し直す＝ワークセンター › 申請 の「要対応」と同じ数え方）と、戻ってきた自分の申請（新しい 3 件） */
+  W.wrMyTodayHtml = function(){
+    try { if (typeof curStoreLogin !== 'undefined' && curStoreLogin) return ''; } catch(e) {}
+    if (!pinTok() || !liveSeen() || typeof mpTodayRow !== 'function') return '';
+    checkAuth();
+    /* Codex #208・#210 の P2：② の経費のカードを出さない人（「画面の表示」で非表示）は wrMyExpCard を呼ばないので、
+       ① がまだ読んでいなければ、ここから読み込みを始める（読み終わると paintMyExp → mpTodayPaint で ① だけ描き直す） */
+    if (!S.me) { if (S.load !== 'loading' && S.load !== 'err') { S.load = ''; load(); } return ''; }
+    if (!S.live) return '';
+    var mine = MY.key === authKey();
+    var cn = (mine && MY.counts) || S.counts; var c = cn ? (Number(cn.todo) || 0) : 0;
+    var h = '';
+    if (c > 0) h += mpTodayRow(T('申請の対応待ち ' + c + ' 件', c + (c > 1 ? ' requests' : ' request') + ' to handle'), T('あなたの番の申請（承認・確認・精算・直して出し直す）', 'Your turn: approve, check, pay or resubmit'), 'wrGoTodo()', T('開く','Open'));
+    /* Codex #208 の P2：② のカード用の一覧（経費の種類だけ・新しい 5 件）から選ぶと、新しい申請が 5 件以上あるときや経費以外の差し戻しが漏れる。
+       ① の分は別に読む（自分のまだ終わっていない申請・全部の種類）→ 差し戻し中だけ → 新しい 3 件 */
+    var rl = retLoadIfStale();
+    rl.filter(function(r){ return r && r.status === 'returned'; }).slice(0, 3).forEach(function(r){
+      h += mpTodayRow(T('戻ってきた申請','Returned request'), kindL(r.kind) + ' · ' + money(r.amount_cents) + (nextPlain(r) ? ' · ' + nextPlain(r) : ''), 'wrOpenMine(this.dataset.a)', T('直す','Fix'), r.code);
+    });
+    return h;
+  };
+  /* ① 今日やること の「戻ってきた申請」用：自分のまだ終わっていない申請（state open・全部の種類・300 件まで・新しい順）。
+     読み込みごとに番号・ログインが変わった答えは使わない・失敗したら前の値のまま 30 秒待つ。読み終わったら ① だけ描き直す */
+  var RET = { key:'', rows:null, at:0, busy:false, req:0, err:false };
+  function retLoadIfStale(){
+    var k = authKey();
+    if (RET.key !== k) RET = { key:k, rows:null, at:0, busy:false, req:0, err:false };
+    var age = Date.now() - RET.at;
+    if (!RET.busy && (RET.err ? age > 30000 : (!RET.rows || age > 10000))) retLoad();
+    return RET.rows || [];
+  }
+  function retLoad(){
+    var k = authKey(), g = S.gen, n = ++RET.req; RET.busy = true;
+    api({ action:'list', scope:'mine', state:'open', limit:300 }, k).then(function(j){
+      if (RET.key !== k || RET.req !== n) return;
+      RET.busy = false; RET.at = Date.now();
+      if (g !== S.gen) { RET.at = 0; try { if (typeof mpTodayPaint === 'function') mpTodayPaint(); } catch(e) {} return; }   /* 世代が変わった：使わずに読み直す */
+      RET.err = false; RET.rows = (j && Array.isArray(j.rows)) ? j.rows : [];
+      try { if (typeof mpTodayPaint === 'function') mpTodayPaint(); } catch(e) {}
+    }, function(){
+      if (RET.key !== k || RET.req !== n) return;
+      RET.busy = false; RET.at = Date.now(); RET.err = true;
+    });
+  }
+  W.wrGoTodo = function(){
+    checkAuth(); try { workTab = 'wr'; } catch(e) {}
+    S.view = 'todo'; S.rows = null; if (S.load === 'done') S.load = '';
+    try { go('tasks'); } catch(e) { rerender(); }
+  };
   W.wrMyExpCard = function(where){
     try { if (typeof curStoreLogin !== 'undefined' && curStoreLogin) return ''; } catch(e) {}
     if (!pinTok() || !liveSeen()) return '';
@@ -115675,6 +115920,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       if (g !== S.gen) { MY.at = 0; return paintMyExp(); }   /* 読んでいるあいだに世代が変わった：使わずに読み直す */
       MY.at = Date.now(); MY.err = '';
       MY.rows = ((j && j.rows) || []).filter(function(r){ return KINDS.indexOf(r.kind) >= 0; }).slice(0, 5);
+      MY.counts = (j && j.counts && typeof j.counts === 'object') ? j.counts : null;   /* v1203：① 今日やること の件数（数え方は一覧の範囲に関係ない＝wr_list） */
       paintMyExp();
     }, function(e){
       if (MY.key !== k || MY.req !== n) return;
@@ -115683,6 +115929,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   }
   function paintMyExp(reload){
     if (reload) { MY.rows = null; MY.err = ''; }
+    try { if (typeof mpTodayPaint === 'function') mpTodayPaint(); } catch(e) {}   /* v1203：マイページ ① の申請の行（経費のカードを出していないときも） */
     var el = document.getElementById('wr-myexp'); if (!el) return;
     el.innerHTML = myExpInner();
     if (!el.innerHTML) el.style.display = 'none'; else el.style.display = '';
