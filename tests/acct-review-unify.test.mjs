@@ -63,7 +63,7 @@ const plain = v => JSON.parse(JSON.stringify(v));
 const FNS = ['renderAcctReview', 'arStatusColor', 'arStatusRank', 'arYm', 'arDocYm', 'arReviewList', 'arOnPage', 'arRerender', 'arSetFilter',
   '_arFetchInvoices', 'arPullLatest', 'arFreshHtml', 'arSetStatus', 'arApprove', '_arApproveCore', 'arRejectModal', 'arRejectConfirm', 'deleteInvoiceDo', '_deleteInvoiceCore',
   'canDeleteInvoice', 'invIsIntake', 'invInGuardOld', 'invIsMine', 'renderReviewThread', 'addReviewThread', '_invDate', 'parseJaDate', 'invTouch',
-  'acSetCat', 'acSetSub', '_acPend', '_acPendHtml', '_acRows', '_acDate', '_acYm', '_acStoreName', 'acUploadList', '_acStatus', '_acStCol', '_acStRank',
+  'acSetCat', 'acSetSub', 'acSubsOf', 'acResolve', '_acPend', '_acPendHtml', '_acRows', '_acDate', '_acYm', '_acStoreName', 'acUploadList', '_acStatus', '_acStCol', '_acStRank',
   'renderAcctCenter', 'pageSync', 'pageSyncScope', '_syncMeta', 'getReimbursements', 'pendingAcctReviewCount', 'acFilterSet', 'lsSplitRO',
   'arFilterRows', 'arRowsNow', 'arMode', 'arPageOf', 'arPagerHtml', 'arNextPlan', 'arAdvance'];   // v1178：ページ・形・次の未確認   // v1098: 読むだけの所は lsSplitRO（この試験の ls をそのまま使う）
 const VARS = ['AR_PER', 'AR_STATUSES', 'AC_TABS', 'AC_ST', '_acF', '_acCat', '_acSub', '_arBusy', '_arPull', 'SYNC_SCOPE_META', 'PAGE_SYNC_SCOPE'];
@@ -136,8 +136,9 @@ test('the review category opens on 区分・承認; the body there is the same a
   assert.equal(bodyOf(center), bodyOf(page), 'same body in both entries');
   assert.match(page, /3 件 ・ 合計 \$194\.70/);
   const subs = plain(run(a, "AC_TABS.find(function(x){ return x.id==='review'; }).subs.map(function(s){ return s.id + ':' + s.label; })"));
+  // v1199（UI案97）：業者マスターは マスター・設定へ、エラーセンターはワークセンター › エラーへ（tests/acct-tabs-v1199.test.mjs）
   assert.deepEqual(subs, ['invoice:Invoice', 'receipt:レシート', 'reimb:建て替え', 'check:チェック', 'lost:紛失届', 'gas:ガソリン代', 'vac:休暇申請', 'exp:事前経費',
-    'purchase:仕入明細', 'vendor:業者マスター', 'acctrev:区分・承認', 'err:エラーセンター', 'appr:報告・承認']);
+    'purchase:仕入明細', 'acctrev:区分・承認', 'appr:報告・承認']);
   run(a, "acSetCat('drive')"); assert.equal(run(a, '_acSub'), 'dlist', 'other categories open on their first tab as before');
   // the pending chip for unconfirmed invoices opens the review body
   run(a, "acSetCat('review')");

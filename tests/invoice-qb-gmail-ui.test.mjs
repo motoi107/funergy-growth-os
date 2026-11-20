@@ -180,16 +180,18 @@ test('アプリの通知 (CEO・GM): each notice once on any device, opening Inv
   assert.equal(c.mem.notifications.length, 2, 'once');
   c.fn('invQbApplyNotifFocus(' + JSON.stringify(n) + ')');
   assert.deepEqual([c._acCat, c._acSub], ['drive', 'dhealth']);
+  c.fn('invQbApplyNotifFocus(' + JSON.stringify(Object.assign({}, n, { invTab: 'dsettings' })) + ')');
+  assert.deepEqual([c._acCat, c._acSub], ['master', 'dsettings'], 'v1199: the sign-in notice opens the settings in マスター・設定');
   for (const role of ['office', 'am', 'crew']) { const o = app({ role, cloud }); o.fn('invQbAlertsPull()'); await new Promise(r => setImmediate(r)); assert.equal((o.mem.notifications || []).length, 0, role); }
 });
 
-test('Google から戻ってきたとき: the result said, the URL cleaned, Invoice取込 › 設定 opened', async () => {
+test('Google から戻ってきたとき: the result said, the URL cleaned, Invoice取込の設定 opened (v1199: マスター・設定)', async () => {
   for (const [code, re, kind] of [['ok', /Gmail をつなぎました/, 'success'], ['wrong_account', /送り元と違うアカウント/, 'warning'], ['scope_missing', /許可が足りません/, 'warning'], ['weird', /つなげませんでした（weird）/, 'warning']]) {
     const c = app({ role: 'gm' });
     c.location.search = '?invoice_gmail=' + code;
     c.fn('invInGmailReturn()'); await c.run();
     assert.equal(c.replaced, '/'); assert.match(c.toasts.at(-1)[0], re); assert.equal(c.toasts.at(-1)[1], kind);
-    assert.deepEqual([c._acCat, c._acSub, c.went], ['drive', 'dsettings', 'acct_center']);
+    assert.deepEqual([c._acCat, c._acSub, c.went], ['master', 'dsettings', 'acct_center']);
   }
   const n = app(); n.fn('invInGmailReturn()'); await n.run(); assert.equal(n.toasts.length, 0, 'nothing without the mark');
 });
