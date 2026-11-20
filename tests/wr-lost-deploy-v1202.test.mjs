@@ -18,11 +18,27 @@ test('① before: approval rules OK, stage 8, no lost; ③ after ②: all OK', a
   const s = await setup();
   const rows = async sql => { await s.pg.exec('reset role'); try { return (await s.pg.query(sql)).rows; } finally { await s.pg.exec('set role service_role'); } };
   const pre = await rows(D('1_最初に確認_読むだけ.sql'));
-  assert.deepEqual(pre.map(r => r['結果']), ['OK', '8', '0']);
+  assert.deepEqual(pre.map(r => r['結果']), ['OK', '8', '0', 'いいえ']);
   let post = await rows(D('3_確認_読むだけ.sql'));
   assert.ok(post.some(r => r['結果'] === 'NG'), 'before ② some are NG');
   await s.pg.exec('reset role'); await s.pg.exec(D('2_SQL_紛失届.sql')); await s.pg.exec('set role service_role');
   post = await rows(D('3_確認_読むだけ.sql'));
-  assert.deepEqual(post.map(r => r['結果']), ['OK', 'OK', 'OK', 'OK', 'OK']);
+  assert.deepEqual(post.map(r => r['結果']), ['OK', 'OK', 'OK', 'OK', 'OK', 'OK', 'OK', 'OK']);
   assert.equal((await rows(D('1_最初に確認_読むだけ.sql')))[1]['結果'], '9', 'after: stage 9');
+});
+
+test('Codex #207/#209 P1: with the approval rules live, ① says “はい”, ③ row 7 is “あとで” until the CEO/GM activates the lost draft, then OK; the procedure says so', async () => {
+  const s = await setup();
+  const rows = async sql => { await s.pg.exec('reset role'); try { return (await s.pg.query(sql)).rows; } finally { await s.pg.exec('set role service_role'); } };
+  await s.activate(); await s.live();
+  assert.equal((await rows(D('1_最初に確認_読むだけ.sql')))[3]['結果'], 'はい');
+  await s.pg.exec('reset role'); await s.pg.exec(D('2_SQL_紛失届.sql')); await s.pg.exec('set role service_role');
+  let post = await rows(D('3_確認_読むだけ.sql'));
+  assert.deepEqual(post.map(r => r['結果']), ['OK', 'OK', 'OK', 'OK', 'OK', 'OK', 'あとで', 'OK']);
+  const st = await s.state(); const k = st.kinds.find(x => x.kind === 'lost');
+  await s.ok('E2', { action: 'ar_rule_activate', kind: 'lost', expect_ver: k.draft.ver, expect_rev: k.draft.rev, note: '確かめた' });
+  post = await rows(D('3_確認_読むだけ.sql'));
+  assert.equal(post[6]['結果'], 'OK');
+  const h = D('手順.md');
+  for (const f of ['承認・閲覧設定', '紛失届', '有効にする', '下書き', 'no_route', '8 が NG']) assert.ok(h.includes(f), f);
 });

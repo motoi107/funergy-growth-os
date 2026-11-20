@@ -68480,9 +68480,14 @@ function officeAttendReady(name){
   if (_ofPull[k] === 'done' || _ofPull[k] === 'fail' || typeof pullOpKey !== 'function') return true;
   if (_ofPull[k] !== 'busy') {
     _ofPull[k] = 'busy';
-    var fin = function(st){ if (_ofPull[k] !== 'busy') return; _ofPull[k] = st; officeClockRepaint(); };
-    setTimeout(function(){ fin('fail'); }, 8000);
-    Promise.resolve().then(function(){ return pullOpKey(k); }).then(function(ok){ fin(ok ? 'done' : 'fail'); }, function(){ fin('fail'); });
+    /* Codex #209 の P2：8 秒で待つのをやめる（手元で打てる）ことと、あとから届いた読み込みを使うことを分ける。
+       前は 8 秒で 'fail' にしたあと、遅れて届いた成功を捨て、カードも描き直さなかった（勤務中なのに「未出勤」・退勤を押せない） */
+    var giveUp = function(){ if (_ofPull[k] !== 'busy') return; _ofPull[k] = 'fail'; officeClockRepaint(); };
+    setTimeout(giveUp, 8000);
+    Promise.resolve().then(function(){ return pullOpKey(k); }).then(function(ok){
+      if (ok) { _ofPull[k] = 'done'; officeClockRepaint(); }   /* 8 秒を過ぎてから届いても使う（届いた記録でカードを描き直す） */
+      else giveUp();
+    }, giveUp);
   }
   return false;
 }
@@ -68498,10 +68503,10 @@ function officeClockIn(){
   var open=officeOpenRec(arr);
   if(open){
     if(open.date < isoDateStr(new Date())){ openOfficeStaleShiftModal(name, open, 'in'); return; }
-    showToast('未退勤の勤務があります（'+open.date+' '+open.in+'〜）。先に退勤してください','info'); return;
+    showToast('未退勤の勤務があります（'+open.date+' '+open.in+'〜）。先に退勤してください','info'); officeClockRepaint(); return;   /* Codex #209：カードが古ければ今の記録で描き直す */
   }
   var date=isoDateStr(new Date()); var rec=arr.find(function(r){return r.date===date;});
-  if(rec && rec.in && rec.out){ showToast('本日は出勤打刻済みです','info'); return; }
+  if(rec && rec.in && rec.out){ showToast('本日は出勤打刻済みです','info'); officeClockRepaint(); return; }
   if(!rec){ rec={date:date, in:'', out:'', breakMin:0, status:'勤務中', log:[]}; arr.push(rec); }
   rec.in=nowHM(); rec.status='勤務中'; rec._ts=Date.now(); rec.log=rec.log||[]; rec.log.push({at:tsNow(), by:name, action:'出勤 '+rec.in});
   setOfficeAttend(name, arr); showToast(t('出勤を記録しました','Clocked in'),'success'); officePunchRerender();
@@ -68512,8 +68517,8 @@ function officeClockOut(){
   var rec=officeOpenRec(arr);
   if(rec && rec.date < isoDateStr(new Date())){ openOfficeStaleShiftModal(name, rec, 'out'); return; }
   if(!rec){ var date=isoDateStr(new Date()); rec=arr.find(function(r){return r.date===date;}); }
-  if(!rec || !rec.in){ showToast('先に出勤打刻してください','info'); return; }
-  if(rec.out){ showToast('退勤打刻済みです','info'); return; }
+  if(!rec || !rec.in){ showToast('先に出勤打刻してください','info'); officeClockRepaint(); return; }
+  if(rec.out){ showToast('退勤打刻済みです','info'); officeClockRepaint(); return; }
   if(rec.breakStart){ var bm=Math.max(0,hmDiffMin(rec.breakStart, nowHM())); var endm=nowHM(); rec.breaks=rec.breaks||[]; for(var bi=rec.breaks.length-1;bi>=0;bi--){ if(!rec.breaks[bi].end){ rec.breaks[bi].end=endm; rec.breaks[bi].min=bm; break; } } delete rec.breakStart; rec.breakMin=officeSumBreaks(rec); rec.log=rec.log||[]; rec.log.push({at:tsNow(), by:name, action:'休憩自動終了（+'+bm+'分）'}); }
   rec.out=nowHM(); rec.hours=officeCalcHours(rec); rec.status='記録済'; rec._ts=Date.now();
   rec.log=rec.log||[]; rec.log.push({at:tsNow(), by:name, action:'退勤 '+rec.out});
@@ -115764,8 +115769,11 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   function expKindsNow(){ if (!S.me) return []; return S.expKinds ? S.expKinds.slice() : oldKinds(S.me); }
   function myHomeStore(){ try { return (typeof curStore !== 'undefined' && curStore && curStore !== 'ALL') ? String(curStore) : ''; } catch(e) { return ''; } }
   W.wrExpKinds = function(){ return S.me ? expKindsNow() : null; };
-  /* v1202（8B）：紛失届をサーバーの申請で出せるか（使い始めている・SQL 段 9・関数 fn 14）。前の版のあいだは今の紛失届の画面のまま */
-  function lostOk(){ return !!(S.me && S.live && (S.fn || 0) >= 14 && (S.sql || 0) >= 9); }
+  /* v1202（8B）：紛失届をサーバーの申請で出せるか（使い始めている・SQL 段 9・関数 fn 14）。前の版のあいだは今の紛失届の画面のまま。
+     Codex #207/#209 の P1：承認・閲覧の共通ルールで動かしている（ar.live）ときは、紛失届の有効なルールがあるときだけ（無いと申請は no_route で送れない）。
+     ルールは SQL が下書きだけを作る＝CEO・GM が 設定 › 承認・閲覧設定 で確かめて有効にするまで、新しい紛失届は今の画面のまま */
+  function lostRouteOk(){ var ar = S.ar; return !(ar && ar.live) || ar.lost_rule === true; }
+  function lostOk(){ return !!(S.me && S.live && (S.fn || 0) >= 14 && (S.sql || 0) >= 9 && lostRouteOk()); }
   W.wrLostReady = function(){ checkAuth(); return S.me ? lostOk() : null; };
   /* 前の画面（1130 以前の端末・使い始める前に開いていた画面）に残った経費の申請を、GM・CEO のログインで写す（何度流しても同じ・写すのは無いものだけ） */
   var legacyTried = '';
@@ -115891,6 +115899,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       var eb = typeof me.exp_base === 'string' ? me.exp_base : '';
       var ch = JSON.stringify(ks) !== JSON.stringify(S.expKinds) || (me.exp_hq === true) !== S.expHq || eb !== (S.expBase || '');
       S.expKinds = ks; S.expHq = me.exp_hq === true; S.expGrants = me.exp_grants === true; S.expBase = eb;
+      if (me.ar && typeof me.ar === 'object') S.ar = me.ar;   /* v1202（Codex #207）：紛失届のルールを有効にしたら、ログインし直さなくても新しい紛失届に（60 秒ごとの whoami） */
       if (ch) paintMyExp();
     }, function(){ EXPR.busy = false; EXPR.at = Date.now(); });
   }
@@ -115899,7 +115908,12 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
      対応待ちの件数（承認・確認・精算・直して出し直す＝ワークセンター › 申請 の「要対応」と同じ数え方）と、戻ってきた自分の申請（新しい 3 件） */
   W.wrMyTodayHtml = function(){
     try { if (typeof curStoreLogin !== 'undefined' && curStoreLogin) return ''; } catch(e) {}
-    if (!pinTok() || !liveSeen() || !S.me || !S.live || typeof mpTodayRow !== 'function') return '';
+    if (!pinTok() || !liveSeen() || typeof mpTodayRow !== 'function') return '';
+    checkAuth();
+    /* Codex #208・#210 の P2：② の経費のカードを出さない人（「画面の表示」で非表示）は wrMyExpCard を呼ばないので、
+       ① がまだ読んでいなければ、ここから読み込みを始める（読み終わると paintMyExp → mpTodayPaint で ① だけ描き直す） */
+    if (!S.me) { if (S.load !== 'loading' && S.load !== 'err') { S.load = ''; load(); } return ''; }
+    if (!S.live) return '';
     var mine = MY.key === authKey();
     var cn = (mine && MY.counts) || S.counts; var c = cn ? (Number(cn.todo) || 0) : 0;
     var h = '';
@@ -119051,7 +119065,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   function onPage(){ return typeof curPage !== 'undefined' && curPage === 'ar_settings'; }
 
   var GROUPS = [
-    ['お金', 'Money', ['mileage','reimburse','expense_pre','budget']],
+    ['お金', 'Money', ['mileage','reimburse','expense_pre','lost','budget']],   /* v1202（Codex #207）：紛失届も CEO・GM が確かめて有効にする */
     ['評価', 'Evaluation', ['skill','cs','tiprate','tip_self','skill_self','prep']],
     ['人・シフト', 'People & shifts', ['leave','shift','hire','resign','promo','plan']]
   ];

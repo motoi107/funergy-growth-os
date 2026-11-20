@@ -291,3 +291,25 @@ test('Codex #208 P2: ① “Returned request” is read on its own (all my open 
   assert.match(h, new RegExp('data-a="' + r1.code + '"'));
   assert.match(h, /申請の対応待ち 1 件/, 'the count was right before, too');
 });
+
+test('Codex #208/#210 P2: with the expense card hidden (“screen visibility”), ① still starts reading the requests by itself and shows the to-handle count and my returned request (wrMyExpCard is never called)', async () => {
+  const s = await setup();
+  const r1 = await s.subOk('E6', 'reimburse', 'S1');
+  const back = await s.act('E2', await s.fresh(r1), 'return', { note: '領収書を付けて' });
+  assert.equal(back.status, 200, JSON.stringify(back.body));
+  const me = wrApp(s, 'E6');   // ② の経費のカードを描かない（wrMyExpCard を呼ばない）
+  const fetches = () => me.ctx._wrState().load;
+  assert.equal(me.today(), '', 'first paint: nothing yet, but reading starts');
+  assert.ok(['loading', 'done'].includes(fetches()), 'the request data load started from ①: ' + fetches());
+  await me.settle();
+  assert.ok(me.ctx._wrState().me, 'whoami done without the expense card');
+  assert.ok(me.paints.length >= 1, '① is painted again when the load finishes (paintMyExp → mpTodayPaint)');
+  me.today(); await me.settle();   // ① の「戻ってきた申請」は ① を描いたときに別に読む
+  const h = me.today();
+  assert.match(h, /申請の対応待ち 1 件/, 'resubmitting my returned request is my turn');
+  assert.match(h, new RegExp('戻ってきた申請[\\s\\S]*data-a="' + r1.code + '"'));
+  // 店のタブレット（共有のログイン）は読まない・出さない
+  const store = wrApp(s, 'E6', { storeLogin: true });
+  assert.equal(store.today(), ''); await store.settle();
+  assert.equal(store.ctx._wrState().me, null, 'the store account does not start reading');
+});

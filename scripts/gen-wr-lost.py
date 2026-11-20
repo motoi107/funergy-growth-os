@@ -58,7 +58,11 @@ old['wr_actions']=last(AR,'wr_actions')
 new['wr_actions']=sub(old['wr_actions'],"and not v_mine and r.kind in "+K3+"\n","and not v_mine and r.kind in "+K4+"\n")
 old['wr_stage']=last(AR,'wr_stage')
 new['wr_stage']=sub(old['wr_stage'],"select jsonb_build_object('stage', 8)","select jsonb_build_object('stage', 9)")
-ORDER=['wr_prefix','wr_norm','wr_can_submit','wr_submit_exp','wr_act_exp','wr_actions_exp','wr_actions','wr_next_v0','ar_visible','ar_kinds','wr_stage']
+# Codex #207/#209（P1）：共通ルールで動かしているとき、紛失届の有効なルールが無いと申請は no_route で送れない。
+# アプリが「新しい紛失届を出せるか」を決められるように、whoami の ar に lost_rule（紛失届の有効なルールがあるか）を足す
+old['wr_whoami']=last(AR,'wr_whoami')
+new['wr_whoami']=sub(old['wr_whoami'],"'live', coalesce(s.live, false), 'rev', coalesce(s.rev, 1), 'live_at', s.live_at,","'live', coalesce(s.live, false), 'rev', coalesce(s.rev, 1), 'live_at', s.live_at,\n  'lost_rule', exists (select 1 from public.ar_rules x where x.kind = 'lost' and x.status = 'active'),   -- v1202（Codex #207）")
+ORDER=['wr_prefix','wr_norm','wr_can_submit','wr_submit_exp','wr_act_exp','wr_actions_exp','wr_actions','wr_next_v0','ar_visible','ar_kinds','wr_stage','wr_whoami']
 KS="'mileage','reimburse','expense_pre','skill','cs','tiprate',\n  'budget','leave','shift','hire','resign','promo','tip_self','skill_self','prep','plan'"
 head='''-- v1202（段階 3 の残り・決めてほしいこと 8 の A「8B と一緒に経理レビューへ」・Moto さん 11/18）：紛失届をサーバーの申請へ。
 -- 仕様：docs/UNIFIED_UI_V1191_JA.md の 25。
@@ -85,7 +89,29 @@ alter table public.wr_requests drop constraint if exists wr_requests_kind_check;
 alter table public.wr_requests add constraint wr_requests_kind_check check (kind in ('''+KS+''',\n  'lost'));
 
 '''
-mig=head+'\n\n'.join(new[k] for k in ORDER)+'\n'
+SEED='''-- Codex #207/#209（P1）：紛失届の承認ルールは「下書き」だけを用意する（20261209090000 の初めの下書きと同じ形＝GM・CEO の 1 段・閲覧者は担当 AM と経理の 3 役・本人は GM）。
+-- 有効にはしない（承認の経路は CEO・GM が 設定 › 承認・閲覧設定 で確かめて有効にする）。共通ルールで動かしているあいだ、有効にするまでアプリは新しい紛失届を出さない（今の紛失届の画面）。
+-- もう lost の行があれば何もしない（2 回流しても同じ）。回数は今の作り方（ar_rule_rev_next）で。
+do $$
+declare
+ v_gmo jsonb := jsonb_build_object('t', 'role', 'role', 'gm', 'scope', 'all');
+ v_ceo jsonb := jsonb_build_object('t', 'role', 'role', 'ceo', 'scope', 'all');
+ v_amo jsonb := jsonb_build_object('t', 'role', 'role', 'am', 'scope', 'mine');
+ v_view jsonb; d jsonb;
+begin
+ perform pg_advisory_xact_lock(hashtext('ar_rule:lost'));
+ if exists (select 1 from public.ar_rules x where x.kind = 'lost') then return; end if;
+ v_view := jsonb_build_array(jsonb_build_object('who', v_amo, 'from', 'submit'),
+  jsonb_build_object('who', jsonb_build_object('t', 'role', 'role', 'acct_mgr', 'scope', 'all'), 'from', 'submit'),
+  jsonb_build_object('who', jsonb_build_object('t', 'role', 'role', 'acct_lead', 'scope', 'all'), 'from', 'submit'),
+  jsonb_build_object('who', jsonb_build_object('t', 'role', 'role', 'office_crew', 'scope', 'all'), 'from', 'submit'));
+ d := jsonb_build_object('default', jsonb_build_object('label', 'GM・CEO', 'stages', jsonb_build_array(jsonb_build_object('mode', 'any', 'slots', jsonb_build_array(v_gmo, v_ceo)))))
+  || jsonb_build_object('viewers', v_view, 'self', 'gm');
+ insert into public.ar_rules(kind, ver, status, def, note, rev, created_by, updated_by)
+  values ('lost', 1, 'draft', d, '初めの下書き（v1202・紛失届）', public.ar_rule_rev_next('lost'), 'sql', 'sql');
+end $$;
+'''
+mig=head+'\n\n'.join(new[k] for k in ORDER)+'\n\n'+SEED
 CHECK = '--check' in sys.argv
 def put(path, text):
     if CHECK:
@@ -103,6 +129,9 @@ end $$;
 
 alter table public.wr_requests drop constraint if exists wr_requests_kind_check;
 alter table public.wr_requests add constraint wr_requests_kind_check check (kind in ('''+KS+'''));
+
+-- 紛失届の承認ルール（下書き・有効・前の版）も外す（申請が 0 件のときだけここまで来る）
+delete from public.ar_rules where kind = 'lost';
 
 '''+'\n\n'.join(old[k] for k in ORDER)+'\n'
 put('db/wr-lost-drop.sql', rb)
