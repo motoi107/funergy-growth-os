@@ -115540,10 +115540,50 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     } catch(e) {}
   }
   W.wrOpenMine = function(code){
-    checkAuth(); try { workTab = 'wr'; } catch(e) {}
-    S.view = 'mine'; S.openCode = (typeof code === 'string' && /^[A-Za-z0-9-]{1,40}$/.test(code)) ? code : ''; S.rows = null; if (S.load === 'done') S.load = '';
+    checkAuth();
+    var c = (typeof code === 'string' && /^[A-Za-z0-9-]{1,40}$/.test(code)) ? code : '';
+    /* v1202（Codex #207 の P1）：ワークセンター（tasks）を開けない人（G1 など）は、ワークセンターへ行くとマイページへ戻される。
+       ワークセンターの権限は広げずに、自分の申請の一覧を窓で開く（番号があればその申請をそのまま開く・直す／出し直す／取り下げは詳しい画面から） */
+    if (!canOpenTasks()) { mineSheet(c); return; }
+    try { workTab = 'wr'; } catch(e) {}
+    S.view = 'mine'; S.openCode = c; S.rows = null; if (S.load === 'done') S.load = '';
     try { go('tasks'); } catch(e) { rerender(); }
   };
+  function canOpenTasks(){ try { return typeof navGuardAllows !== 'function' || !!navGuardAllows('tasks'); } catch(e) { return true; } }
+  /* 自分の申請の窓（ワークセンターを開けない人だけ）。読み込みごとに番号（古い答えは使わない）・ログインが変わったら使わない */
+  var MINE_SHEET = { tok:0, rows:null };
+  function mineSheet(code){
+    var k = authKey(), tok = ++MINE_SHEET.tok;
+    MINE_SHEET.rows = null;
+    openModal('<div id="wr-mine-sheet" style="width:100%">' + T('読み込み中…','Loading…') + '</div>');
+    api({ action:'list', scope:'mine', state:'all', limit:100 }, k).then(function(j){
+      if (tok !== MINE_SHEET.tok || authKey() !== k) return;
+      var rows = (j && j.rows) || [];
+      if (code) { var hit = rows.find(function(x){ return x && x.code === code; }); if (hit) { W.wrOpen(hit.id); return; } }
+      MINE_SHEET.rows = rows; drawMineSheet();
+    }, function(e){
+      if (tok !== MINE_SHEET.tok || authKey() !== k) return;
+      var el = document.getElementById('wr-mine-sheet'); if (!el) return;
+      el.innerHTML = '<div class="alert alert-danger" style="font-size:12px">' + esc(String(e && e.message || e)) + '</div>'
+        + '<div style="display:flex;gap:6px;margin-top:8px"><button class="btn btn-secondary btn-sm" onclick="wrOpenMine()">' + T('もう一度','Retry') + '</button>'
+        + '<button class="btn btn-secondary btn-sm" onclick="closeModalDirect()">' + T('閉じる','Close') + '</button></div>';
+    });
+  }
+  function drawMineSheet(){
+    var el = document.getElementById('wr-mine-sheet'); if (!el) return;
+    var rows = MINE_SHEET.rows || [];
+    var h = '<div style="font-size:15px;font-weight:700"><i class="ti ti-files"></i> ' + T('自分の申請','My requests') + '</div>'
+      + '<div style="font-size:11px;color:var(--muted);margin:4px 0 8px">' + T('押すと中身・今の状態・差し戻しの理由が出ます。差し戻されたものはそこから直して出し直せます。','Tap one to see its details, status and any return reason. A returned request can be fixed and sent again from there.') + '</div>';
+    if (!rows.length) h += '<div style="font-size:12px;color:var(--muted);padding:12px 0">' + T('まだありません','None yet') + '</div>';
+    else h += rows.map(function(r){
+      var st = r.kind === 'expense_pre' && r.status === 'done' ? T('事前承認済み','Pre-approved') : ST_L[r.status] ? T(ST_L[r.status][0], ST_L[r.status][1]) : r.status;
+      return '<div class="approval-item" style="cursor:pointer" data-wr-sheet="' + esc(r.code) + '" data-a="' + esc(r.id) + '" onclick="wrOpen(this.dataset.a)"><div class="approval-header"><div class="approval-title">' + esc(r.code) + ' · ' + esc(kindL(r.kind)) + '</div>'
+        + '<span class="tag ' + (/^(paid|done|applied)$/.test(r.status) ? 'tag-green' : /^(rejected|apply_error|returned)$/.test(r.status) ? 'tag-red' : /^withdrawn$/.test(r.status) ? 'tag-gray' : 'tag-yellow') + '">' + esc(st) + '</span></div>'
+        + '<div class="approval-meta">' + money(r.amount_cents) + (nextPlain(r) ? ' · ' + esc(nextPlain(r)) : '') + '</div></div>';
+    }).join('');
+    h += '<div style="display:flex;justify-content:flex-end;margin-top:10px"><button class="btn btn-secondary btn-sm" onclick="closeModalDirect()">' + T('閉じる','Close') + '</button></div>';
+    el.innerHTML = h;
+  }
   function nextPlain(r){
     var n = r && r.next; if (!n) return '';
     var who = n.who === 'am' ? (n.name || 'AM') : n.who === 'gm' ? 'GM' : n.who === 'acct' ? T('経理','Accounting') : n.who === 'requester' ? T('あなた','You') : '';
