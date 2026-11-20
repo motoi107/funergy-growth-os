@@ -97,7 +97,10 @@ for (const [W, lang] of [[1440, 'ja'], [390, 'ja'], [1440, 'en'], [390, 'en']]) 
         ok(tag + ': PC は 2 列（左 ①②③・右 ④⑤⑥）', L.pc6 && l.every(s => s.left === l[0].left) && r.every(s => s.left === r[0].left) && l[0].left < r[0].left, L.secs.map(s => [s.n, s.left]));
       } else ok(tag + ': スマホは 1 列で上から ①〜⑥', !L.pc && L.secs.every((s, i, a) => i === 0 || s.top > a[i - 1].top), L.secs.map(s => [s.n, s.top]));
       ok(tag + ': 従業員証明は名前の帯のボタン（カードは無い・2A）', L.pass && !L.idCard, { pass: L.pass, id: L.idCard });
-      ok(tag + ': ① 今日やること（何も無ければ「ありません」）', L.today && L.today.sec === 1 && L.today.shown && /今日やることはありません|Nothing to do today/.test(L.today.text), L.today);
+      /* v1204 から：本部の打刻の人（経理・事務Crew・Head Chef）は ① に打刻のカードがあるので「ありません」のカードは出さない（tests/e2e-pcsp/mypage-punch-v1204.mjs） */
+      const punch = await page.evaluate(() => !!document.querySelector('.mp-sec[data-mps="1"] #office-clock'));
+      if (punch) ok(tag + ': ① は本部の打刻（v1204）・「ありません」は出さない', L.today && L.today.sec === 1 && !L.today.shown && ['chef', 'office', 'oc'].includes(key), L.today);
+      else ok(tag + ': ① 今日やること（何も無ければ「ありません」）', L.today && L.today.sec === 1 && L.today.shown && /今日やることはありません|Nothing to do today/.test(L.today.text), L.today);
       ok(tag + ': ② 1 つの申請のカード（休暇・紛失届は開ける人だけ）', L.req && L.req.sec === 2 && L.req.vac && L.req.lost === lostOk, L.req);
       ok(tag + ': 前の「休暇申請」のカードは無い（② にまとめた・4A）', !L.titles.some(x => /^(休暇申請|Time Off)/.test(x)), L.titles.filter(x => /休暇|Time Off/.test(x)));
       if (['g4', 'am', 'gm', 'chef', 'office', 'oc'].includes(key)) ok(tag + ': 名前は今のまま（Personal Growth Dashboard・7B）', await page.evaluate(() => /Personal Growth Dashboard/.test(document.getElementById('main-content').innerText)));

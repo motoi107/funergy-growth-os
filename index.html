@@ -50135,7 +50135,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1203';
+const APP_VERSION = '1204';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -68084,24 +68084,32 @@ function officePendingApprovals(){
 }
 function officeClockCard(){
   var name=myName(); var today=officeTodayStr();
+  var ready=officeAttendReady(name);   /* v1204：読み終わるまで押せない（読み込み中） */
   var arr=getOfficeAttend(name)||[]; var rec=officeOpenRec(arr)||arr.find(function(r){return r.date===today;})||{};
   var inDone=!!rec.in, outDone=!!rec.out, onBreak=!!rec.breakStart;
+  if(!ready){ inDone=true; outDone=true; onBreak=false; }
   var statusTxt, statusCol;
-  if(outDone){ statusTxt='退勤済 '+rec.in+'〜'+rec.out+(rec.hours!=null?'（'+rec.hours+'h）':''); statusCol='var(--muted)'; }
-  else if(onBreak){ statusTxt='休憩中（'+rec.breakStart+'〜）'; statusCol='var(--yellow)'; }
-  else if(inDone){ var _bt=officeSumBreaks(rec), _bn=(rec.breaks||[]).length; statusTxt='勤務中 '+rec.in+'〜'+(_bt>0?'　休憩'+_bn+'回/'+_bt+'分':''); statusCol='var(--green)'; }
-  else { statusTxt='未出勤'; statusCol='var(--muted)'; }
-  return '<div class="card" style="padding:14px;border-left:3px solid var(--accent2)">'
+  /* v1204（UI案98・3A）：マイページ ① にも出す（同じ記録）ので英語の画面の言葉も（日本語の画面は前のまま） */
+  if(outDone){ statusTxt=t('退勤済 ','Clocked out ')+rec.in+'〜'+rec.out+(rec.hours!=null?'（'+rec.hours+'h）':''); statusCol='var(--muted)'; }
+  else if(onBreak){ statusTxt=t('休憩中（'+rec.breakStart+'〜）','On break ('+rec.breakStart+'–)'); statusCol='var(--yellow)'; }
+  else if(inDone){ var _bt=officeSumBreaks(rec), _bn=(rec.breaks||[]).length; statusTxt=t('勤務中 ','Working ')+rec.in+'〜'+(_bt>0?t('　休憩'+_bn+'回/'+_bt+'分','  breaks '+_bn+' / '+_bt+' min'):''); statusCol='var(--green)'; }
+  else { statusTxt=t('未出勤','Not clocked in'); statusCol='var(--muted)'; }
+  if(!ready){ statusTxt=t('読み込み中…','Loading…'); statusCol='var(--muted)'; }
+  return '<div class="card" id="office-clock"'+(ready?'':' data-loading="1"')+' style="padding:14px;border-left:3px solid var(--accent2)">'
     +'<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px">'
-    +'<div style="flex:1;min-width:150px"><div style="font-size:11px;color:var(--muted)">本日の勤怠 ・ '+escapeHtml(name)+'</div><div style="font-size:16px;font-weight:800;color:'+statusCol+'">'+statusTxt+'</div></div>'
+    +'<div style="flex:1;min-width:150px"><div style="font-size:11px;color:var(--muted)">'+t('本日の勤怠','Today')+' ・ '+escapeHtml(name)+'</div><div style="font-size:16px;font-weight:800;color:'+statusCol+'">'+statusTxt+'</div></div>'
     +'</div>'
     +'<div style="display:flex;gap:8px;flex-wrap:wrap">'
-    +'<button class="btn '+(inDone?'btn-secondary':'btn-primary')+' btn-sm" '+(inDone?'disabled style="opacity:.45"':'')+' onclick="officeClockIn()"><i class="ti ti-login-2"></i> 出勤</button>'
-    +'<button class="btn '+(onBreak?'btn-primary':'btn-secondary')+' btn-sm" '+((!inDone||outDone||onBreak)?'disabled style="opacity:.45"':'')+' onclick="officeBreakStart()"><i class="ti ti-coffee"></i> 休憩開始</button>'
-    +'<button class="btn '+(onBreak?'btn-primary':'btn-secondary')+' btn-sm" '+(onBreak?'':'disabled style="opacity:.45"')+' onclick="officeBreakEnd()"><i class="ti ti-coffee-off"></i> 休憩終了</button>'
-    +'<button class="btn '+((inDone&&!outDone&&!onBreak)?'btn-primary':'btn-secondary')+' btn-sm" '+((!inDone||outDone)?'disabled style="opacity:.45"':'')+' onclick="officeClockOut()"><i class="ti ti-logout-2"></i> 退勤</button>'
+    +'<button class="btn '+(inDone?'btn-secondary':'btn-primary')+' btn-sm" '+(inDone?'disabled style="opacity:.45"':'')+' onclick="officeClockIn()"><i class="ti ti-login-2"></i> '+t('出勤','Clock in')+'</button>'
+    +'<button class="btn '+(onBreak?'btn-primary':'btn-secondary')+' btn-sm" '+((!inDone||outDone||onBreak)?'disabled style="opacity:.45"':'')+' onclick="officeBreakStart()"><i class="ti ti-coffee"></i> '+t('休憩開始','Start break')+'</button>'
+    +'<button class="btn '+(onBreak?'btn-primary':'btn-secondary')+' btn-sm" '+(onBreak?'':'disabled style="opacity:.45"')+' onclick="officeBreakEnd()"><i class="ti ti-coffee-off"></i> '+t('休憩終了','End break')+'</button>'
+    +'<button class="btn '+((inDone&&!outDone&&!onBreak)?'btn-primary':'btn-secondary')+' btn-sm" '+((!inDone||outDone)?'disabled style="opacity:.45"':'')+' onclick="officeClockOut()"><i class="ti ti-logout-2"></i> '+t('退勤','Clock out')+'</button>'
     +'</div>'
-    +'<div style="font-size:10.5px;color:var(--muted);margin-top:8px"><i class="ti ti-info-circle"></i> 打刻・休憩は'+((typeof curPage!=='undefined'&&curPage==='acct_center')?'「本部タイムカード」':'「勤怠」')+'タブの月次タイムシートに自動反映されます（休憩は労働時間から控除）。</div></div>';
+    +'<div style="font-size:10.5px;color:var(--muted);margin-top:8px"><i class="ti ti-info-circle"></i> '
+    +((typeof curPage!=='undefined'&&curPage==='mypage')
+      ? t('打刻・休憩は本部タイムカードの月次タイムシートと同じ記録です（休憩は労働時間から控除）。','Punches and breaks go to the same HQ time card (breaks are taken out of the hours).')
+      : '打刻・休憩は'+((typeof curPage!=='undefined'&&curPage==='acct_center')?'「本部タイムカード」':'「勤怠」')+'タブの月次タイムシートに自動反映されます（休憩は労働時間から控除）。')
+    +'</div></div>';
 }
 function officeTodayBoard(){
   var today=officeTodayStr(); var mem=hqStaffMembers();   /* v775 */
@@ -68442,56 +68450,98 @@ function officeCloseStaleShift(name, thenClockIn){
   showToast(open.date+' の勤務を締めました（'+open.hours+'h）','success');
   closeModalDirect();
   if(thenClockIn){ setTimeout(function(){ officeClockIn(); }, 60); }
-  else renderPage('office_mgr');
+  else officePunchRerender();   /* v1204 */
 }
 
+/* v1204（UI案98・3A）：打刻・休憩のあとは、押した画面を描き直す。マイページ ① で押したらマイページのまま（前は経理センターへ移っていた）。
+   経理ホーム・本部タイムカードからは今までどおり（office_mgr＝経理センターの今の中タブ） */
+function officePunchRerender(){
+  if (typeof curPage !== 'undefined' && curPage === 'mypage') { renderPage('mypage'); return; }
+  renderPage('office_mgr');
+}
+/* マイページ ① に本部の打刻を出す人：本部タイムカードで打刻できる人と同じ（renderOfficeAttend の isOffice＝経理・事務Crew・Head Chef） */
+function mpHqPunch(){
+  var me = (typeof _curEmp === 'function') ? _curEmp() : null;
+  return !!(me && ['office','office_crew','chef'].indexOf(me.role) >= 0 && me.status !== '退職');
+}
+/* v1204：自分の本部の勤怠（office_attend_<名前>）をこの端末でまだ読んでいなければ、先に読む。読み終わるまで打刻のボタンは押せない
+   （e2e で見つけた：ログインした直後の新しい端末では前の打刻がまだ届いておらず「未出勤」と出て、出勤を押すと 2 つ目の出勤になっていた。
+   経理ホームの「本日の勤怠」も同じ）。読めなかった（つながらない・8 秒で答えが無い）ときは前と同じく手元で打刻できる */
+var _ofPull = {};
+function officeAttendReady(name){
+  var k = officeAttendKey(name);
+  try { if (typeof _LS_FETCHED !== 'undefined' && _LS_FETCHED[k]) return true; } catch(e) { return true; }
+  if (_ofPull[k] === 'done' || _ofPull[k] === 'fail' || typeof pullOpKey !== 'function') return true;
+  if (_ofPull[k] !== 'busy') {
+    _ofPull[k] = 'busy';
+    /* Codex #209 の P2：8 秒で待つのをやめる（手元で打てる）ことと、あとから届いた読み込みを使うことを分ける。
+       前は 8 秒で 'fail' にしたあと、遅れて届いた成功を捨て、カードも描き直さなかった（勤務中なのに「未出勤」・退勤を押せない） */
+    var giveUp = function(){ if (_ofPull[k] !== 'busy') return; _ofPull[k] = 'fail'; officeClockRepaint(); };
+    setTimeout(giveUp, 8000);
+    Promise.resolve().then(function(){ return pullOpKey(k); }).then(function(ok){
+      if (ok) { _ofPull[k] = 'done'; officeClockRepaint(); }   /* 8 秒を過ぎてから届いても使う（届いた記録でカードを描き直す） */
+      else giveUp();
+    }, giveUp);
+  }
+  return false;
+}
+/* 読み終わったら打刻のカードだけ描き直す（画面ぜんたいは描き直さない） */
+function officeClockRepaint(){
+  var el = document.getElementById('office-clock'); if (!el) return;
+  try { el.outerHTML = officeClockCard(); } catch(e) {}
+}
+function officeNotReadyToast(){ showToast(t('勤怠を読み込み中です。少し待ってからもう一度押してください','Loading your time card. Try again in a moment.'),'info'); }
 function officeClockIn(){
-  var name=myName(); var arr=getOfficeAttend(name);
+  var name=myName(); if(!officeAttendReady(name)){ officeNotReadyToast(); return; }   /* v1204 */
+  var arr=getOfficeAttend(name);
   var open=officeOpenRec(arr);
   if(open){
     if(open.date < isoDateStr(new Date())){ openOfficeStaleShiftModal(name, open, 'in'); return; }
-    showToast('未退勤の勤務があります（'+open.date+' '+open.in+'〜）。先に退勤してください','info'); return;
+    showToast('未退勤の勤務があります（'+open.date+' '+open.in+'〜）。先に退勤してください','info'); officeClockRepaint(); return;   /* Codex #209：カードが古ければ今の記録で描き直す */
   }
   var date=isoDateStr(new Date()); var rec=arr.find(function(r){return r.date===date;});
-  if(rec && rec.in && rec.out){ showToast('本日は出勤打刻済みです','info'); return; }
+  if(rec && rec.in && rec.out){ showToast('本日は出勤打刻済みです','info'); officeClockRepaint(); return; }
   if(!rec){ rec={date:date, in:'', out:'', breakMin:0, status:'勤務中', log:[]}; arr.push(rec); }
   rec.in=nowHM(); rec.status='勤務中'; rec._ts=Date.now(); rec.log=rec.log||[]; rec.log.push({at:tsNow(), by:name, action:'出勤 '+rec.in});
-  setOfficeAttend(name, arr); showToast('出勤を記録しました','success'); renderPage('office_mgr');
+  setOfficeAttend(name, arr); showToast(t('出勤を記録しました','Clocked in'),'success'); officePunchRerender();
 }
 function officeClockOut(){
-  var name=myName(); var arr=getOfficeAttend(name);
+  var name=myName(); if(!officeAttendReady(name)){ officeNotReadyToast(); return; }   /* v1204 */
+  var arr=getOfficeAttend(name);
   var rec=officeOpenRec(arr);
   if(rec && rec.date < isoDateStr(new Date())){ openOfficeStaleShiftModal(name, rec, 'out'); return; }
   if(!rec){ var date=isoDateStr(new Date()); rec=arr.find(function(r){return r.date===date;}); }
-  if(!rec || !rec.in){ showToast('先に出勤打刻してください','info'); return; }
-  if(rec.out){ showToast('退勤打刻済みです','info'); return; }
+  if(!rec || !rec.in){ showToast('先に出勤打刻してください','info'); officeClockRepaint(); return; }
+  if(rec.out){ showToast('退勤打刻済みです','info'); officeClockRepaint(); return; }
   if(rec.breakStart){ var bm=Math.max(0,hmDiffMin(rec.breakStart, nowHM())); var endm=nowHM(); rec.breaks=rec.breaks||[]; for(var bi=rec.breaks.length-1;bi>=0;bi--){ if(!rec.breaks[bi].end){ rec.breaks[bi].end=endm; rec.breaks[bi].min=bm; break; } } delete rec.breakStart; rec.breakMin=officeSumBreaks(rec); rec.log=rec.log||[]; rec.log.push({at:tsNow(), by:name, action:'休憩自動終了（+'+bm+'分）'}); }
   rec.out=nowHM(); rec.hours=officeCalcHours(rec); rec.status='記録済'; rec._ts=Date.now();
   rec.log=rec.log||[]; rec.log.push({at:tsNow(), by:name, action:'退勤 '+rec.out});
-  setOfficeAttend(name, arr); showToast('退勤を記録しました（'+rec.hours+'h）','success'); renderPage('office_mgr');
+  setOfficeAttend(name, arr); showToast(t('退勤を記録しました（'+rec.hours+'h）','Clocked out ('+rec.hours+'h)'),'success'); officePunchRerender();
 }
 function hmDiffMin(from, to){ if(!from||!to) return 0; var a=from.split(':'), b=to.split(':'); var d=(parseInt(b[0])*60+parseInt(b[1]))-(parseInt(a[0])*60+parseInt(a[1])); if(d<0) d+=24*60; return d; }
 function officeSumBreaks(rec){ if(rec && rec.breaks && rec.breaks.length) return rec.breaks.reduce(function(a,b){return a+(b.min||0);},0); return (rec&&rec.breakMin)||0; }
 function getOfficeAttendCfg(){ var c=ls('office_attend_config', null)||{}; c.breakStdMin=0; return c; } /* 休憩・戻りの時間制限は撤廃（無制限）。全てのover判定は無効化される */
 function setOfficeBreakStd(v){ if(['ceo','gm','office'].indexOf(curRole)<0) return; var c=getOfficeAttendCfg(); c.breakStdMin=Math.max(0,parseInt(v)||0); lsSet('office_attend_config', c); showToast('休憩の標準上限を更新しました','success'); renderPage('office_mgr'); }
 function officeBreakStart(){
-  var name=myName(); var arr=getOfficeAttend(name); var rec=officeOpenRec(arr);
+  var name=myName(); if(!officeAttendReady(name)){ officeNotReadyToast(); return; }   /* v1204 */
+  var arr=getOfficeAttend(name); var rec=officeOpenRec(arr);
   if(!rec || !rec.in){ showToast('先に出勤打刻してください','info'); return; }
   if(rec.out){ showToast('退勤済みです','info'); return; }
   if(rec.breakStart){ showToast('既に休憩中です','info'); return; }
   rec.breakStart=nowHM(); rec.breaks=rec.breaks||[]; rec.breaks.push({start:rec.breakStart, end:'', min:0});
   rec.status='休憩中'; rec.log=rec.log||[]; rec.log.push({at:tsNow(), by:name, action:'休憩開始 '+rec.breakStart});
-  setOfficeAttend(name, arr); showToast('休憩を開始しました','success'); renderPage('office_mgr');
+  setOfficeAttend(name, arr); showToast(t('休憩を開始しました','Break started'),'success'); officePunchRerender();
 }
 function officeBreakEnd(){
-  var name=myName(); var arr=getOfficeAttend(name); var rec=officeOpenRec(arr);
+  var name=myName(); if(!officeAttendReady(name)){ officeNotReadyToast(); return; }   /* v1204 */
+  var arr=getOfficeAttend(name); var rec=officeOpenRec(arr);
   if(!rec || !rec.breakStart){ showToast('休憩中ではありません','info'); return; }
   var mins=Math.max(0, hmDiffMin(rec.breakStart, nowHM())); var ended=nowHM();
   rec.breaks=rec.breaks||[]; for(var bi=rec.breaks.length-1;bi>=0;bi--){ if(!rec.breaks[bi].end){ rec.breaks[bi].end=ended; rec.breaks[bi].min=mins; break; } }
   delete rec.breakStart; rec.breakMin=officeSumBreaks(rec); rec.status='勤務中';
   var cfg=getOfficeAttendCfg(); var over=cfg.breakStdMin>0 && rec.breakMin>cfg.breakStdMin;
   rec.log=rec.log||[]; rec.log.push({at:tsNow(), by:name, action:'休憩終了 '+ended+'（+'+mins+'分）'});
-  setOfficeAttend(name, arr); showToast('休憩を終了しました（+'+mins+'分'+(over?'・計'+rec.breakMin+'分/上限超過':'')+'）', over?'warning':'success'); renderPage('office_mgr');
+  setOfficeAttend(name, arr); showToast(t('休憩を終了しました（+'+mins+'分'+(over?'・計'+rec.breakMin+'分/上限超過':'')+'）','Break ended (+'+mins+' min)'), over?'warning':'success'); officePunchRerender();
 }
 function recomputeBreakMin(rec){ rec.breakMin=officeSumBreaks(rec); }
 function _officeBreakRec(name,date){ var arr=getOfficeAttend(name); return {arr:arr, rec:arr.find(function(r){return r.date===date;})}; }
@@ -93632,7 +93682,7 @@ function mpTodayRow(title, sub, onclick, label, a){
     + '</div>';
 }
 /* ① 今日やること：今日のシフト・相談の返事・（申請のモジュールが読んだあと）申請の対応待ちと戻ってきた自分の申請。
-   何も無ければ「今日やることはありません」。ヘルプ募集だけのときは、このカードは出さない（ヘルプ募集のカードが ① にある） */
+   何も無ければ「今日やることはありません」。ヘルプ募集・本部の打刻（v1204）だけのときは、このカードは出さない（そのカードが ① にある） */
 function mpTodayHtml(o){
   o = o || {};
   var rows = '';
@@ -93640,7 +93690,8 @@ function mpTodayHtml(o){
   if (o.consult) rows += mpTodayRow(t('相談に返事があります', 'You have a reply'), t('お悩み相談室・これまでの相談', 'Consultation room · past consultations'), 'mpGoSec(5)', t('見る','View'));
   var wr = ''; try { if (typeof wrMyTodayHtml === 'function') wr = wrMyTodayHtml() || ''; } catch(e) { wr = ''; }
   var has = !!(rows || wr.trim());
-  return '<div class="card mp-today" id="mp-today" data-rows="' + (rows ? 1 : 0) + '" data-helps="' + (o.helps ? 1 : 0) + '"' + (!has && o.helps ? ' style="display:none"' : '') + '>'
+  var oth = !!(o.helps || o.punch);   /* ① にほかのカード（ヘルプ募集・本部の打刻）がある */
+  return '<div class="card mp-today" id="mp-today" data-rows="' + (rows ? 1 : 0) + '" data-helps="' + (oth ? 1 : 0) + '"' + (!has && oth ? ' style="display:none"' : '') + '>'
     + rows + '<div id="mp-today-wr">' + wr + '</div>'
     + '<div class="mp-today-none" id="mp-today-none"' + (has ? ' style="display:none"' : '') + '>' + t('今日やることはありません', 'Nothing to do today') + '</div></div>';
 }
@@ -93895,7 +93946,10 @@ function renderMypage() {
     html += _ms(5,10) + renderCompanyMessageCard() + renderPriceAlertCard();
     var _mgSh = mpMyShifts(me, meEmp);
     if (_mgSh.keys.length) html += _ms(3,5) + mpShiftCardHtml(_mgSh.keys);
-    html += _ms(1,10) + mpTodayHtml({ shifts:_mgSh.today, shiftGo:_mgSh.go, helps:helps.length });
+    /* v1204（UI案98・3A）：本部の打刻（経理・事務Crew・Head Chef）。経理ホームの「本日の勤怠」・本部タイムカードと同じ記録・同じ関数 */
+    var _punch = false; try { _punch = mpHqPunch(); } catch(e) {}
+    if (_punch) html += _ms(1,5) + officeClockCard();
+    html += _ms(1,10) + mpTodayHtml({ shifts:_mgSh.today, shiftGo:_mgSh.go, helps:helps.length, punch:_punch });
     html += _ms(4,80) + `<div class="section-header" style="margin-bottom:8px"><div class="section-title" style="font-size:15px"><i class="ti ti-rocket" style="color:var(--accent)"></i> Personal Growth Dashboard</div></div>`;
     html += renderPGD(me, false);
     return mpSecLayout(html);

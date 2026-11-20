@@ -167,7 +167,7 @@ test('renderMypage: G1 (crew) and the store account keep the v1177 layout; every
   const mg = MYPAGE.slice(MYPAGE.indexOf('  if (!isCrewView) {\n    /* v1203'), MYPAGE.indexOf('    return mpSecLayout(html);\n  }\n') + 30);
   assert.match(mg, /html \+= _ms\(2,10\) \+ mpReqCardHtml\(me\);/);
   assert.match(mg, /if \(_mgSh\.keys\.length\) html \+= _ms\(3,5\) \+ mpShiftCardHtml\(_mgSh\.keys\);/);
-  assert.match(mg, /_ms\(1,10\) \+ mpTodayHtml\(\{ shifts:_mgSh\.today, shiftGo:_mgSh\.go, helps:helps\.length \}\)/);
+  assert.match(mg, /_ms\(1,10\) \+ mpTodayHtml\(\{ shifts:_mgSh\.today, shiftGo:_mgSh\.go, helps:helps\.length[^}]*\}\)/);
   assert.match(mg, /_ms\(4,80\)[^\n]*Personal Growth Dashboard/);
   assert.doesNotMatch(mg.replace(/\/\*[\s\S]*?\*\//g, ''), /mpLayout\(html, true\)/);
   // スタッフの側（G2・G3）：前の休暇と申請の 2 枚は G1 だけ・最後に ① と 6 つの段・G1 は mpLayout

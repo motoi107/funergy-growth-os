@@ -1,5 +1,10 @@
 # Claude / Codex 共通記録
 
+## 2026-11-20 v1204：マイページ ① に本部の打刻（UI案98 の 3A・Claude（Cowork・Team）・ブランチ `claude/mypage-1204`・アプリだけ・本番未反映）
+
+- 経理・事務Crew・Head Chef のマイページ ① に経理ホームと同じ打刻のカード（同じ記録 `office_attend_<名前>`・同じ関数）。押したあとは `officePunchRerender`（マイページならマイページ）。
+- 守ること：打刻の関数は `officeAttendReady(name)` を通す（この端末で自分の勤怠をまだ読んでいなければ読み終わるまで押せない＝新しい端末で 2 つ目の出勤を作らない。読めなければ前と同じ）。中身は `docs/UNIFIED_UI_V1191_JA.md` の 27b。
+
 ## 2026-11-20 v1203：マイページの 6 つの段（段階 4・UI案98 の 1A・2A・4A・7B・8A・Claude（Cowork・Team）・ブランチ `claude/mypage-1203`・アプリだけ・本番未反映）
 
 - G1（crew）と店のアカウントは今の `mpLayout` のまま。ほかは `mpSecLayout`（今の印 `MPC:c:o` を表 `MP_SEC_OF` で段に振り分ける・新しいカードは `MPS:段:順`）。
