@@ -1,5 +1,15 @@
 # Claude / Codex 共通記録
 
+## 2026-11-20 T6 を GitHub へ・#201〜#205 はマージ済み・Codex #207（P1）と #208（P2 2）の直し（Claude（Personal・Claude Code）・ブランチ `claude/lost-wr-1202`・`claude/mypage-1203` とその上）
+
+- 引き継ぎ版 T6 を bundle で push（11/20・force なし）：#205 を `4ecefd7` へ早送り・新しいブランチ 6 つ（`acct-intake-1201`・`lost-wr-1202`・`mypage-ui98`・`mypage-1203`・`mypage-1204`・`mypage-1205`）・新しい PR #206（v1201）〜#210（v1205）。`mypage-ui98` は PR なし（#208 に入る）。Moto さんが #201〜#205 をマージ（main `465e352`・merge コミット）。
+- 関数 work-requests v1202 の非公開の 1 ファイル（候補・sha256 先頭 `d966eac55cad`）を Moto さんに直接渡した（リポジトリに置かない）。v1190 の非公開のファイル（`59a201315ee9`）がこの Mac に無かったので、v1161 の非公開のファイル（`270ff002fd91`）の PIN の確かめの部分（1 文字も変えない）＋ v1202 の handler.mjs（export を外す）で作った。記録では PIN の部分は v1161〜v1190 で同じ。v1190 の 1 ファイルと比べてから入れる。偽の Deno・偽の PostgREST の試験 8/8（whoami fn 14）。本物の SQL につないだ試験はしていない。
+- Codex の判定（PR を作ったときの自動の依頼・11/20 11:31〜11:34 UTC）：#206・#209・#210 は大きな指摘なし。**#207（`73c7bb0`）P1 1**＝G1 が出した紛失届を閲覧・再提出できない（`wrOpenMine` → `go('tasks')` だが G1 は tasks を開けない）。**#208（`38e970b`）P2 2**＝① の今日のシフトがシフト画面で選んだ週を読む／戻ってきた申請を ② 用の新しい 5 件（経費だけ）から選ぶ。
+- 直し（Moto さん 11/20「直してから頼む」）：`1e64d6d`（#207：ワークセンターを開けない人には自分の申請の一覧の窓・番号ならその申請・ワークセンターの権限は広げない）・`d11e8b3`＋`3846eb6`（#208：マイページは `mpThisWeekStr`＝営業日の今週・① の戻ってきた申請は ① を描くときに別に読む＝state open・全部の種類）。中身は `docs/UNIFIED_UI_V1191_JA.md` の 25b・27a2。下の PR の直しは上のブランチに merge で取り込んだ（force なし）。
+- 試験（合成データ・手元＝Node v24.22.1・PGlite 0.5.11（CI は 0.3.14）・fake-indexeddb と xlsx は手元に無い）：足した試験は直す前の head で落ちる・わざと壊す #207 3/3・#208 3/3。各ブランチの関係する試験（v1202 64/64・v1203 22/22・v1204 33/33）・static release pass（1202〜1205）。v1205 の head で CI の段を手元で順に（`invoice-mutations`・npm ci・本物の PostgreSQL の段など 10 は流さない）：80 段成功・6 段は fake-indexeddb／xlsx が無いだけ（試験の数 2,255 成功・8 は module not found）。e2e（本物の Chromium）は流していない。
+- 手元の CI で見つけたこと：`d11e8b3` は ② のカードと一緒に ① 用の一覧も読んでいて、カードだけの画面（レシート管理など）でも読み込みが増え `tests/wr-expense-card-v1164.test.mjs` が落ちた → `3846eb6` で直した。
+- 次：Codex の再レビュー（#207・#208・#209・#210 の最新の head）→ Moto さんが #206 → #210 の順にマージ（v1202 は SQL・関数が先・`deploy/wr-lost-v1202/手順.md`）。
+
 ## 2026-11-20 v1205：スマホのマイページの ④⑤⑥ をたたむ・本部の人のポジション（UI案98 の 5A・6A・Claude（Cowork・Team）・ブランチ `claude/mypage-1205`・アプリだけ・本番未反映）
 
 - スマホ（`empSmIsPc()` が false）では ④⑤⑥ は見出しのボタン（`mpFoldToggle`）。開いたかは `localStorage` の `mp_open_v1205`（この端末だけ・同期しない）。PC はたたまない。
