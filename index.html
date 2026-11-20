@@ -68474,9 +68474,14 @@ function officeAttendReady(name){
   if (_ofPull[k] === 'done' || _ofPull[k] === 'fail' || typeof pullOpKey !== 'function') return true;
   if (_ofPull[k] !== 'busy') {
     _ofPull[k] = 'busy';
-    var fin = function(st){ if (_ofPull[k] !== 'busy') return; _ofPull[k] = st; officeClockRepaint(); };
-    setTimeout(function(){ fin('fail'); }, 8000);
-    Promise.resolve().then(function(){ return pullOpKey(k); }).then(function(ok){ fin(ok ? 'done' : 'fail'); }, function(){ fin('fail'); });
+    /* Codex #209 の P2：8 秒で待つのをやめる（手元で打てる）ことと、あとから届いた読み込みを使うことを分ける。
+       前は 8 秒で 'fail' にしたあと、遅れて届いた成功を捨て、カードも描き直さなかった（勤務中なのに「未出勤」・退勤を押せない） */
+    var giveUp = function(){ if (_ofPull[k] !== 'busy') return; _ofPull[k] = 'fail'; officeClockRepaint(); };
+    setTimeout(giveUp, 8000);
+    Promise.resolve().then(function(){ return pullOpKey(k); }).then(function(ok){
+      if (ok) { _ofPull[k] = 'done'; officeClockRepaint(); }   /* 8 秒を過ぎてから届いても使う（届いた記録でカードを描き直す） */
+      else giveUp();
+    }, giveUp);
   }
   return false;
 }
@@ -68492,10 +68497,10 @@ function officeClockIn(){
   var open=officeOpenRec(arr);
   if(open){
     if(open.date < isoDateStr(new Date())){ openOfficeStaleShiftModal(name, open, 'in'); return; }
-    showToast('未退勤の勤務があります（'+open.date+' '+open.in+'〜）。先に退勤してください','info'); return;
+    showToast('未退勤の勤務があります（'+open.date+' '+open.in+'〜）。先に退勤してください','info'); officeClockRepaint(); return;   /* Codex #209：カードが古ければ今の記録で描き直す */
   }
   var date=isoDateStr(new Date()); var rec=arr.find(function(r){return r.date===date;});
-  if(rec && rec.in && rec.out){ showToast('本日は出勤打刻済みです','info'); return; }
+  if(rec && rec.in && rec.out){ showToast('本日は出勤打刻済みです','info'); officeClockRepaint(); return; }
   if(!rec){ rec={date:date, in:'', out:'', breakMin:0, status:'勤務中', log:[]}; arr.push(rec); }
   rec.in=nowHM(); rec.status='勤務中'; rec._ts=Date.now(); rec.log=rec.log||[]; rec.log.push({at:tsNow(), by:name, action:'出勤 '+rec.in});
   setOfficeAttend(name, arr); showToast(t('出勤を記録しました','Clocked in'),'success'); officePunchRerender();
@@ -68506,8 +68511,8 @@ function officeClockOut(){
   var rec=officeOpenRec(arr);
   if(rec && rec.date < isoDateStr(new Date())){ openOfficeStaleShiftModal(name, rec, 'out'); return; }
   if(!rec){ var date=isoDateStr(new Date()); rec=arr.find(function(r){return r.date===date;}); }
-  if(!rec || !rec.in){ showToast('先に出勤打刻してください','info'); return; }
-  if(rec.out){ showToast('退勤打刻済みです','info'); return; }
+  if(!rec || !rec.in){ showToast('先に出勤打刻してください','info'); officeClockRepaint(); return; }
+  if(rec.out){ showToast('退勤打刻済みです','info'); officeClockRepaint(); return; }
   if(rec.breakStart){ var bm=Math.max(0,hmDiffMin(rec.breakStart, nowHM())); var endm=nowHM(); rec.breaks=rec.breaks||[]; for(var bi=rec.breaks.length-1;bi>=0;bi--){ if(!rec.breaks[bi].end){ rec.breaks[bi].end=endm; rec.breaks[bi].min=bm; break; } } delete rec.breakStart; rec.breakMin=officeSumBreaks(rec); rec.log=rec.log||[]; rec.log.push({at:tsNow(), by:name, action:'休憩自動終了（+'+bm+'分）'}); }
   rec.out=nowHM(); rec.hours=officeCalcHours(rec); rec.status='記録済'; rec._ts=Date.now();
   rec.log=rec.log||[]; rec.log.push({at:tsNow(), by:name, action:'退勤 '+rec.out});

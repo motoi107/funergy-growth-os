@@ -160,3 +160,29 @@ test('when it cannot read (offline: false, an error, or no answer in 8 s) it pun
   const d = app({ fetched: true });
   assert.equal(d.ctx.officeAttendReady('Gina Sato'), true); assert.equal(d.pulls.length, 0, 'no read when it was read before');
 });
+
+test('Codex #209 P2: the read answers after the 8 s limit (the server has an open 08:55 shift) → the card is drawn again from it and clock-out works; tapping clock-in on a stale card redraws it', async () => {
+  let done; const a = app({ fetched: false, pull: k => new Promise(r => { done = ok => { if (ok) a.ctx._LS_FETCHED[k] = 1; r(ok); }; }) });
+  a.store['office_attend_Gina Sato'] = [];   // 新しい端末：手元にはまだ無い
+  const el = { outerHTML: '' }; a.els['office-clock'] = el;
+  assert.equal(a.ctx.officeAttendReady('Gina Sato'), false); await a.settle();   // 読み込みが始まった（まだ答えない）
+  const tm = a.timers.find(x => x[1] === 8000); tm[0]();   // 8 秒：待つのをやめる（手元で打てる）
+  assert.match(el.outerHTML, /未出勤/, 'after the limit the card shows the device data (nothing yet)');
+  assert.match(el.outerHTML, /<button[^>]*disabled[^>]*onclick="officeClockOut\(\)"/, 'clock-out is off while it looks not clocked in');
+  // 遅れて答えが届く：サーバーにあった 08:55 の未退勤の記録（pullOpKey が手元に保存）
+  a.store['office_attend_Gina Sato'] = [{ date: '2026-11-19', in: '08:55', out: '', status: '勤務中', log: [] }];
+  done(true); await a.settle();
+  assert.match(el.outerHTML, /勤務中 08:55/, 'the late answer is used (before: thrown away, still 未出勤)');
+  assert.doesNotMatch(el.outerHTML, /<button[^>]*disabled[^>]*onclick="officeClockOut\(\)"/, 'clock-out can be pressed');
+  a.at('17:30'); a.ctx.officeClockOut();
+  const rec = a.store['office_attend_Gina Sato'][0];
+  assert.equal(rec.out, '17:30'); assert.equal(rec.in, '08:55', 'the same record (no 2nd clock-in)');
+  // カードが古いまま出勤を押した（記録はもう勤務中）：断って、今の記録でカードを描き直す
+  const b = app({ fetched: true });
+  b.store['office_attend_Gina Sato'] = [{ date: '2026-11-19', in: '08:55', out: '', status: '勤務中', log: [] }];
+  const el2 = { outerHTML: '<div id="office-clock">未出勤</div>' }; b.els['office-clock'] = el2;
+  b.ctx.officeClockIn();
+  assert.match(b.toasts[0][1], /先に退勤してください/);
+  assert.match(el2.outerHTML, /勤務中 08:55/, 'the stale card is drawn again');
+  assert.equal(b.store['office_attend_Gina Sato'].length, 1);
+});
