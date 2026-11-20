@@ -212,6 +212,7 @@ test('① request rows (real module, handler and SQL): my returned request with 
   const me = wrApp(s, 'E6');
   assert.equal(me.today(), '', 'nothing before reading');
   await me.load();
+  me.today(); await me.settle();   // Codex #208 の P2：① の「戻ってきた申請」は ① を描いたときに別に読む（読み終わったら ① を描き直す）
   const h = me.today();
   assert.match(h, /戻ってきた申請/);
   assert.match(h, new RegExp('data-a="' + r1.code + '" onclick="wrOpenMine\\(this\\.dataset\\.a\\)">直す'));
