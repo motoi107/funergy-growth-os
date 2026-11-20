@@ -208,11 +208,12 @@ for (const [W, lang] of [[1440, 'ja'], [1024, 'en'], [390, 'ja'], [390, 'en']]) 
   ok(tag + '：月間行動計画で横にはみ出さない', (await over(page)) <= 1, await over(page));
   /* ---- 4A マイページ（GM） ---- */
   await run(page, () => go('mypage'));
-  const my = await page.evaluate(() => ({ pos: !!document.querySelector('table.pgd-pos'), pair: !!document.querySelector('.mp-pair'), multi: (function(){ try { return empStoresOf(getEmployees().find(e => e.name === curUserName) || {}).length; } catch (e) { return -1; } })() }));
+  /* v1203（UI案98）：管理者のマイページも 6 つの段（PC は 2 列 .mp-pc6・前の「証明と PIN を横に」は無い）。tests/e2e-pcsp/mypage-v1203.mjs */
+  const my = await page.evaluate(() => ({ pos: !!document.querySelector('table.pgd-pos'), pc6: !!document.querySelector('.mp-pc6'), multi: (function(){ try { return empStoresOf(getEmployees().find(e => e.name === curUserName) || {}).length; } catch (e) { return -1; } })() }));
   if (pc) {
     ok(tag + '：PC：店が 2 つ以上なら店ごとの表', my.multi < 2 || my.pos, my);
-    ok(tag + '：PC：管理者のマイページは証明と PIN を横に', my.pair, my);
-  } else ok(tag + '：スマホ：マイページは今のまま（表・横並びなし）', !my.pos && !my.pair, my);
+    ok(tag + '：PC：管理者のマイページは 2 列の段（v1203）', my.pc6, my);
+  } else ok(tag + '：スマホ：マイページは 1 列（表・2 列なし）', !my.pos && !my.pc6, my);
   ok(tag + '：マイページで横にはみ出さない', (await over(page)) <= 1, await over(page));
   /* ---- 箱：× の押す範囲（スマホ）・キャッシュチップの文字 ---- */
   await run(page, () => openSelfAspiration());
@@ -227,10 +228,10 @@ for (const [W, lang] of [[1440, 'ja'], [1024, 'en'], [390, 'ja'], [390, 'en']]) 
   if (W === 1440) {
     await run(page, () => go('mypage'));
     await page.setViewportSize({ width: 390, height: 844 }); await sleep(1500);
-    const rs = await page.evaluate(() => ({ pair: !!document.querySelector('.mp-pair'), pos: !!document.querySelector('table.pgd-pos') }));
-    ok(tag + '：1440 → 390 にするとマイページを描き直す', !rs.pair && !rs.pos, rs);
+    const rs = await page.evaluate(() => ({ pc6: !!document.querySelector('.mp-pc6'), pos: !!document.querySelector('table.pgd-pos') }));
+    ok(tag + '：1440 → 390 にするとマイページを描き直す', !rs.pc6 && !rs.pos, rs);
     await page.setViewportSize({ width: 1440, height: 900 }); await sleep(1500);
-    ok(tag + '：390 → 1440 に戻すと PC の形', await page.evaluate(() => !!document.querySelector('.mp-pair')));
+    ok(tag + '：390 → 1440 に戻すと PC の形', await page.evaluate(() => !!document.querySelector('.mp-pc6')));
     /* #175 の Codex・Claude の P2-1：月間行動計画 › 設定で、まだ保存していない目標・必須のチェックを、幅をまたいだ描き直しで消さない（フォーカスあり・なし・両方向） */
     await run(page, () => { switchStore('ALL'); go('cc_plan'); setCcTab('setting'); });
     const ids = await page.evaluate(() => { const t = document.querySelector('table.cc-mx input[id^="ct-"]'), q = document.querySelector('#main-content input[id^="cq-"]'); return { t: t && t.id, q: q && q.id, tv: t && t.defaultValue, qv: q && q.defaultChecked }; });
@@ -303,13 +304,14 @@ for (const W of [1440, 390]) {
   await sleep(800);
   const my = await page.evaluate(() => {
     const pcv = document.querySelector('.mp-pc'); const cols = pcv ? [...pcv.querySelectorAll(':scope > .mp-col')] : [];
-    return { pcv: !!pcv, cols: cols.length, lefts: cols.map(c => Math.round(c.getBoundingClientRect().left)), heads: cols.map(c => (c.querySelector('.mp-colh') || {}).innerText || ''),
+    return { pcv: !!pcv, cols: cols.length, lefts: cols.map(c => Math.round(c.getBoundingClientRect().left)), heads: cols.map(c => (c.querySelector('.mp-colh, .mp-sech') || {}).innerText || ''),
       cards: document.querySelectorAll('#main-content .card').length };
   });
+  /* v1203（UI案98）：G3 も 6 つの段（PC の 2 列は左 ①②③・右 ④⑤⑥＝見出しは段の名前）。G1 は前の「仕事・成長」 */
   if (W >= 1024) {
-    ok(tag + '：PC：マイページは 2 列（仕事・成長）', my.pcv && my.cols === 2 && my.lefts[0] < my.lefts[1] && /仕事/.test(my.heads[0]) && /成長/.test(my.heads[1]), my);
+    ok(tag + '：PC：マイページは 2 列（左 ①②③・右 ④⑤⑥）', my.pcv && my.cols === 2 && my.lefts[0] < my.lefts[1] && /今日やること/.test(my.heads[0]) && /成長/.test(my.heads[1]), my);
   } else {
-    ok(tag + '：スマホ：マイページは今のまま（1 列）', !my.pcv && my.cards > 2, my);
+    ok(tag + '：スマホ：マイページは 1 列', !my.pcv && my.cards > 2, my);
     const sk = await svgText(page, '#main-content svg[data-phw]');
     ok(tag + '：スマホ：スキルのグラフの文字は 11px 以上', sk.length >= 1 && sk.every(x => x.minFs >= 10.95), sk);
   }
