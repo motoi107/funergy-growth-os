@@ -7707,7 +7707,8 @@ const MENU_GROUPS = [
     children:['dashboard','store_cmd','mypage','discount']},   /* v840 / v897: discount / v1084: 対応依頼は廃止 */
   {id:'g_budget', label:'予実', icon:'ti-chart-bar', roles:['ceo','gm','office','am','sl'],
     /* v1084: 会議は中間レビューの右隣・仕入れは原価率(FC)のあった位置（原価率(FC)は廃止） */
-    children:['budget','mid_review','meeting','labor','purchase','kpi_master']},
+    /* v1196（UI案96 の 5B・Moto 11/18）：月間行動計画（cc_plan）は予実の中タブ。開ける人は今のまま（NAV_ITEMS の roles＝CEO・GM・Head Chef） */
+    children:['budget','mid_review','meeting','labor','purchase','kpi_master','cc_plan']},
   {id:'g_tasks', label:'ワークセンター', icon:'ti-layout-kanban', roles:['ceo','gm','office','am','sl'],
     children:['tasks','chat','lala']},   /* v1156 */
   {id:'g_hr', label:'人材管理', icon:'ti-users', roles:['ceo','gm','office','am','sl'],
@@ -7822,12 +7823,43 @@ var NAV_EXTRA_ITEMS = {
   office_export: {label:'出力センター', icon:'ti-file-export'}
 };
 function navItemById(id) { return NAV_ITEMS.find(n=>n.id===id) || (NAV_EXTRA_ITEMS[id] ? Object.assign({id:id}, NAV_EXTRA_ITEMS[id]) : {id, label:id, icon:'ti-circle'}); }
+/* ===== v1196（UI案96 の 3・Moto 11/18「1 B・2 A・3 A・4 A・5 B・6 B・7 B」）：大タブを 1 つの木に =====
+   GM・CEO が確かめた所属（FUNERGY_LOC）で新しい見え方の人だけ。木の形は今の GM の形（MENU_GROUPS）＋「そのほか」。
+   ・出る画面は今と同じ：その役割が今どこかの木（店・全店のときの木と、本部（Office）のときの木）で開けた画面だけを、1 つの木に並べ直す。
+     ほかの人の画面は増やさない。増やす・減らすのは「画面の表示」（FUNERGY_PV）で。
+   ・共通の木に無い画面（通知・業務ガイド・経理出力・月次サマリー・事前経費申請・出力センター）は「そのほか」（「画面の表示」の行と同じ）。
+   ・月間行動計画は予実の中（5B・MENU_GROUPS）。承認センターは出さない（v1165）。 */
+var NAV_OTHER_GROUP = {id:'g_other', label:'そのほか', icon:'ti-dots', children:['notifications','biz_guide','acct_export','monthly','expense','office_export']};
+function _locMode(){ try{ return (typeof window !== 'undefined' && window.FUNERGY_LOC && typeof window.FUNERGY_LOC.mode === 'function') ? window.FUNERGY_LOC.mode() : null; }catch(e){ return null; } }
+/* その役割が今まで出していた木（左上で全店・店を選んだとき／本部（Office）を選んだとき） */
+function _navTodayTreesFor(role){
+  if (role==='office_crew') return [ACCT_GROUPS];
+  if (role==='chef') return [CHEF_GROUPS];
+  var m = MENU_GROUPS.filter(function(g){ return (g.roles||[]).indexOf(role) >= 0; });
+  if (role==='office') return [m, ACCT_GROUPS];
+  if (role==='ceo' || role==='gm') return [m, OFFICE_GROUPS.filter(function(g){ return !g.roles || g.roles.indexOf(role) >= 0; })];
+  return [m];
+}
+function _navUnifiedGroups(role){
+  var have = {}, order = [];
+  _navTodayTreesFor(role).forEach(function(gs){ gs.forEach(function(g){ (g.children||[]).forEach(function(c){ if (c !== 'approval' && !have[c]) { have[c] = 1; order.push(c); } }); }); });
+  var seen = {}, out = [];
+  MENU_GROUPS.concat([NAV_OTHER_GROUP]).forEach(function(g){
+    var ch = (g.children||[]).filter(function(c){ if (!have[c] || seen[c]) return false; seen[c] = 1; return true; });
+    if (ch.length) out.push({ id:g.id, label:g.label, icon:g.icon, children:ch });
+  });
+  /* どの木にも無い画面が今の木にあれば（新しい画面を足したとき）、落とさずに「そのほか」へ */
+  var left = order.filter(function(c){ return !seen[c]; });
+  if (left.length) { var o = out.find(function(g){ return g.id === NAV_OTHER_GROUP.id; }); if (o) o.children = o.children.concat(left); else out.push({ id:NAV_OTHER_GROUP.id, label:NAV_OTHER_GROUP.label, icon:NAV_OTHER_GROUP.icon, children:left }); }
+  return out;
+}
 /* v1193（UI案95）：役割の木（ナビの元）。画面の表示の設定（FUNERGY_PV）・Grade 別の非表示・専門職の隠す画面をかける前。
    「今の決まりで開ける画面か」（FUNERGY_PV の見るだけの判定）にも使う */
 function _navBaseGroups() {
   var groups;
   if (curStoreLogin) groups = STORE_GROUPS;
   else if (curRole==='crew') groups = CREW_GROUPS;
+  else if (typeof _locMode === 'function' && _locMode()) groups = _navUnifiedGroups(curRole);   /* v1196（UI案96 の 3）：確かめた所属の人は 1 つの木（左上が本部・店でも同じ） */
   /* v844: 事務Crew も経理と同じメニューにする。Marcia と Akane で見え方が違う状態を解消。
      権限そのもの（canApprove 等）は変えていない。見えるだけで、できることは役職のまま。 */
   else if (curRole==='office_crew') groups = ACCT_GROUPS;
@@ -8041,7 +8073,16 @@ function navPageAllowed(id){
 function navHomePage(){
   if (curStoreLogin) return 'store_cmd';
   if (curRole === 'crew') return 'mypage';
+  if (typeof navAcctLanding === 'function' && navAcctLanding()) return 'acct_center';   /* v1196（UI案96 の 4A）。関数を 1 つずつ切り出す試験でも動くように typeof */
   var gs = groupsForRole(); return gs[0] ? firstAllowedChild(gs[0]) : 'mypage';
+}
+/* v1196（UI案96 の 3A・4A）：確かめた本部所属の経理・事務Crew は、ログイン直後（とホーム）が経理センター。
+   経理センターの入口そのものは本部所属＋役割（CEO・GM・経理・事務Crew）なら左上が店でも出る（1 つの木の g_acct_center・PAGE_GUARD）。
+   「画面の表示」で経理センターを隠したときは、今までどおり木の最初の画面 */
+function navAcctLanding(){
+  if (curStoreLogin || (curRole !== 'office' && curRole !== 'office_crew')) return false;
+  var lm = (typeof _locMode === 'function') ? _locMode() : null; if (!lm || lm.kind !== 'hq') return false;
+  return navPageAllowed('acct_center');
 }
 /* ===== v1084: 廃止・移動した画面への古い行き先を、今の画面に寄せる（Moto 10/15） =====
    古い行き先は、お気に入り（fav_<名前>）・通知（notifications の page）・画面に残ったリンク・小タブの状態から来る。
@@ -16780,6 +16821,7 @@ function ssOnLogout(){
   try{ if(typeof ltOnLogout==='function') ltOnLogout(); }catch(e){}   /* v1192：人件費の合計も（前の人の答えを残さない） */
   try{ if(window.FUNERGY_PV) FUNERGY_PV.onLogout(); }catch(e){}   /* v1193：画面の表示の設定も */
   try{ if(window.FUNERGY_AFF) FUNERGY_AFF.onLogout(); }catch(e){}   /* v1195：所属の確認も（待っている答えは使わない・Codex #200 P2-2） */
+  try{ if(window.FUNERGY_LOC) FUNERGY_LOC.onLogout(); }catch(e){}   /* v1196：自分の確かめた所属も（前の人の見え方を残さない） */
 }
 /* 関数を呼ぶ。返す：{ok, j}／{legacy}／{none}（ログインの印が無い）／{net}／{status, error} */
 async function ssCall(payload, retried){
@@ -23184,7 +23226,10 @@ async function enterAppWithSync(){
     }
   } catch(e){}
   try { if (window._uxMastersP) uxLoginOpsStart(window._uxMastersP); } catch(e){}   /* v1127 */
+  /* v1196（UI案96 の 2〜4）：自分の確かめた所属（aff_get）。名簿を読み直したあとに始め、アプリを出す前に少しだけ待つ（届かなければ今までの見え方・届いたら描き直す） */
+  var _locP = null; try { if (window.FUNERGY_LOC) _locP = FUNERGY_LOC.afterLogin(); } catch(e){ _locP = null; }
   try { await fetchEmpPrivate(); } catch(e){}
+  try { if (_locP) await Promise.race([ _locP, new Promise(function(res){ setTimeout(res, 3000); }) ]); } catch(e){}
   try { if (typeof piiAfterLogin === 'function') piiAfterLogin(); } catch(e){}   /* v1144：個人の欄と保険料の合計（待たない） */
   try { if (typeof ltAfterLogin === 'function') ltAfterLogin(); } catch(e){}   /* v1192：経理・AM の人件費の合計（待たない） */
   try { if (window.FUNERGY_PV) FUNERGY_PV.afterLogin(); } catch(e){}   /* v1193（UI案95）：画面の表示の設定（前に受け取った分はすぐ・新しい分は待たない） */
@@ -23732,15 +23777,24 @@ function tbStoreName(id, name){
   var ab = id === 'ALL' ? '全店' : id === 'OFFICE' ? 'Office' : (function(){ try{ var st = (typeof STORES !== 'undefined' ? STORES : []).find(function(x){ return x.id === id; }); return _bStoreAbbr(st || { id: id, name: name }); }catch(e){ return String(id || ''); } })();
   return '<span class="tb-sn"><span class="tb-sn-f">' + escapeHtml(String(name == null ? '' : name)) + '</span><span class="tb-sn-s">' + escapeHtml(String(ab)) + '</span></span>';
 }
+/* v1196（UI案96 の 2）：左上の中身。本部所属で新しい見え方の人は「全店舗」「Office」の代わりに「オフィス・本部」（FUNERGY_LOC.label） */
+function locTopHtml(id){
+  var lb = null; try{ lb = (window.FUNERGY_LOC && FUNERGY_LOC.label) ? FUNERGY_LOC.label(id) : null; }catch(e){ lb = null; }
+  if (lb) return '<i class="ti ' + lb.icon + '" style="font-size:12px;"></i> <span class="tb-sn"><span class="tb-sn-f">' + escapeHtml(lb.name) + '</span><span class="tb-sn-s">' + escapeHtml(lb.abbr) + '</span></span> <i class="ti ti-chevron-down" style="font-size:10px;"></i>';
+  var storeName = id === 'ALL' ? '全店舗' : (id==='OFFICE' ? 'Office' : (STORES.find(function(s){ return s.id===id; })||{name:id}).name);
+  var sicon = id==='OFFICE' ? 'ti-building-skyscraper' : 'ti-building-store';
+  return '<i class="ti ' + sicon + '" style="font-size:12px;"></i> ' + tbStoreName(id, storeName) + ' <i class="ti ti-chevron-down" style="font-size:10px;"></i>';
+}
 function initApp() {
   var _dg=(typeof _lsDegraded==='function' && _lsDegraded());   /* v1138：IndexedDB を読めなかった起動では一度きりの移し替えをしない（localStorage に大きなデータが無い） */
   try{ autoPruneIfCritical(); }catch(e){}
   try{ if(!_dg) migrateInvHistSplit(); }catch(e){}   /* v617: 棚卸履歴を月ごとの行へ移行（巨大1行だとクラウド保存が失敗するため） */
   var rc = ROLE_CONFIG[curRole];
   try { if(!_dg) migrateMenuStore(); } catch(e){}
+  /* v1196（UI案96 の 2）：確かめた所属で新しい見え方の人は、ログイン直後の左上を決め直す（本部所属＝オフィス・本部・店舗所属＝所属の店） */
+  try { if (window.FUNERGY_LOC) FUNERGY_LOC.enter(); } catch(e){}
   // Topbar
-  var storeName = curStore === 'ALL' ? '全店舗' : (STORES.find(s=>s.id===curStore)||{name:curStore}).name;
-  document.getElementById('topbar-store').innerHTML = `<i class="ti ti-building-store" style="font-size:12px;"></i> ${tbStoreName(curStore, storeName)} <i class="ti ti-chevron-down" style="font-size:10px;"></i>`;
+  document.getElementById('topbar-store').innerHTML = locTopHtml(curStore);
   (function(){
     var _hr = (typeof curRealRole!=='undefined' && curRealRole) ? curRealRole : curRole;
     var _hlabel = ((typeof ROLE_CONFIG!=='undefined' && ROLE_CONFIG[_hr]) ? ROLE_CONFIG[_hr].label : rc.label);
@@ -23758,8 +23812,10 @@ function initApp() {
   var groups = groupsForRole();
   if (curStoreLogin) curPage = 'store_cmd';            // 店舗共有ログインは店舗オペレーション中心
   else curPage = (curRole==='crew') ? 'mypage' : (groups[0] ? firstAllowedChild(groups[0]) : 'mypage');
+  /* v1196（UI案96 の 4A）：確かめた本部所属の経理・事務Crew は経理センターから（ワークセンターの「要対応」より先） */
+  var _land4a = false; try{ if(!curStoreLogin && typeof navAcctLanding==='function' && navAcctLanding()){ curPage='acct_center'; _land4a=true; } }catch(e){}
   /* v1131（UI案68 の 10A）：GM・経理・事務Crew・G4 はワークセンターの「要対応」から（申請を使い始めたあと・この端末で見たとき） */
-  try{ if(!curStoreLogin && typeof wrLandHere==='function' && wrLandHere()){ curPage='tasks'; workTab='wr'; } }catch(e){}
+  try{ if(!curStoreLogin && !_land4a && typeof wrLandHere==='function' && wrLandHere()){ curPage='tasks'; workTab='wr'; } }catch(e){}
   /* v897: QR（?s=店舗コード）で開かれていたら割引カードに着地する。
      このアプリにハッシュルーターは無いので、ここで行き先を差し替えないと
      コードは読めても割引画面には辿り着かない。 */
@@ -23879,6 +23935,7 @@ if(typeof window.FUNERGY_WEB_OFFICE_NAVIGATE==='function')return window.FUNERGY_
    STORE SWITCHER (for GM/CEO/office/am)
 ============================================================ */
 function openStoreSwitcher() {
+  try{ if(window.FUNERGY_LOC && FUNERGY_LOC.mode()){ FUNERGY_LOC.openSwitcher(); return; } }catch(e){}   /* v1196（UI案96 の 2・7B） */
   var rc = ROLE_CONFIG[curRole];
   if (!rc.allStores && curRole !== 'am') return;
   var stores = sortByLoginOrder(curRole === 'am' ? activeStores().filter(s => myAmStores().includes(s.id)) : activeStores());
@@ -23893,11 +23950,11 @@ function openStoreSwitcher() {
 }
 
 function switchStore(id) {
+  /* v1196（UI案96 の 2）：前の値（全店・Office・ほかの店・画面の店のタブ・ダッシュボードの店のボタン）は、確かめた所属と権限で決め直す */
+  try{ if(window.FUNERGY_LOC && FUNERGY_LOC.mode()) id = FUNERGY_LOC.resolve(id); }catch(e){}
   curStore = id;
   try{ if(typeof pageStoresFollow==='function') pageStoresFollow(id); }catch(e){}   /* v1129 ③：画面の中の店を左上に合わせる */
-  var storeName = id === 'ALL' ? '全店舗' : (id==='OFFICE' ? 'Office' : (STORES.find(s=>s.id===id)||{name:id}).name);
-  var sicon = id==='OFFICE' ? 'ti-building-skyscraper' : 'ti-building-store';
-  document.getElementById('topbar-store').innerHTML = `<i class="ti ${sicon}" style="font-size:12px;"></i> ${tbStoreName(id, storeName)} <i class="ti ti-chevron-down" style="font-size:10px;"></i>`;
+  document.getElementById('topbar-store').innerHTML = locTopHtml(id);
   closeModalDirect();
   if (id === 'OFFICE') { curPage = 'office_mgr'; if(typeof buildNav==='function') buildNav(); renderPage('office_mgr'); window.scrollTo(0,0); return; }
   if (['office_mgr','error_center'].indexOf(curPage)>=0) curPage='dashboard';
@@ -26059,6 +26116,8 @@ function healthRing(score, color, size){
 }
 function getVisibleStores() {
   var out;
+  /* v1196（UI案96 の 2・7B）：確かめた店舗所属の人は、左上の 1 店だけ（所属の店と応援の店から 1 店ずつ。合計は作らない） */
+  try{ if(window.FUNERGY_LOC){ var _lo=FUNERGY_LOC.storeOpts(); if(_lo){ var _cs=FUNERGY_LOC.resolve(curStore); return sortByLoginOrder(activeStores().filter(function(s){ return s.id===_cs; })); } } }catch(e){}
   // AMは常に管轄店舗のみ（+応援店舗）。curStore=ALLでも管轄外は見せない
   if (curRole === 'am') {
     var amIds = myAmStores().concat(mySupportStores());
@@ -50041,7 +50100,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1195';
+const APP_VERSION = '1196';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -117532,8 +117591,10 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   }
   /* 「確認が必要」の理由。none＝まだ決まっていない／diff＝マスターと確かめた所属が違う／role＝役割と所属が合わない（2A）／
      all＝所属が全店／unknown＝所属が空・店舗マスターに無い／am＝AM の管轄（店舗マスターの AM 欄）が所属と応援に無い */
-  function reasons(e){
-    var id = String(e.id), row = E.rows[id], st = hqState(e), role = String(e.role || ''), v = mStore(e), out = [];
+  function reasons(e){ return reasonsWith(e, E.rows[String(e.id)]); }
+  /* v1196：同じ決まりを、ログインした人の自分の行（aff_get）にも使う（FUNERGY_LOC。理由が 1 つも無い人だけ新しい見え方＝2A） */
+  function reasonsWith(e, row){
+    var st = hqState(e), role = String(e.role || ''), v = mStore(e), out = [];
     if (!row) out.push('none'); else if (!matches(e, row)) out.push('diff');
     if ((OFFICE_ROLES[role] && st === 'store') || (STORE_ROLES[role] && (st === 'hq' || st === 'all'))) out.push('role');
     if (st === 'all') out.push('all'); else if (st === 'unknown') out.push('unknown');
@@ -118024,9 +118085,203 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     reason: function(v){ E.reason = String(v || '').slice(0, 500); },
     save: function(){ save(); }
   };
-  W.FUNERGY_AFF = { cardHtml:cardHtml, h:h, onLogout:onLogout, _t:{ E:function(){ return E; }, reasons:reasons, suggest:suggest, changes:changes, matches:matches, itemsOf:itemsOf, writeMaster:writeMaster, load:load, counts:counts, reset:function(){ E = fresh(); } } };
+  /* v1196：ログインした人の自分の行（aff_get の row）で、確認が必要な理由を返す（空なら確かめ済み・マスターと同じ・役割とも合う）。
+     row の形は aff_get のまま（aff・store・support）。合わない形は「まだ決まっていない」と同じ */
+  function selfReasons(e, row){
+    if (!e) return ['none'];
+    var r = (row && (row.aff === 'hq' || row.aff === 'store')) ? { aff:row.aff, store:row.aff === 'hq' ? '' : String(row.store || ''), support:uniq(Array.isArray(row.support) ? row.support : []) } : null;
+    try{ return reasonsWith(e, r); }catch(x){ return ['none']; }
+  }
+  W.FUNERGY_AFF = { cardHtml:cardHtml, h:h, onLogout:onLogout, selfReasons:selfReasons, _t:{ E:function(){ return E; }, reasons:reasons, suggest:suggest, changes:changes, matches:matches, itemsOf:itemsOf, writeMaster:writeMaster, load:load, counts:counts, reset:function(){ E = fresh(); } } };
 })();
 /* ==== FUNERGY_AFF end ==== */
+/* ==== FUNERGY_LOC（v1196・UI案96 の段階 2 の ②③④）：左上の店と前の値・1 つの木・経理センターの入口とログイン直後 ====
+   仕様：docs/UNIFIED_UI_V1191_JA.md の 19（Moto さん 11/18「1 B・2 A・3 A・4 A・5 B・6 B・7 B」）。
+   ・新しい見え方になるのは、GM・CEO が「所属の確認」で確かめた自分の所属（関数 secure-state の aff_get）があり、
+     従業員マスターと同じで、役割とも合う人だけ（FUNERGY_AFF.selfReasons が空＝2A）。それ以外の人・店のタブレット・G1 は今までどおり。
+     答えが届くまで・届かない・前の版の関数（affn なし）・SQL の前も今までどおり（狭いほう・今の見え方）。
+   ・本部所属（hq）：左上は「オフィス・本部」（＝今の「全店舗」。全店を横断する表示の形で、1 店として足さない）＋各店。
+     前の「本部 › Office」は「オフィス・本部」にまとめる。ログイン直後は「オフィス・本部」。見える店は今と同じ（AM＝管轄＋応援・1B）。
+   ・店舗所属（store）：左上は所属の店と応援の店だけ。2 店以上でも合計は作らず 1 店ずつ選ぶ（7B）。今の役割で見えていた店より広げない。
+   ・前の値（ALL・OFFICE・ほかの店の ID・画面の店のタブ・ダッシュボードの店のボタン）は、使うたびにここで決め直す（resolve）。
+   ・大タブは 1 つの木（_navUnifiedGroups）。経理センターの入口は本部所属＋役割（3A）。ログイン直後は経理・事務Crew が経理センター（4A）。
+   ・この端末には何も残さない（自分の行はメモリだけ・ログインが変わったら捨てる）。 */
+(function(){
+  'use strict';
+  var W = window;
+  if (W.FUNERGY_LOC) return;
+  function T(ja, en){ try{ return typeof t === 'function' ? t(ja, en) : ja; }catch(e){ return ja; } }
+  function esc(s){ return String(s == null ? '' : s).replace(/[&<>"']/g, function(c){ return { '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]; }); }
+  function uniq(a){ var m = {}, o = []; (a || []).forEach(function(x){ x = String(x == null ? '' : x).trim(); if (x && !m[x]) { m[x] = 1; o.push(x); } }); return o; }
+
+  /* ---------------------------------------------------------------- 状態（メモリだけ） */
+  function fresh(){ return { k:'', state:'', row:null, entered:false, pend:null }; }
+  var S = fresh(), GEN = 0, MEMO = { key:'', at:0, v:null };
+  function who(){
+    try{
+      if (typeof curStoreLogin !== 'undefined' && curStoreLogin) return '';
+      if (typeof curUserName === 'undefined' || !curUserName || typeof curRole === 'undefined' || !curRole) return '';
+      return String((typeof curRealRole !== 'undefined' && curRealRole) || curRole) + '|' + String(curUserName);
+    }catch(e){ return ''; }
+  }
+  function goodRow(x){
+    if (!x || typeof x !== 'object' || (x.aff !== 'hq' && x.aff !== 'store')) return null;
+    var st = x.aff === 'hq' ? '' : String(x.store == null ? '' : x.store);
+    if (x.aff === 'store' && !st) return null;
+    return { aff:x.aff, store:st, support:uniq(Array.isArray(x.support) ? x.support : []) };
+  }
+  /* 自分の行を読む（ログインのたび）。返す：答えを置いたか */
+  async function load(){
+    var k = who(), g = ++GEN;
+    S.k = k; S.row = null; S.state = k ? 'loading' : ''; S.pend = null; MEMO.at = 0;
+    if (!k || typeof ssCall !== 'function') { S.state = ''; return false; }
+    var r = null;
+    try{ r = await ssCall({ action:'aff_get', ms:8000 }); }catch(e){ r = { net:true }; }
+    if (g !== GEN || who() !== k) return false;   /* 待つあいだにログインが変わった：前の人の答えは置かない */
+    var res = (r && r.ok && r.j && r.j.affn === 1) ? { row: r.j.nosql ? null : goodRow(r.j.row), state: r.j.nosql ? 'nosql' : 'ok' } : { row:null, state: (r && r.legacy) ? 'old' : 'err' };
+    /* v1196（Codex #201）：アプリを出したあとに届いた答えは、すぐには使わない（S.pend）。入力の途中（開いている箱・打っている欄）に
+       見え方（mode）・左上の店（curStore＝保存先）が変わらないように、入力が終わってから settle が使う */
+    if (S.entered) S.pend = res; else commit(res);
+    return true;
+  }
+  function commit(res){ S.row = res.row; S.state = res.state; S.pend = null; MEMO.at = 0; }
+  /* 入力の途中か：箱（modal）が開いている・画面の欄（input・textarea・select）で打っている */
+  function busy(){
+    try{
+      var mo = document.getElementById('modal-overlay'); if (mo && mo.classList && mo.classList.contains('open')) return true;
+      var ae = document.activeElement, mc = document.getElementById('main-content');
+      return !!(ae && mc && mc.contains && mc.contains(ae) && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName));
+    }catch(e){ return false; }
+  }
+  /* 遅れて届いた答えを、入力が終わってから使う（1 秒ごとに見る・ログインが変わったらやめる）。見え方が変わったら左上・ナビ・今の画面を描き直す */
+  function settle(g){
+    if (g !== GEN || !S.pend) return;
+    if (busy()) { try{ setTimeout(function(){ settle(g); }, 1000); }catch(e){} return; }
+    var before = JSON.stringify(mode());
+    commit(S.pend);
+    if (JSON.stringify(mode()) !== before) apply();
+  }
+  function afterLogin(){
+    S = fresh(); MEMO.at = 0;
+    var p = load(), g = GEN;
+    p.then(function(put){ if (put && S.entered) settle(g); }).catch(function(){});
+    return p;
+  }
+  function onLogout(){ GEN++; S = fresh(); MEMO = { key:'', at:0, v:null }; }
+
+  /* ---------------------------------------------------------------- 決まり */
+  function me(){
+    try{ var nm = curUserName; return nm ? ((getEmployees() || []).find(function(x){ return x && x.name === nm; }) || null) : null; }catch(e){ return null; }
+  }
+  function actIds(){ try{ return (activeStores() || []).map(function(s){ return String(s.id); }); }catch(e){ return []; } }
+  /* 今の役割で見えていた店（左上が全店のとき）。店舗所属の選べる店はこれより広げない */
+  function todayIds(){
+    try{
+      if (curRole === 'am') return uniq([].concat(myAmStores() || []).concat(mySupportStores() || []));
+      return uniq([myStoreId()].concat(mySupportStores() || []));
+    }catch(e){ return []; }
+  }
+  function calc(){
+    if (typeof curStoreLogin !== 'undefined' && curStoreLogin) return null;
+    if (typeof curRole === 'undefined' || !curRole || curRole === 'crew') return null;   /* G1 は今までどおり（Claude が決めた） */
+    var k = who(); if (!k || k !== S.k || S.state !== 'ok' || !S.row) return null;
+    var e = me(); if (!e || String(e.role || '') !== String((typeof curRealRole !== 'undefined' && curRealRole) || curRole)) return null;
+    if (!W.FUNERGY_AFF || typeof W.FUNERGY_AFF.selfReasons !== 'function') return null;
+    if (W.FUNERGY_AFF.selfReasons(e, S.row).length) return null;   /* 2A：確認が必要な理由があるあいだは今の見え方 */
+    if (S.row.aff === 'hq') return { kind:'hq' };
+    var act = actIds(), today = todayIds();
+    var opts = uniq([S.row.store].concat(S.row.support)).filter(function(id){ return act.indexOf(id) >= 0 && today.indexOf(id) >= 0; });
+    if (!opts.length) return null;
+    return { kind:'store', opts:opts };
+  }
+  /* 新しい見え方か。null＝今までどおり。何度も呼ばれる（getVisibleStores・ナビ）ので 2 秒だけ覚える（ログインの人・役割が変われば読み直す） */
+  function mode(){
+    try{
+      var key = who() + '|' + GEN + '|' + S.state + '|' + (typeof curRole !== 'undefined' ? curRole : '');
+      var now = Date.now();
+      if (MEMO.key === key && now - MEMO.at < 2000) return MEMO.v;
+      var v = calc(); MEMO = { key:key, at:now, v:v }; return v;
+    }catch(e){ return null; }
+  }
+  /* 本部所属の人が選べる店（今と同じ：AM は管轄＋応援・ほかは全部の店） */
+  function hqIds(){
+    try{ if (curRole === 'am') { var act = actIds(); return uniq([].concat(myAmStores() || []).concat(mySupportStores() || [])).filter(function(id){ return act.indexOf(id) >= 0; }); } }catch(e){ return []; }
+    return actIds();
+  }
+  /* 前の値を、今の所属と権限で決め直す */
+  function resolve(id){
+    var m = mode(); if (!m) return id;
+    id = id == null ? '' : String(id);
+    if (m.kind === 'hq') return (id && id !== 'ALL' && id !== 'OFFICE' && hqIds().indexOf(id) >= 0) ? id : 'ALL';
+    return m.opts.indexOf(id) >= 0 ? id : m.opts[0];
+  }
+  /* 左上の名前（本部所属の「オフィス・本部」だけ。ほかは null＝今までの名前） */
+  function label(id){
+    var m = mode(); if (!m || m.kind !== 'hq' || (id !== 'ALL' && id !== 'OFFICE')) return null;
+    return { name:T('オフィス・本部','Office / HQ'), abbr:T('本部','HQ'), icon:'ti-building-skyscraper' };
+  }
+  /* 店舗所属の人が画面の中で選べる店（左上と同じ） */
+  function storeOpts(){ var m = mode(); return (m && m.kind === 'store') ? m.opts.slice() : null; }
+
+  /* ---------------------------------------------------------------- 左上の切り替え */
+  function storeObj(id){ try{ return (STORES || []).find(function(s){ return String(s.id) === String(id); }) || { id:id, name:id, color:'#888' }; }catch(e){ return { id:id, name:id, color:'#888' }; } }
+  function sorted(ids){ var a = ids.map(storeObj); try{ return sortByLoginOrder(a); }catch(e){ return a; } }
+  function openSwitcher(){
+    var m = mode(); if (!m) return false;
+    var cs = (typeof curStore !== 'undefined') ? curStore : '';
+    var btn = function(id, name, color, icon, sub){
+      return '<div class="store-btn' + (id === cs ? ' sel' : '') + '" style="border-left-color:' + esc(color || '#888') + '" onclick="switchStore(\'' + esc(id) + '\')">'
+        + (icon ? '<i class="ti ' + icon + '" style="font-size:13px"></i> ' : '') + esc(name)
+        + (sub ? '<div style="font-size:10.5px;color:var(--muted);font-weight:400;margin-top:2px">' + esc(sub) + '</div>' : '') + '</div>';
+    };
+    var h = '';
+    if (m.kind === 'hq') {
+      var ids = hqIds();
+      h += '<div class="store-grid">' + btn('ALL', T('オフィス・本部','Office / HQ'), '#8b5cf6', 'ti-building-skyscraper',
+          curRole === 'am' ? T('管轄の店をまとめて（' + ids.length + ' 店）','Your stores together (' + ids.length + ')') : T('全店をまとめて','All stores together')) + '</div>';
+      if (ids.length) h += '<div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border)"><div class="store-picker-label">' + esc(T('店','Stores')) + '</div><div class="store-grid">'
+        + sorted(ids).map(function(s){ return btn(String(s.id), s.name || s.id, s.color); }).join('') + '</div></div>';
+    } else {
+      if (m.opts.length < 2) return true;   /* 1 店だけ：切り替えるものが無い（今までどおり何も開かない） */
+      h += '<div style="font-size:11.5px;color:var(--muted);margin:0 0 8px">' + esc(T('所属の店と応援の店です。1 店ずつ選びます。','Your store and support stores. Pick one at a time.')) + '</div>'
+        + '<div class="store-grid">' + sorted(m.opts).map(function(s){ return btn(String(s.id), s.name || s.id, s.color); }).join('') + '</div>';
+    }
+    try{ openModal('<div class="modal-title">' + esc(T('ロケーション切替','Location')) + ' <button class="modal-close" onclick="closeModalDirect()">×</button></div>' + h); }catch(e){}
+    return true;
+  }
+
+  /* ---------------------------------------------------------------- ログイン直後と、答えが遅れて届いたとき */
+  /* initApp の最初：本部所属は「オフィス・本部」、店舗所属は所属の店（選べない値なら決め直す） */
+  function enter(){
+    S.entered = true;
+    var m = mode(); if (!m) return;
+    var cs = m.kind === 'hq' ? 'ALL' : resolve(curStore);
+    if (cs !== curStore) { curStore = cs; try{ if (typeof pageStoresFollow === 'function') pageStoresFollow(cs); }catch(e){} }
+  }
+  /* 答えがアプリを出したあとに届いて、見え方が変わった（settle が入力の終わりを待ってから呼ぶ）：左上の店を決め直し、左上・ナビ・今の画面を描き直す。
+     開けない画面になったらホーム。v1196（Codex #201）：前は左上の店が変わったときだけ画面を描き直していた（見える店・名前が変わっても古いまま）。
+     また前は入力の途中でも左上の店（保存先）を先に変えていた */
+  function apply(){
+    try{
+      if (!S.entered || typeof curRole === 'undefined' || !curRole) return;
+      MEMO.at = 0;
+      var cs = resolve(curStore);
+      if (cs !== curStore) { curStore = cs; try{ if (typeof pageStoresFollow === 'function') pageStoresFollow(cs); }catch(e){} }
+      var tb = document.getElementById('topbar-store'); if (tb && typeof locTopHtml === 'function') tb.innerHTML = locTopHtml(curStore);
+      if (!document.getElementById('nav-bar') || typeof buildNav !== 'function') return;
+      buildNav();
+      var cp = (typeof curPage !== 'undefined') ? curPage : '';
+      if (!cp) return;
+      var bad = (typeof navGuardAllows === 'function' && !navGuardAllows(cp)) || (typeof isPageHiddenForMe === 'function' && isPageHiddenForMe(cp));
+      if (bad && typeof go === 'function') go(navHomePage());
+      else if (typeof renderPage === 'function') renderPage(cp);
+    }catch(e){}
+  }
+
+  W.FUNERGY_LOC = { afterLogin:afterLogin, onLogout:onLogout, mode:mode, resolve:resolve, label:label, storeOpts:storeOpts, openSwitcher:openSwitcher, enter:enter, apply:apply,
+    _t:{ S:function(){ return S; }, load:load, calc:calc, hqIds:hqIds, settle:settle, busy:busy, reset:function(){ GEN++; S = fresh(); MEMO = { key:'', at:0, v:null }; } } };
+})();
+/* ==== FUNERGY_LOC end ==== */
 </script>
 <script>
 /* ==== FUNERGY_AR（v1190・UI案93）：承認・閲覧の共通ルールの画面（設定 › 承認・閲覧設定・申請の画面のルートと例外）====

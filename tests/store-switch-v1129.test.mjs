@@ -42,6 +42,7 @@ function app(role, store, am) {
     ${fnFrom('getVisibleStores')}
     ${HELPERS}
     ${fnFrom('tbStoreName')}
+    ${fnFrom('locTopHtml')}
     ${fnFrom('switchStore')}
     ${fnFrom('dailyScopeStores')}
   `, c);
