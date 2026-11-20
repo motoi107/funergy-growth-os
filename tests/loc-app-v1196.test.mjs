@@ -55,7 +55,7 @@ function app(o = {}) {
     curRole: null, curRealRole: null, curStore: o.store || 'S1', curStoreLogin: !!o.storeLogin, curUserName: null, curLang: o.lang || 'ja', curPage: '',
     budgetTab: 'daily', workTab: 'today', officeMgrTab: 'dash', _acCat: 'docs', _acSub: 'x',
     TOASTS: [], NAVS: [], RENDERS: [], MODALS: [], CALLS: [], GOS: [], FOLLOW: [], EMPS: o.emps || EMPS0(), STORES0: STORES0.map(s => ({ ...s })),
-    ROWS: o.rows || ROWS0(), SSMODE: o.ssMode || 'ok', WRLAND: !!o.wrLand, TOP: { innerHTML: '' }, MODALOPEN: false, TYPING: false, PENDING: [],
+    ROWS: o.rows || ROWS0(), SSMODE: o.ssMode || 'ok', WRLAND: !!o.wrLand, TOP: { innerHTML: '' }, MODALOPEN: false, TYPING: false, PENDING: [], TIMERS: [],
     Date, JSON, Math, Object, Array, String, Number, Promise, console,
   };
   vm.createContext(c);
@@ -66,7 +66,7 @@ function app(o = {}) {
     var MO = { classList: { contains: function(){ return MODALOPEN; } } };
     var document = { getElementById: function(id){ if (id === 'topbar-store') return TOP; if (id === 'nav-bar') return { innerHTML:'' }; if (id === 'main-content') return MAIN; if (id === 'modal-overlay') return MO; return null; },
       get activeElement(){ return TYPING ? { tagName:'INPUT' } : null; } };
-    function setTimeout(){ return 0; } function clearTimeout(){}
+    function setTimeout(f, ms){ TIMERS.push([f, ms]); return TIMERS.length; } function clearTimeout(){}   // Codex #201：遅れた答えの待ちを試験で進める
     function t(ja, en){ return curLang === 'en' ? en : ja; }
     function showToast(m){ TOASTS.push(m); }
     function ls(k, d){ return d; } function lsSet(){ return true; }
@@ -329,12 +329,45 @@ test('an answer after the app is shown: the top-left and nav are redrawn, the op
   assert.equal(c.curPage, 'acct_center', 'the open page stays (still allowed)');
   assert.equal(c.GOS.length, 0);
   assert.equal(c.RENDERS.at(-1), 'acct_center', 'redrawn for the new store');
-  // while typing, the page is not redrawn
+  // Codex #201：入力の途中（打っている・箱が開いている）は、見え方も左上の店（保存先）も変えない。終わってから決め直して描き直す
   const d = app({ ssMode: 'deferred' });
   await login(d, 'Sal Lee', { store: 'S2' });
-  run(d, "initApp(); curStore='ALL'"); d.TYPING = true; const r0 = d.RENDERS.length;
+  run(d, "initApp(); curStore='ALL'"); d.TYPING = true; const r0 = d.RENDERS.length, n0 = d.NAVS.length;
   d.PENDING[0](); await settle();
-  assert.equal(d.curStore, 'S1', 'an old ALL is re-decided to the own store'); assert.equal(d.RENDERS.length, r0, 'not redrawn while typing');
+  assert.equal(d.curStore, 'ALL', 'the save target does not change while typing'); assert.equal(mode(d), null, 'the view does not change yet');
+  assert.equal(d.RENDERS.length, r0); assert.equal(d.NAVS.length, n0);
+  const waits = d.TIMERS.filter(([, ms]) => ms === 1000);
+  assert.equal(waits.length, 1, 'it looks again in a second');
+  d.TYPING = false; d.MODALOPEN = true; waits[0][0]();
+  assert.equal(d.curStore, 'ALL', 'a dialog is open: still waits'); assert.equal(d.TIMERS.filter(([, ms]) => ms === 1000).length, 2);
+  d.MODALOPEN = false; d.TIMERS.filter(([, ms]) => ms === 1000).at(-1)[0]();
+  assert.equal(d.curStore, 'S1', 'after the input: an old ALL is re-decided to the own store');
+  assert.deepEqual(mode(d), { kind: 'store', opts: ['S1', 'S2'] });
+  assert.equal(d.RENDERS.at(-1), d.curPage, 'redrawn after the input'); assert.ok(d.NAVS.length > n0);
+  // a logout while waiting: the old answer is never used
+  const e = app({ ssMode: 'deferred' });
+  await login(e, 'Sal Lee', { store: 'S2' });
+  run(e, "initApp(); curStore='ALL'"); e.TYPING = true; e.PENDING[0](); await settle();
+  run(e, 'FUNERGY_LOC.onLogout()'); e.TYPING = false; e.TIMERS.filter(([, ms]) => ms === 1000).at(-1)[0]();
+  assert.equal(e.curStore, 'ALL'); assert.equal(mode(e), null);
+});
+
+test('Codex #201: a late answer that changes what is shown redraws the page even when the top-left store stays the same; an answer that changes nothing redraws nothing', async () => {
+  const c = app({ ssMode: 'deferred' });
+  await login(c, 'Gina M');
+  run(c, "curStore='ALL'; initApp()");
+  const r0 = c.RENDERS.length;
+  assert.doesNotMatch(c.TOP.innerHTML, /オフィス・本部/);
+  c.PENDING[0](); await settle();
+  assert.equal(c.curStore, 'ALL', 'the same store');
+  assert.match(c.TOP.innerHTML, /オフィス・本部/, 'the name is new');
+  assert.equal(c.RENDERS.length, r0 + 1, 'the open page is redrawn for the new view'); assert.equal(c.RENDERS.at(-1), c.curPage);
+  // no confirmed affiliation (old view stays): nothing is redrawn
+  const n = app({ ssMode: 'deferred', rows: {} });
+  await login(n, 'Gina M');
+  run(n, "curStore='ALL'; initApp()"); const n0 = n.RENDERS.length, v0 = n.NAVS.length;
+  n.PENDING[0](); await settle();
+  assert.equal(mode(n), null); assert.equal(n.RENDERS.length, n0); assert.equal(n.NAVS.length, v0);
 });
 
 test('the shared memory: nothing is written to the device; aff_get asks without extra fields', async () => {
