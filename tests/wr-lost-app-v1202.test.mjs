@@ -112,3 +112,46 @@ test('a person who can also send expenses gets only the lost receipt form from �
   assert.ok(a.ctx.wrExpKinds().length > 0, 'this person can send expenses');
   assert.match(f, /会社のカードで買ったのにレシートを無くしたとき/); assert.doesNotMatch(f, /wrPick\('/);
 });
+
+test('Codex #207 P1: a G1 who cannot open the Work Center sees own lost receipts in a sheet, opens one by its number, and can fix and resend a returned one (the Work Center rights are not widened)', async () => {
+  const s = await world();
+  const a = await app(s, 'E8');   // Crew（G1）・ワークセンター（tasks）は開けない
+  a.ctx.navGuardAllows = p => p !== 'tasks';
+  a.ctx.openLostReceiptForm(); await a.settle();
+  fill(a, { store: 'S1', vendor: 'Costco', amount: '42.50', items: 'ice', memo: 'lost it' });
+  await a.ctx.wrSend(); await a.settle();
+  const [row] = await s.q("select id, code from wr_requests where kind = 'lost'");
+  // 送ったあとの「自分の申請を見る」（番号つき）：ワークセンターへ行かず、その申請をそのまま開く
+  a.pages.length = 0;
+  a.ctx.wrOpenMine(row.code); await a.settle();
+  assert.ok(!a.pages.includes('go:tasks'), 'does not go to the Work Center (it would bounce to My Page)');
+  assert.match(a.dom.els['wr-detail'].innerHTML, new RegExp(row.code), 'the request itself opens');
+  // GM が差し戻す
+  const f = (await s.call('E2', { action: 'get', id: row.id })).body;
+  const ret = await s.act('E2', f, 'return', { note: 'store name please' });
+  assert.equal(ret.status, 200, JSON.stringify(ret.body));
+  // 紛失届の画面の「自分の申請」（番号なし）：自分の申請の一覧の窓。差し戻し中が出る
+  a.pages.length = 0;
+  a.ctx.wrOpenMine(); await a.settle();
+  assert.ok(!a.pages.includes('go:tasks'));
+  const sheet = a.dom.els['wr-mine-sheet'].innerHTML;
+  assert.match(sheet, new RegExp('data-wr-sheet="' + row.code + '"'), 'my lost receipt is listed');
+  assert.match(sheet, /差し戻し中/);
+  // 開く → 差し戻しの理由と「直して出し直す」→ 直して送る
+  a.ctx.wrOpen(row.id); await a.settle();
+  const d = a.dom.els['wr-detail'].innerHTML;
+  assert.match(d, /差し戻し：store name please/);
+  assert.match(d, /直して出し直す/);
+  a.ctx.wrAsk('resubmit'); await a.settle();
+  fill(a, { store: 'S1', vendor: 'Costco Iwilei', amount: '42.50', items: 'ice', memo: 'lost it' });
+  await a.ctx.wrSend(); await a.settle();
+  const [after] = await s.q("select status, payload from wr_requests where id = $1", [row.id]);
+  assert.equal(after.status, 'pending', 'resent to the GM');
+  assert.equal(after.payload.vendor, 'Costco Iwilei');
+  // ワークセンターを開ける人（G2 以上など）は今までどおりワークセンターの「自分の申請」へ
+  const g = await app(s, 'E6', { role: 'sl' });
+  g.ctx.navGuardAllows = () => true;
+  g.ctx.wrOpenMine(row.code);
+  assert.deepEqual(g.pages, ['go:tasks']);
+  assert.equal(g.dom.els['wr-mine-sheet'], undefined, 'no sheet');
+});
