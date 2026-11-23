@@ -370,3 +370,29 @@ test('v1206: when both the expense card (MY) and ① (the 10-second reread) have
   assert.doesNotMatch(g.today(), /申請の対応待ち/, 'the newer ① read (0) wins over the older card read (1)');
   g.ctx.Date = RealDate;
 });
+
+test('v1206 (Claude routine P3-1): a failed ① reread does not make its old count look newer than the expense card count', async () => {
+  const s = await setup();
+  const g = wrApp(s, 'E2', { role: 'gm' });
+  const RealDate = Date;
+  let off = 0, failMine = false;
+  class FD extends RealDate { constructor(...a) { if (a.length) super(...a); else super(RealDate.now() + off); } static now() { return RealDate.now() + off; } }
+  g.ctx.Date = FD;
+  const realFetch = g.ctx.fetch;
+  g.ctx.fetch = async (url, init) => {
+    let b = {}; try { b = JSON.parse(init && init.body || '{}'); } catch (e) {}
+    if (failMine && b.action === 'list' && b.scope === 'mine') throw new Error('offline');
+    return realFetch(url, init);
+  };
+  const m = await s.subOk('E6', 'mileage', 'S1');
+  g.today(); await g.settle(); g.today(); await g.settle();   // ① の読み直し：対応待ち 1
+  assert.match(g.today(), /申請の対応待ち 1 件/);
+  assert.equal((await s.approve('E2', await s.fresh(m))).status, 200);
+  off += 3000;
+  await g.load();   // 経費のカード：対応待ち 0（新しい）
+  assert.doesNotMatch(g.today(), /申請の対応待ち/, 'the newer card count (0)');
+  failMine = true; off += 11000;   // ① の読み直しが失敗する（RET.at は進むが件数は前の 1 のまま）
+  g.today(); await g.settle();
+  assert.doesNotMatch(g.today(), /申請の対応待ち/, 'a failed reread keeps the newer card count (0), not its own old count (1)');
+  g.ctx.Date = RealDate;
+});

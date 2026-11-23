@@ -115921,7 +115921,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     /* v1206（Codex #208 の P2 の残り）：② の経費のカードを出さない人は MY.counts が読まれず、ログインのときの S.counts のまま古くなった。
        ① の「戻ってきた申請」の読み込み（10 秒ごと）の答えの件数も使い、いちばん新しく読んだ件数を出す */
     var rl = retLoadIfStale(), rk = RET.key === authKey() && RET.counts ? RET : null, mk = mine && MY.counts ? MY : null;
-    var cn = (rk && mk) ? (rk.at >= mk.at ? rk.counts : mk.counts) : rk ? rk.counts : mk ? mk.counts : S.counts;
+    var cn = (rk && mk) ? ((rk.cAt || 0) >= (mk.cAt || 0) ? rk.counts : mk.counts) : rk ? rk.counts : mk ? mk.counts : S.counts;   /* 比べるのは読めた時刻（cAt）：読めなかったときの at では比べない（Claude のルーティンの P3） */
     var c = cn ? (Number(cn.todo) || 0) : 0;
     var h = '';
     if (c > 0) h += mpTodayRow(T('申請の対応待ち ' + c + ' 件', c + (c > 1 ? ' requests' : ' request') + ' to handle'), T('あなたの番の申請（承認・確認・精算・直して出し直す）', 'Your turn: approve, check, pay or resubmit'), 'wrGoTodo()', T('開く','Open'));
@@ -115950,6 +115950,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       if (g !== S.gen) { RET.at = 0; try { if (typeof mpTodayPaint === 'function') mpTodayPaint(); } catch(e) {} return; }   /* 世代が変わった：使わずに読み直す */
       RET.err = false; RET.rows = (j && Array.isArray(j.rows)) ? j.rows : [];
       RET.counts = (j && j.counts && typeof j.counts === 'object') ? j.counts : null;   /* v1206：① の件数（wr_list の数え方は一覧の範囲に関係ない） */
+      RET.cAt = Date.now();
       try { if (typeof mpTodayPaint === 'function') mpTodayPaint(); } catch(e) {}
     }, function(){
       if (RET.key !== k || RET.req !== n) return;
@@ -116009,6 +116010,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       MY.at = Date.now(); MY.err = '';
       MY.rows = ((j && j.rows) || []).filter(function(r){ return KINDS.indexOf(r.kind) >= 0; }).slice(0, 5);
       MY.counts = (j && j.counts && typeof j.counts === 'object') ? j.counts : null;   /* v1203：① 今日やること の件数（数え方は一覧の範囲に関係ない＝wr_list） */
+      MY.cAt = Date.now();
       paintMyExp();
     }, function(e){
       if (MY.key !== k || MY.req !== n) return;
