@@ -830,3 +830,113 @@ test('Codex #215 P2-1: a change typed while the 取り消す reason dialog is op
   assert.equal(F.unsaved(), true, 'the change is kept');
   assert.equal(scoreOf(F, A), 3);
 });
+
+/* ---------------------------------------------------------------- Codex #215 P2-2：賞与 ① が古い写しを使わない・確定の前に必ず読み直す */
+// 一覧（cs4_roster）の写しは 2 分まで。過ぎたら読み直しているあいだも、読めなかったあとも ok を返さない。
+// 締め（仮締め・再確定）の前は 2 分以内でも読み直し、読めなければ false（締めない）。
+function bApp(opts = {}) {
+  const st = { rev: 1, exact: '1561/20', total: 78.05, base: 75, mode: 'ok', meMode: 'ok', hold: [], ros: 0, me: 0 };
+  const c = app({ page: 'growth_karte', user: opts.user });
+  const pub = () => ({ id: 50, rev: st.rev, exact: st.exact, total: st.total, base: st.base, confirmed_at: '2026-11-2' + st.rev + 'T00:00:00Z' });
+  const fail = (m) => (m === 'net' ? { net: true } : m === 403 ? { status: 403, error: 'forbidden' } : { status: 500, error: 'x' });
+  c._reply = (p) => {
+    if (p.action === 'cs4_me') {
+      st.me++;
+      if (st.meMode !== 'ok') return fail(st.meMode);
+      const mp = opts.selfPub ? Object.assign({}, PUB, { id: 60, rev: st.rev, shared: { result: { state: 'complete', totalProvisional: false, total: { exact: st.exact, display: String(st.total) }, base: st.base } } }) : null;
+      return { ok: true, j: meJ(mp) };
+    }
+    if (p.action === 'cs4_roster') {
+      st.ros++;
+      const good = () => ({ ok: true, j: rosterJ([rosterRow('E1', 'Sue One', pub())]) });
+      if (st.mode !== 'hold') return st.mode === 'ok' ? good() : fail(st.mode);
+      const val = good();   // 答えは頼んだときの中身（あとで公開された版は入らない）
+      return new Promise((r) => st.hold.push(() => { st.mode = 'ok'; r(val); }));
+    }
+    return { status: 400, error: 'bad_value' };
+  };
+  return { c, st, F: c.FUNERGY_CS4 };
+}
+const age = (F, ms) => { const E = F._t.E(); if (E.rosAt) E.rosAt -= ms; if (E.meAt) E.meAt -= ms; };
+const warm = async (F, id, name) => { for (let k = 0; k < 3; k++) { F.bonusRow({ id, name }, '2026-Q4'); await settle(); await settle(); } };
+const rowCode = (F, id, name) => { const r = F.bonusRow({ id, name }, '2026-Q4'); return r.ok ? 'ok:' + r.rev : r.code; };
+
+test('Codex #215 P2-2: bonusRow never gives an expired roster as ok — re-reading → loading, failed (500 / network / 403) → err, read → the new version', async () => {
+  const { c, st, F } = bApp();
+  await warm(F, 'E1', 'Sue One');
+  assert.equal(rowCode(F, 'E1', 'Sue One'), 'ok:1', 'first read');
+  // 2 分以内：読んだ写しを使う（読み直さない）
+  const n0 = st.ros;
+  age(F, 60000);
+  assert.equal(rowCode(F, 'E1', 'Sue One'), 'ok:1');
+  assert.equal(st.ros, n0, 'within the time limit the copy is used');
+  // 期限切れ：ほかの端末が第 2 版を確定・公開した。読み直しているあいだは ok を返さない
+  st.rev = 2; st.exact = '81/1'; st.total = 81; st.mode = 'hold';
+  age(F, 121000);
+  assert.equal(rowCode(F, 'E1', 'Sue One'), 'loading', 'an expired copy is not used while re-reading');
+  assert.equal(rowCode(F, 'E1', 'Sue One'), 'loading');
+  st.hold.shift()(); await settle(); await settle();
+  assert.equal(rowCode(F, 'E1', 'Sue One'), 'ok:2', 'after the re-read: the new version');
+  // 期限切れで読み直しが失敗：err（古い写しの点で係数を出さない）
+  for (const m of [500, 'net', 403]) {
+    const E = F._t.E(); E.rosErr = ''; E.rosNext = 0;
+    st.mode = m; age(F, 121000);
+    F.bonusRow({ id: 'E1', name: 'Sue One' }, '2026-Q4'); await settle(); await settle();
+    assert.equal(rowCode(F, 'E1', 'Sue One'), 'err', 'failed re-read (' + m + ') is not ok');
+  }
+  void c;
+});
+
+test('Codex #215 P2-2: bonusRefresh re-reads the roster and the own record even within the time limit; false when it cannot (500 / network / 403 / timeout / sign-in changed); other quarters need nothing', async () => {
+  const { c, st, F } = bApp();
+  assert.equal(typeof F.bonusRefresh, 'function');
+  await warm(F, 'E1', 'Sue One');
+  assert.equal(rowCode(F, 'E1', 'Sue One'), 'ok:1');
+  // 2 分以内でも読み直す（ほかの端末の第 2 版を拾う）
+  st.rev = 2; st.exact = '81/1'; st.total = 81;
+  const r0 = st.ros, m0 = st.me;
+  assert.equal(await F.bonusRefresh('2026-Q4'), true);
+  assert.ok(st.ros > r0, 'the roster was read again'); assert.ok(st.me > m0, 'the own record was read again');
+  assert.equal(rowCode(F, 'E1', 'Sue One'), 'ok:2');
+  // 読めない → false
+  for (const m of [500, 'net', 403]) {
+    st.mode = m; assert.equal(await F.bonusRefresh('2026-Q4'), false, 'roster ' + m);
+    st.mode = 'ok'; st.meMode = m; assert.equal(await F.bonusRefresh('2026-Q4'), false, 'own record ' + m);
+    st.meMode = 'ok';
+  }
+  assert.equal(await F.bonusRefresh('2026-Q4'), true, 'reads again after the failures');
+  // 前から読んでいる途中の答えは使わない（押したあとに始めた読み直しの答えだけ）
+  st.mode = 'hold';
+  F._t.E().rosAt = 0; F.bonusRow({ id: 'E1', name: 'Sue One' }, '2026-Q4');   // 期限切れで読み直しが始まる（第 2 版のころ）
+  const r2 = st.ros;
+  st.rev = 3; st.exact = '84/1'; st.total = 84;   // そのあと、押す前に第 3 版が公開された
+  const p = F.bonusRefresh('2026-Q4'); await settle();
+  st.hold.shift()(); await settle(); await settle();
+  assert.equal(await p, true);
+  assert.equal(st.ros, r2 + 1, 'the refresh started its own read after the earlier one');
+  assert.equal(rowCode(F, 'E1', 'Sue One'), 'ok:3', 'the answer of the read started before the press is not the last word');
+  // 読み直しのあいだにログインが替わった → false
+  st.mode = 'hold';
+  const p2 = F.bonusRefresh('2026-Q4'); await settle();
+  c._ssGen++;
+  st.hold.shift()(); await settle(); await settle();
+  assert.equal(await p2, false, 'a changed sign-in is not a good read');
+  // 2026 Q4 より前（Q3 の締め・前の締め）は新しい Career Score を使わない：読み直しも要らない
+  c._ssGen--; const r1 = st.ros, m1 = st.me;
+  assert.equal(await F.bonusRefresh('2026-Q3'), true);
+  assert.equal(st.ros, r1); assert.equal(st.me, m1);
+});
+
+test('Codex #215 P2-2: the own record (not in the roster) is not used once it is old; re-read → the new version', async () => {
+  const { st, F } = bApp({ user: 'Sue Self', selfPub: true });
+  await warm(F, 'E7', 'Sue Self');
+  assert.equal(rowCode(F, 'E7', 'Sue Self'), 'ok:1');
+  st.rev = 2; st.exact = '81/1'; st.total = 81; st.meMode = 500;
+  age(F, 121000); F._t.E().probeAt = 0;
+  assert.equal(rowCode(F, 'E7', 'Sue Self'), 'loading', 'an old copy is not used while re-reading');
+  await warm(F, 'E7', 'Sue Self');
+  assert.equal(rowCode(F, 'E7', 'Sue Self'), 'err', 'an old own record is not used after a failed re-read');
+  st.meMode = 'ok'; F._t.E().probeAt = 0;
+  await warm(F, 'E7', 'Sue Self');
+  assert.equal(rowCode(F, 'E7', 'Sue Self'), 'ok:2');
+});

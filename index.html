@@ -80421,6 +80421,9 @@ function kevLockPull(q){
     return Promise.resolve().then(function(){ return pullOpKey(k); }).then(function(r){ if(r!==true) ok=false; }, function(){ ok=false; }).then(next);
   };
   var runs=[]; for(var j=0;j<Math.min(6, keys.length);j++) runs.push(next());
+  /* 2026 Q4 からの新しい Career Score（cs4_roster・本人の記録）も、期限の内でも読み直す。読めなければ締めない（Codex #215 P2-2） */
+  runs.push(Promise.resolve().then(function(){ var F=window.FUNERGY_CS4; return (F && typeof F.bonusRefresh==='function') ? F.bonusRefresh(q) : true; })
+    .then(function(r){ if(r!==true) ok=false; }, function(){ ok=false; }));
   var all=Promise.all(runs).then(function(){ return ok; }, function(){ return false; });
   if(typeof setTimeout!=='function') return all;
   return Promise.race([all, new Promise(function(res){ setTimeout(function(){ res(false); }, 45000); })]);
@@ -125764,7 +125767,7 @@ window.FUNERGY_CSQ4_MASTER = {"version":"CAREER_2026_Q4_V1","note":"Career Score
   function noop(){}
   if (!C || !M || !M.period || !M.systems) {
     W.FUNERGY_CS4 = { on:function(){ return false; }, oldView:function(){ return true; }, oldBlocked:function(){ return ''; }, pageHtml:function(){ return ''; },
-      myCardHtml:function(){ return ''; }, onLogout:noop, bonusQ:function(){ return false; }, bonusRow:function(){ return { code:'off' }; }, unsaved:function(){ return false; }, h:{} };
+      myCardHtml:function(){ return ''; }, onLogout:noop, bonusQ:function(){ return false; }, bonusRow:function(){ return { code:'off' }; }, bonusRefresh:function(){ return Promise.resolve(true); }, unsaved:function(){ return false; }, h:{} };
     return;
   }
   function T(ja, en){ try{ return typeof t === 'function' ? t(ja, en) : ja; }catch(e){ return ja; } }
@@ -125831,7 +125834,7 @@ window.FUNERGY_CSQ4_MASTER = {"version":"CAREER_2026_Q4_V1","note":"Career Score
 
   /* ---------------------------------------------------------------- 状態（メモリだけ） */
   function fresh(){
-    return { k:'', probe:'', probing:null, probeAt:0, seen:false, me:null, ros:null, rosAt:0, rosLoad:null, rosErr:'', rosNext:0,
+    return { k:'', probe:'', probing:null, probeAt:0, seen:false, me:null, meAt:0, ros:null, rosAt:0, rosLoad:null, rosErr:'', rosNext:0,
       ix:[], ixm:{}, tab:'now', f:{ q:'', st:'', store:'' }, cu:null, hist:{}, hsel:null, fbc:{}, fbLoad:null, bonusWait:false, asg:null, busy:'' };
   }
   var E = fresh();
@@ -125884,7 +125887,7 @@ window.FUNERGY_CSQ4_MASTER = {"version":"CAREER_2026_Q4_V1","note":"Career Score
       E.seen = true;
       if (r.j.nosql) { E.probe = 'nosql'; E.me = null; }
       else if (r.j.none) { E.probe = 'noemp'; E.me = null; }
-      else { E.probe = 'yes'; E.me = r.j; }
+      else { E.probe = 'yes'; E.me = r.j; E.meAt = Date.now(); }
       return;
     }
     if (!r || r.net) { E.probe = 'net'; return; }
@@ -127408,8 +127411,13 @@ window.FUNERGY_CSQ4_MASTER = {"version":"CAREER_2026_Q4_V1","note":"Career Score
     if ((p.state != null && p.state !== 'complete') || p.provisional === true) return { code:'none' };   /* 仮の点（入力途中）は使わない */
     return { ok:true, exact:String(p.exact), score:Number(p.total), base:Number(p.base), date:p.confirmed_at || '', rev:p.rev, id:p.id, system:p.system, grade:p.grade || null, type:p.type || null };
   }
+  var BONUS_TTL = 120000;   /* 賞与 ① に使う写しの期限（2 分） */
   function meRow(){
-    if (!E.me) { probe(); E.bonusWait = true; return { code:E.probe === 'net' || E.probe === 'err' ? 'err' : 'loading' }; }
+    /* 期限を過ぎた本人の記録は使わない（読み直しているあいだは loading・読めなければ err。Codex #215 P2-2） */
+    if (!E.me || !E.meAt || Date.now() - E.meAt > BONUS_TTL) {
+      probe(); E.bonusWait = true;
+      return { code:(!E.probing && (E.probe === 'net' || E.probe === 'err' || (E.me && E.meAt && Date.now() - E.meAt > BONUS_TTL))) ? 'err' : 'loading' };
+    }
     var p = E.me.published; if (!p) return { code:'none' };
     if (p.system === 'PREP') return { code:'prep' };
     var res = p.shared && p.shared.result, t0 = res && res.total;
@@ -127427,17 +127435,39 @@ window.FUNERGY_CSQ4_MASTER = {"version":"CAREER_2026_Q4_V1","note":"Career Score
     if (E.probe === 'noemp' && !mgr()) return { code:'nosess' };
     var id = e && e.id != null ? String(e.id) : '';
     var self = false; try{ self = !!(e && typeof curUserName !== 'undefined' && curUserName && e.name === curUserName); }catch(x){}
-    if (!E.ros || !E.rosAt || Date.now() - E.rosAt > 120000) {
+    if (!E.ros || !E.rosAt || Date.now() - E.rosAt > BONUS_TTL) {
+      /* 期限を過ぎた一覧は使わない：読み直しているあいだは loading、読めなかったら err（古い版の点で係数を出さない。Codex #215 P2-2） */
       if (!E.rosLoad && !(E.rosErr && Date.now() < E.rosNext)) loadRos(true);
       if (E.rosLoad) E.bonusWait = true;
-      if (!E.ros) {
-        if (self) return meRow();
-        return { code:E.rosErr && !E.rosLoad ? 'err' : 'loading' };
-      }
+      if (!E.ros && self) return meRow();
+      return { code:E.rosErr && !E.rosLoad ? 'err' : 'loading' };
     }
     var r = id ? rowOf(id) : null;
     if (!r) return self ? meRow() : { code:'hidden' };
     return fromPub(r.published);
+  }
+  /* 締め（仮締め・再確定・確定）の前に、期限の内でも一覧と本人の記録を読み直す（Codex #215 P2-2）。
+     押したあとに始めた読み直しが両方とも読めたときだけ true。2026 Q4 より前は新しい Career Score を使わないので読み直さない。 */
+  async function bonusRefresh(q){
+    q = String(q || '');
+    if (q !== Q) return true;
+    sync();
+    if (!E.k) return true;   /* ログインの印が無い：① は「未入力」で締めを止める（bonusRow） */
+    var t0 = tok();
+    try{ if (E.rosLoad) await E.rosLoad; }catch(e){}
+    try{ if (E.probing) await E.probing; }catch(e){}
+    if (stale(t0)) return false;
+    if (E.probe === 'nosess') return true;
+    var at = Date.now(), useRos = srv() !== 'old';
+    E.rosErr = ''; E.rosNext = 0;
+    try{ await Promise.all([probe(true), useRos ? loadRos(true) : null]); }catch(e){ return false; }
+    if (stale(t0)) return false;
+    var s = srv();
+    if (s === 'old' || E.probe === 'nosess') return true;   /* 新しい Career Score を使わない（bonusRow は off・nosess で締めを止める） */
+    var meOk = (E.probe === 'yes' && E.meAt >= at) || E.probe === 'noemp';
+    var rosOk = !!(E.ros && E.rosAt >= at && !E.rosErr);
+    if (!useRos) return false;
+    return meOk && rosOk;
   }
   var nudgeT = null, nudgeN = 0;
   function bonusNudge(){
@@ -127459,7 +127489,7 @@ window.FUNERGY_CSQ4_MASTER = {"version":"CAREER_2026_Q4_V1","note":"Career Score
   /* ---------------------------------------------------------------- 外に出すもの */
   W.FUNERGY_CS4 = {
     on:on, oldView:oldView, oldBlocked:oldBlocked, pageHtml:pageHtml, myCardHtml:myCardHtml, onLogout:onLogout,
-    bonusQ:bonusQ, bonusRow:bonusRow, unsaved:function(){ return !!E.cu && unsaved(); }, h:h,
+    bonusQ:bonusQ, bonusRow:bonusRow, bonusRefresh:bonusRefresh, unsaved:function(){ return !!E.cu && unsaved(); }, h:h,
     _t:{ E:function(){ return E; }, srv:srv, setMe:setMe, preview:function(){ return E.cu ? preview() : null; }, buildSave:function(m){ return E.cu ? buildSave(m) : null; },
       shape:shape, guardLeave:guardLeave, ocsBlocked:ocsBlocked, ocsPer:ocsPer, fromPub:fromPub, Q:Q }
   };
