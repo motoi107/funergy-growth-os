@@ -450,12 +450,71 @@ test('最低条件：総合点と別に出す・未担当 0 点も含む・指�
   const i = C.csq4Score(M, { system: 'G', grade: 'G2', type: 'Kitchen中心', entries: { ...all3, '02-01': UN() } });
   assert.equal(kind(i).basic, 'incomplete');
   assert.equal(i.minimum.overall, 'incomplete');
-  // 両部門育成・店長などの主担当／他部門は資料で決まっていない：判定を保留
-  for (const [grade, type] of [['G3', '両部門育成'], ['G4', '店長'], ['G5', '管轄責任']]) {
+  // 両部門育成・G4 以上：サービスとキッチンの両方が主担当（それぞれ G主担当の基準）・G他部門は使わない（Moto さん 11/23）
+  let exactRan = 0;
+  const both = [['G1', '両部門育成'], ['G2', '両部門育成'], ['G3', '両部門育成'], ['G4', '店長'], ['G5', '管轄責任'], ['G6', '全社責任']];
+  for (const [grade, type] of both) {
+    const gn = grade.slice(1);
     const p = C.csq4Score(M, { system: 'G', grade, type, entries: all3 });
-    assert.equal(kind(p).gMain, 'pending_rule');
-    assert.equal(kind(p).gOther, 'pending_rule');
-    assert.equal(p.minimum.overall, 'pending_rule');
+    assert.equal(kind(p).gMain, 'met', grade + type);
+    assert.ok(!('gOther' in kind(p)), grade + type);
+    assert.equal(p.minimum.overall, 'met', grade + type);
+    const gm = p.minimum.conditions.find((c) => c.key === 'gMain');
+    assert.equal(gm.min, Number(M.minimum[gn].gMain));
+    assert.deepEqual(gm.cats, ['SERVICE', 'KITCHEN']);
+    assert.deepEqual(gm.parts.map((x) => x.key), ['gMain:SERVICE', 'gMain:KITCHEN']);
+    // 片方だけ基準の下（主担当の基準ちょうどは達成・少しでも下は未達）。合わせた平均は基準を超えていても未達
+    const mn = Number(M.minimum[gn].gMain);
+    for (const cat of ['SERVICE', 'KITCHEN']) {
+      const lo = C.csq4Score(M, { system: 'G', grade, type, entries: fill('G', (it) => (it.cat === cat ? S(1) : S(3))) });
+      assert.equal(kind(lo).gMain, 'not_met', grade + type + cat);
+      assert.equal(lo.minimum.conditions.find((c) => c.key === 'gMain').parts.find((x) => x.key === 'gMain:' + cat).state, 'not_met');
+      assert.equal(lo.minimum.overall, 'not_met');
+      // 片方の部門がすべて完全非該当：実務機会なし（部門ごとに分けた型の G他部門と同じ）
+      const na = C.csq4Score(M, { system: 'G', grade, type, entries: fill('G', (it) => (it.cat === cat ? NR() : S(3))) });
+      assert.equal(kind(na).gMain, 'no_opportunity', grade + type + cat);
+      assert.deepEqual(na.minimum.noOpportunity, ['gMain']);
+      // 片方の部門に未評価：決まらない
+      const one = M.systems.G.items.find((it) => it.cat === cat).id;
+      const ic = C.csq4Score(M, { system: 'G', grade, type, entries: { ...all3, [one]: UN() } });
+      assert.equal(kind(ic).gMain, 'incomplete', grade + type + cat);
+      // 片方の部門の全項目が未担当（0 点）：未達
+      const ua = C.csq4Score(M, { system: 'G', grade, type, entries: fill('G', (it) => (it.cat === cat ? UA() : S(3))) });
+      assert.equal(kind(ua).gMain, 'not_met', grade + type + cat);
+    }
+    // 両方ちょうど基準（各部門の平均が G主担当の基準と同じ）は達成・1 項目だけ 1 点下げると未達
+    const atMin = (cat) => {
+      const ids = M.systems.G.items.filter((it) => it.cat === cat).map((it) => it.id);
+      const tot = mn * ids.length;
+      if (!Number.isInteger(Math.round(tot * 1000) / 1000)) return null;
+      const lo = Math.floor(mn), extra = Math.round(tot - lo * ids.length);
+      return Object.fromEntries(ids.map((id, i) => [id, S(i < extra ? lo + 1 : lo)]));
+    };
+    const es = atMin('SERVICE'), ek = atMin('KITCHEN');
+    if (es && ek) {
+      exactRan++;
+      const ex = C.csq4Score(M, { system: 'G', grade, type, entries: { ...all3, ...es, ...ek } });
+      assert.equal(kind(ex).gMain, 'met', grade + type + ' exact');
+      const firstK = Object.keys(ek)[0];
+      const below = C.csq4Score(M, { system: 'G', grade, type, entries: { ...all3, ...es, ...ek, [firstK]: S(ek[firstK].score - 1) } });
+      assert.equal(kind(below).gMain, 'not_met', grade + type + ' below');
+    }
+  }
+  assert.ok(exactRan >= 1, '基準ちょうどの確かめが 1 つも走っていない');
+  // 決まっていない型（資料に無い名前）は判定を保留のまま
+  {
+    const M2 = JSON.parse(JSON.stringify(M));
+    M2.systems.G.weights.G4['合成の型'] = M2.systems.G.weights.G4['店長'];
+    const q = C.csq4Score(M2, { system: 'G', grade: 'G4', type: '合成の型', entries: all3 });
+    assert.equal(kind(q).gMain, 'pending_rule');
+    assert.equal(kind(q).gOther, 'pending_rule');
+    assert.equal(q.minimum.overall, 'pending_rule');
+  }
+  // Kitchen中心・Server中心は今までどおり主担当と他部門を分ける
+  for (const [type, main, other] of [['Kitchen中心', 'KITCHEN', 'SERVICE'], ['Server中心', 'SERVICE', 'KITCHEN']]) {
+    const r = C.csq4Score(M, { system: 'G', grade: 'G3', type, entries: all3 });
+    assert.deepEqual(r.minimum.conditions.find((c) => c.key === 'gMain').cats, [main]);
+    assert.deepEqual(r.minimum.conditions.find((c) => c.key === 'gOther').cats, [other]);
   }
   // 理念の分類の平均：G2 は 2.0 以上
   const ph = C.csq4Score(M, { system: 'G', grade: 'G2', type: 'Kitchen中心', entries: fill('G', (it) => (it.cls === 'THANK' ? S(1) : S(3))) });

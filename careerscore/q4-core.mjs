@@ -286,10 +286,22 @@ export function csq4Minimum(master, sys, gn, type, entries, sysDef) {
   if (sys === 'G') {
     out.push(avgCondition('basic', '基本業務', fdec(row.basic), items.filter((i) => i.cat === 'BASIC'), entries));
     const map = (master.systems.G.mainMap || {})[type];
-    for (const [k, col, label] of [['gMain', 'main', 'G主担当'], ['gOther', 'other', 'G他部門']]) {
-      if (!map) { out.push({ key: k, label, min: Number(row[k]), state: 'pending_rule', note: master.systems.G.mainMapNote }); continue; }
-      const its = items.filter((i) => map[col].includes(i.cat));
-      out.push(Object.assign(avgCondition(k, label, fdec(row[k]), its, entries), { cats: map[col] }));
+    if (map && map.each) {
+      // 両部門育成・G4 以上：サービスとキッチンの両方が主担当。それぞれの平均を G主担当の基準で見る（G他部門は使わない）。
+      // 1 つでも未達なら未達・未評価があれば決まらない・どれかの対象がすべて除外なら実務機会なし（部門ごとに分けた型と同じ）
+      const names = Object.fromEntries((master.systems.G.categories || []).map((c) => [c.key, c.short || c.name]));
+      const parts = map.main.map((cat) => avgCondition('gMain:' + cat, 'G主担当：' + (names[cat] || cat), fdec(row.gMain), items.filter((i) => i.cat === cat), entries));
+      const ps = parts.map((p) => p.state);
+      out.push({
+        key: 'gMain', label: 'G主担当（' + map.main.map((c) => names[c] || c).join('・') + 'のそれぞれ）', min: Number(row.gMain), cats: map.main, each: true, parts,
+        state: ps.includes('not_met') ? 'not_met' : ps.includes('incomplete') ? 'incomplete' : ps.includes('no_opportunity') ? 'no_opportunity' : 'met',
+      });
+    } else {
+      for (const [k, col, label] of [['gMain', 'main', 'G主担当'], ['gOther', 'other', 'G他部門']]) {
+        if (!map) { out.push({ key: k, label, min: Number(row[k]), state: 'pending_rule', note: master.systems.G.mainMapNote }); continue; }
+        const its = items.filter((i) => map[col].includes(i.cat));
+        out.push(Object.assign(avgCondition(k, label, fdec(row[k]), its, entries), { cats: map[col] }));
+      }
     }
   }
   if (sys === 'S_CHEF') out.push(avgCondition('chefHygiene', 'Chef 衛生', fdec(row.chefHygiene), items.filter((i) => i.cat === 'HYGIENE'), entries));
