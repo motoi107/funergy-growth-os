@@ -32,7 +32,7 @@
 4. 前から：v1192〜v1195 の配備の残り（各節）。
 ## 2026-11-22 Career Score 2026 Q4（新制度）
 
-1. 済（Claude・ブランチ `claude/career-score-q4-core`）：段階 1＝評価表マスターと計算の芯・試験 24（`docs/CAREER_SCORE_Q4_JA.md`）。済：PR #212。次：Codex。
+1. 済（Claude・ブランチ `claude/career-score-q4-core`）：段階 1＝評価表マスターと計算の芯・試験 24（そのあとの直しで 26。`docs/CAREER_SCORE_Q4_JA.md`）。済：PR #212。次：Codex。
 2. 済（Claude 11/22）：段階 2＝今の記録の見え方（移し方の案）と UI案99（PC・スマホ 8 枚）。
 3. 済（Moto さん 11/22 19:44 HST）：UI案99 は 1 A・2 A・3 B・4〜8 A。済（Claude）：8 A（見直しメモを公開の JSON から外した）。済（Moto さん 11/23 06:01 HST）：3 B＝主担当で分けるのは G1〜G3 の Kitchen中心・Server中心だけ・両部門育成と G4 以上はサービスとキッチンの両方が主担当。済（Claude 11/23）：評価表と計算の芯に入れた（仕様の 5）。
 4. そのあと：段階 3（サーバーの表・関数・権限・競合・移し替え・画面）。
