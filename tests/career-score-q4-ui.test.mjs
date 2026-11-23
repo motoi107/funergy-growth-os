@@ -658,3 +658,175 @@ test('Moto 11/23 06:59: a GM has every right for other GM・CEO people too (no v
   const acts = [...new Set(c._calls.map((x) => x.action))].sort();
   assert.deepEqual(acts, ['cs4_get', 'cs4_me', 'cs4_roster']);
 });
+
+/* ---------------------------------------------------------------- Codex #215 P2-1：状態を変える（共有・確認依頼など）答えを待つあいだの入力 */
+// 答えを待つあいだは点・コメント・まとめ・理由を変えられない（画面は入力欄を止める）。答えのあとに読み直しても、
+// 消える入力は無い。失敗・ほかの人が先に変えた（409）・ログインが替わったときも、止めたままにしない。
+function actApp(opts = {}) {
+  const items = app().FUNERGY_CSQ4_MASTER.systems.G.items;
+  const A = items[0].id, B = items[1].id;
+  const ev = Object.assign({ id: 81, rev: 1, ver: 3, status: 'draft', system: 'G', grade: 'G3', type: 'Kitchen中心', version: 'CAREER_2026_Q4_V1',
+    entries: { [A]: { status: 'SCORED', score: 2 } }, feedback: {} }, opts.ev || {});
+  const st = { ev: JSON.parse(JSON.stringify(ev)), saves: [], acts: [], rel: [], getHook: null };
+  const c = app({ page: 'leadership' });
+  c._reply = (p) => {
+    if (p.action === 'cs4_me') return { ok: true, j: meJ(null) };
+    if (p.action === 'cs4_roster') return { ok: true, j: rosterJ([rosterRow('E1', 'Sue One', null)]) };
+    if (p.action === 'cs4_get') { if (st.getHook) st.getHook(); return { ok: true, j: { person: { emp: 'E1', name: 'Sue One' }, assign: { system: 'G', grade: 'G3', type: 'Kitchen中心', ver: 1 }, evals: [JSON.parse(JSON.stringify(st.ev))], reqs: [], log: [], can: { score: true, confirm: !!opts.confirm, cancel: !!opts.confirm } } }; }
+    if (p.action === 'cs4_save') {
+      st.saves.push(JSON.parse(JSON.stringify(p)));
+      const go = () => { for (const [k, v] of Object.entries(p.entries || {})) st.ev.entries[k] = v; st.ev.ver++; return { ok: true, j: { ver: st.ev.ver } }; };
+      return opts.holdSave ? new Promise((r) => st.rel.push(() => r(go()))) : go();
+    }
+    if (p.action === 'cs4_act') {
+      st.acts.push(JSON.parse(JSON.stringify(p)));
+      return new Promise((r) => st.rel.push((res) => {
+        if (!res) { if (p.act === 'share') st.ev.shared_at = '2026-11-23T20:00:00Z'; if (p.act === 'submit') st.ev.status = 'submitted'; st.ev.ver++; res = { ok: true, j: { ver: st.ev.ver } }; }
+        r(res);
+      }));
+    }
+    return { status: 400, error: 'bad_value' };
+  };
+  return { c, st, A, B };
+}
+async function actOpen(c) {
+  const F = c.FUNERGY_CS4;
+  F.on(); await settle();
+  const E0 = F._t.E(); E0.ix.push('E1'); E0.ixm.E1 = 0;
+  F.h.open(0); await settle();
+  assert.equal(F._t.E().cu.edit, true);
+  return F;
+}
+const scoreOf = (F, id) => { const e = F._t.E().cu; return (Object.prototype.hasOwnProperty.call(e.pend, id) ? e.pend[id] : e.srv[id] || {}).score; };
+
+test('Codex #215 P2-1: while 本人に共有 waits, score / comment / summary / reason inputs are refused and shown as stopped; nothing is lost after the reply', async () => {
+  const { c, st, A, B } = actApp();
+  const F = await actOpen(c);
+  F.h.act('share'); await settle();
+  assert.equal(st.acts.length, 1, 'share sent');
+  const cu = F._t.E().cu;
+  // 待つあいだに打つ：点・根拠・本人へのコメント・まとめ・理由・Prep は受け付けない
+  F.h.st(0, 'S3'); F.h.st(1, 'S1');
+  F.h.tx(0, 'feedbackComment', 'よくできた'); F.h.tx(0, 'evidence', '11/20');
+  F.h.fb('good', '早い'); F.h.rsn('理由');
+  assert.equal(F.unsaved(), false, 'no change was taken while waiting');
+  assert.equal(cu.reason || '', '', 'the change reason is not taken while waiting');
+  assert.equal(cu.lock, 'share', 'locked while the state change waits');
+  assert.equal(scoreOf(F, A), 2);
+  F.h.save(); await settle();
+  assert.equal(st.saves.length, 0, 'no save while the state change waits');
+  // 画面：入力欄と状態を変えるボタンは止めて、待っていると出す
+  const h = F.pageHtml();
+  assert.match(h, /状態を変えています/);
+  assert.ok(!/onclick="FUNERGY_CS4\.h\.st\(0,'S3'\)">/.test(h), 'score buttons are disabled');
+  assert.ok(/<textarea[^>]*disabled/.test(h) || !/<textarea/.test(h), 'text areas are disabled');
+  assert.ok(!/onclick="FUNERGY_CS4\.h\.act\('submit'\)">/.test(h), 'the other state buttons are disabled');
+  // 2 回目の共有は送らない
+  F.h.act('submit'); await settle();
+  assert.equal(st.acts.length, 1, 'a second state change is not sent while waiting');
+  st.rel.shift()(); await settle(); await settle();
+  const cu2 = F._t.E().cu;
+  assert.equal(cu2.lock, '', 'unlocked after the reply');
+  assert.equal(F._t.E().busy, '', 'not busy after the reply');
+  assert.ok(cu2.ev.shared_at, 'reloaded the shared draft');
+  assert.equal(scoreOf(F, A), 2); assert.equal(scoreOf(F, B), undefined);
+  // 答えのあとはまた入力できる（共有したあとなので変えた理由が要る）
+  F.h.st(0, 'S3');
+  assert.equal(F.unsaved(), true, 'editable again after the reply');
+  assert.equal(scoreOf(F, A), 3);
+});
+
+test('Codex #215 P2-1: a failed (500 / net) or conflicting (409) state change unlocks; typed text is not silently dropped', async () => {
+  for (const res of [{ status: 500, error: 'x' }, { net: true }, { status: 409, error: 'conflict' }]) {
+    const { c, st, A } = actApp();
+    const F = await actOpen(c);
+    F.h.act('share'); await settle();
+    F.h.st(0, 'S3');
+    assert.equal(F.unsaved(), false, 'refused while waiting (' + JSON.stringify(res) + ')');
+    if (res.status === 409) st.ev.ver = 9;   // ほかの人が先に保存した
+    st.rel.shift()(res); await settle(); await settle();
+    const cu = F._t.E().cu;
+    assert.equal(cu.lock, '', 'unlocked after a failure');
+    assert.equal(F._t.E().busy, '', 'not busy after a failure');
+    assert.ok(c._toasts.length, 'the failure is told');
+    assert.equal(scoreOf(F, A), 2);
+    F.h.st(0, 'S3');
+    assert.equal(F.unsaved(), true, 'editable again');
+    if (res.status === 409) assert.equal(cu.ev.ver, 9, 'reloaded the newer version');
+  }
+});
+
+test('Codex #215 P2-1: changes that got in while waiting (any way) are kept and reconciled, not reset by the reload', async () => {
+  const { c, st, A } = actApp();
+  const F = await actOpen(c);
+  F.h.act('share'); await settle();
+  const cu = F._t.E().cu;
+  // 画面の外の道で入った変更（念のための守り）
+  cu.pend[A] = { status: 'SCORED', score: 3 };
+  F.h.save(); await settle();
+  assert.equal(st.saves.length, 0, 'not saved while the state change waits (the reply would change the version under it)');
+  st.rel.shift()(); await settle(); await settle(); await settle();
+  assert.equal(F.unsaved(), true, 'the change is kept');
+  assert.equal(scoreOf(F, A), 3);
+  assert.ok(F._t.E().cu.ev.shared_at, 'reloaded the new version under it');
+});
+
+test('Codex #215 P2-1: pressing 本人に共有 while a save runs waits for the save, then shares the saved version; a change that needs a reason stops the share and is kept', async () => {
+  const { c, st, A } = actApp({ holdSave: true });
+  const F = await actOpen(c);
+  F.h.st(0, 'S3');
+  F.h.save(); await settle();
+  assert.equal(st.saves.length, 1);
+  F.h.act('share'); await settle();
+  assert.equal(st.acts.length, 0, 'waits for the save');
+  st.rel.shift()(); await settle(); await settle();
+  assert.equal(st.acts.length, 1, 'shared after the save');
+  assert.equal(st.acts[0].expect, 4, 'with the saved version');
+  st.rel.shift()(); await settle(); await settle();
+  assert.equal(scoreOf(F, A), 3);
+  // 共有したあとに点を変えた（理由が要る）まま押す：送らずに残す
+  F.h.st(0, 'S1');
+  F.h.act('submit'); await settle();
+  assert.equal(st.acts.length, 1, 'not sent');
+  assert.equal(F.unsaved(), true, 'the change is kept');
+  assert.ok(c._toasts.some(([m]) => /理由/.test(m)));
+});
+
+test('Codex #215 P2-1: a changed sign-in (session) or logout while waiting does not leave the page stuck', async () => {
+  const { c, st } = actApp();
+  const F = await actOpen(c);
+  F.h.act('share'); await settle();
+  c._ssGen = 2;   // サインインが替わった
+  st.rel.shift()(); await settle(); await settle();
+  assert.equal(F._t.E().busy || '', '', 'not stuck busy');
+  const cu = F._t.E().cu;
+  if (cu) assert.equal(cu.lock || '', '', 'not stuck locked');
+  // ログアウト：前の人の画面は残らない
+  const x = actApp(); const F2 = await actOpen(x.c);
+  F2.h.act('share'); await settle();
+  F2.onLogout();
+  x.st.rel.shift()(); await settle();
+  assert.equal(F2._t.E().cu || null, null);
+  assert.equal(F2._t.E().busy || '', '');
+});
+
+test('Codex #215 P2-1: a change typed while the 取り消す reason dialog is open is saved before the cancel is sent (or the cancel stops and keeps it)', async () => {
+  // 理由を聞く画面のあいだに点を変えた → 先に保存してから送る（保存した版で送る）
+  let { c, st, A } = actApp({ confirm: true });
+  let F = await actOpen(c);
+  c.askInput = async () => { F.h.st(0, 'S3'); return '担当を替えるため'; };
+  F.h.act('cancel'); await settle(); await settle();
+  assert.equal(st.saves.length, 1, 'the change typed during the dialog was saved first');
+  assert.equal(st.acts.length, 1, 'then the cancel was sent');
+  assert.equal(st.acts[0].expect, st.saves[0].expect + 1, 'with the saved version');
+  st.rel.shift()(); await settle(); await settle();
+  assert.equal(F._t.E().cu.lock, '');
+  // 保存できない（理由の要る）変更なら止めて、変更は残す
+  ({ c, st, A } = actApp({ confirm: true, ev: { shared_at: '2026-11-22T00:00:00Z' } }));
+  F = await actOpen(c);
+  c.askInput = async () => { F.h.st(0, 'S3'); return '担当を替えるため'; };
+  F.h.act('cancel'); await settle(); await settle();
+  assert.equal(st.acts.length, 0, 'not sent while an unsaved change needs a reason');
+  assert.equal(F.unsaved(), true, 'the change is kept');
+  assert.equal(scoreOf(F, A), 3);
+});

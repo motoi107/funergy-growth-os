@@ -126207,7 +126207,7 @@ window.FUNERGY_CSQ4_MASTER = {"version":"CAREER_2026_Q4_V1","note":"Career Score
 
   /* ---------------------------------------------------------------- 1 人の評価（採点・確認） */
   var OPEN = ['draft', 'submitted', 'returned'];
-  function newCu(emp){ return { emp:emp, ld:true, err:'', d:null, ev:null, items:[], srv:{}, pend:{}, fbS:{}, fb:{}, prepS:{}, prep:null, prepErr:'', reason:'', need:[], bad:[], conflicts:[], lost:0, st:'', msg:'', at:0, cat:'', saving:null, again:false, timer:null, edit:false, retried:false, rk:'' }; }
+  function newCu(emp){ return { emp:emp, ld:true, err:'', d:null, ev:null, items:[], srv:{}, pend:{}, fbS:{}, fb:{}, prepS:{}, prep:null, prepErr:'', reason:'', need:[], bad:[], conflicts:[], lost:0, st:'', msg:'', at:0, cat:'', saving:null, again:false, timer:null, edit:false, retried:false, rk:'', lock:'', lockTold:false }; }
   async function openP(emp){
     sync();
     if (E.cu && E.cu.emp !== emp && !(await leaveCu())) return;
@@ -126365,13 +126365,13 @@ window.FUNERGY_CSQ4_MASTER = {"version":"CAREER_2026_Q4_V1","note":"Career Score
   function sched(ms){
     var cu = E.cu; if (!cu) return;
     if (cu.timer) { clearTimeout(cu.timer); cu.timer = null; }
-    if (!cu.edit || !unsaved()) return;
+    if (!cu.edit || cu.lock || !unsaved()) return;
     var auto = Object.keys(cu.pend).some(function(id){ return needIds().indexOf(id) < 0; }) || fbChanged() || (prepChanged() && !cu.prepErr);
     if (!auto) return;
     cu.timer = setTimeout(function(){ if (E.cu === cu) { cu.timer = null; save(false); } }, ms == null ? 1200 : ms);
   }
   async function save(manual){
-    var cu = E.cu; if (!cu || !cu.edit) return;
+    var cu = E.cu; if (!cu || !cu.edit || cu.lock) return;   /* 状態を変える答えを待つあいだは保存しない（Codex #215 P2-1） */
     if (cu.timer) { clearTimeout(cu.timer); cu.timer = null; }
     if (cu.saving) { cu.again = true; if (manual) cu.againM = true; return cu.saving; }   /* 手で押し直したときは、理由の要る項目も次に送る（#215 のルーティンの P3） */
     var b = buildSave(manual);
@@ -126541,7 +126541,7 @@ window.FUNERGY_CSQ4_MASTER = {"version":"CAREER_2026_Q4_V1","note":"Career Score
   function firstLine(s){ return String(s || '').split('\n')[0]; }
   function itemHtml(n){
     var cu = E.cu, it = cu.items[n], e = ent(it.id) || {}, s = e.status || ST.UNASSESSED, ev = cu.ev, isG = ev.system === 'G';
-    var dis = cu.edit ? '' : ' disabled', scale = M.scale || {};
+    var dis = (cu.edit && !cu.lock) ? '' : ' disabled', scale = M.scale || {}, tdis = cu.lock ? ' disabled' : '';
     var h = '<div class="cs4-it' + (own(cu.pend, it.id) ? ' cs4-dirty' : '') + (cu.bad.indexOf(it.id) >= 0 ? ' cs4-hit' : '') + '" id="cs4i-' + n + '">'
       + '<div class="cs4-ih"><span class="cs4-iid">' + esc(it.id) + '</span><span class="cs4-in">' + esc(it.name) + '</span><span id="cs4ib-' + n + '">' + badge(n) + '</span></div>';
     var sub = it.sub || it.field || '';
@@ -126561,14 +126561,14 @@ window.FUNERGY_CSQ4_MASTER = {"version":"CAREER_2026_Q4_V1","note":"Career Score
     function ta(field, label, ph){
       var v = e[field] == null ? '' : String(e[field]);
       if (!cu.edit) return v ? '<div class="cs4-note"><b>' + esc(label) + '</b>：' + esc(v) + '</div>' : '';
-      return '<label class="cs4-note" style="display:block;margin-top:6px">' + esc(label) + '</label><textarea rows="2" maxlength="1000" placeholder="' + esc(ph || '') + '" oninput="FUNERGY_CS4.h.tx(' + n + ',\'' + field + '\',this.value)">' + esc(v) + '</textarea>';
+      return '<label class="cs4-note" style="display:block;margin-top:6px">' + esc(label) + '</label><textarea rows="2" maxlength="1000" placeholder="' + esc(ph || '') + '" oninput="FUNERGY_CS4.h.tx(' + n + ',\'' + field + '\',this.value)"' + tdis + '>' + esc(v) + '</textarea>';
     }
     if (s === ST.UNASSIGNED) h += ta('unassignedReason', '未担当の理由（本人に見えます）', '例：今期はこの作業を任せていない') + '<div class="cs4-note">未担当は 0 点で数えます（配点の分母に入ります）。</div>';
     if (s === ST.NOT_APPLICABLE) {
       if (isG && e.naReasonType === NA.COMPANY) {
         h += ta('naReason', '会社都合の理由（本人に見えます）', '例：今期は店の都合でこの作業を止めていた');
-        if (cu.edit) h += '<div class="cs4-acts" style="margin-top:6px"><label class="cs4-note">いつから<input type="date" min="' + D0 + '" max="' + D1 + '" value="' + esc(e.periodFrom || '') + '" onchange="FUNERGY_CS4.h.tx(' + n + ',\'periodFrom\',this.value)"></label>'
-          + '<label class="cs4-note">いつまで<input type="date" min="' + D0 + '" max="' + D1 + '" value="' + esc(e.periodTo || '') + '" onchange="FUNERGY_CS4.h.tx(' + n + ',\'periodTo\',this.value)"></label></div>';
+        if (cu.edit) h += '<div class="cs4-acts" style="margin-top:6px"><label class="cs4-note">いつから<input type="date" min="' + D0 + '" max="' + D1 + '" value="' + esc(e.periodFrom || '') + '" onchange="FUNERGY_CS4.h.tx(' + n + ',\'periodFrom\',this.value)"' + tdis + '></label>'
+          + '<label class="cs4-note">いつまで<input type="date" min="' + D0 + '" max="' + D1 + '" value="' + esc(e.periodTo || '') + '" onchange="FUNERGY_CS4.h.tx(' + n + ',\'periodTo\',this.value)"' + tdis + '></label></div>';
         else h += '<div class="cs4-note">期間：' + esc(e.periodFrom || '') + '〜' + esc(e.periodTo || '') + '</div>';
         h += '<div class="cs4-note">今期だけ配点から外します（本人には「会社都合で今回非該当」と出ます）。</div>';
       } else {
@@ -126588,7 +126588,7 @@ window.FUNERGY_CSQ4_MASTER = {"version":"CAREER_2026_Q4_V1","note":"Career Score
     var cu = E.cu, f = cu.fb || {}, h = '<div class="cs4-it">';
     [['good', '良い点'], ['improve', '伸ばす点'], ['next', '次の目標']].forEach(function(x){
       var v = f[x[0]] == null ? '' : String(f[x[0]]);
-      if (cu.edit) h += '<label class="cs4-note" style="display:block;margin-top:6px">' + x[1] + '（本人に共有すると見えます）</label><textarea rows="3" maxlength="2000" oninput="FUNERGY_CS4.h.fb(\'' + x[0] + '\',this.value)">' + esc(v) + '</textarea>';
+      if (cu.edit) h += '<label class="cs4-note" style="display:block;margin-top:6px">' + x[1] + '（本人に共有すると見えます）</label><textarea rows="3" maxlength="2000" oninput="FUNERGY_CS4.h.fb(\'' + x[0] + '\',this.value)"' + (cu.lock ? ' disabled' : '') + '>' + esc(v) + '</textarea>';
       else h += '<div class="cs4-note" style="margin-top:6px"><b>' + x[1] + '</b>：' + (v ? esc(v) : '—') + '</div>';
     });
     return h + '</div>';
@@ -126598,7 +126598,7 @@ window.FUNERGY_CSQ4_MASTER = {"version":"CAREER_2026_Q4_V1","note":"Career Score
   var MREASON = { no_measure:'測った記録がありません', bad_trial_date:'測った日が正しくありません', bad_trial_value:'時間が正しくありません', zero_actual:'実作業時間が 0 です',
     need_3_days:'別の日に 3 回以上測ってください', no_range:'習得範囲の標準時間を入れてください', zero_all_std:'全作業の標準時間が 0 です', bad_range:'自立できる作業の時間が全作業より多いです' };
   function pqHtml(){
-    var cu = E.cu, cp = cu.prep || editPrep({}), PS = sysOf('PREP') || {}, dis = cu.edit ? '' : ' disabled', h = '<div class="cs4-it cs4-pq">';
+    var cu = E.cu, cp = cu.prep || editPrep({}), PS = sysOf('PREP') || {}, dis = (cu.edit && !cu.lock) ? '' : ' disabled', h = '<div class="cs4-it cs4-pq">';
     h += '<b>品質</b><div class="cs4-note">3 つとも確認済みのときだけ時給の段を判定します。</div>';
     (PS.quality || []).forEach(function(q){
       var v = cp.quality[q.id] || 'unconfirmed';
@@ -126611,10 +126611,10 @@ window.FUNERGY_CSQ4_MASTER = {"version":"CAREER_2026_Q4_V1","note":"Career Score
       h += '<tr><td><input type="date" value="' + esc(x.date) + '" onchange="FUNERGY_CS4.h.pt(' + i + ',\'date\',this.value)"' + dis + '></td>'
         + '<td><input inputmode="decimal" value="' + esc(x.goodStd) + '" oninput="FUNERGY_CS4.h.pt(' + i + ',\'goodStd\',this.value)"' + dis + '></td>'
         + '<td><input inputmode="decimal" value="' + esc(x.actual) + '" oninput="FUNERGY_CS4.h.pt(' + i + ',\'actual\',this.value)"' + dis + '></td>'
-        + '<td>' + (cu.edit ? '<button class="btn btn-secondary btn-sm" onclick="FUNERGY_CS4.h.pdel(' + i + ')">消す</button>' : '') + '</td></tr>';
+        + '<td>' + (cu.edit ? '<button class="btn btn-secondary btn-sm" onclick="FUNERGY_CS4.h.pdel(' + i + ')"' + dis + '>消す</button>' : '') + '</td></tr>';
     });
     h += '</table>';
-    if (cu.edit && cp.trials.length < 20) h += '<button class="btn btn-secondary btn-sm" onclick="FUNERGY_CS4.h.padd()">測った記録を足す</button>';
+    if (cu.edit && cp.trials.length < 20) h += '<button class="btn btn-secondary btn-sm" onclick="FUNERGY_CS4.h.padd()"' + dis + '>測った記録を足す</button>';
     h += '<b style="display:block;margin-top:10px">習得範囲</b><div class="cs4-note">' + esc((PS.payNotes || {}).range || '') + '</div>'
       + '<div class="cs4-acts"><label class="cs4-note" style="flex:1">自立して完結できる作業の標準時間<input inputmode="decimal" value="' + esc(cp.ind) + '" oninput="FUNERGY_CS4.h.pstd(\'ind\',this.value)"' + dis + '></label>'
       + '<label class="cs4-note" style="flex:1">店で要る全作業の標準時間<input inputmode="decimal" value="' + esc(cp.all) + '" oninput="FUNERGY_CS4.h.pstd(\'all\',this.value)"' + dis + '></label></div>';
@@ -126683,12 +126683,14 @@ window.FUNERGY_CSQ4_MASTER = {"version":"CAREER_2026_Q4_V1","note":"Career Score
     var cu = E.cu, need = needIds(); if (!cu || !need.length) return '';
     var names = need.slice(0, 8).map(function(id){ var it = itemOf(cu.ev.system, id); return esc(id + (it ? ' ' + it.name : '')); }).join('<br>');
     return '<div class="cs4-warn"><b>変えた理由が要ります</b>（本人に共有した・再評価・差戻しのあとに点や状態を変えた ' + need.length + ' 項目。記録に残ります）<div class="cs4-note" style="margin:4px 0">' + names + (need.length > 8 ? '<br>ほか ' + (need.length - 8) : '') + '</div>'
-      + '<textarea id="cs4-rsn" rows="2" maxlength="1000" style="width:100%;box-sizing:border-box" oninput="FUNERGY_CS4.h.rsn(this.value)">' + esc(cu.reason || '') + '</textarea>'
-      + '<div class="cs4-acts" style="margin-top:6px"><button class="btn btn-primary btn-sm" onclick="FUNERGY_CS4.h.save()">理由を付けて保存する</button></div></div>';
+      + '<textarea id="cs4-rsn" rows="2" maxlength="1000" style="width:100%;box-sizing:border-box" oninput="FUNERGY_CS4.h.rsn(this.value)"' + (cu.lock ? ' disabled' : '') + '>' + esc(cu.reason || '') + '</textarea>'
+      + '<div class="cs4-acts" style="margin-top:6px"><button class="btn btn-primary btn-sm" onclick="FUNERGY_CS4.h.save()"' + (cu.lock ? ' disabled' : '') + '>理由を付けて保存する</button></div></div>';
   }
   function actsHtml(){
     var cu = E.cu, ev = cu.ev, can = (cu.d && cu.d.can) || {}, a = [];
     if (!ev) return '';
+    /* 状態を変える答えを待つあいだは、どのボタンも押せない・入力も止める（Codex #215 P2-1） */
+    if (cu.lock) return '<div class="cs4-warn">状態を変えています（' + esc(ACT_LABEL[cu.lock] || cu.lock) + '）。終わるまで点・コメントは変えられません。</div>';
     if (cu.edit) a.push('<button class="btn btn-secondary btn-sm"' + (pendCount() && cu.st !== 'saving' ? '' : ' disabled') + ' onclick="FUNERGY_CS4.h.save()">保存する</button>');
     if ((ev.status === 'draft' || ev.status === 'returned') && can.score) {
       a.push('<button class="btn btn-secondary btn-sm" onclick="FUNERGY_CS4.h.act(\'share\')">本人に共有（見直し中）</button>');
@@ -126733,13 +126735,21 @@ window.FUNERGY_CSQ4_MASTER = {"version":"CAREER_2026_Q4_V1","note":"Career Score
     if (autosavable()) { await save(false); if (!unsaved()) return true; }
     return confirm('保存していない変更があります（' + pendCount() + ' 件）。保存せずに移りますか？（変更は消えます）');
   }
-  async function act(kind){
-    var cu = E.cu; if (!cu || !cu.ev || E.busy) return;
+  /* 状態を変える前に、保存していない変更を片づける（保存できなければ止めて、変更は残す） */
+  async function settleEdits(cu){
     if (cu.saving) { try{ await cu.saving; }catch(e){} }
+    if (E.cu !== cu) return false;
     if (unsaved()) {
       if (autosavable()) await save(false);
-      if (unsaved()) { toast(needIds().length ? '先に変えた理由を付けて保存してください' : '先に保存してください（保存できていない変更があります）', 'warning'); return; }
+      if (E.cu !== cu) return false;
+      if (unsaved()) { toast(needIds().length ? '先に変えた理由を付けて保存してください' : '先に保存してください（保存できていない変更があります）', 'warning'); return false; }
     }
+    return true;
+  }
+  var ACT_LABEL = { share:'本人に共有', submit:'確認待ちに出す', return:'差し戻す', confirm:'確定・公開する', cancel:'取り消す' };
+  async function act(kind){
+    var cu = E.cu; if (!cu || !cu.ev || E.busy || cu.lock) return;
+    if (!(await settleEdits(cu))) return;
     var ev = cu.ev, R = preview(), note;
     if (kind === 'submit' || kind === 'confirm') {
       if (!R || !R.confirmable) { toast(ERR.not_complete, 'warning'); return; }
@@ -126754,14 +126764,33 @@ window.FUNERGY_CSQ4_MASTER = {"version":"CAREER_2026_Q4_V1","note":"Career Score
       if (note == null) return;
       note = String(note).trim().slice(0, 1000);
     }
-    var t0 = tok(); E.busy = 'act';
-    var r = await call({ action:'cs4_act', id:ev.id, expect:ev.ver, act:kind, note:note }, 30000);
+    /* ダイアログのあいだに打った変更も先に片づける。ほかの画面へ移った・ほかで押したときは送らない */
+    function moved(){ if (E.cu !== cu || E.busy || cu.lock) return true; if (cu.ev !== ev) { toast('評価が新しくなりました。内容を確かめて、もう一度押してください', 'warning'); return true; } return false; }
+    if (moved()) return;
+    if (!(await settleEdits(cu))) return;
+    if (moved()) return;
+    /* 答えを待つあいだは入力を止める（Codex #215 P2-1：待つあいだに打った点が答えのあとの読み直しで黙って消えていた） */
+    var t0 = tok(), e0 = E, r;
+    e0.busy = 'act'; cu.lock = kind; cu.lockTold = false;
+    if (cu.timer) { clearTimeout(cu.timer); cu.timer = null; }
+    if (E.cu === cu && byId('cs4-main')) { paintMain(); cu.rk = '\u0000'; refresh(); }
+    try{ r = await call({ action:'cs4_act', id:ev.id, expect:ev.ver, act:kind, note:note }, 30000); }
+    finally{ cu.lock = ''; e0.busy = ''; }
     if (stale(t0)) return;
-    E.busy = '';
     if (r.ok && r.j) toast({ share:'本人に共有しました', submit:'確認待ちに出しました', return:'差し戻しました', confirm:'確定・公開しました', cancel:'取り消しました' }[kind], 'success');
     else toast(errTxt(r), 'warning');
     E.rosAt = 0; E.hist = {}; E.fbc = {};
-    if (E.cu === cu) { cu.ld = true; await loadP(cu); }
+    if (E.cu !== cu) return;
+    if (unsaved()) {
+      /* 念のため：止めていても入った変更は消さずに、新しい版の上に重ねる（重なった項目・保存できない状態ならそう伝える） */
+      var ok = await rebase(cu);
+      if (E.cu !== cu) return;
+      paint();
+      if (!ok && cu.lost) toast(lead() + '状態が変わったため、保存していない変更 ' + cu.lost + ' 件は保存できませんでした', 'warning');
+      else if (ok && unsaved()) toast(lead() + '保存していない変更は残しています（保存してください）', 'warning');
+      return;
+    }
+    cu.ld = true; await loadP(cu);
   }
 
   /* ---------------------------------------------------------------- 本人に見せる形（共有・確定した評価） */
@@ -127065,7 +127094,9 @@ window.FUNERGY_CSQ4_MASTER = {"version":"CAREER_2026_Q4_V1","note":"Career Score
 
   /* ---------------------------------------------------------------- 押したときの処理（onclick は FUNERGY_CS4.h.*。人・項目の ID は ref の番号で渡す） */
   function rowOf(k){ return (E.rosMap && E.rosMap[String(k)]) || null; }
-  function cuItem(n){ var cu = E.cu; if (!cu || !cu.edit) return null; var it = cu.items[Number(n)]; return it || null; }
+  /* 状態を変える答えを待つあいだは変えない（Codex #215 P2-1）。止めた入力欄を経ずに来たときは 1 回だけ知らせる */
+  function lockedNow(){ var cu = E.cu; if (!cu || !cu.lock) return false; if (!cu.lockTold) { cu.lockTold = true; toast('状態を変えています。終わるまで点・コメントは変えられません', 'info'); } return true; }
+  function cuItem(n){ var cu = E.cu; if (!cu || !cu.edit || lockedNow()) return null; var it = cu.items[Number(n)]; return it || null; }
   function dropMark(cu, id){
     cu.conflicts = cu.conflicts.filter(function(x){ return x !== id; });
     cu.bad = cu.bad.filter(function(x){ return x !== id; });
@@ -127198,42 +127229,42 @@ window.FUNERGY_CSQ4_MASTER = {"version":"CAREER_2026_Q4_V1","note":"Career Score
       refresh(); sched();
     },
     fb:function(f, v){
-      var cu = E.cu; if (!cu || !cu.edit || ['good', 'improve', 'next'].indexOf(f) < 0) return;
+      var cu = E.cu; if (!cu || !cu.edit || lockedNow() || ['good', 'improve', 'next'].indexOf(f) < 0) return;
       cu.fb[f] = String(v == null ? '' : v).slice(0, 2000);
       refresh(); sched();
     },
-    rsn:function(v){ var cu = E.cu; if (!cu) return; cu.reason = String(v == null ? '' : v).slice(0, 1000); paintChip(); },
+    rsn:function(v){ var cu = E.cu; if (!cu || lockedNow()) return; cu.reason = String(v == null ? '' : v).slice(0, 1000); paintChip(); },
     save:function(){ save(true); },
     act:function(k){ if (['share', 'submit', 'return', 'confirm', 'cancel'].indexOf(k) >= 0) act(k); },
     pq:function(i, s){
-      var cu = E.cu; if (!cu || !cu.edit || !cu.prep) return;
+      var cu = E.cu; if (!cu || !cu.edit || lockedNow() || !cu.prep) return;
       var q = idAt(i); if (!q) return;
       if (s === 'clear' || s === 'not_clear') cu.prep.quality[q] = s; else delete cu.prep.quality[q];
       setHtml('cs4-pq', pqHtml()); refresh(); sched();
     },
     pt:function(i, f, v){
-      var cu = E.cu; if (!cu || !cu.edit || !cu.prep) return;
+      var cu = E.cu; if (!cu || !cu.edit || lockedNow() || !cu.prep) return;
       var x = cu.prep.trials[Number(i)]; if (!x || ['date', 'goodStd', 'actual'].indexOf(f) < 0) return;
       x[f] = String(v == null ? '' : v).slice(0, 20);
       prepChanged(); refresh(); sched();
     },
     padd:function(){
-      var cu = E.cu; if (!cu || !cu.edit || !cu.prep || cu.prep.trials.length >= 20) return;
+      var cu = E.cu; if (!cu || !cu.edit || lockedNow() || !cu.prep || cu.prep.trials.length >= 20) return;
       cu.prep.trials.push({ date:'', goodStd:'', actual:'' });
       setHtml('cs4-pq', pqHtml()); refresh();
     },
     pdel:function(i){
-      var cu = E.cu; if (!cu || !cu.edit || !cu.prep) return;
+      var cu = E.cu; if (!cu || !cu.edit || lockedNow() || !cu.prep) return;
       cu.prep.trials.splice(Number(i), 1);
       setHtml('cs4-pq', pqHtml()); refresh(); sched();
     },
     pstd:function(k, v){
-      var cu = E.cu; if (!cu || !cu.edit || !cu.prep || (k !== 'ind' && k !== 'all')) return;
+      var cu = E.cu; if (!cu || !cu.edit || lockedNow() || !cu.prep || (k !== 'ind' && k !== 'all')) return;
       cu.prep[k] = String(v == null ? '' : v).slice(0, 20);
       prepChanged(); refresh(); sched();
     },
     pstep:function(v){
-      var cu = E.cu; if (!cu || !cu.edit || !cu.prep) return;
+      var cu = E.cu; if (!cu || !cu.edit || lockedNow() || !cu.prep) return;
       cu.prep.step = /^P[1-6]$/.test(String(v)) ? String(v) : '';
       refresh(); sched();
     },
