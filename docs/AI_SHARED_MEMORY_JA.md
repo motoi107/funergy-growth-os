@@ -10,7 +10,7 @@
 - 試験（合成データ）：google-places-server 8（わざと壊す 15/15）・google-places-deploy 5・v1157 の server 15・app 13・deploy 5（v1209 に合わせた）・career-score-q4-ui の版の確かめを 1208 以上に・版を見る 61 ファイルの失敗は d4cd923 と同じ 6 件だけ・static release pass/1209。CI に足した。実機・本物の Google は未確認。
 - 確認事項（Moto さん）：店の place ID（GM・CEO が画面で選ぶ。Claude は Google マップを開けず未照合）・LaLa が Google マップにあるか・ToriTon と Tenkichi／Totoya Piikoi と LaLa は同じ建物・Google の決まりの利用規約とプライバシーポリシー・上限の数・Head Chef／経理／事務Crew に全店。
 - 独立レビューは無し。Codex のレビューはまだ。
-- 次：PR → Codex → #211 → #213 → #212 → #214 → #215 → この PR の順にマージ → Moto さんが手順.md（SQL・関数・Google Cloud の割り当てと予算）→ 端末を 1209 に → GM・CEO が店を選ぶ。
+- 済：PR #216（`55178b6`）。次：Codex → #211 → #213 → #212 → #214 → #215 → この PR の順にマージ → Moto さんが手順.md（SQL・関数・Google Cloud の割り当てと予算）→ 端末を 1209 に → GM・CEO が店を選ぶ。
 
 ## 2026-11-23 Career Score 2026 Q4 段階 3-2：画面（UI案99）・Q4 から前の採点を止める・Q4 の賞与 ①（Moto さん 11/22 23:09 HST「次お願いします」・Claude（Personal・Claude Code）・ブランチ `claude/career-score-q4-ui`・#214（`a79738b`）の上・アプリ 1208・SQL と関数は変えていない・本番未反映）
 
