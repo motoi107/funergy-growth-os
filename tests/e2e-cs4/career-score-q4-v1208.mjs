@@ -4,8 +4,11 @@
 //   → 一覧が「確定・公開済み」・賞与の ① の元（bonusRow）が確定した総合点 → 前の採点は止まる → 保存していない変更があるとほかの画面へ移る前に聞く
 // ・本人（スタッフ・390px）：マイページと「フィードバック・見直し」に確定した総合点・横にはみ出ない
 // ・GM（390px）：一覧と評価の画面が横にはみ出ない
+// ・Moto さん 11/23「b1」「c B」（DATA_FILE に login.gm2 と確かめた店長があるとき＝node tests/e2e-cs4/data-b1.mjs で作った写し。無ければ飛ばして SKIP と出す）：
+//   CEO が 2 人目の GM を確定・公開 → GM は見るだけ／GM が店長の店の G2 の評価表を決める → 確かめた店長（390px）が採点して確認待ち → GM が確定・公開
 // 使い方：模擬サーバー（tests/perf/server.mjs）を SS_REAL=1 CSQ4_DB=1 DATA_FILE=<合成データ（today は 2026 Q4 の日）> で動かしてから
 //   DATA_FILE=<合成データ> node career-score-q4-v1208.mjs [結果の JSON]
+//   （4〜7 は node tests/e2e-cs4/data-b1.mjs <合成データ> <写し> で作った写しを DATA_FILE にして、模擬サーバーを動かし直してから）
 import fs from 'node:fs';
 const { chromium } = await import('/opt/npm-tools/node_modules/playwright/index.mjs');
 for (const k of Object.keys(process.env)) if (/proxy/i.test(k)) delete process.env[k];
@@ -235,6 +238,137 @@ let total = '';
   ok('GM 390: no page errors', errors.length === 0, errors.slice(0, 5));
   await ctx.close();
 }
+
+// ---- 4〜7（Moto さん 11/23「b1」「c B」）：合成データに確かめた店長（G3）と 2 人目の GM がいるとき（DATA_FILE に login.gm2 があるとき）だけ
+// ・CEO：2 人目の GM の評価を確定・公開 → GM はその人を「見るだけ」（採点・確定・取り消しのボタンなし）
+// ・GM：店長の店の G2 の人の評価表を決める → 確かめた店長（390px）が採点して確認待ちに出す（確定のボタンは無い）→ GM が確定・公開
+async function scoreAll(page) {
+  const cats = await page.evaluate(() => Array.from(document.querySelectorAll('#cs4-nav [onclick*="FUNERGY_CS4.h.cat("]')).map(b => b.getAttribute('onclick')));
+  let n = 0;
+  for (const oc of cats) { await page.click(`#cs4-nav [onclick="${oc}"]`); await sleep(150); n += await scoreCat(page); }
+  const left = await page.evaluate(() => { const p = FUNERGY_CS4._t.preview(); return p && p.counts ? p.counts.unassessed : null; });
+  return { cats: cats.length, n, left };
+}
+async function assignFirst(page, emp) {
+  const i = await idx(page, emp);
+  await page.click(`button[onclick="FUNERGY_CS4.h.asg(${i})"]`);
+  await page.waitForSelector('#cs4-as-sys', { timeout: 10000 });
+  const ts = page.locator('select[onchange*="asgSet(\'type\'"]');
+  if (await ts.count()) { const o = await ts.locator('option').evaluateAll(os => os.map(x => x.value).filter(Boolean)); if (o.length) await ts.selectOption(o[0]); }
+  await page.click('button[onclick="FUNERGY_CS4.h.asgSave()"]');
+  await page.waitForFunction(k => { const r = FUNERGY_CS4._t.E().rosMap; return r && r[k] && r[k].assign; }, emp, { timeout: 30000 });
+  await waitIdle(page);
+}
+const rowBtns = (page, i) => page.evaluate(n => Array.from(document.querySelectorAll('#cs4-list [onclick]')).map(b => b.getAttribute('onclick')).filter(s => new RegExp('^FUNERGY_CS4\\.h\\.\\w+\\(' + n + '\\)$').test(s)).map(s => s.replace(/\(.*$/, '').replace('FUNERGY_CS4.h.', '')), i);
+if (D.login.gm2 && D.login.sl) {
+  const GM2 = { id: D.login.gm2Id, name: D.login.gm2 };
+  const SL = { id: D.login.slId, name: D.login.sl, store: D.login.slStore };
+  // 4. CEO（1280px）：2 人目の GM の評価を確定・公開
+  {
+    const { ctx, page, errors } = await open('ceo-c');
+    await login(page, 'OFFICE', D.login.ceo);
+    await toCareer(page);
+    await page.waitForSelector('#cs4-list', { timeout: 60000 });
+    ok('CEO (c B): the other GM person can be scored by the CEO', await page.evaluate(k => { const r = FUNERGY_CS4._t.E().rosMap[k]; return !!(r && !r.view && r.can && r.can.score && r.can.confirm); }, GM2.id));
+    await assignFirst(page, GM2.id);
+    const i = await idx(page, GM2.id);
+    await page.click(`button[onclick="FUNERGY_CS4.h.start(${i})"]`);
+    await page.waitForSelector('#cs4-main', { timeout: 30000 });
+    await waitIdle(page);
+    const sc = await scoreAll(page);
+    ok('CEO (c B): every item of the GM person is scored', sc.left === 0 && sc.n > 0, sc);
+    await page.click('#cs4-actb button[onclick="FUNERGY_CS4.h.save()"]');
+    await page.waitForFunction(() => { const e = FUNERGY_CS4._t.E(); return e.cu && e.cu.st === 'saved' && !FUNERGY_CS4.unsaved(); }, null, { timeout: 30000, polling: 100 });
+    await page.click('#cs4-actb button[onclick="FUNERGY_CS4.h.act(\'submit\')"]');
+    await page.waitForFunction(() => { const e = FUNERGY_CS4._t.E(); return e.cu && e.cu.ev && e.cu.ev.status === 'submitted' && !e.busy; }, null, { timeout: 30000, polling: 100 });
+    await page.click('#cs4-actb button[onclick="FUNERGY_CS4.h.act(\'confirm\')"]');
+    await page.waitForFunction(() => { const e = FUNERGY_CS4._t.E(); return e.cu && e.cu.ev && e.cu.ev.status === 'published' && !e.busy; }, null, { timeout: 30000, polling: 100 });
+    ok('CEO (c B): the GM person\'s evaluation is published', true);
+    ok('CEO: no page errors', errors.length === 0, errors.slice(0, 5));
+    await ctx.close();
+  }
+  // 5. GM（1280px）：2 人目の GM は見るだけ／店長の店の G2 の人の評価表を決める
+  let g2 = null;
+  {
+    const { ctx, page, errors } = await open('gm-c');
+    await login(page, 'OFFICE', D.login.gm);
+    await toCareer(page);
+    await page.waitForSelector('#cs4-list', { timeout: 60000 });
+    const v = await page.evaluate(k => { const r = FUNERGY_CS4._t.E().rosMap[k]; return r ? { view: !!r.view, can: r.can, pub: !!r.published } : null; }, GM2.id);
+    ok('GM (c B): the other GM person is listed as 見るだけ with the published result', !!(v && v.view && v.pub && v.can && !v.can.score && !v.can.confirm && !v.can.assign), v);
+    const t = await rootText(page);
+    ok('GM (c B): the list has the 見るだけ filter and the note', /見るだけ（GM・CEO の人）/.test(t) && /ほかの GM・CEO の人の確定・公開した評価です/.test(t));
+    const vi = await idx(page, GM2.id);
+    const vb = await rowBtns(page, vi);
+    ok('GM (c B): the 見るだけ row has only 開く', vb.length >= 1 && vb.every(s => s === 'open'), vb);
+    await page.click(`#cs4-list button[onclick="FUNERGY_CS4.h.open(${vi})"]`);
+    await page.waitForFunction(() => { const e = FUNERGY_CS4._t.E(); return e.cu && !e.cu.ld && !e.busy; }, null, { timeout: 30000, polling: 100 });
+    await sleep(300);
+    const vt = await rootText(page);
+    ok('GM (c B): the opened evaluation says 見るだけ (scoring, confirm and cancel are the CEO\'s)', /見るだけです：ほかの GM・CEO の人の確定・公開した評価です/.test(vt), vt.slice(0, 200));
+    ok('GM (c B): the opened evaluation has no write buttons', await page.evaluate(() => !document.querySelector('#cs4-root [onclick*="FUNERGY_CS4.h.save("], #cs4-root [onclick*="FUNERGY_CS4.h.act("], #cs4-root button.cs4-sb:not([disabled])')));
+    ok('GM (c B): it is not editable', await page.evaluate(() => { const e = FUNERGY_CS4._t.E(); return !!(e.cu && !e.cu.edit && e.cu.ev && e.cu.ev.status === 'published'); }));
+    await page.evaluate(k => { FUNERGY_CS4.h.back(); const e = FUNERGY_CS4._t.E(); e.hsel = k; FUNERGY_CS4.h.tab('hist'); }, GM2.id);
+    await page.waitForFunction(() => { const r = document.getElementById('cs4-root'); return r && /見るだけ：確定・公開した版/.test(r.innerText); }, null, { timeout: 30000, polling: 200 }).catch(() => {});
+    ok('GM (c B): the history of the 見るだけ person says what is shown', /見るだけ：確定・公開した版/.test(await rootText(page)));
+    await page.evaluate(() => FUNERGY_CS4.h.tab('now'));
+    await page.waitForSelector('#cs4-list', { timeout: 30000 });
+    g2 = await page.evaluate(s => { const rows = FUNERGY_CS4._t.E().ros.rows || []; const r = rows.find(x => x.store === s && x.grade === 2 && !x.view && x.can && x.can.assign && !x.assign && !x.open && !x.published); return r ? String(r.emp) : null; }, SL.store);
+    ok('GM (b1): a G2 person of the store leader\'s store to assign', !!g2, g2);
+    if (g2) {
+      await assignFirst(page, g2);
+      ok('GM (b1): the G2 person\'s form is saved', await page.evaluate(k => { const r = FUNERGY_CS4._t.E().rosMap[k]; return !!(r && r.assign && r.assign.system === 'G' && r.assign.grade === 'G2'); }, g2), await page.evaluate(k => (FUNERGY_CS4._t.E().rosMap[k] || {}).assign, g2));
+    }
+    ok('GM (c B): no page errors', errors.length === 0, errors.slice(0, 5));
+    await ctx.close();
+  }
+  // 6. 確かめた店長（G3・390px・タッチ）：自分の店の G2 の人だけ・採点して確認待ちに出す（確定のボタンは無い）
+  if (g2) {
+    const { ctx, page, errors } = await open('sl-b1', { width: 390, height: 844 }, true);
+    await login(page, SL.store, SL.name);
+    await toCareer(page);
+    await page.waitForSelector('#cs4-list', { timeout: 60000 });
+    const rs = await page.evaluate(() => (FUNERGY_CS4._t.E().ros.rows || []).map(r => ({ emp: String(r.emp), store: r.store, grade: r.grade, role: r.role, view: !!r.view, can: r.can })));
+    ok('SL (b1): the list has only G2 people of the own store', rs.length > 0 && rs.every(r => r.store === SL.store && r.grade === 2 && !r.view), rs.map(r => [r.emp, r.store, r.grade, r.role]));
+    ok('SL (b1): the assigned G2 person can be scored but not confirmed', rs.some(r => r.emp === g2 && r.can && r.can.score && !r.can.confirm && !r.can.assign));
+    const t = await rootText(page);
+    ok('SL (b1): the list says CEO・GM confirm and publish', /CEO・GM が確認して確定・公開します/.test(t));
+    ok('SL (b1): the list has no horizontal overflow (390px)', (await overflow(page)) <= 0, await overflow(page));
+    const i = await idx(page, g2);
+    await page.click(`button[onclick="FUNERGY_CS4.h.start(${i})"]`);
+    await page.waitForSelector('#cs4-main', { timeout: 30000 });
+    await waitIdle(page);
+    const sc = await scoreAll(page);
+    ok('SL (b1): every item is scored', sc.left === 0 && sc.n > 0, sc);
+    ok('SL (b1): the evaluation page has no horizontal overflow (390px)', (await overflow(page)) <= 0, await overflow(page));
+    await page.click('#cs4-actb button[onclick="FUNERGY_CS4.h.save()"]');
+    await page.waitForFunction(() => { const e = FUNERGY_CS4._t.E(); return e.cu && e.cu.st === 'saved' && !FUNERGY_CS4.unsaved(); }, null, { timeout: 30000, polling: 100 });
+    ok('SL (b1): no 確定・公開 button for the store leader', await page.evaluate(() => !document.querySelector('#cs4-root [onclick="FUNERGY_CS4.h.act(\'confirm\')"]')));
+    await page.click('#cs4-actb button[onclick="FUNERGY_CS4.h.act(\'submit\')"]');
+    await page.waitForFunction(() => { const e = FUNERGY_CS4._t.E(); return e.cu && e.cu.ev && e.cu.ev.status === 'submitted' && !e.busy; }, null, { timeout: 30000, polling: 100 });
+    ok('SL (b1): 確認待ちに出す moves it to 確認待ち', true);
+    ok('SL (b1): no page errors', errors.length === 0, errors.slice(0, 5));
+    await ctx.close();
+  }
+  // 7. GM：店長が出した G2 の人の評価を確定・公開
+  if (g2) {
+    const { ctx, page, errors } = await open('gm-b1');
+    await login(page, 'OFFICE', D.login.gm);
+    await toCareer(page);
+    await page.waitForSelector('#cs4-list', { timeout: 60000 });
+    const r0 = await page.evaluate(k => { const r = FUNERGY_CS4._t.E().rosMap[k]; return r && r.open ? { status: r.open.status, by: r.open.by_name } : null; }, g2);
+    ok('GM (b1): the G2 person\'s evaluation is 確認待ち (sent by the store leader)', !!(r0 && r0.status === 'submitted'), r0);
+    const i = await idx(page, g2);
+    await page.click(`button[onclick="FUNERGY_CS4.h.open(${i})"]`);
+    await page.waitForSelector('#cs4-main', { timeout: 30000 });
+    await waitIdle(page);
+    await page.click('#cs4-actb button[onclick="FUNERGY_CS4.h.act(\'confirm\')"]');
+    await page.waitForFunction(() => { const e = FUNERGY_CS4._t.E(); return e.cu && e.cu.ev && e.cu.ev.status === 'published' && !e.busy; }, null, { timeout: 30000, polling: 100 });
+    ok('GM (b1): GM confirms and publishes it', true);
+    ok('GM (b1): no page errors', errors.length === 0, errors.slice(0, 5));
+    await ctx.close();
+  }
+} else console.log('SKIP b1 / c B: the data has no confirmed store leader and second GM (make the copy with tests/e2e-cs4/data-b1.mjs)');
 
 const st = await fetch(APP + '__csq4').then(r => r.json()).catch(() => null);
 ok('server: the csq4 functions were called through the real SQL', st && st.rpcs && ['csq4_assign_save', 'csq4_eval_start', 'csq4_eval_save', 'csq4_eval_act', 'csq4_req_add'].every(f => st.rpcs.includes(f)), st && st.rpcs && [...new Set(st.rpcs)]);

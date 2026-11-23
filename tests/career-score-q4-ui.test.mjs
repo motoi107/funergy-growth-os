@@ -583,3 +583,89 @@ test('pressing 保存する again while a save is running sends the changes that
   assert.equal(F.unsaved(), false);
   assert.equal(F._t.E().cu.reason, '', 'reason cleared after the last save');
 });
+
+/* ---------------------------------------------------------------- Moto さん 11/23：b1（G3 が G2 を採点）・c（GM はほかの GM・CEO の人の確定・公開した評価を見るだけ） */
+function rowHtml(h, name) {
+  const tr = h.split('<tr>').find((x) => x.includes('<b>' + name + '</b>'));
+  return tr || '';
+}
+test('Moto 11/23 b1: a G3 (sl) sees the own-store G2 people the server returns, can start and is told that CEO・GM confirm', async () => {
+  const c = app({ user: 'Lee Leader', role: 'sl', page: 'leadership' });
+  const g2 = Object.assign(rosterRow('E21', 'Gus Two', null), { role: 'g2', grade: 'G2', assign: { system: 'G', grade: 'G2', type: 'Kitchen', ver: 1 }, can: { score: true, confirm: false, cancel: false, assign: false } });
+  c._reply = (p) => (p.action === 'cs4_me' ? { ok: true, j: meJ(null) } : (p.action === 'cs4_roster' ? { ok: true, j: { rows: [g2], counts: { not_started: 1 } } } : { status: 400 }));
+  const F = c.FUNERGY_CS4;
+  F.on(); await settle();
+  F.bonusRow({ id: 'E21', name: 'Gus Two' }, '2026-Q4'); await settle();
+  const h = F.pageHtml();
+  const tr = rowHtml(h, 'Gus Two');
+  assert.ok(tr, 'the G2 row is listed');
+  assert.match(tr, /評価を開始/);
+  assert.doesNotMatch(tr, /評価表を決める|評価表を変える|見るだけ/);
+  assert.match(h, /CEO・GM が確認して確定・公開します/);
+  assert.doesNotMatch(h, /見るだけ（GM・CEO の人）/);
+});
+test('Moto 11/23 c: a GM gets view-only rows for other GM・CEO people (own count, chip, only 開く); the opened view shows the published version without actions; bonus ① reads it', async () => {
+  const c = app({ page: 'leadership' });
+  const items = c.FUNERGY_CSQ4_MASTER.systems.G.items;
+  const mine = Object.assign(rosterRow('E1', 'Sue One', { exact: '1561/20', total: '78.05', base: 75 }), { assign: { system: 'G', grade: 'G3', type: 'Kitchen', ver: 1 }, can: { score: true, confirm: true, cancel: true, assign: true } });
+  const gm2 = Object.assign(rosterRow('E5', 'Gail Second', { system: 'G', grade: 'G5', type: '管轄責任', exact: '1601/20', total: '80.05', base: 78 }), { role: 'gm', grade: 'G5', view: true, can: { score: false, confirm: false, cancel: false, assign: false } });
+  const PUBEV = { id: 90, rev: 2, ver: 5, status: 'published', system: 'G', grade: 'G5', type: '管轄責任', version: 'CAREER_2026_Q4_V1', entries: { [items[0].id]: { status: 'SCORED', score: 3 } }, feedback: {},
+    confirmed_at: '2026-11-21T00:00:00Z', confirmed_by_name: 'Cal CEO' };
+  c._reply = (p) => {
+    if (p.action === 'cs4_me') return { ok: true, j: meJ(null) };
+    if (p.action === 'cs4_roster') return { ok: true, j: { rows: [mine, gm2], counts: { published: 1 } } };
+    if (p.action === 'cs4_get' && p.emp === 'E5') return { ok: true, j: { period: { quarter: '2026-Q4' }, version: 'CAREER_2026_Q4_V1', person: { emp: 'E5', name: 'Gail Second', store: 'S1' }, assign: null, evals: [PUBEV], reqs: [], log: [], view: true, can: { score: false, confirm: false, cancel: false, assign: false } } };
+    return { status: 400, error: 'bad_value' };
+  };
+  const F = c.FUNERGY_CS4;
+  F.on(); await settle();
+  F.bonusRow({ id: 'E1', name: 'Sue One' }, '2026-Q4'); await settle();
+  // 賞与の ①：見るだけの人も確定・公開した評価から（GM の画面で GM・CEO の人の ① が出る）
+  const b = F.bonusRow({ id: 'E5', name: 'Gail Second' }, '2026-Q4');
+  assert.equal(b.ok, true); assert.equal(b.exact, '1601/20'); assert.equal(b.base, 78);
+  let h = F.pageHtml();
+  assert.match(h, /見るだけ（GM・CEO の人）<b>1<\/b>/);
+  assert.match(h, /確定・公開済み<b>1<\/b>/, 'the server count stays the own one');
+  const tr = rowHtml(h, 'Gail Second');
+  assert.match(tr, /見るだけ<\/span>/);
+  assert.match(tr, />開く</);
+  assert.doesNotMatch(tr, /再評価を作成|評価を開始|評価表を|確認する|再開/);
+  assert.match(tr, /G5/);
+  assert.doesNotMatch(rowHtml(h, 'Sue One'), /見るだけ<\/span>/);
+  // 絞り込み：見るだけの人は「すべて」と「見るだけ」だけ
+  F.h.fst('published'); h = F.pageHtml();
+  assert.ok(rowHtml(h, 'Sue One')); assert.equal(rowHtml(h, 'Gail Second'), '');
+  F.h.fst('view'); h = F.pageHtml();
+  assert.equal(rowHtml(h, 'Sue One'), ''); assert.ok(rowHtml(h, 'Gail Second'));
+  F.h.fst(''); h = F.pageHtml();
+  // 開く：確定・公開した版を読むだけ（押すところなし）
+  const m = rowHtml(h, 'Gail Second').match(/FUNERGY_CS4\.h\.open\((\d+)\)/);
+  F.h.open(Number(m[1])); await settle();
+  const cu = F._t.E().cu;
+  assert.equal(cu.edit, false); assert.equal(cu.ev.id, 90);
+  h = F.pageHtml();
+  assert.match(h, /見るだけです：ほかの GM・CEO の人の確定・公開した評価です/);
+  assert.match(h, /読むだけ<\/span>/);
+  for (const s of ['差し戻す', '確定・公開する', 'この評価を取り消す', '再評価を作成', '保存する', '本人に共有', '確認待ちに出す', '答える']) assert.ok(!h.includes(s), s);
+  assert.match(h, /確定・公開：.*Cal CEO/);
+  // 確定・公開した版がまだ無い（見るだけ）：始める押しボタンは出さない
+  cu.d = Object.assign({}, cu.d, { evals: [] }); cu.ev = null;
+  h = F.pageHtml();
+  assert.match(h, /見るだけです。確定・公開した評価はまだありません/);
+  assert.ok(!h.includes('評価を開始'));
+  // 評価履歴：見るだけの人は確定した版と前の決まった記録だけ（関数が絞る）と書く
+  const base = c._reply;
+  c._reply = (p) => (p.action === 'cs4_hist' ? { ok: true, j: { rows: [] } } : base(p));
+  c.FUNERGY_CS4.h.back && await c.FUNERGY_CS4.h.back();
+  F.h.tab('hist');
+  const E0 = F._t.E(); E0.hsel = 'E5';
+  const root = {};
+  c.document.getElementById = (id) => (id === 'cs4-root' ? root : null);   /* kick は画面に一覧の枠があるときだけ読む */
+  c.setTimeout = (f) => { f(); return 0; };
+  F.pageHtml(); await settle(20);
+  h = F.pageHtml();
+  assert.match(h, /見るだけ：確定・公開した版と前の Career Score の決まった点・履歴・賞与の固定だけ/);
+  assert.match(h, /第 2 版/);
+  const acts = [...new Set(c._calls.map((x) => x.action))].sort();
+  assert.deepEqual(acts, ['cs4_get', 'cs4_hist', 'cs4_me', 'cs4_roster']);
+});

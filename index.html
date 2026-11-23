@@ -126055,9 +126055,12 @@ window.FUNERGY_CSQ4_MASTER = {"version":"CAREER_2026_Q4_V1","note":"Career Score
     var rows = R.rows || [];
     if (!rows.length) return self + (self ? '' : '<div class="cs4-card cs4-note">評価する人はいません。自分の評価は「フィードバック・見直し」とマイページで見られます。</div>');
     var f = E.f, cnt = R.counts || {}, nReq = rows.filter(function(r){ return r.reqs > 0; }).length;
+    var nView = rows.filter(function(r){ return r.view; }).length;   /* 見るだけ（GM：ほかの GM・CEO の人の確定・公開した評価・Moto さん 11/23「c B」）。関数は数えない */
     var h = self + '<div class="cs4-cnts">';
-    [['', 'すべて', rows.length], ['not_started', '未開始', cnt.not_started], ['draft', '入力中', cnt.draft], ['submitted', '確認待ち', cnt.submitted],
-      ['returned', '差戻し', cnt.returned], ['published', '確定・公開済み', cnt.published], ['req', '申し出あり', nReq]].forEach(function(x){
+    var cb = [['', 'すべて', rows.length], ['not_started', '未開始', cnt.not_started], ['draft', '入力中', cnt.draft], ['submitted', '確認待ち', cnt.submitted],
+      ['returned', '差戻し', cnt.returned], ['published', '確定・公開済み', cnt.published], ['req', '申し出あり', nReq]];
+    if (nView) cb.push(['view', '見るだけ（GM・CEO の人）', nView]);
+    cb.forEach(function(x){
       h += '<button class="cs4-cnt' + (f.st === x[0] ? ' on' : '') + '" onclick="FUNERGY_CS4.h.fst(\'' + x[0] + '\')">' + esc(x[1]) + '<b>' + (x[2] || 0) + '</b></button>';
     });
     h += '</div>';
@@ -126070,7 +126073,9 @@ window.FUNERGY_CSQ4_MASTER = {"version":"CAREER_2026_Q4_V1","note":"Career Score
     if (bulk.length) h += '<button class="btn btn-primary btn-sm" onclick="FUNERGY_CS4.h.bulk()">提案のまま評価表を決める（' + bulk.length + ' 人）</button>';
     h += '</div><div id="cs4-list">' + listRows(rows) + '</div>';
     h += '<div class="cs4-note" style="margin-top:8px">評価表（G・S Chef・S Office・Prep と Grade・型）は GM・CEO が決めます（提案は役職・肩書き・G3 の職種から）。'
-      + '確定・公開した評価だけが本人に見え、2026 Q4 の賞与の ① に使われます。時給・Tip Rate・Grade は自動では変えません。</div>';
+      + '確定・公開した評価だけが本人に見え、2026 Q4 の賞与の ① に使われます。時給・Tip Rate・Grade は自動では変えません。'
+      + (mgr() ? '' : '採点して「確認待ちに出す」と、CEO・GM が確認して確定・公開します。')
+      + (nView ? '「見るだけ」はほかの GM・CEO の人の確定・公開した評価です（採点・確定・取り消しは CEO）。' : '') + '</div>';
     return h;
   }
   function listFiltered(rows){
@@ -126079,6 +126084,8 @@ window.FUNERGY_CSQ4_MASTER = {"version":"CAREER_2026_Q4_V1","note":"Career Score
       if (f.store && r.store !== f.store) return false;
       if (q && String(r.name || '').toLowerCase().indexOf(q) < 0) return false;
       if (f.st === 'req') return r.reqs > 0;
+      if (f.st === 'view') return !!r.view;
+      if (f.st && r.view) return false;   /* 見るだけの人は「すべて」「見るだけ」だけ（数と合わせる） */
       if (f.st && rowSt(r) !== f.st) return false;
       return true;
     });
@@ -126096,6 +126103,7 @@ window.FUNERGY_CSQ4_MASTER = {"version":"CAREER_2026_Q4_V1","note":"Career Score
   }
   function rowSys(r){
     if (r.assign) return sysLine(r.assign);
+    if (r.view) return r.published ? sysLine(r.published) : '<span class="cs4-note">—</span>';   /* 見るだけ：評価表の決定は出さない（確定した版の評価表だけ） */
     if (r.suggest) return '<span class="cs4-note">提案：' + sysLine(r.suggest) + (r.suggest.system === 'G' && !r.suggest.type ? '（型を選ぶ）' : '') + '</span>';
     return '<span class="cs4-note">—</span>';
   }
@@ -126104,7 +126112,7 @@ window.FUNERGY_CSQ4_MASTER = {"version":"CAREER_2026_Q4_V1","note":"Career Score
     if (!L.length) return '<div class="cs4-note">当てはまる人はいません。</div>';
     if (phone()) return L.map(function(r){
       var b = r.open || r.published;
-      return '<div class="cs4-row-card"><div class="cs4-ih"><b style="flex:1">' + esc(r.name) + '</b>' + chip(rowSt(r)) + (r.out ? ' <span class="cs4-chip cs4-back">退職</span>' : '') + '</div>'
+      return '<div class="cs4-row-card"><div class="cs4-ih"><b style="flex:1">' + esc(r.name) + '</b>' + chip(rowSt(r)) + viewChip(r) + (r.out ? ' <span class="cs4-chip cs4-back">退職</span>' : '') + '</div>'
         + '<div class="cs4-note">' + esc(r.store || '') + ' · ' + rowSys(r) + (b ? ' · ' + briefTxt(b) : '') + (r.reqs ? ' · <b style="color:#b42318">申し出 ' + r.reqs + '</b>' : '') + '</div>'
         + '<div class="cs4-acts" style="margin-top:6px">' + rowActs(r) + '</div></div>';
     }).join('');
@@ -126112,11 +126120,12 @@ window.FUNERGY_CSQ4_MASTER = {"version":"CAREER_2026_Q4_V1","note":"Career Score
       + L.map(function(r){
         var b = r.open || r.published;
         return '<tr><td><b>' + esc(r.name) + '</b>' + (r.out ? ' <span class="cs4-chip cs4-back">退職</span>' : '') + (r.reqs ? ' <span class="cs4-chip cs4-back">申し出 ' + r.reqs + '</span>' : '') + '</td>'
-          + '<td>' + esc(r.store || '') + '</td><td>' + rowSys(r) + '</td><td>' + chip(rowSt(r), b && b.shared && rowSt(r) !== 'published' ? '· 本人に共有中' : '') + '</td>'
+          + '<td>' + esc(r.store || '') + '</td><td>' + rowSys(r) + '</td><td>' + chip(rowSt(r), b && b.shared && rowSt(r) !== 'published' ? '· 本人に共有中' : '') + viewChip(r) + '</td>'
           + '<td>' + (b ? briefTxt(b) : '—') + '</td><td class="cs4-note">' + (b ? esc(hst(b.at)) + (b.by_name ? ' ' + esc(b.by_name) : '') : '') + '</td>'
           + '<td><div class="cs4-acts">' + rowActs(r) + '</div></td></tr>';
       }).join('') + '</tbody></table>';
   }
+  function viewChip(r){ return r && r.view ? ' <span class="cs4-chip cs4-todo" title="ほかの GM・CEO の人の確定・公開した評価（採点・確定・取り消しは CEO）">見るだけ</span>' : ''; }
   function selfBlock(){
     var me = E.me;
     if (!me || !me.state) return '';
@@ -126450,7 +126459,8 @@ window.FUNERGY_CSQ4_MASTER = {"version":"CAREER_2026_Q4_V1","note":"Career Score
     if (cu.lost) ban += '<div class="cs4-bad">ほかの人が状態を変えたため、保存していない変更 ' + cu.lost + ' 件は保存できませんでした。</div>';
     if (cu.conflicts.length) ban += '<div class="cs4-warn">ほかの人が同じ所を先に保存しました。重なった ' + cu.conflicts.length + ' 項目（' + esc(cu.conflicts.slice(0, 8).map(function(id){ return id === '_feedback' ? 'フィードバック' : id === '_prep' ? '品質・段' : id; }).join('、')) + '）はほかの人の内容にしました。</div>';
     if (ev.status === 'published' && (cu.d.evals || []).some(function(x){ return OPEN.indexOf(x.status) >= 0; })) ban += '<div class="cs4-warn">再評価が始まっています。</div>';
-    if (!cu.edit && ev.status !== 'published') ban += '<div class="cs4-note" style="margin-bottom:8px">' + (ev.status === 'submitted' ? '確認待ちです（読むだけ）。' : '読むだけ（この人を採点できません）。') + '</div>';
+    if (d.view) ban += '<div class="cs4-warn">見るだけです：ほかの GM・CEO の人の確定・公開した評価です。採点・確定・取り消しは CEO が行います（下書き・確認待ち・申し出・変更の記録は出ません）。</div>';
+    else if (!cu.edit && ev.status !== 'published') ban += '<div class="cs4-note" style="margin-bottom:8px">' + (ev.status === 'submitted' ? '確認待ちです（読むだけ）。' : '読むだけ（この人を採点できません）。') + '</div>';
     var nav = '<div class="cs4-nav" id="cs4-nav">' + navHtml() + '</div>';
     var main = '<div id="cs4-main">' + mainHtml() + '</div>';
     var side = '<div class="cs4-side"><div class="cs4-card" id="cs4-sum">' + sumHtml() + '</div><div id="cs4-rbox">' + rboxHtml() + '</div><div class="cs4-card" id="cs4-actb">' + actsHtml() + '</div></div>';
@@ -126461,6 +126471,7 @@ window.FUNERGY_CSQ4_MASTER = {"version":"CAREER_2026_Q4_V1","note":"Career Score
   }
   function startPanel(){
     var cu = E.cu, d = cu.d, a = d.assign, can = d.can || {}, h = '<div class="cs4-card">';
+    if (d.view) return h + '<div class="cs4-note">見るだけです。確定・公開した評価はまだありません（採点・確定は CEO が行います）。</div></div>';
     if (a) h += '<div>評価表：' + sysLine(a) + '</div>';
     if (a && can.score && !(d.person && d.person.out)) h += '<div class="cs4-acts" style="margin-top:8px"><button class="btn btn-primary" onclick="FUNERGY_CS4.h.start(' + ref(cu.emp) + ')">評価を開始</button></div>';
     else if (!a) h += '<div class="cs4-note">評価表がまだ決まっていません（GM・CEO が決めます）。</div>';
@@ -126889,6 +126900,7 @@ window.FUNERGY_CSQ4_MASTER = {"version":"CAREER_2026_Q4_V1","note":"Career Score
     var d = c.d || {}, p = d.person || {}, sys = '', h = '<div class="cs4-card"><b>' + esc(p.name || '') + '</b> <span class="cs4-note">' + esc(p.store || '') + '</span>'
       + '<div class="cs4-acts" style="margin-top:6px"><button class="btn btn-secondary btn-sm" onclick="FUNERGY_CS4.h.open(' + ref(emp) + ')">今期の評価を開く</button></div></div>';
     var evs = d.evals || [];
+    if (d.view) h += '<div class="cs4-note" style="margin:-4px 0 10px">見るだけ：確定・公開した版と前の Career Score の決まった点・履歴・賞与の固定だけを出します（下書き・申し出・変更の記録は出ません）。</div>';
     h += '<div class="cs4-card"><b>2026 Q4 の版</b>';
     if (!evs.length) h += '<div class="cs4-note">まだありません。</div>';
     evs.forEach(function(ev){
