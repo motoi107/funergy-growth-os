@@ -805,14 +805,17 @@ export function cs4CleanEntry(sys, id, e) {
       }
     }
   }
+  // 変えた理由は明細に残さない（記録 csq4_log にだけ。#214 のルーティン 7096582005 の P3-2：理由だけの未評価の明細を作らない）
+  const reason = out.changeReason || '';
+  delete out.changeReason;
   if (st === 'UNASSESSED') {
-    const keep = ['evidence', 'feedbackComment', 'changeReason'].filter(k => out[k]);
-    if (!keep.length) return { entry: null };
+    const keep = ['evidence', 'feedbackComment'].filter(k => out[k]);
+    if (!keep.length) return { entry: null, reason };
   }
   const errs = CSQ4.csq4CheckEntry(CSQ4_MASTER, sys, id, out);
   const hard = errs.find(x => CS4_HARD.includes(x));
   if (hard) return { error: hard };
-  return { entry: out };
+  return { entry: out, reason };
 }
 const cs4Pick = (e, ks) => { const o = {}; if (!e) return o; for (const k of ks) if (e[k] !== undefined) o[k] = e[k]; return o; };
 // 比べるための中身（null・未設定・periodOnly false は「無い」と同じ。未評価の項目と null は同じ）
@@ -905,7 +908,9 @@ export function cs4Brief(row) {
   const r = obj(row && row.result) || {};
   const base = { state: r.state || null, confirmable: r.confirmable === true, counts: obj(r.counts) || null };
   if (row && row.system === 'PREP') return { ...base, score: r.score ? r.score.display : null, pay: obj(r.pay) ? { state: r.pay.state, step: r.pay.step || null } : null };
-  return { ...base, total: r.total ? r.total.display : null, provisional: r.totalProvisional !== false, baseMet: r.baseMet === undefined ? null : r.baseMet };
+  // exact＝総合点の分数（賞与の ① の段を丸めずに決めるため・段階 3-2）・base＝その評価表の基準点
+  return { ...base, total: r.total ? r.total.display : null, exact: r.total ? r.total.exact : null, base: Number.isFinite(r.base) ? r.base : null,
+    provisional: r.totalProvisional !== false, baseMet: r.baseMet === undefined ? null : r.baseMet };
 }
 // 本人に共有する内容（根拠・変えた理由・だれがいつ書いたかは入れない）
 export function cs4Shared(row, entries, feedback, result) {
@@ -2733,7 +2738,8 @@ export function createHandler(deps) {
       for (const r of (Array.isArray(rq) ? rq : [])) R.set(String(r.emp_id), (R.get(String(r.emp_id)) || 0) + 1);
     }
     const counts = { not_started: 0, draft: 0, submitted: 0, returned: 0, published: 0 };
-    const sum = r => r ? { id: r.id, rev: r.rev, status: r.status, ver: r.ver, shared: !!r.shared_at, at: r.updated_at, by_name: r.updated_by_name || '', confirmed_at: r.confirmed_at || null, ...cs4Brief(r) } : null;
+    const sum = r => r ? { id: r.id, rev: r.rev, status: r.status, ver: r.ver, system: r.system, grade: r.grade || null, type: r.type || null,
+      shared: !!r.shared_at, at: r.updated_at, by_name: r.updated_by_name || '', confirmed_at: r.confirmed_at || null, ...cs4Brief(r) } : null;
     const rows = ppl.map(p => {
       const es = E.get(p.id) || [];
       const op = es.find(r => CS4_OPEN.includes(r.status)) || null, pub = es.find(r => r.status === 'published') || null;
@@ -2837,7 +2843,7 @@ export function createHandler(deps) {
         const coreChanged = cs4CoreOf(before) !== cs4CoreOf(after);
         const bodyChanged = cs4BodyOf(before) !== cs4BodyOf(after);
         if (!coreChanged && !bodyChanged) continue;
-        const why = after && after.changeReason && after.changeReason !== (before && before.changeReason) ? after.changeReason : '';   // 前に残った理由は使わない
+        const why = c.reason && c.reason !== (before && before.changeReason) ? c.reason : '';   // この保存で送った理由だけ（前の版が明細に残した理由は使わない）
         if (coreChanged && sensitive && before && before.status !== 'UNASSESSED' && !why) { need.push(id); continue; }
         if (after === null) delete entries[id];
         else entries[id] = { ...cs4Pick(after, [...CS4_CORE, ...CS4_KEEP]), prevStatus: coreChanged ? (before ? before.status : 'UNASSESSED') : (before && before.prevStatus ? before.prevStatus : 'UNASSESSED'),

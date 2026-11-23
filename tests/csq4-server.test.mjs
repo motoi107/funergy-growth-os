@@ -525,6 +525,12 @@ test('the main flow (G1 Kitchen中心): assign, start, save, share, requests, su
   const R = okj(await email('gm', { action: 'cs4_roster' }), 'roster');
   assert.equal(R.counts.published, 1);
   assert.deepEqual(R.rows.find(x => x.emp === 'E-1').published, { ...R.rows.find(x => x.emp === 'E-1').published, rev: 2, status: 'published', total: wantTotal });
+  // 段階 3-2：賞与の ① のために、総合点の分数・基準点・評価表も返す（分数は表示の数と同じ値）
+  const pb = R.rows.find(x => x.emp === 'E-1').published;
+  assert.deepEqual([pb.system, pb.grade, pb.type, pb.base], ['G', 'G1', 'Kitchen中心', 55]);
+  assert.match(pb.exact, /^\d+\/\d+$/);
+  const [en, ed] = pb.exact.split('/').map(Number);
+  assert.equal((Math.round(en / ed * 10) / 10).toFixed(1), wantTotal);
 
   // 20：app_state と社員の表は書かない
   assert.equal(W.calls.post + W.calls.patch, 0);
@@ -608,6 +614,12 @@ test('#214 review: unknown grades, retired people\'s open evaluations and change
   await db.query(`update public.csq4_evals set entries = jsonb_set(entries, '{01-01,changeReason}', '"前の理由"') where id = $1`, [st.id]);
   assert.deepEqual(fail(await pin('am', { action: 'cs4_save', id: st.id, expect: r.ver, entries: { '01-01': { status: 'SCORED', score: 1, changeReason: '前の理由' } } }), 400, 'reason_required', 'the old reason').ids, ['01-01']);
   r = okj(await pin('am', { action: 'cs4_save', id: st.id, expect: r.ver, entries: { '01-01': { status: 'UNASSESSED', changeReason: '見直すため未評価に戻す' } } }), 'back to unassessed with a reason');
+  // #214 のルーティン（7096582005）の P3-2：理由だけの未評価の明細は残さない（理由は記録にだけ）
+  ev = await evalRow(db, st.id);
+  assert.equal(ev.entries['01-01'], undefined, 'no entry with only a reason');
+  const lg2 = (await db.query(`select detail from public.csq4_log where eval_id = $1 and action = 'save' order by id desc limit 1`, [st.id])).rows[0].detail;
+  assert.equal(lg2.changes['01-01'].reason, '見直すため未評価に戻す');
+  assert.equal(lg2.changes['01-01'].after, null);
   okj(await pin('g1b', { action: 'cs4_req', id: st.id, kind: 'comment', note: '確認したい' }), 'comment before');
   W.emps.find(e => e.id === 'E-1B').status = '退職';
   fail(await pin('g1b', { action: 'cs4_req', id: st.id, kind: 'comment', note: 'もう一度' }), 403, 'forbidden', 'retired people do not send');
