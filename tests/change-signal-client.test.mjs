@@ -127,7 +127,7 @@ function load(o = {}) {
   ctx.supabase = { createClient: () => W.client };
   if (o.realPii) delete ctx.piiLoad;   // index.html の本物の piiLoad（関数から読む・メモリだけ）
   vm.createContext(ctx);
-  if (o.realPii) vm.runInContext(fn('piiLoad') + '\nfunction piiTid(){ return "1|u-gm||E-GM"; } function piiWants(){ return true; } function ssToken(){ return { g: 1, u: "u-gm", st: "", id: "E-GM" }; } function ssStale(){ return false; }', ctx);
+  if (o.realPii) vm.runInContext(fn('piiLoad') + '\nvar _piiSeq = 0; function piiTid(){ return "1|u-gm||E-GM"; } function piiWants(){ return true; } function ssToken(){ return { g: 1, u: "u-gm", st: "", id: "E-GM" }; } function ssStale(){ return false; }', ctx);
   vm.runInContext(MOD, ctx);
   const out = { W, ctx, SG: ctx.FUNERGY_SIGNAL, pulls, store, doc, setBusy: b => { busy = b; }, refreshes: () => refreshes, autoN: () => autoN, AU, setData: () => { dataAt = Date.now() + 1; } };
   LIVE.push(out);

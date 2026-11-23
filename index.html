@@ -16279,6 +16279,7 @@ var PII_ROLES = ['ceo','gm','office','office_crew','am','chef'];
 var _pii = { tid:'', lv:'', map:null, ids:null, at:0, p:null };   /* メモリだけ（ログアウトで消す）。ids：見られる人の社員 ID（全員ではない人＝AM のとき。v1207） */
 var _piiCard = {};                                      /* 下 4 桁 → { tid, t, list:[{id,name}] }（メモリだけ） */
 var _piiEnsureAt = 0;
+var _piiSeq = 0;   /* Codex #213 P2：保存に成功した人を見られる人（ids）に足した順。読み直しが保存の前に始まっていたら、その答えで外さない */
 /* Codex #138 P1-2：emp_pii の行は、SQL 20261113090000 の前は公開の鍵で読める。通常の取り込み（_kvPullRows・_applyKvRows）で
    取らず・置かず、前に置いた写し（localStorage・IndexedDB・送信待ち）も消す。起動（IndexedDB を読み終えたあと）・取り込み・ログアウトのたび。
    画面の個人の欄は pii_get の答え（メモリだけ）から出すので、この行の写しはどこでも使わない */
@@ -16337,6 +16338,7 @@ async function piiLoad(force){
   var tk=ssToken(), tid=piiTid(tk);
   if(!force && _pii.map && _pii.tid===tid && Date.now()-_pii.at<60000) return 'ok';
   if(_pii.p && _pii.p.tid===tid) return _pii.p.p;
+  var s0=_piiSeq;
   var p=(async function(){
     var r=await ssCall({ action:'pii_get', ms:30000 });
     if(ssStale(tk)) return 'stale';
@@ -16347,8 +16349,12 @@ async function piiLoad(force){
     var before='', lv=String(r.j.level||''), after='';
     /* v1207：全員ではない人（AM）には見られる人の社員 ID が来る（来ない＝前の版の関数か全員：今までどおり） */
     var ids=(r.j && Array.isArray(r.j.ids)) ? r.j.ids.map(function(x){ return String(x); }) : null;
+    /* Codex #213 P2：この読み直しを始めたあとに、同じログインで保存に成功した人（サーバーがその人を直せると答えた）は外さない
+       （読み直しのサーバーの読みが、新しい人の社員の行より前だったかもしれない）。始める前に足した人はサーバーの答えのまま */
+    var add=(_pii.tid===tid && _pii.add) ? _pii.add : null;
+    if(add && ids){ Object.keys(add).forEach(function(k){ if(add[k]>s0 && ids.indexOf(k)<0){ ids.push(k); if(!Object.prototype.hasOwnProperty.call(d, k) && _pii.map && _pii.map[k]) d[k]=_pii.map[k]; } }); }
     try{ before=(_pii.map && _pii.tid===tid) ? (_pii.lv+'|'+JSON.stringify(_pii.map)+'|'+JSON.stringify(_pii.ids)) : ''; after=lv+'|'+JSON.stringify(d)+'|'+JSON.stringify(ids); }catch(e){ before=''; after='?'; }
-    _pii={ tid:tid, lv:lv, map:d, ids:ids, at:Date.now(), p:_pii.p };
+    _pii={ tid:tid, lv:lv, map:d, ids:ids, at:Date.now(), p:_pii.p, add:add };
     /* 端末には残さない（メモリだけ）ので、画面の「データが変わった」の見張り（端末の保存を見る）に届かない。前に読んだ中身から変わったら知らせる
        （Codex #145 6846570741 P2-3：前は変更の合図で読み直しても、画面を描き直さなかった）。初めて読んだときは知らせない（読む画面が自分で描く。Claude #145 6847734306 P3-2） */
     if(before && before!==after){ try{ var ux=window.FUNERGY_UX; if(ux && typeof ux.noteDataChange==='function') ux.noteDataChange(); }catch(e){} }
@@ -16372,6 +16378,14 @@ function piiPut(id, entry, lv){
   Object.keys(cur).forEach(function(k){ nx[k]=cur[k]; });
   Object.keys(entry).forEach(function(k){ if(PII_SKIP.indexOf(k)>=0) nx[k]=entry[k]; });
   _pii.map[String(id)]=nx;
+  /* Codex #213 P2：サーバーが保存を受けた人は、このログインで直せる人（新しく登録した人も）。読み直す前でも、もう一度開いて直せるように。
+     ids の無い人（全員・前の版の関数）は作らない。piiReady（同じログインの読み）のときだけ（呼ぶ側は保存の成功と ssStale を確かめてから） */
+  if(Array.isArray(_pii.ids)){
+    var k=String(id);
+    if(_pii.ids.indexOf(k)<0) _pii.ids.push(k);
+    if(!_pii.add) _pii.add={};
+    _pii.add[k]=++_piiSeq;
+  }
 }
 /* 画面を描くときに呼ぶ：読めていなければ読み、読めたらその画面を描き直す */
 function piiEnsure(page){

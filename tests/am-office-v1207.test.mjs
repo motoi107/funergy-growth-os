@@ -172,7 +172,7 @@ function piiApp(answer) {
   c.localStorage = { getItem: () => '1' };
   vm.createContext(c);
   const pre = src.slice(src.indexOf('var _pii = {'), src.indexOf('\n', src.indexOf('var _pii = {')));
-  vm.runInContext([pre, 'var _piiCard = {}; var _piiEnsureAt = 0;',
+  vm.runInContext([pre, 'var _piiCard = {}; var _piiEnsureAt = 0; var _piiSeq = 0;',
     "function ssToken(){ return { g:1, u:'U-AM', st:'', id:'E-AM' }; }", 'function ssStale(){ return false; }',
     'async function ssCall(p){ calls++; return JSON.parse(JSON.stringify(ANSWER)); }',
     'function t(ja){ return ja; }',
@@ -201,4 +201,109 @@ test('the edit screen: an AM sees the fields of people in ids; a head-office per
   assert.deepEqual(JSON.parse(JSON.stringify(vm.runInContext("piiFormState('E-HQ')", o))), { note: '', lock: false, lockAmt: true });
   // ログアウトで ids も消える
   assert.ok(src.includes("function piiOnLogout(){ _pii={ tid:'', lv:'', map:null, ids:null, at:0, p:null };"));
+});
+
+// ---- 4. Codex（#213 7108122960）P2：AM が新しい人を登録して個人の欄の保存に成功したあと、もう一度開くと「担当の店の外」で止まる ----
+// 本物の piiLoad・piiPut・piiSave・piiFormState を VM で。サーバーの答えは合成（action ごと・遅らせられる）
+function piiApp2() {
+  const c = { curRole: 'am', curStoreLogin: false, PII_ROLES: ['ceo', 'gm', 'office', 'office_crew', 'am', 'chef', 'g4', 'sl', 'g2', 'crew'],
+    PII_FN_KEY: 'k', window: {}, TOK: 'A', Q: [], log: [] };
+  c.localStorage = { getItem: () => '1' };
+  vm.createContext(c);
+  const pre = src.slice(src.indexOf('var _pii = {'), src.indexOf('\n', src.indexOf('var _pii = {')));
+  const fns = ['piiFnSeen', 'piiTid', 'piiWants', 'piiReady', 'piiLoad', 'piiPut', 'piiSave', 'piiFormState'];
+  const seq = src.includes('var _piiSeq') ? src.slice(src.indexOf('var _piiSeq'), src.indexOf('\n', src.indexOf('var _piiSeq'))) : '';
+  const skip = src.slice(src.indexOf('var PII_FIELDS'), src.indexOf('\n', src.indexOf('var PII_SKIP')));
+  vm.runInContext([skip, pre, 'var _piiCard = {}; var _piiEnsureAt = 0;', seq,
+    // ログインは TOK（A／B）。ssStale は頼んだときのログインと今が違うか
+    "function ssToken(){ return { g:1, u:'U-'+TOK, st:'', id:'E-AM' }; }", 'function ssStale(tk){ return tk.u !== ssToken().u; }',
+    // ssCall：Q の先頭の答えを使う（{ action, r, wait }）。wait があれば Promise を返して、あとで解く
+    'async function ssCall(p){ log.push(p.action); var a = Q.shift(); if(!a || a.action !== p.action) throw new Error("unexpected " + p.action); if(a.wait) await a.wait; return JSON.parse(JSON.stringify(a.r)); }',
+    'function t(ja){ return ja; }', 'function showToast(){}', 'async function empPushDirty(){}', 'function insTotalsRefresh(){}',
+    ...fns.map(fnBal)].join('\n'), c);
+  return c;
+}
+const GET = (ids, data = {}) => ({ action: 'pii_get', r: { ok: true, j: { level: 'hr', data, ids, updated_at: null } } });
+const OK = (id) => ({ action: 'pii_op', r: { ok: true, j: { entry: { dob: '2000-02-02' }, level: 'hr' } } });
+const stOf = (c, id) => JSON.parse(JSON.stringify(vm.runInContext('piiFormState(' + JSON.stringify(id) + ')', c)));
+const defer = () => { let res; const p = new Promise((r) => { res = r; }); return { p, res }; };
+
+test('Codex #213 P2：AM が新しい人を登録して保存できたら、読み直す前でももう一度開いて直せる（担当の外・失敗・ログインの切り替えでは増えない）', async () => {
+  // 1) 新しい人 → 保存に成功 → 自分の変更の合図より前にもう一度開く（前は「担当の店の外」で止まっていた）
+  const c = piiApp2();
+  c.Q.push(GET(['E-AM', 'E-S1']));
+  assert.equal(await vm.runInContext('piiLoad(true)', c), 'ok');
+  assert.equal(stOf(c, 'E-NEW').lock, true, '保存の前は止まる（サーバーの一覧に無い）');
+  c.Q.push(OK('E-NEW'));
+  assert.equal(await vm.runInContext("piiSave('E-NEW', { dob:'2000-02-02' }, {}, true)", c), true);
+  assert.deepEqual(stOf(c, 'E-NEW'), { note: '', lock: false, lockAmt: true }, '保存できた人はもう一度開いて直せる');
+  assert.equal(vm.runInContext("_pii.map['E-NEW'].dob", c), '2000-02-02');
+  // 自分の変更の合図で読み直し（サーバーの一覧に入っている）→ そのまま
+  c.Q.push(GET(['E-AM', 'E-S1', 'E-NEW'], { 'E-NEW': { dob: '2000-02-02' } }));
+  assert.equal(await vm.runInContext('piiLoad(true)', c), 'ok');
+  assert.equal(stOf(c, 'E-NEW').lock, false);
+  // 担当の外（本部の人）は止まったまま
+  assert.equal(stOf(c, 'E-HQ').lock, true);
+
+  // 2) 保存の前に始まった読み直しが、保存のあとに古い一覧で返っても、保存できた人を外さない
+  const d = piiApp2();
+  d.Q.push(GET(['E-AM']));
+  await vm.runInContext('piiLoad(true)', d);
+  const late = defer();
+  d.Q.push({ ...GET(['E-AM']), wait: late.p });
+  const pending = vm.runInContext('piiLoad(true)', d);
+  d.Q.push(OK('E-NEW2'));
+  assert.equal(await vm.runInContext("piiSave('E-NEW2', { dob:'2000-02-02' }, {}, true)", d), true);
+  late.res(); assert.equal(await pending, 'ok');
+  assert.equal(stOf(d, 'E-NEW2').lock, false, '古い読み直しで止めに戻らない');
+  assert.equal(vm.runInContext("_pii.map['E-NEW2'] && _pii.map['E-NEW2'].dob", d), '2000-02-02', '保存した欄も消えない');
+  // 保存のあとに始めた読み直しは、サーバーの答えそのまま（外されたら外れる）
+  d.Q.push(GET(['E-AM']));
+  await vm.runInContext('piiLoad(true)', d);
+  assert.equal(stOf(d, 'E-NEW2').lock, true, '保存のあとに読んだ一覧に無ければ止める（サーバーが正）');
+
+  // 3) 失敗・403・競合では増えない
+  for (const r of [{ ok: false, status: 500 }, { ok: false, status: 403 }, { ok: false, status: 409 }, { ok: false, net: true, status: 0 }]) {
+    const e = piiApp2();
+    e.Q.push(GET(['E-AM']));
+    await vm.runInContext('piiLoad(true)', e);
+    e.Q.push({ action: 'pii_op', r });
+    if (r.status === 409) e.Q.push(GET(['E-AM']));   // 競合のあとの読み直し（今までどおり）
+    const out = await vm.runInContext("piiSave('E-X', { dob:'2000-02-02' }, {}, true)", e);
+    assert.notEqual(out, true, JSON.stringify(r));
+    await new Promise((s) => setImmediate(s));
+    assert.equal(stOf(e, 'E-X').lock, true, '失敗のあとも止まる ' + JSON.stringify(r));
+    assert.equal(vm.runInContext("_pii.map['E-X']", e), undefined);
+  }
+
+  // 4) ログインの切り替え：A で保存を始め、答えの前に B に替わる → A の答えで B の一覧に足さない
+  const f = piiApp2();
+  f.Q.push(GET(['E-AM']));
+  await vm.runInContext('piiLoad(true)', f);
+  const slow = defer();
+  f.Q.push({ ...OK('E-NEW3'), wait: slow.p });
+  const save = vm.runInContext("piiSave('E-NEW3', { dob:'2000-02-02' }, {}, true)", f);
+  await new Promise((s) => setImmediate(s));
+  assert.equal(f.log[f.log.length - 1], 'pii_op', '保存を送ってから切り替える');
+  f.TOK = 'B';
+  f.Q.push(GET(['E-AM']));
+  await vm.runInContext('piiLoad(true)', f);
+  slow.res();
+  assert.equal(await save, 'failed', '古いログインの遅れた答えは使わない');
+  assert.equal(stOf(f, 'E-NEW3').lock, true, 'B の一覧は増えない');
+  // B の読み直しのあとに A の遅れた読み直しが来ても使わない（今までどおり ssStale）
+});
+
+test('Codex #213 P2：応援の店の人（サーバーの一覧にいる）はそのまま・前の版の関数（ids なし）と GM は今までどおり', async () => {
+  const c = piiApp2();
+  c.Q.push(GET(['E-AM', 'E-SUP']));   // 応援が担当の店の人はサーバーが ids に入れる
+  await vm.runInContext('piiLoad(true)', c);
+  assert.equal(stOf(c, 'E-SUP').lock, false);
+  const o = piiApp2();
+  o.Q.push({ action: 'pii_get', r: { ok: true, j: { level: 'hr', data: {}, updated_at: null } } });
+  await vm.runInContext('piiLoad(true)', o);
+  o.Q.push(OK('E-NEW'));
+  assert.equal(await vm.runInContext("piiSave('E-NEW', { dob:'2000-02-02' }, {}, true)", o), true);
+  assert.equal(vm.runInContext('_pii.ids', o), null, 'ids の無い前の版の関数では一覧を作らない');
+  assert.equal(stOf(o, 'E-HQ').lock, false);
 });
