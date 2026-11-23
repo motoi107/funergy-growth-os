@@ -141,7 +141,9 @@ test('the AM lists (staff master, offboarding targets, staff growth) show ALL an
   assert.equal(JSON.parse(JSON.stringify(vm.runInContext('visibleStaffForManager().length', g))), EMPS.filter(e => e.status !== '退職').length);
 });
 
-test('the version is 1207 in the page and the service worker', () => {
-  assert.match(src, /^const APP_VERSION = '1207';/m);
-  assert.match(rd('sw.js'), /^const SW_BUILD = '1207';/m);
+test('the version is 1207 or later, the same in the page and the service worker', () => {
+  // v1208（Career Score Q4 の段階 3-2）で版が上がった。1207 より前に戻っていないこと・ページと SW が同じことを見る
+  const v = (src.match(/^const APP_VERSION = '(\d+)';/m) || [])[1], w = (rd('sw.js').match(/^const SW_BUILD = '(\d+)';/m) || [])[1];
+  assert.ok(Number(v) >= 1207, v);
+  assert.equal(v, w);
 });

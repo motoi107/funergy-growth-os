@@ -1,5 +1,11 @@
 # 改修・自動化の作業記録
 
+## 2026-11-23 Career Score 2026 Q4 段階 3-2（画面・前の採点を止める・Q4 の賞与 ①）
+
+1. 済（Claude・ブランチ `claude/career-score-q4-ui`）：アプリ 1208（`docs/CAREER_SCORE_Q4_JA.md` の 8）・試験 16・わざと壊す 22/22・Chromium 38/38。次：PR → Codex → #211 → #213 → #212 → #214 → この PR → 端末を 1208 に → 実機（iPhone で採点・PC で確定）。
+2. Moto さんに確かめる：Q4 にグレードを変えた人の「前のグレードの期間の評価の確定」（UI案38）を Q4 の評価で決めるか（今は前の Career Score）・GM が GM／CEO の人の評価を見られないままでよいか・3 B の型ごとのカテゴリー（前から）。
+3. あとで：賞与の締めの関数（bonus-close）で ① の元（評価の ID と版）をサーバーで確かめる・2027 Q1 からの評価表と基準点。
+
 ## 2026-11-22 Career Score 2026 Q4 段階 3-1（サーバー）
 
 1. 済（Claude・ブランチ `claude/career-score-q4-server`）：SQL `20261214090000`・関数 secure-state の `cs4_*`・今の記録の写し・入れる一式 `deploy/career-score-q4-server/`・試験（`docs/CAREER_SCORE_Q4_JA.md` の 7）。済：PR #214。次：Codex → #211 → #213 → #212 → #214 の順にマージ → Moto さんが手順.md（① → ② → ③ → ④ → ⑤ → ③）。

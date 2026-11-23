@@ -87,6 +87,7 @@ const appServer = http.createServer(async (req, res) => {
     RTT = Number(u.searchParams.get('rtt') ?? RTT); BPS = Number(u.searchParams.get('bps') ?? BPS);
     res.writeHead(200); res.end(JSON.stringify({ RTT, BPS })); return;
   }
+  if (u.pathname === '/__csq4') { const st = await mock.csq4Stats(); res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(st || {})); return; }   // v1208：csq4_* を読んだ・呼んだ回数（CSQ4_DB=1）
   if (u.pathname === '/__ss') { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(mock.ss || {})); return; }   // v1140：関数を呼んだ回数・公開の鍵で渡った Career Score の行
   if (u.pathname === '/__hr') {   // v1142：採用・お悩み相談室の行（合成データ・hr-check.mjs が確かめる）
     const r = (mock.T.app_state || []).find(x => x.key === u.searchParams.get('key'));
