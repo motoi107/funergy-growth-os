@@ -940,3 +940,252 @@ test('Codex #215 P2-2: the own record (not in the roster) is not used once it is
   await warm(F, 'E7', 'Sue Self');
   assert.equal(rowCode(F, 'E7', 'Sue Self'), 'ok:2');
 });
+
+/* ---------------------------------------------------------------- Codex #215 item 6：本人の画面を言語の切り替えにつなぐ（英語の設定で日本語の決まった文を出さない） */
+// 日本語の文字（ひらがな・カタカナ・漢字・全角の記号）。本人やほかの人が書いた文と、マスターの名前（項目・カテゴリー・品質・型）は訳さないので除いてから見る。
+const JP = /[　-ヿ㐀-鿿豈-﫿＀-￯]/;
+function masterNames(c) {
+  const out = ['Kitchen中心'];
+  for (const s of Object.values(c.FUNERGY_CSQ4_MASTER.systems)) {
+    for (const it of s.items || []) { out.push(it.name, it.catName); }
+    for (const k of s.categories || []) { out.push(k.name, k.short); }
+    for (const q of s.quality || []) out.push(q.name);
+  }
+  return out.filter(Boolean);
+}
+function visibleText(html) {
+  const attrs = [...String(html).matchAll(/\s(?:title|placeholder|aria-label)="([^"]*)"/g)].map((m) => m[1]);
+  const body = String(html).replace(/<style[\s\S]*?<\/style>/g, ' ').replace(/<[^>]*>/g, ' ');
+  return (body + ' ' + attrs.join(' ')).replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&');
+}
+/* 訳していない決まった文（日本語）を返す：書いた文・マスターの名前を除いたあとに日本語が残れば、その前後 */
+function jpLeft(c, html, extra = []) {
+  let s = visibleText(html);
+  const allow = masterNames(c).concat(extra).sort((a, b) => b.length - a.length);
+  for (const a of allow) s = s.split(a).join(' ');
+  const out = [];
+  const re = new RegExp(JP.source, 'g'); let m;
+  while ((m = re.exec(s))) { out.push(s.slice(Math.max(0, m.index - 12), m.index + 12).replace(/\s+/g, ' ')); re.lastIndex = m.index + 12; }
+  return out;
+}
+const USER = ['ユーザーの理由A', 'ユーザーのコメントB', 'ユーザーの理由C', 'ユーザーのコメントD', 'ユーザーのよい点E', 'ユーザーの伸ばす点F', 'ユーザーの次の目標G', 'ユーザーの申し出H', 'ユーザーのコメントI', 'ユーザーへの答えJ', 'ユーザーが書いた文K', 'ユーザーのメモL', 'ユーザーのコメントM', 'ユーザーのコメントN'];
+function langApp(lang, opts = {}) {
+  const c = app(Object.assign({ user: 'Sam Crew', role: 'crew', page: 'mypage' }, opts));
+  c.curLang = lang;
+  c.t = (ja, en) => (c.curLang === 'en' && en != null ? en : ja);
+  return c;
+}
+function selfFix(c) {
+  const G = c.FUNERGY_CSQ4_MASTER.systems.G, P = c.FUNERGY_CSQ4_MASTER.systems.PREP;
+  const [i1, i2, i3, i4, i5] = G.items;
+  const shG = { system: 'G', grade: 'G3', type: 'Kitchen中心', rev: 1,
+    result: { state: 'incomplete', total: { display: '62.5' }, totalProvisional: true, base: 60, baseMet: true, minimum: { overall: 'incomplete' },
+      counts: { scored: 20, unassigned: 1, naRole: 1, naCompany: 1, unassessed: 3 }, categories: [{ name: G.categories[0].name, score: { display: '10' }, weight: 20 }],
+      unassignedList: [{ id: i1.id, name: i1.name }, { id: i5.id, name: i5.name }], roleNaList: [{ id: i2.id, name: i2.name }] },
+    items: { [i1.id]: { status: 'UNASSIGNED', unassignedReason: USER[0], feedbackComment: USER[1] },
+      [i3.id]: { status: 'NOT_APPLICABLE', naReasonType: 'COMPANY_UNASSIGNED_THIS_PERIOD', naReason: USER[2], periodFrom: '2026-10-01', periodTo: '2026-10-15', feedbackComment: USER[12] },
+      [i4.id]: { status: 'SCORED', score: 2, feedbackComment: USER[3] }, [i5.id]: { status: 'UNASSIGNED' }, [i2.id]: { status: 'NOT_APPLICABLE', naReasonType: 'ROLE_NOT_APPLICABLE', naReason: USER[11], feedbackComment: USER[13] } },
+    feedback: { good: USER[4], improve: USER[5], next: USER[6] } };
+  const shP = { system: 'PREP', rev: 1,
+    result: { score: { display: '3' }, counts: { scored: 5, na: 1, unassessed: 0 }, quality: P.quality.map((q, k) => ({ id: q.id, name: q.name, state: ['clear', 'not_clear', 'unconfirmed'][k % 3] })),
+      measure: { speed: { display: '1.2' }, range: { display: '80%' } }, pay: { state: 'quality_unconfirmed' } }, items: {}, feedback: {} };
+  const reqs = [
+    { id: 1, status: 'open', kind: 'not_assigned', item_id: i1.id, note: USER[7], created_at: '2026-11-21T01:00:00Z' },
+    { id: 2, status: 'answered', kind: 'comment', note: USER[8], answer: USER[9], answered_by_name: 'Gina Manager', answered_at: '2026-11-22T01:00:00Z', created_at: '2026-11-21T02:00:00Z' }];
+  const open = { id: 61, rev: 2, system: 'G', grade: 'G3', type: 'Kitchen中心', shared: shG };
+  const pub = { id: 41, rev: 1, system: 'G', grade: 'G3', type: 'Kitchen中心', version: 'CAREER_2026_Q4_V1', confirmed_at: '2026-11-20T21:00:00Z', confirmed_by_name: 'Gina Manager', shared: shG };
+  const prepPub = { id: 42, rev: 1, system: 'PREP', version: 'CAREER_2026_Q4_V1', confirmed_at: '2026-11-20T21:00:00Z', confirmed_by_name: 'Gina Manager', shared: shP };
+  const base = { period: { quarter: '2026-Q4' }, version: 'CAREER_2026_Q4_V1', assign: { system: 'G', grade: 'G3', type: 'Kitchen中心' }, published: null, open: null, past: [], reqs: [], hist: [] };
+  return {
+    none: Object.assign({}, base, { state: 'none' }),
+    in_progress: Object.assign({}, base, { state: 'in_progress' }),
+    shared: Object.assign({}, base, { state: 'shared', open, published: pub, reqs }),
+    published: Object.assign({}, base, { state: 'published', published: pub, reqs, past: [{ id: 40, rev: 0, closed_at: '2026-11-19T00:00:00Z', shared: shG }],
+      hist: [{ period: '2026-Q3', kind: 'lss_emp', data: { a: 1 } }] }),
+    prep: Object.assign({}, base, { state: 'published', published: prepPub, assign: { system: 'PREP' } }),
+  };
+}
+async function selfApp(lang, state, opts = {}) {
+  const c = langApp(lang, opts);
+  const fx = selfFix(c);
+  c._reply = (p) => {
+    if (p.action === 'cs4_me') return { ok: true, j: JSON.parse(JSON.stringify(fx[state])) };
+    if (p.action === 'cs4_roster') return opts.roster || { ok: true, j: rosterJ([]) };
+    if (p.action === 'cs4_req') return c._reqReply ? c._reqReply(p) : { ok: true, j: { id: 9 } };
+    return { status: 400, error: 'bad_value' };
+  };
+  const F = c.FUNERGY_CS4;
+  F.on(); await settle();
+  return { c, F };
+}
+const FIXED_JA = ['任されていないため見直しを希望', 'コメントを送る', '見直し中（確定前）', '評価中', '送った申し出・コメント', '答え待ち', '答えあり', '確定・公開', '基準点', '最低条件',
+  'カテゴリー別', '任されていない項目', '会社都合で今回非該当', '良い点', '伸ばす点', '次の目標', '項目ごとのコメント', 'まだ始まっていません', '評価する人が入力しています', '読み込めませんでした', 'もう一度', '100 点満点'];
+
+test('Codex #215 item 6: My page in English — not started / being assessed / under review / published / Prep / could not load: no fixed Japanese; written text and master names stay as written', async () => {
+  const want = {
+    none: ['has not started', 'Not started'], in_progress: ['Being assessed', 'Your assessor'], shared: ['Under review', 'Request a review', 'Send a comment', 'Base score', 'Minimum requirements', 'By category'],
+    published: ['Confirmed and published', 'Send a comment', 'Strengths', 'To improve', 'Next goal', 'Comments by item'], prep: ['Prep score', 'Wage step', 'Quality not confirmed'],
+  };
+  for (const state of Object.keys(want)) {
+    const { c, F } = await selfApp('en', state);
+    const h = F.myCardHtml();
+    assert.ok(h.includes('cs4-my'), state + ': the card is shown');
+    same(jpLeft(c, h, USER), [], state + ': no fixed Japanese in English');
+    for (const s of want[state]) assert.ok(visibleText(h).includes(s), state + ': ' + s);
+    assert.ok(visibleText(h).includes('Career Score 2026 Q4 (out of 100)'), state + ': heading');
+    if (state === 'shared' || state === 'published') for (const k of [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12, 13]) assert.ok(h.includes(USER[k]), state + ': written text as written: ' + USER[k]);
+    if (state === 'published') {
+      const v = visibleText(h);
+      assert.ok(v.includes('(Not applicable this time (company reasons) (2026-10-01 – 2026-10-15)): ' + USER[12]), 'comment on a company-reason item: the state is in English');
+      assert.ok(v.includes('(Fully not applicable): ' + USER[13]), 'comment on a role-N/A item: the state is in English');
+    }
+    // 日本語の設定では、今までの決まった文のまま（英語は出ない）
+    const j = await selfApp('ja', state);
+    const hj = j.F.myCardHtml();
+    assert.ok(!/Request a review|Send a comment|Under review|Being assessed|Confirmed and published|out of 100/.test(visibleText(hj)), state + ': Japanese stays Japanese');
+  }
+  // 読み込めなかった（通信できない）とき
+  const { c, F } = await selfApp('en', 'published');
+  const E = F._t.E(); E.me = null; E.probing = null; E.probe = 'net'; E.seen = true;
+  const h = F.myCardHtml();
+  same(jpLeft(c, h, USER), [], 'could not load: no fixed Japanese');
+  assert.ok(visibleText(h).includes('Could not load') && visibleText(h).includes('Try again'));
+  const j = await selfApp('ja', 'published');
+  const Ej = j.F._t.E(); Ej.me = null; Ej.probing = null; Ej.probe = 'net'; Ej.seen = true;
+  const hj = j.F.myCardHtml();
+  assert.ok(hj.includes('読み込めませんでした') && hj.includes('もう一度'));
+  // 日本語の画面には今までの決まった文がそろっている
+  const all = [hj];
+  for (const state of ['none', 'in_progress', 'shared', 'published', 'prep']) all.push((await selfApp('ja', state)).F.myCardHtml());
+  for (const s of FIXED_JA) assert.ok(all.some((x) => visibleText(x).includes(s)), 'Japanese: ' + s);
+});
+
+test('Codex #215 item 6: the Career Score page for a staff member in English — header, tabs, own evaluation in feedback and history, loading and error states', async () => {
+  for (const state of ['shared', 'published', 'prep', 'none']) {
+    const { c, F } = await selfApp('en', state, { page: 'leadership' });
+    for (const tab of ['now', 'fb', 'hist', 'old']) {
+      F.h.tab(tab); await settle();
+      const h = F.pageHtml(); await settle();
+      same(jpLeft(c, h, USER), [], state + ' / ' + tab + ': no fixed Japanese in English');
+      assert.ok(/Career Score 2026 Q4/.test(visibleText(h)));
+    }
+    F.h.tab('fb'); await settle();
+    const fb = visibleText(F.pageHtml());
+    assert.ok(fb.includes('Your assessment'), state + ': own card heading');
+    F.h.tab('hist'); await settle();
+    const hi = visibleText(F.pageHtml());
+    assert.ok(/Whose history/.test(hi) && /\bMe\b/.test(hi), state + ': history picker');
+    if (state === 'published') assert.ok(hi.includes('Previous Career Score (up to 2026 Q3, out of 420)'), 'old Career Score heading');
+  }
+  // 一覧を読み込んでいるあいだ・読めなかったとき（本人だけの人にも出る）
+  for (const roster of [new Promise(() => {}), { status: 500, error: '' }, { net: true }]) {
+    const { c, F } = await selfApp('en', 'none', { page: 'leadership', roster });
+    F.h.tab('now'); await settle();
+    const h = F.pageHtml(); await settle();
+    same(jpLeft(c, h, USER), [], 'roster loading / error: no fixed Japanese');
+    const h2 = F.pageHtml();
+    same(jpLeft(c, h2, USER), [], 'roster loading / error (again): no fixed Japanese');
+  }
+  // 日本語は今までどおり
+  const j = await selfApp('ja', 'published', { page: 'leadership' });
+  j.F.h.tab('fb'); await settle();
+  const hj = visibleText(j.F.pageHtml());
+  for (const s of ['今期の評価', '評価履歴', 'フィードバック・見直し', '自分の評価', 'コメントを送る']) assert.ok(hj.includes(s), 'Japanese: ' + s);
+});
+
+test('Codex #215 item 6: request and comment dialogs, the result toasts and errors follow the language; the typed text is sent as written', async () => {
+  for (const lang of ['en', 'ja']) {
+    const { c, F } = await selfApp(lang, 'shared');
+    const asks = [];
+    c.askInput = async (o) => { asks.push(o); return USER[10]; };
+    const h = F.myCardHtml();
+    const ri = Number((h.match(/FUNERGY_CS4\.h\.req\((\d+)\)/) || [])[1]);
+    const ci = Number((h.match(/FUNERGY_CS4\.h\.comment\((\d+)\)/) || [])[1]);
+    assert.ok(Number.isInteger(ri) && Number.isInteger(ci), lang + ': both buttons');
+    // 1 つ目の任されていない項目はもう申し出が開いている（答え待ち）＝ボタンは 2 つ目の項目だけ
+    assert.equal((h.match(/FUNERGY_CS4\.h\.req\(/g) || []).length, 1);
+    await F.h.req(ri); await settle();
+    await F.h.comment(ci); await settle();
+    assert.equal(asks.length, 2);
+    const toasts = c._toasts.map((x) => x[0]);
+    const sent = c._calls.filter((p) => p.action === 'cs4_req');
+    assert.equal(sent.length, 2, lang + ': two requests sent');
+    for (const p of sent) assert.equal(p.note, USER[10], lang + ': the typed text is sent as written');
+    if (lang === 'en') {
+      for (const o of asks) {
+        same(jpLeft(c, [o.title, o.label, o.okLabel, o.cancelLabel, o.requiredMsg, o.hint].join(' '), USER), [], 'dialog in English: ' + o.title);
+        assert.equal(o.okLabel, 'Send'); assert.equal(o.cancelLabel, 'Cancel');
+      }
+      assert.ok(asks[1].requiredMsg, 'the comment is required: the message is given');
+      for (const m of toasts) same(jpLeft(c, m, USER), [], 'toast in English: ' + m);
+      assert.ok(toasts.some((m) => /^Sent/.test(m)));
+    } else {
+      assert.equal(asks[0].title, '任されていないため見直しを希望'); assert.equal(asks[1].title, '評価についてコメント');
+      assert.equal(asks[0].okLabel, '送る'); assert.equal(asks[0].cancelLabel, 'キャンセル');
+      assert.ok(toasts.includes('送りました（評価する人に届きます）'));
+    }
+    // 同じ申し出・通信できない・断られた（状態）・サーバーが前の版
+    const errs = [{ ok: true, j: { same: true } }, { net: true }, { net: true, timeout: true }, { status: 409, error: 'state' }, { status: 403, error: 'forbidden' }, { status: 429, error: 'too_many' }, { legacy: true }, { none: true }, { status: 500, error: 'boom' }];
+    for (const r of errs) {
+      c._reqReply = () => r; c._toasts.length = 0;
+      await F.h.comment(ci); await settle();
+      const m = (c._toasts[0] || [])[0] || '';
+      assert.ok(m, lang + ': a message for ' + JSON.stringify(r));
+      if (lang === 'en') same(jpLeft(c, m, USER), [], 'error in English: ' + m);
+      else assert.ok(JP.test(m), 'Japanese message: ' + m);
+    }
+  }
+});
+
+test('Codex #215 item 6: the shared input box takes the Cancel label and the required message; without them it stays as before', () => {
+  const c = { document: null, window: null, escapeHtml: (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (x) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[x])), setTimeout: () => 0, console };
+  const els = {};
+  c.window = c;
+  c.document = { getElementById: (id) => els[id] || null };
+  c.openModal = (h) => { c._html = h; };
+  c.closeModalDirect = () => { c._closed = (c._closed || 0) + 1; };
+  vm.createContext(c);
+  vm.runInContext([fnSrc('openInputModal'), fnSrc('cancelInputModal'), fnSrc('submitInputModal')].join('\n'), c);
+  c.openInputModal({ title: 'x', required: true }, () => {});
+  assert.ok(c._html.includes('>キャンセル</button>') && c._html.includes('入力が必要です'), 'default: as before');
+  c.openInputModal({ title: 'x', required: true, cancelLabel: 'Cancel', requiredMsg: 'Please enter something' }, () => {});
+  assert.ok(c._html.includes('>Cancel</button>') && !c._html.includes('キャンセル') && !c._html.includes('入力が必要です'), 'labels given');
+  els['ipm-val'] = { value: '  ', focus() {} }; els['ipm-err'] = { textContent: '', style: {} };
+  c.submitInputModal();
+  assert.equal(els['ipm-err'].textContent, 'Please enter something');
+  c.openInputModal({ title: 'x', required: true }, () => {});
+  c.submitInputModal();
+  assert.equal(els['ipm-err'].textContent, '入力が必要です', 'the next box without the message is back to the default');
+});
+
+test('Codex #215 item 6: switching the language keeps what was typed (unsaved scores, comments, the reason) and sends nothing', async () => {
+  const { c, st, A } = actApp();
+  c.curLang = 'ja'; c.t = (ja, en) => (c.curLang === 'en' && en != null ? en : ja);
+  const F = await actOpen(c);
+  F.h.st(1, 'S3');
+  F.h.tx(1, 'feedbackComment', USER[10]);
+  const cu = F._t.E().cu; cu.reason = USER[11];
+  const before = JSON.stringify({ pend: cu.pend, reason: cu.reason });
+  const saves = st.saves.length, n = c._calls.length;
+  c.curLang = 'en'; c.renderPage('mypage');
+  const my = F.myCardHtml(); const pg = F.pageHtml(); await settle();
+  assert.equal(F._t.E().cu, cu, 'the same evaluation is open');
+  assert.equal(JSON.stringify({ pend: cu.pend, reason: cu.reason }), before, 'nothing typed is lost');
+  assert.ok(pg.includes(USER[10]), 'the typed comment is still in the page');
+  assert.equal(st.saves.length, saves, 'switching the language sends no save');
+  assert.ok(c._calls.slice(n).every((p) => p.action === 'cs4_me' || p.action === 'cs4_roster'), 'only reads');
+  assert.equal(typeof my, 'string');
+  c.curLang = 'ja'; F.pageHtml(); await settle();
+  assert.equal(JSON.stringify({ pend: cu.pend, reason: cu.reason }), before, 'back to Japanese: still kept');
+  assert.equal(scoreOf(F, A), 2, 'the item that was not touched is as it was');
+});
+
+test('Codex #215 item 6: screens only for assessors stay Japanese in English mode for now (the scope of item 6 is the own screens); the own parts on them follow the language', async () => {
+  const { c } = actApp();
+  c.curLang = 'en'; c.t = (ja, en) => (c.curLang === 'en' && en != null ? en : ja);
+  const F = await actOpen(c);
+  const v = visibleText(F.pageHtml());
+  assert.ok(v.includes('G（店舗）'), 'the assessment form name on the assessor screen stays Japanese');
+  assert.ok(!v.includes('G (store)'));
+  assert.ok(v.includes('This quarter'), 'the tabs follow the language');
+});

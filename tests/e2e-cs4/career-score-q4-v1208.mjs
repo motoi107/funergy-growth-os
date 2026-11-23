@@ -221,6 +221,67 @@ let total = '';
   await ctx.close();
 }
 
+// ---- 2b. 本人（スタッフ）を英語で（Codex #215 item 6）：390px（タッチ）と 1280px
+// 決まった文（見出し・状態・ボタン・注意・箱）は英語。人が書いた文とマスターの名前（項目・カテゴリー・品質・型）は訳さない＝取り除いてから日本語が残っていないかを見る
+const JPRE = /[　-ヿ㐀-鿿豈-﫿＀-￯]/;
+const leftJp = (page, sel) => page.evaluate(([sel, src]) => {
+  const re = new RegExp(src);
+  const el = document.querySelector(sel);
+  let txt = el ? el.innerText : '';
+  const allow = new Set();
+  const walk = (v, d) => { if (d > 12) return; if (typeof v === 'string') { if (v.trim()) allow.add(v.trim()); } else if (v && typeof v === 'object') for (const k in v) walk(v[k], d + 1); };
+  walk(FUNERGY_CS4._t.E().me, 0); walk(window.FUNERGY_CSQ4_MASTER, 0);
+  for (const x of [...allow].sort((a, b) => b.length - a.length)) if (re.test(x)) txt = txt.split(x).join(' ');
+  const out = []; const g = new RegExp(src, 'g'); let m;
+  while ((m = g.exec(txt)) && out.length < 8) out.push(txt.slice(Math.max(0, m.index - 20), m.index + 20));
+  return out;
+}, [sel, JPRE.source]);
+for (const [tag, vp, touch] of [['en390', { width: 390, height: 844 }, true], ['en1280', { width: 1280, height: 860 }, false]]) {
+  const { ctx, page, errors } = await open('staff' + tag, vp, touch);
+  await login(page, CREW.store, CREW.name);
+  await page.evaluate(() => { setLang('en'); go('mypage'); });
+  await page.waitForFunction(() => { const m = document.getElementById('cs4-my'); return m && /\d/.test(m.innerText) && !/Loading/.test(m.innerText); }, null, { timeout: 60000, polling: 300 }).catch(() => {});
+  const my = await page.evaluate(() => (document.getElementById('cs4-my') || {}).innerText || '');
+  ok(`staff EN ${tag}: My page card is in English`, /Career Score 2026 Q4 \(out of 100\)/.test(my) && /Confirmed and published/.test(my) && /Send a comment/.test(my), my.slice(0, 200));
+  const jp = await leftJp(page, '#cs4-my');
+  ok(`staff EN ${tag}: no fixed Japanese on the My page card`, jp.length === 0, jp);
+  ok(`staff EN ${tag}: My page has no horizontal overflow`, (await overflow(page)) <= 0, await overflow(page));
+  // コメントの箱：英語で開き、送らずに閉じる（何も送らない）
+  const cb = page.locator('#cs4-my button[onclick^="FUNERGY_CS4.h.comment("]');
+  if (await cb.count()) {
+    await cb.click();
+    await page.waitForSelector('#ipm-val', { timeout: 10000 });
+    const box = await page.evaluate(() => (document.getElementById('modal-body') || {}).innerText || '');
+    ok(`staff EN ${tag}: the comment box is in English (Send / Cancel)`, /Send/.test(box) && /Cancel/.test(box) && !JSON.stringify(box).match(/[　-ヿ㐀-鿿＀-￯]/), box.slice(0, 200));
+    await page.evaluate(() => submitInputModal());
+    const err = await page.evaluate(() => { const e = document.getElementById('ipm-err'); return e && e.style.display !== 'none' ? e.innerText : ''; });
+    ok(`staff EN ${tag}: an empty comment is stopped with an English message`, err === 'Please enter a comment', err);
+    await page.evaluate(() => cancelInputModal());
+  } else ok(`staff EN ${tag}: the comment button is there`, false);
+  // 確かめの道具が日本語を見つけられること（日本語の設定に戻すと、決まった文の日本語が残る）
+  await page.evaluate(() => { setLang('ja'); go('mypage'); });
+  await sleep(1500);
+  const jpj = await leftJp(page, '#cs4-my');
+  ok(`staff EN ${tag}: with the Japanese setting the same check finds the Japanese fixed text (the check works)`, jpj.length > 0, jpj.slice(0, 3));
+  await page.evaluate(() => { setLang('en'); go('mypage'); });
+  await sleep(1500);
+  const canOld = await page.evaluate(() => { try { return groupsForRole && Array.from(groupsForRole()).flatMap(g => Array.from(g.children)).some(p => p === 'leadership' && navChildAllowed(p)); } catch (e) { return null; } });
+  if (canOld) {
+    await toCareer(page);
+    for (const tab of ['fb', 'hist']) {
+      await page.evaluate(t => FUNERGY_CS4.h.tab(t), tab);
+      await sleep(2500);
+      const rt = await rootText(page);
+      ok(`staff EN ${tag}: Career Score page (${tab}) in English`, /This quarter/.test(rt) && /Feedback and review/.test(rt), rt.slice(0, 200));
+      const j2 = await leftJp(page, '#cs4-root');
+      ok(`staff EN ${tag}: no fixed Japanese on the Career Score page (${tab})`, j2.length === 0, j2);
+      ok(`staff EN ${tag}: the Career Score page (${tab}) has no horizontal overflow`, (await overflow(page)) <= 0, await overflow(page));
+    }
+  }
+  ok(`staff EN ${tag}: no page errors`, errors.length === 0, errors.slice(0, 5));
+  await ctx.close();
+}
+
 // ---- 3. GM（390px・タッチ）：一覧と評価の画面が横にはみ出ない
 {
   const { ctx, page, errors } = await open('gm390', { width: 390, height: 844 }, true);

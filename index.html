@@ -110081,6 +110081,7 @@ function openInputModal(opts, cb){
   window._ipmRequired = !!opts.required;
   window._ipmPattern = opts.pattern || null;
   window._ipmPatternMsg = opts.patternMsg || '形式が正しくありません';
+  window._ipmReqMsg = opts.requiredMsg || '入力が必要です';   /* v1208：言語に合わせた文を渡せる（Career Score 2026 Q4） */
   var isPw = opts.type==='password';
   var multi = (opts.multiline!==false) && !isPw && opts.type!=='number';
   var val = escapeHtml(String(opts.value!=null?opts.value:''));
@@ -110093,8 +110094,8 @@ function openInputModal(opts, cb){
         +(opts.type==='number'?' inputmode="decimal"':'')
         +(isPw?' inputmode="numeric" autocomplete="off" maxlength="'+(opts.maxlength||6)+'" style="letter-spacing:6px;font-size:18px;text-align:center"':'')
         +' value="'+val+'" placeholder="'+escapeHtml(opts.placeholder||'')+'" onkeydown="if(event.key===\'Enter\')submitInputModal()">')
-    +'<div id="ipm-err" style="display:none;font-size:11px;color:var(--red);margin-top:4px">入力が必要です</div></div>'
-    +'<div class="btn-row"><button class="btn btn-secondary" onclick="cancelInputModal()">キャンセル</button>'
+    +'<div id="ipm-err" style="display:none;font-size:11px;color:var(--red);margin-top:4px">'+escapeHtml(window._ipmReqMsg)+'</div></div>'
+    +'<div class="btn-row"><button class="btn btn-secondary" onclick="cancelInputModal()">'+escapeHtml(opts.cancelLabel||'キャンセル')+'</button>'
     +'<button class="btn '+(opts.okClass||'btn-primary')+'" onclick="submitInputModal()">'+escapeHtml(opts.okLabel||'OK')+'</button></div>');
   setTimeout(function(){ var el=document.getElementById('ipm-val'); if(el) el.focus(); }, 60);
 }
@@ -110107,7 +110108,7 @@ function submitInputModal(){
   var el=document.getElementById('ipm-val'); if(!el) return;
   var v=(el.value||'').trim();
   var er=document.getElementById('ipm-err');
-  if(window._ipmRequired && !v){ if(er){ er.textContent='入力が必要です'; er.style.display='block'; } el.focus(); return; }
+  if(window._ipmRequired && !v){ if(er){ er.textContent=window._ipmReqMsg||'入力が必要です'; er.style.display='block'; } el.focus(); return; }
   if(v && window._ipmPattern && !window._ipmPattern.test(v)){ if(er){ er.textContent=window._ipmPatternMsg; er.style.display='block'; } el.focus(); el.select&&el.select(); return; }
   var cb=window._ipmCb; window._ipmCb=null; window._ipmCancel=null;
   closeModalDirect();
@@ -125792,6 +125793,9 @@ window.FUNERGY_CSQ4_MASTER = {"version":"CAREER_2026_Q4_V1","note":"Career Score
   var DEC = /^\d{1,12}(\.\d{1,6})?$/, DAY = /^\d{4}-\d{2}-\d{2}$/;
   var SYS_LABEL = { G:'G（店舗）', S_CHEF:'S Chef', S_OFFICE:'S Office・経理・人事', PREP:'Prep' };
   var ST_LABEL = { not_started:'未開始', draft:'入力中', submitted:'確認待ち', returned:'差戻し', published:'確定・公開済み', superseded:'前の版', cancelled:'取り消し' };
+  /* 本人の画面の英語（Codex #215 item 6）：決まった文だけ。人が書いた文・マスターの名前（項目・カテゴリー・品質・型）は訳さない */
+  var SYS_EN = { G:'G (store)', S_CHEF:'S Chef', S_OFFICE:'S Office / Accounting / HR', PREP:'Prep' };
+  var ST_EN = { not_started:'Not started', draft:'In progress', submitted:'Waiting for check', returned:'Sent back', published:'Confirmed and published', superseded:'Earlier version', cancelled:'Cancelled' };
   var ST_CLS = { not_started:'todo', draft:'work', submitted:'wait', returned:'back', published:'done', superseded:'todo', cancelled:'todo' };
   function today(){
     try{ if (typeof bizToday === 'function') { var b = String(bizToday() || ''); if (DAY.test(b)) return b; } }catch(e){}
@@ -125825,10 +125829,12 @@ window.FUNERGY_CSQ4_MASTER = {"version":"CAREER_2026_Q4_V1","note":"Career Score
       return o.year + '-' + o.month + '-' + o.day + ' ' + (o.hour === '24' ? '00' : o.hour) + ':' + o.minute;
     }catch(e){ return String(iso).slice(0, 16).replace('T', ' '); }
   }
-  function sysLine(x){
+  function tl(tr, ja, en){ return tr ? T(ja, en) : ja; }   /* tr：本人の画面（言語に合わせる）／ほかは今までどおり */
+  function sysLine(x, tr){
     if (!x || !x.system) return '';
-    return esc(SYS_LABEL[x.system] || x.system) + (x.grade ? ' · ' + esc(x.grade) : '') + (x.type ? ' · ' + esc(x.type) : '');
+    return esc(tl(tr, SYS_LABEL[x.system] || x.system, SYS_EN[x.system])) + (x.grade ? ' · ' + esc(x.grade) : '') + (x.type ? ' · ' + esc(x.type) : '');
   }
+  function chipT(st){ return '<span class="cs4-chip cs4-' + (ST_CLS[st] || 'todo') + '">' + esc(T(ST_LABEL[st] || st, ST_EN[st])) + '</span>'; }
   function chip(st, extra){ return '<span class="cs4-chip cs4-' + (ST_CLS[st] || 'todo') + '">' + esc(ST_LABEL[st] || st) + (extra ? ' ' + extra : '') + '</span>'; }
   function vd(v){ return v && v.display != null ? String(v.display) : '—'; }
 
@@ -125871,13 +125877,21 @@ window.FUNERGY_CSQ4_MASTER = {"version":"CAREER_2026_Q4_V1","note":"Career Score
     not_found:'見つかりません（読み直してください）', no_emp:'自分の社員の記録とつながっていません（自分の PIN でログインしてください）',
     not_installed:'サーバーの準備がまだです', too_many:'申し出が多すぎます', view_only:'見るだけの画面です'
   };
+  var ERR_EN = {
+    conflict:'Someone else changed it first. Please reload', state:'Not possible in the current state (someone else changed it)',
+    not_complete:'Cannot confirm yet (some items are not assessed or need a reason)', open_requests:'Some review requests have no answer yet (answer them first)',
+    forbidden:'You cannot assess this person', no_assign:'Decide the assessment form first (GM or CEO)', published:'There is a confirmed and published assessment (create a re-assessment)',
+    open:'Cannot change while an assessment is open (cancel or confirm it first)', reason_required:'A reason for the change is needed', bad_value:'Please check what you entered',
+    not_found:'Not found (please reload)', no_emp:'Your sign-in is not linked to your employee record (sign in with your own PIN)',
+    not_installed:'The server is not ready yet', too_many:'Too many requests', view_only:'This screen is view only'
+  };
   function errTxt(r){
-    if (!r) return '通信できませんでした';
-    if (r.net) return r.timeout ? '時間内に返事がありませんでした（通信を確かめて、もう一度）' : '通信できませんでした（もう一度）';
-    if (r.none) return 'ログインし直してください';
-    if (r.legacy) return 'サーバーが前の版です（新しい Career Score はまだ使えません）';
-    if (r.error && ERR[r.error]) return ERR[r.error];
-    return '失敗しました' + (r.status ? '（' + r.status + (r.error ? ' ' + r.error : '') + '）' : '');
+    if (!r) return T('通信できませんでした', 'Could not connect');
+    if (r.net) return r.timeout ? T('時間内に返事がありませんでした（通信を確かめて、もう一度）', 'No reply in time (check the connection and try again)') : T('通信できませんでした（もう一度）', 'Could not connect (try again)');
+    if (r.none) return T('ログインし直してください', 'Please sign in again');
+    if (r.legacy) return T('サーバーが前の版です（新しい Career Score はまだ使えません）', 'The server is an earlier version (the new Career Score cannot be used yet)');
+    if (r.error && ERR[r.error]) return T(ERR[r.error], ERR_EN[r.error]);
+    return T('失敗しました', 'Failed') + (r.status ? T('（', ' (') + r.status + (r.error ? ' ' + r.error : '') + T('）', ')') : '');
   }
 
   /* ---------------------------------------------------------------- サーバーが新しい Career Score を扱えるか */
@@ -126008,25 +126022,25 @@ window.FUNERGY_CSQ4_MASTER = {"version":"CAREER_2026_Q4_V1","note":"Career Score
     sync();
     if (!inQ4()) return '';
     var s = srv();
-    if (s === 'unknown') { probe(); return CSS + '<div id="cs4-wait" class="cs4-card cs4-note">新しい Career Score（2026 Q4）を読み込んでいます…</div>'; }
+    if (s === 'unknown') { probe(); return CSS + '<div id="cs4-wait" class="cs4-card cs4-note">' + T('新しい Career Score（2026 Q4）を読み込んでいます…', 'Loading the new Career Score (2026 Q4)…') + '</div>'; }
     if (s === 'old') return '';
     setTimeout(kick, 0);
     return CSS + '<div id="cs4-root">' + rootHtml() + '</div>';
   }
   function headHtml(){
     return '<div class="cs4-head"><b>Career Score ' + esc(Q.replace('-', ' ')) + '</b>'
-      + '<span class="cs4-sub">' + esc(D0) + '〜' + esc(D1) + '（ハワイ時間）・' + esc(VER) + '・100 点満点</span></div>';
+      + '<span class="cs4-sub">' + esc(D0) + T('〜', ' – ') + esc(D1) + T('（ハワイ時間）・', ' (Hawaii time) · ') + esc(VER) + T('・100 点満点', ' · out of 100') + '</span></div>';
   }
   function tabsHtml(){
-    var a = [['now', '今期の評価'], ['hist', '評価履歴'], ['fb', 'フィードバック・見直し'], ['old', '前の Career Score（記録・読むだけ）']];
+    var a = [['now', T('今期の評価', 'This quarter')], ['hist', T('評価履歴', 'History')], ['fb', T('フィードバック・見直し', 'Feedback and review')], ['old', T('前の Career Score（記録・読むだけ）', 'Previous Career Score (records, read only)')]];
     return '<div class="cs4-tabs">' + a.map(function(x){
       return '<button class="cs4-tab' + (E.tab === x[0] ? ' on' : '') + '" onclick="FUNERGY_CS4.h.tab(\'' + x[0] + '\')">' + esc(x[1]) + '</button>';
     }).join('') + '</div>';
   }
   function rootHtml(){
     var h = headHtml() + tabsHtml();
-    if (E.probe === 'noemp') return h + '<div class="cs4-card cs4-note">新しい Career Score は、社員の記録とつながったログインで使います。自分の PIN でログインしてください。</div>';
-    if (E.tab === 'old') return h + '<div class="cs4-warn">前の Career Score の記録です（読むだけ）。2026 Q4 からの採点・申請・承認は止めています。</div>';
+    if (E.probe === 'noemp') return h + '<div class="cs4-card cs4-note">' + T('新しい Career Score は、社員の記録とつながったログインで使います。自分の PIN でログインしてください。', 'The new Career Score works with a sign-in linked to your employee record. Please sign in with your own PIN.') + '</div>';
+    if (E.tab === 'old') return h + '<div class="cs4-warn">' + T('前の Career Score の記録です（読むだけ）。2026 Q4 からの採点・申請・承認は止めています。', 'These are records of the previous Career Score (read only). Its scoring, requests and approvals stopped from 2026 Q4.') + '</div>';
     if (E.tab === 'hist') return h + histHtml();
     if (E.tab === 'fb') return h + fbHtml();
     return h + (E.cu ? scoreHtml() : listHtml());
@@ -126057,7 +126071,7 @@ window.FUNERGY_CSQ4_MASTER = {"version":"CAREER_2026_Q4_V1","note":"Career Score
         E.ros = r.j; E.rosAt = Date.now(); E.rosErr = '';
         E.rosMap = {}; (r.j.rows || []).forEach(function(x){ E.rosMap[String(x.emp)] = x; });
       } else {
-        E.rosErr = (r.ok && r.j && r.j.nosql) ? ERR.not_installed : errTxt(r); E.rosNext = Date.now() + 30000;
+        E.rosErr = errTxt((r.ok && r.j && r.j.nosql) ? { error:'not_installed' } : r); E.rosNext = Date.now() + 30000;
         if (r.legacy || r.status === 503 || (r.ok && r.j && r.j.nosql)) probe(true);
       }
       if (rosPaintable()) paint();
@@ -126075,9 +126089,9 @@ window.FUNERGY_CSQ4_MASTER = {"version":"CAREER_2026_Q4_V1","note":"Career Score
   function listHtml(){
     var R = E.ros;
     var self = selfBlock();
-    if (!R) return self + '<div class="cs4-card cs4-note">' + (E.rosErr ? esc(E.rosErr) + ' <button class="btn btn-secondary btn-sm" onclick="FUNERGY_CS4.h.reload()">もう一度</button>' : '評価する人を読み込んでいます…') + '</div>';
+    if (!R) return self + '<div class="cs4-card cs4-note">' + (E.rosErr ? esc(E.rosErr) + ' <button class="btn btn-secondary btn-sm" onclick="FUNERGY_CS4.h.reload()">' + T('もう一度', 'Try again') + '</button>' : T('評価する人を読み込んでいます…', 'Loading the people you assess…')) + '</div>';
     var rows = R.rows || [];
-    if (!rows.length) return self + (self ? '' : '<div class="cs4-card cs4-note">評価する人はいません。自分の評価は「フィードバック・見直し」とマイページで見られます。</div>');
+    if (!rows.length) return self + (self ? '' : '<div class="cs4-card cs4-note">' + T('評価する人はいません。自分の評価は「フィードバック・見直し」とマイページで見られます。', 'There is no one for you to assess. You can see your own assessment in "Feedback and review" and on My page.') + '</div>');
     var f = E.f, cnt = R.counts || {}, nReq = rows.filter(function(r){ return r.reqs > 0; }).length;
     var h = self + '<div class="cs4-cnts">';
     [['', 'すべて', rows.length], ['not_started', '未開始', cnt.not_started], ['draft', '入力中', cnt.draft], ['submitted', '確認待ち', cnt.submitted],
@@ -126145,7 +126159,7 @@ window.FUNERGY_CSQ4_MASTER = {"version":"CAREER_2026_Q4_V1","note":"Career Score
   function selfBlock(){
     var me = E.me;
     if (!me || !me.state) return '';
-    return '<details class="cs4-card"><summary><b>自分の評価</b> ' + myStateChip(me) + '</summary><div style="margin-top:8px">' + myBody(me, false) + '</div></details>';
+    return '<details class="cs4-card"><summary><b>' + T('自分の評価', 'Your assessment') + '</b> ' + myStateChip(me) + '</summary><div style="margin-top:8px">' + myBody(me, false) + '</div></details>';
   }
   function bulkOk(r){ return !!(r.can && r.can.assign && !r.assign && !r.open && !r.out && r.suggest && r.suggest.system && (r.suggest.system !== 'G' || r.suggest.type)); }
 
@@ -126597,6 +126611,8 @@ window.FUNERGY_CSQ4_MASTER = {"version":"CAREER_2026_Q4_V1","note":"Career Score
     return h + '</div>';
   }
   var QSTATE = { clear:'確認済み', not_clear:'基準に届かない', unconfirmed:'未確認' };
+  var QSTATE_EN = { clear:'Confirmed', not_clear:'Below the standard', unconfirmed:'Not confirmed' };
+  var PAYSTATE_EN = { quality_unconfirmed:'Quality not confirmed', quality_not_clear:'Quality below the standard', unmeasured:'Not enough measurements', judged:'Judged' };
   var PAYSTATE = { quality_unconfirmed:'品質が未確認', quality_not_clear:'品質が基準に届かない', unmeasured:'測った記録が足りない', judged:'判定できました' };
   var MREASON = { no_measure:'測った記録がありません', bad_trial_date:'測った日が正しくありません', bad_trial_value:'時間が正しくありません', zero_actual:'実作業時間が 0 です',
     need_3_days:'別の日に 3 回以上測ってください', no_range:'習得範囲の標準時間を入れてください', zero_all_std:'全作業の標準時間が 0 です', bad_range:'自立できる作業の時間が全作業より多いです' };
@@ -126636,6 +126652,7 @@ window.FUNERGY_CSQ4_MASTER = {"version":"CAREER_2026_Q4_V1","note":"Career Score
     if (p.compare) h += '<div class="cs4-note">今の段と比べて：' + ({ raise:'上がる', same:'同じ', keep_current:'下がる（自動では下げません。今の段のまま）' }[p.compare] || p.compare) + '</div>';
     return h + '<div class="cs4-note">時給は自動では変えません（確定したあと、会社が確かめて決めます）。</div>';
   }
+  var MINST_EN = { met:'Met', not_met:'Not met', incomplete:'Some items not assessed', pending_rule:'On hold (target categories not decided)', no_opportunity:'No chance to judge' };
   var MINST = { met:'達成', not_met:'未達', incomplete:'未評価あり', pending_rule:'判定を保留（対象カテゴリーが未決定）', no_opportunity:'判定する機会なし' };
   function sumHtml(){
     var cu = E.cu, ev = cu.ev; if (!ev) return '';
@@ -126797,93 +126814,98 @@ window.FUNERGY_CSQ4_MASTER = {"version":"CAREER_2026_Q4_V1","note":"Career Score
   }
 
   /* ---------------------------------------------------------------- 本人に見せる形（共有・確定した評価） */
+  var KIND_EN = { lss_emp:'Previous Career Score points', lss_history:'Previous Career Score change history', lss_requests:'Previous Career Score requests', lss_legacy:'Previous Career Score (combined record)', bonus_csfreeze:'Points fixed for the bonus', ocs_ev:'Office Career Score' };
   var KIND_OLD = { lss_emp:'前の Career Score の点', lss_history:'前の Career Score の変更履歴', lss_requests:'前の Career Score の申請', lss_legacy:'前の Career Score（まとめた記録）', bonus_csfreeze:'賞与のために固定した点', ocs_ev:'オフィス Career Score' };
-  function coreTxt(c, sys){
-    if (!c || !c.status || c.status === ST.UNASSESSED) return '未評価';
+  function coreTxt(c, sys, tr){
+    if (!c || !c.status || c.status === ST.UNASSESSED) return tl(tr, '未評価', 'Not assessed');
     if (c.status === ST.SCORED) return String(c.score);
-    if (c.status === ST.UNASSIGNED) return '未担当（0 点）';
-    if (c.naReasonType === NA.COMPANY) return '会社都合で今回非該当' + (c.periodFrom ? '（' + c.periodFrom + '〜' + (c.periodTo || '') + '）' : '');
-    return sys === 'G' ? '完全非該当' : '非該当';
+    if (c.status === ST.UNASSIGNED) return tl(tr, '未担当（0 点）', 'Not assigned (0 points)');
+    if (c.naReasonType === NA.COMPANY) return tl(tr, '会社都合で今回非該当', 'Not applicable this time (company reasons)') + (c.periodFrom ? tl(tr, '（', ' (') + c.periodFrom + tl(tr, '〜', ' – ') + (c.periodTo || '') + tl(tr, '）', ')') : '');
+    return sys === 'G' ? tl(tr, '完全非該当', 'Fully not applicable') : tl(tr, '非該当', 'Not applicable');
   }
   function itemName(sys, id){ var it = itemOf(sys, id); return id + (it ? ' ' + it.name : ''); }
   function sharedHtml(sh, evId, withReq, reqs){
-    if (!sh || !sh.result) return '<div class="cs4-note">内容がありません。</div>';
-    var R = sh.result, it = sh.items || {}, sys = sh.system, h = '<div class="cs4-note">' + sysLine(sh) + '・第 ' + esc(sh.rev) + ' 版</div>';
+    if (!sh || !sh.result) return '<div class="cs4-note">' + T('内容がありません。', 'Nothing to show.') + '</div>';
+    var R = sh.result, it = sh.items || {}, sys = sh.system, h = '<div class="cs4-note">' + sysLine(sh, true) + T('・第 ' + esc(sh.rev) + ' 版', ' · version ' + esc(sh.rev)) + '</div>';
     var open = {}; (reqs || []).forEach(function(q){ if (q.status === 'open' && q.kind === 'not_assigned' && q.item_id) open[q.item_id] = 1; });
     if (sys === 'PREP') {
-      h += '<div class="cs4-big">' + esc(vd(R.score)) + '<span style="font-size:13px;font-weight:600"> Prep の点</span></div>';
-      if (R.counts) h += '<div class="cs4-note">採点 ' + R.counts.scored + '・非該当 ' + R.counts.na + '・未評価 ' + R.counts.unassessed + '</div>';
-      (R.quality || []).forEach(function(q){ h += '<div class="cs4-kv"><span>' + esc(q.id + ' ' + q.name) + '</span><b>' + esc(QSTATE[q.state] || q.state) + '</b></div>'; });
-      if (R.measure && !R.measure.reason) h += '<div class="cs4-kv"><span>スピード・習得範囲</span><b>' + esc(vd(R.measure.speed)) + '・' + esc(vd(R.measure.range)) + '</b></div>';
-      if (R.pay) h += '<div class="cs4-kv"><span>時給の段（判定）</span><b>' + esc(R.pay.step ? R.pay.step + (R.pay.wageUsd != null ? '（$' + R.pay.wageUsd + '）' : '') : (PAYSTATE[R.pay.state] || R.pay.state)) + '</b></div>';
-      h += '<div class="cs4-note">時給は自動では変えません（会社が確かめて決めます）。</div>';
+      h += '<div class="cs4-big">' + esc(vd(R.score)) + '<span style="font-size:13px;font-weight:600"> ' + T('Prep の点', 'Prep score') + '</span></div>';
+      if (R.counts) h += '<div class="cs4-note">' + T('採点 ' + R.counts.scored + '・非該当 ' + R.counts.na + '・未評価 ' + R.counts.unassessed, 'Scored ' + R.counts.scored + ' · Not applicable ' + R.counts.na + ' · Not assessed ' + R.counts.unassessed) + '</div>';
+      (R.quality || []).forEach(function(q){ h += '<div class="cs4-kv"><span>' + esc(q.id + ' ' + q.name) + '</span><b>' + esc(T(QSTATE[q.state] || q.state, QSTATE_EN[q.state])) + '</b></div>'; });
+      if (R.measure && !R.measure.reason) h += '<div class="cs4-kv"><span>' + T('スピード・習得範囲', 'Speed / range learned') + '</span><b>' + esc(vd(R.measure.speed)) + T('・', ' / ') + esc(vd(R.measure.range)) + '</b></div>';
+      if (R.pay) h += '<div class="cs4-kv"><span>' + T('時給の段（判定）', 'Wage step (result)') + '</span><b>' + esc(R.pay.step ? R.pay.step + (R.pay.wageUsd != null ? T('（', ' (') + '$' + R.pay.wageUsd + T('）', ')') : '') : T(PAYSTATE[R.pay.state] || R.pay.state, PAYSTATE_EN[R.pay.state])) + '</b></div>';
+      h += '<div class="cs4-note">' + T('時給は自動では変えません（会社が確かめて決めます）。', 'Your wage does not change automatically (the company checks and decides).') + '</div>';
     } else {
-      h += '<div class="cs4-big">' + esc(R.total ? R.total.display : '—') + '<span style="font-size:14px;font-weight:600"> / 100' + (R.totalProvisional ? ' 仮' : '') + '</span></div>'
-        + '<div class="cs4-kv"><span>基準点</span><b>' + esc(R.base) + (R.baseMet === true ? ' 達成' : R.baseMet === false ? ' 未達' : '') + '</b></div>'
-        + '<div class="cs4-kv"><span>最低条件</span><b>' + esc(MINST[R.minimum && R.minimum.overall] || '—') + '</b></div>';
-      var c = R.counts || {};
-      h += '<div class="cs4-note">採点 ' + (c.scored || 0) + (sys === 'G' ? '・未担当 ' + (c.unassigned || 0) + '（0 点で数えます）・完全非該当 ' + (c.naRole || 0) + '・会社都合 ' + (c.naCompany || 0) : '・非該当 ' + ((c.naRole || 0) + (c.naCompany || 0))) + '・未評価 ' + (c.unassessed || 0) + '</div>';
-      if ((R.categories || []).length) h += '<details><summary class="cs4-note">カテゴリー別</summary>' + R.categories.map(function(k){ return '<div class="cs4-kv"><span>' + esc(k.name) + '</span><b>' + esc(k.score ? k.score.display : '—') + ' / ' + esc(k.weight) + '</b></div>'; }).join('') + '</details>';
+      var mk = R.minimum && R.minimum.overall;
+      h += '<div class="cs4-big">' + esc(R.total ? R.total.display : '—') + '<span style="font-size:14px;font-weight:600"> / 100' + (R.totalProvisional ? T(' 仮', ' provisional') : '') + '</span></div>'
+        + '<div class="cs4-kv"><span>' + T('基準点', 'Base score') + '</span><b>' + esc(R.base) + (R.baseMet === true ? T(' 達成', ' met') : R.baseMet === false ? T(' 未達', ' not met') : '') + '</b></div>'
+        + '<div class="cs4-kv"><span>' + T('最低条件', 'Minimum requirements') + '</span><b>' + esc(T(MINST[mk] || '—', MINST_EN[mk])) + '</b></div>';
+      var c = R.counts || {}, c0 = c.scored || 0, c1 = c.unassigned || 0, c2 = c.naRole || 0, c3 = c.naCompany || 0, c4 = c.unassessed || 0;
+      h += '<div class="cs4-note">' + (sys === 'G'
+        ? T('採点 ' + c0 + '・未担当 ' + c1 + '（0 点で数えます）・完全非該当 ' + c2 + '・会社都合 ' + c3 + '・未評価 ' + c4, 'Scored ' + c0 + ' · Not assigned ' + c1 + ' (counted as 0) · Fully not applicable ' + c2 + ' · Company reasons ' + c3 + ' · Not assessed ' + c4)
+        : T('採点 ' + c0 + '・非該当 ' + (c2 + c3) + '・未評価 ' + c4, 'Scored ' + c0 + ' · Not applicable ' + (c2 + c3) + ' · Not assessed ' + c4)) + '</div>';
+      if ((R.categories || []).length) h += '<details><summary class="cs4-note">' + T('カテゴリー別', 'By category') + '</summary>' + R.categories.map(function(k){ return '<div class="cs4-kv"><span>' + esc(k.name) + '</span><b>' + esc(k.score ? k.score.display : '—') + ' / ' + esc(k.weight) + '</b></div>'; }).join('') + '</details>';
       var un = R.unassignedList || [];
       if (un.length) {
-        h += '<div style="margin-top:8px"><b>任されていない項目（未担当・0 点で数えます）</b>';
+        h += '<div style="margin-top:8px"><b>' + T('任されていない項目（未担当・0 点で数えます）', 'Items not assigned to you (not assigned, counted as 0)') + '</b>';
         un.forEach(function(x){
           var e = it[x.id] || {};
-          h += '<div class="cs4-it"><div><b>' + esc(x.id) + '</b> ' + esc(x.name || '') + '</div>' + (e.unassignedReason ? '<div class="cs4-note">理由：' + esc(e.unassignedReason) + '</div>' : '') + (e.feedbackComment ? '<div class="cs4-note">コメント：' + esc(e.feedbackComment) + '</div>' : '');
-          if (withReq && evId) h += open[x.id] ? '<span class="cs4-chip cs4-wait">見直しを希望しました（答え待ち）</span>' : '<button class="btn btn-secondary btn-sm" onclick="FUNERGY_CS4.h.req(' + ref('na|' + evId + '|' + x.id) + ')">任されていないため見直しを希望</button>';
+          h += '<div class="cs4-it"><div><b>' + esc(x.id) + '</b> ' + esc(x.name || '') + '</div>' + (e.unassignedReason ? '<div class="cs4-note">' + T('理由：', 'Reason: ') + esc(e.unassignedReason) + '</div>' : '') + (e.feedbackComment ? '<div class="cs4-note">' + T('コメント：', 'Comment: ') + esc(e.feedbackComment) + '</div>' : '');
+          if (withReq && evId) h += open[x.id] ? '<span class="cs4-chip cs4-wait">' + T('見直しを希望しました（答え待ち）', 'Review requested (waiting for an answer)') + '</span>' : '<button class="btn btn-secondary btn-sm" onclick="FUNERGY_CS4.h.req(' + ref('na|' + evId + '|' + x.id) + ')">' + T('任されていないため見直しを希望', 'Request a review (not assigned to me)') + '</button>';
           h += '</div>';
         });
         h += '</div>';
       }
       var co = Object.keys(it).filter(function(id){ return it[id].status === ST.NOT_APPLICABLE && it[id].naReasonType === NA.COMPANY; });
-      if (co.length) h += '<div style="margin-top:8px"><b>会社都合で今回非該当（配点から外しています）</b>' + co.map(function(id){ var e = it[id]; return '<div class="cs4-note">' + esc(itemName(sys, id)) + (e.naReason ? '：' + esc(e.naReason) : '') + (e.periodFrom ? '（' + esc(e.periodFrom) + '〜' + esc(e.periodTo || '') + '）' : '') + '</div>'; }).join('') + '</div>';
+      if (co.length) h += '<div style="margin-top:8px"><b>' + T('会社都合で今回非該当（配点から外しています）', 'Not applicable this time for company reasons (removed from the points)') + '</b>' + co.map(function(id){ var e = it[id]; return '<div class="cs4-note">' + esc(itemName(sys, id)) + (e.naReason ? T('：', ': ') + esc(e.naReason) : '') + (e.periodFrom ? T('（', ' (') + esc(e.periodFrom) + T('〜', ' – ') + esc(e.periodTo || '') + T('）', ')') : '') + '</div>'; }).join('') + '</div>';
       var rn = R.roleNaList || [];
-      if (rn.length) h += '<details style="margin-top:6px"><summary class="cs4-note">' + (sys === 'G' ? '完全非該当' : '非該当') + '（役割に無い項目・' + rn.length + '）</summary>' + rn.map(function(x){ var e = it[x.id] || {}; return '<div class="cs4-note">' + esc(x.id + ' ' + (x.name || '')) + (e.naReason ? '：' + esc(e.naReason) : '') + '</div>'; }).join('') + '</details>';
+      if (rn.length) h += '<details style="margin-top:6px"><summary class="cs4-note">' + (sys === 'G' ? T('完全非該当', 'Fully not applicable') : T('非該当', 'Not applicable')) + T('（役割に無い項目・' + rn.length + '）', ' (not part of the role: ' + rn.length + ')') + '</summary>' + rn.map(function(x){ var e = it[x.id] || {}; return '<div class="cs4-note">' + esc(x.id + ' ' + (x.name || '')) + (e.naReason ? T('：', ': ') + esc(e.naReason) : '') + '</div>'; }).join('') + '</details>';
     }
     var fb = sh.feedback || {};
-    if (fb.good || fb.improve || fb.next) h += '<div style="margin-top:8px">' + [['good', '良い点'], ['improve', '伸ばす点'], ['next', '次の目標']].map(function(x){ return fb[x[0]] ? '<div class="cs4-note"><b>' + x[1] + '</b>：' + esc(fb[x[0]]) + '</div>' : ''; }).join('') + '</div>';
+    if (fb.good || fb.improve || fb.next) h += '<div style="margin-top:8px">' + [['good', T('良い点', 'Strengths')], ['improve', T('伸ばす点', 'To improve')], ['next', T('次の目標', 'Next goal')]].map(function(x){ return fb[x[0]] ? '<div class="cs4-note"><b>' + x[1] + '</b>' + T('：', ': ') + esc(fb[x[0]]) + '</div>' : ''; }).join('') + '</div>';
     var cm = Object.keys(it).filter(function(id){ return it[id].feedbackComment && it[id].status !== ST.UNASSIGNED; });
-    if (cm.length) h += '<details style="margin-top:6px"><summary class="cs4-note">項目ごとのコメント（' + cm.length + '）</summary>' + cm.map(function(id){ return '<div class="cs4-note"><b>' + esc(itemName(sys, id)) + '</b>（' + esc(coreTxt(it[id], sys)) + '）：' + esc(it[id].feedbackComment) + '</div>'; }).join('') + '</details>';
-    if (withReq && evId) h += '<div class="cs4-acts" style="margin-top:8px"><button class="btn btn-secondary btn-sm" onclick="FUNERGY_CS4.h.comment(' + ref(String(evId)) + ')">コメントを送る</button></div>';
+    if (cm.length) h += '<details style="margin-top:6px"><summary class="cs4-note">' + T('項目ごとのコメント（' + cm.length + '）', 'Comments by item (' + cm.length + ')') + '</summary>' + cm.map(function(id){ return '<div class="cs4-note"><b>' + esc(itemName(sys, id)) + '</b>' + T('（', ' (') + esc(coreTxt(it[id], sys, true)) + T('）：', '): ') + esc(it[id].feedbackComment) + '</div>'; }).join('') + '</details>';
+    if (withReq && evId) h += '<div class="cs4-acts" style="margin-top:8px"><button class="btn btn-secondary btn-sm" onclick="FUNERGY_CS4.h.comment(' + ref(String(evId)) + ')">' + T('コメントを送る', 'Send a comment') + '</button></div>';
     return h;
   }
   function myStateChip(me){
     var s = me && me.state;
-    if (s === 'published') return chip('published');
-    if (s === 'shared') return '<span class="cs4-chip cs4-wait">見直し中（確定前）</span>';
-    if (s === 'in_progress') return '<span class="cs4-chip cs4-work">評価中</span>';
-    return chip('not_started');
+    if (s === 'published') return chipT('published');
+    if (s === 'shared') return '<span class="cs4-chip cs4-wait">' + T('見直し中（確定前）', 'Under review (not final)') + '</span>';
+    if (s === 'in_progress') return '<span class="cs4-chip cs4-work">' + T('評価中', 'Being assessed') + '</span>';
+    return chipT('not_started');
   }
   function reqsHtml(reqs, sys){
     if (!reqs || !reqs.length) return '';
-    return '<details style="margin-top:8px"' + (reqs.some(function(q){ return q.status === 'answered'; }) ? ' open' : '') + '><summary class="cs4-note">送った申し出・コメント（' + reqs.length + '）</summary>' + reqs.slice(0, 50).map(function(q){
-      return '<div class="cs4-it"><div>' + (q.status === 'open' ? '<span class="cs4-chip cs4-wait">答え待ち</span>' : '<span class="cs4-chip cs4-done">答えあり</span>') + ' '
-        + esc(q.kind === 'not_assigned' ? '見直しの希望：' + itemName(sys || 'G', q.item_id || '') : 'コメント') + ' <span class="cs4-note">' + esc(hst(q.created_at)) + '</span></div>'
+    return '<details style="margin-top:8px"' + (reqs.some(function(q){ return q.status === 'answered'; }) ? ' open' : '') + '><summary class="cs4-note">' + T('送った申し出・コメント（' + reqs.length + '）', 'Requests and comments you sent (' + reqs.length + ')') + '</summary>' + reqs.slice(0, 50).map(function(q){
+      return '<div class="cs4-it"><div>' + (q.status === 'open' ? '<span class="cs4-chip cs4-wait">' + T('答え待ち', 'Waiting for an answer') + '</span>' : '<span class="cs4-chip cs4-done">' + T('答えあり', 'Answered') + '</span>') + ' '
+        + esc(q.kind === 'not_assigned' ? T('見直しの希望：', 'Review request: ') + itemName(sys || 'G', q.item_id || '') : T('コメント', 'Comment')) + ' <span class="cs4-note">' + esc(hst(q.created_at)) + '</span></div>'
         + (q.note ? '<div class="cs4-note">' + esc(q.note) + '</div>' : '')
-        + (q.status === 'answered' ? '<div class="cs4-note"><b>答え</b>（' + esc(q.answered_by_name || '') + ' ' + esc(hst(q.answered_at)) + '）：' + esc(q.answer) + '</div>' : '') + '</div>';
+        + (q.status === 'answered' ? '<div class="cs4-note"><b>' + T('答え', 'Answer') + '</b>' + T('（', ' (') + esc(q.answered_by_name || '') + ' ' + esc(hst(q.answered_at)) + T('）：', '): ') + esc(q.answer) + '</div>' : '') + '</div>';
     }).join('') + '</details>';
   }
   function myBody(me, withReq){
     if (!me) return '';
     var h = '', sysNow = (me.open && me.open.system) || (me.published && me.published.system) || (me.assign && me.assign.system) || 'G';
-    if (me.state === 'none') h += '<div class="cs4-note">2026 Q4 の評価はまだ始まっていません。' + (me.assign ? '（評価表：' + sysLine(me.assign) + '）' : '') + '</div>';
-    if (me.state === 'in_progress') h += '<div class="cs4-note">評価する人が入力しています。共有されると、ここで見られます。</div>';
+    if (me.state === 'none') h += '<div class="cs4-note">' + T('2026 Q4 の評価はまだ始まっていません。', 'Your 2026 Q4 assessment has not started yet.') + (me.assign ? T('（評価表：', ' (Form: ') + sysLine(me.assign, true) + T('）', ')') : '') + '</div>';
+    if (me.state === 'in_progress') h += '<div class="cs4-note">' + T('評価する人が入力しています。共有されると、ここで見られます。', 'Your assessor is filling it in. You can see it here once it is shared with you.') + '</div>';
     if (me.state === 'shared' && me.open) {
-      h += '<div class="cs4-warn" style="margin-bottom:6px">見直し中の内容です（確定前・点はまだ変わることがあります）。任されていない項目があれば「見直しを希望」を押してください。</div>'
+      h += '<div class="cs4-warn" style="margin-bottom:6px">' + T('見直し中の内容です（確定前・点はまだ変わることがあります）。任されていない項目があれば「見直しを希望」を押してください。', 'This is under review (not final; the points may still change). If an item was not assigned to you, press "Request a review".') + '</div>'
         + sharedHtml(me.open.shared, me.open.id, withReq, me.reqs);
     }
     if (me.published) {
-      var ph = '<div class="cs4-note" style="margin-bottom:4px">確定・公開：' + esc(hst(me.published.confirmed_at)) + ' ' + esc(me.published.confirmed_by_name || '') + '</div>' + sharedHtml(me.published.shared, me.published.id, withReq && me.state === 'published', me.reqs);
-      h += me.state === 'published' ? ph : '<details style="margin-top:8px"><summary><b>確定・公開済みの評価（第 ' + esc(me.published.rev) + ' 版）</b></summary>' + ph + '</details>';
+      var ph = '<div class="cs4-note" style="margin-bottom:4px">' + T('確定・公開：', 'Confirmed and published: ') + esc(hst(me.published.confirmed_at)) + ' ' + esc(me.published.confirmed_by_name || '') + '</div>' + sharedHtml(me.published.shared, me.published.id, withReq && me.state === 'published', me.reqs);
+      var pr = esc(me.published.rev);
+      h += me.state === 'published' ? ph : '<details style="margin-top:8px"><summary><b>' + T('確定・公開済みの評価（第 ' + pr + ' 版）', 'Confirmed and published assessment (version ' + pr + ')') + '</b></summary>' + ph + '</details>';
     }
     return h + reqsHtml(me.reqs, sysNow);
   }
   function myInner(){
     var s = srv();
     if (s === 'old' || E.probe === 'noemp') return '';
-    var h = '<div class="cs4-acts" style="align-items:center;margin-bottom:6px"><b>Career Score 2026 Q4（100 点満点）</b>';
-    if (s === 'unknown' || (!E.me && E.probing)) return h + '</div><div class="cs4-note">読み込んでいます…</div>';
-    if (!E.me) return h + '</div><div class="cs4-note">読み込めませんでした。 <button class="btn btn-secondary btn-sm" onclick="FUNERGY_CS4.h.myRetry()">もう一度</button></div>';
+    var h = '<div class="cs4-acts" style="align-items:center;margin-bottom:6px"><b>' + T('Career Score 2026 Q4（100 点満点）', 'Career Score 2026 Q4 (out of 100)') + '</b>';
+    if (s === 'unknown' || (!E.me && E.probing)) return h + '</div><div class="cs4-note">' + T('読み込んでいます…', 'Loading…') + '</div>';
+    if (!E.me) return h + '</div><div class="cs4-note">' + T('読み込めませんでした。', 'Could not load.') + ' <button class="btn btn-secondary btn-sm" onclick="FUNERGY_CS4.h.myRetry()">' + T('もう一度', 'Try again') + '</button></div>';
     return h + myStateChip(E.me) + '</div>' + myBody(E.me, true);
   }
   function myCardHtml(){
@@ -126900,7 +126922,7 @@ window.FUNERGY_CSQ4_MASTER = {"version":"CAREER_2026_Q4_V1","note":"Career Score
     var r = await call(body, 30000);
     if (stale(t0)) return;
     E.busy = '';
-    if (r.ok && r.j) toast(r.j.same ? '同じ申し出はもう送っています' : '送りました（評価する人に届きます）', 'success');
+    if (r.ok && r.j) toast(r.j.same ? T('同じ申し出はもう送っています', 'You have already sent the same request') : T('送りました（評価する人に届きます）', 'Sent (your assessor will see it)'), 'success');
     else toast(errTxt(r), 'warning');
     await probe(true);
     if (byId('cs4-root') && (E.tab === 'fb' || E.tab === 'hist')) paint();
@@ -126909,35 +126931,36 @@ window.FUNERGY_CSQ4_MASTER = {"version":"CAREER_2026_Q4_V1","note":"Career Score
   /* ---------------------------------------------------------------- 評価履歴 */
   function histPeople(){
     var o = [];
-    if (E.me && E.probe === 'yes') o.push({ k:'me', name:'自分' });
+    if (E.me && E.probe === 'yes') o.push({ k:'me', name:T('自分', 'Me') });
     ((E.ros && E.ros.rows) || []).forEach(function(r){ o.push({ k:String(r.emp), name:r.name + (r.store ? '（' + r.store + '）' : '') }); });
     return o;
   }
   function histHtml(){
     var ps = histPeople();
     if (!E.hsel || (!(E.hsel === '_legacy' && mgr()) && !ps.some(function(p){ return p.k === E.hsel; }))) E.hsel = ps.length ? ps[0].k : null;
-    var h = '<div class="cs4-card"><div class="cs4-acts" style="align-items:center"><label class="cs4-note">だれの履歴<select class="form-input" style="max-width:260px" onchange="FUNERGY_CS4.h.hsel(this.value)">'
+    var h = '<div class="cs4-card"><div class="cs4-acts" style="align-items:center"><label class="cs4-note">' + T('だれの履歴', 'Whose history') + '<select class="form-input" style="max-width:260px" onchange="FUNERGY_CS4.h.hsel(this.value)">'
       + ps.map(function(p){ return '<option value="' + ref(p.k) + '"' + (E.hsel === p.k ? ' selected' : '') + '>' + esc(p.name) + '</option>'; }).join('') + '</select></label>';
     if (mgr()) h += '<button class="btn btn-secondary btn-sm" onclick="FUNERGY_CS4.h.hsel(' + ref('_legacy') + ')">人に結べない前の記録（GM・CEO）</button>';
     h += '</div></div>';
-    if (!E.ros && !E.rosErr) h += '<div class="cs4-note">一覧を読み込んでいます…</div>';
+    if (!E.ros && !E.rosErr) h += '<div class="cs4-note">' + T('一覧を読み込んでいます…', 'Loading the list…') + '</div>';
     var k = E.hsel;
-    if (!k) return h + '<div class="cs4-card cs4-note">見られる履歴はありません。</div>';
+    if (!k) return h + '<div class="cs4-card cs4-note">' + T('見られる履歴はありません。', 'No history to show.') + '</div>';
     if (k === 'me') return h + selfHist();
     var c = E.hist[k];
-    if (!c || c.ld) return h + '<div class="cs4-card cs4-note">読み込んでいます…</div>';
-    if (c.err) return h + '<div class="cs4-card cs4-note">' + esc(c.err) + ' <button class="btn btn-secondary btn-sm" onclick="FUNERGY_CS4.h.hreload()">もう一度</button></div>';
+    if (!c || c.ld) return h + '<div class="cs4-card cs4-note">' + T('読み込んでいます…', 'Loading…') + '</div>';
+    if (c.err) return h + '<div class="cs4-card cs4-note">' + esc(c.err) + ' <button class="btn btn-secondary btn-sm" onclick="FUNERGY_CS4.h.hreload()">' + T('もう一度', 'Try again') + '</button></div>';
     if (k === '_legacy') return h + '<div class="cs4-card"><b>人に結べない前の記録</b>' + oldRowsHtml(c.h || []) + runsHtml(c.runs || []) + '</div>';
     return h + personHist(k, c);
   }
   function selfHist(){
     var me = E.me, h = '';
-    if (me.published) h += '<div class="cs4-card"><b>2026 Q4（確定・公開・第 ' + esc(me.published.rev) + ' 版）</b><div class="cs4-note">新しい Career Score（' + esc(me.published.version || VER) + '・100 点満点）</div>' + sharedHtml(me.published.shared, me.published.id, false, me.reqs) + '</div>';
-    if (me.state === 'shared' && me.open) h += '<div class="cs4-card"><b>2026 Q4（見直し中・第 ' + esc(me.open.rev) + ' 版）</b>' + sharedHtml(me.open.shared, me.open.id, false, me.reqs) + '</div>';
-    (me.past || []).forEach(function(p){ h += '<details class="cs4-card"><summary><b>2026 Q4 第 ' + esc(p.rev) + ' 版（前の版・' + esc(hst(p.closed_at)) + ' に置き換え）</b></summary>' + sharedHtml(p.shared, p.id, false, []) + '</details>'; });
-    if (!h) h = '<div class="cs4-card cs4-note">2026 Q4 の確定した評価はまだありません。</div>';
+    if (me.published) { var pr = esc(me.published.rev), pv = esc(me.published.version || VER);
+      h += '<div class="cs4-card"><b>' + T('2026 Q4（確定・公開・第 ' + pr + ' 版）', '2026 Q4 (confirmed and published, version ' + pr + ')') + '</b><div class="cs4-note">' + T('新しい Career Score（' + pv + '・100 点満点）', 'New Career Score (' + pv + ', out of 100)') + '</div>' + sharedHtml(me.published.shared, me.published.id, false, me.reqs) + '</div>'; }
+    if (me.state === 'shared' && me.open) { var orv = esc(me.open.rev); h += '<div class="cs4-card"><b>' + T('2026 Q4（見直し中・第 ' + orv + ' 版）', '2026 Q4 (under review, version ' + orv + ')') + '</b>' + sharedHtml(me.open.shared, me.open.id, false, me.reqs) + '</div>'; }
+    (me.past || []).forEach(function(p){ var r0 = esc(p.rev), d0 = esc(hst(p.closed_at)); h += '<details class="cs4-card"><summary><b>' + T('2026 Q4 第 ' + r0 + ' 版（前の版・' + d0 + ' に置き換え）', '2026 Q4 version ' + r0 + ' (earlier version, replaced ' + d0 + ')') + '</b></summary>' + sharedHtml(p.shared, p.id, false, []) + '</details>'; });
+    if (!h) h = '<div class="cs4-card cs4-note">' + T('2026 Q4 の確定した評価はまだありません。', 'There is no confirmed 2026 Q4 assessment yet.') + '</div>';
     h += reqsHtml(me.reqs, (me.published && me.published.system) || 'G');
-    return h + '<div class="cs4-card"><b>前の Career Score（2026 Q3 まで・420 点満点）</b>' + oldRowsHtml(me.hist || []) + '</div>';
+    return h + '<div class="cs4-card"><b>' + T('前の Career Score（2026 Q3 まで・420 点満点）', 'Previous Career Score (up to 2026 Q3, out of 420)') + '</b>' + oldRowsHtml(me.hist || [], true) + '</div>';
   }
   function personHist(emp, c){
     var d = c.d || {}, p = d.person || {}, sys = '', h = '<div class="cs4-card"><b>' + esc(p.name || '') + '</b> <span class="cs4-note">' + esc(p.store || '') + '</span>'
@@ -126989,13 +127012,13 @@ window.FUNERGY_CSQ4_MASTER = {"version":"CAREER_2026_Q4_V1","note":"Career Score
       + (q.status === 'answered' ? '<div class="cs4-note"><b>答え</b>（' + esc(q.answered_by_name || '') + ' ' + esc(hst(q.answered_at)) + '）：' + esc(q.answer) + '</div>'
         : (emp ? '<button class="btn btn-primary btn-sm" onclick="FUNERGY_CS4.h.answer(' + ref(emp + '|' + q.id) + ')">答える</button>' : '')) + '</div>';
   }
-  function oldRowsHtml(rows){
-    if (!rows.length) return '<div class="cs4-note">前の記録はありません（写していない・この人の記録が無い）。</div>';
+  function oldRowsHtml(rows, tr){
+    if (!rows.length) return '<div class="cs4-note">' + tl(tr, '前の記録はありません（写していない・この人の記録が無い）。', 'No earlier records (not copied, or none for this person).') + '</div>';
     return rows.slice(0, 200).map(function(r){
       var js = ''; try{ js = JSON.stringify(r.data, null, 1); }catch(e){}
-      if (js.length > 4000) js = js.slice(0, 4000) + '\n…（長いので途中まで）';
-      return '<details class="cs4-it"><summary class="cs4-note"><b>' + esc(r.period || '期間不明') + '</b> ' + esc(KIND_OLD[r.kind] || r.kind) + (r.emp_name ? '・' + esc(r.emp_name) : '')
-        + '・制度：前の Career Score' + (r.oldSystem ? '（2026 Q4 に前の制度で入った記録）' : '') + (r.src_updated_at ? '・' + esc(hst(r.src_updated_at)) : '') + '</summary>'
+      if (js.length > 4000) js = js.slice(0, 4000) + tl(tr, '\n…（長いので途中まで）', '\n… (cut, too long)');
+      return '<details class="cs4-it"><summary class="cs4-note"><b>' + esc(r.period || tl(tr, '期間不明', 'Unknown period')) + '</b> ' + esc(tl(tr, KIND_OLD[r.kind] || r.kind, KIND_EN[r.kind])) + (r.emp_name ? tl(tr, '・', ' · ') + esc(r.emp_name) : '')
+        + tl(tr, '・制度：前の Career Score', ' · System: previous Career Score') + (r.oldSystem ? tl(tr, '（2026 Q4 に前の制度で入った記録）', ' (entered in 2026 Q4 under the previous system)') : '') + (r.src_updated_at ? tl(tr, '・', ' · ') + esc(hst(r.src_updated_at)) : '') + '</summary>'
         + '<pre style="white-space:pre-wrap;font-size:11px;max-height:320px;overflow:auto">' + esc(js) + '</pre></details>';
     }).join('');
   }
@@ -127020,7 +127043,7 @@ window.FUNERGY_CSQ4_MASTER = {"version":"CAREER_2026_Q4_V1","note":"Career Score
     c.ld = false;
     if (!(r1.ok && r1.j)) c.err = errTxt(r1);
     else if (!(r2.ok && r2.j)) c.err = errTxt(r2);
-    else { c.d = r1.j; c.h = r2.j.rows || []; c.runs = r2.j.runs || []; if (r1.j.nosql || r2.j.nosql) c.err = ERR.not_installed; }
+    else { c.d = r1.j; c.h = r2.j.rows || []; c.runs = r2.j.runs || []; if (r1.j.nosql || r2.j.nosql) c.err = errTxt({ error:'not_installed' }); }
     if (E.tab === 'hist' && E.hsel === k) paint();
   }
 
@@ -127028,7 +127051,7 @@ window.FUNERGY_CSQ4_MASTER = {"version":"CAREER_2026_Q4_V1","note":"Career Score
   function fbHtml(){
     var h = '';
     var me = E.me;
-    if (me && E.probe === 'yes') h += '<div class="cs4-card"><b>自分の評価</b> ' + myStateChip(me) + '<div style="margin-top:8px">' + myBody(me, true) + '</div></div>';
+    if (me && E.probe === 'yes') h += '<div class="cs4-card"><b>' + T('自分の評価', 'Your assessment') + '</b> ' + myStateChip(me) + '<div style="margin-top:8px">' + myBody(me, true) + '</div></div>';
     var rows = (E.ros && E.ros.rows) || [];
     var rq = rows.filter(function(r){ return r.reqs > 0; });
     if (rows.length) {
@@ -127050,8 +127073,8 @@ window.FUNERGY_CSQ4_MASTER = {"version":"CAREER_2026_Q4_V1","note":"Career Score
       var pub = rows.filter(function(r){ return r.published && !r.open && r.can && r.can.score && r.assign && !r.out; });
       if (pub.length) h += '<details class="cs4-card"><summary><b>確定・公開した評価の見直し（再評価・' + pub.length + ' 人）</b></summary><div class="cs4-note" style="margin:6px 0">申し出に答えて点を直すときは、再評価を作成して新しい版で確定します（前の版は記録に残ります）。</div>'
         + pub.slice(0, 100).map(function(r){ return '<div class="cs4-acts" style="align-items:center;margin-top:4px"><span style="flex:1">' + esc(r.name) + ' <span class="cs4-note">' + briefTxt(r.published) + '</span></span><button class="btn btn-secondary btn-sm" onclick="FUNERGY_CS4.h.reeval(' + ref(r.emp) + ')">再評価を作成</button></div>'; }).join('') + '</details>';
-    } else if (!E.ros) h += '<div class="cs4-card cs4-note">' + (E.rosErr ? esc(E.rosErr) : '読み込んでいます…') + '</div>';
-    if (!h) h = '<div class="cs4-card cs4-note">見直しの申し出はありません。</div>';
+    } else if (!E.ros) h += '<div class="cs4-card cs4-note">' + (E.rosErr ? esc(E.rosErr) : T('読み込んでいます…', 'Loading…')) + '</div>';
+    if (!h) h = '<div class="cs4-card cs4-note">' + T('見直しの申し出はありません。', 'There are no review requests.') + '</div>';
     return h;
   }
   function fbKick(){
@@ -127275,13 +127298,13 @@ window.FUNERGY_CSQ4_MASTER = {"version":"CAREER_2026_Q4_V1","note":"Career Score
       var p = String(idAt(i) || '').split('|'); if (p[0] !== 'na' || !p[1] || !p[2]) return;
       var evId = Number(p[1]), item = p[2];
       var sys = (E.me && E.me.open && String(E.me.open.id) === String(evId)) ? E.me.open.system : (E.me && E.me.published && String(E.me.published.id) === String(evId)) ? E.me.published.system : 'G';
-      var note = await askInput({ title:'任されていないため見直しを希望', hint:esc(item + '：' + itemName(sys, item)), label:'ひとこと（任意・評価する人に見えます）', required:false, okLabel:'送る' });
+      var note = await askInput({ title:T('任されていないため見直しを希望', 'Request a review (not assigned to me)'), hint:esc(item + T('：', ': ') + itemName(sys, item)), label:T('ひとこと（任意・評価する人に見えます）', 'A short note (optional; your assessor will see it)'), required:false, okLabel:T('送る', 'Send'), cancelLabel:T('キャンセル', 'Cancel') });
       if (note == null) return;
       sendReq({ action:'cs4_req', id:evId, kind:'not_assigned', item:item, note:String(note).trim().slice(0, 1000) });
     },
     comment:async function(i){
       var evId = Number(idAt(i)); if (!evId) return;
-      var note = await askInput({ title:'評価についてコメント', label:'コメント（評価する人に見えます）', required:true, okLabel:'送る', multiline:true });
+      var note = await askInput({ title:T('評価についてコメント', 'Comment on the assessment'), label:T('コメント（評価する人に見えます）', 'Comment (your assessor will see it)'), required:true, requiredMsg:T('入力が必要です', 'Please enter a comment'), okLabel:T('送る', 'Send'), cancelLabel:T('キャンセル', 'Cancel'), multiline:true });
       if (note == null) return;
       sendReq({ action:'cs4_req', id:evId, kind:'comment', note:String(note).trim().slice(0, 1000) });
     },
