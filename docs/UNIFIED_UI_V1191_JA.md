@@ -746,6 +746,9 @@ Moto さんの答え「はい」＝Tip の個人額・シフトリーダー手�
 - 直したあと：関係する 29 ファイル（loc・wr・mypage・work-requests）263/263・static release pass/1206。
 - 残した P3（Moto さんに確かめる）：#206 の Codex の P3＝③ インボイス取り込みの前の経路の書類は「読むだけ」と出るが、前からあるメモの保存はできる（`openInvoiceViewer` → `saveInvoiceMemo`）。メモも止めるか、「読むだけ（メモは書ける）」と書くか。
 
+- Moto さんの答え（11/22 18:42 HST）：① v1197（secure-state）・v1202（SQL・非公開の関数 fn 14）は本番に入れた ② 前に渡した戻す SQL（ルールを消すもの）は流していない＝紛失届のルールは作り直されていない・② をもう一度流さなくてよい（直した戻す SQL は使うときだけ）③ #206 の P3（前の経路の書類の「読むだけ」とメモ）は今のまま（メモはそのまま書ける）④ AM に本部の人を見せる → v1207（別の PR・29）。
+- 手元の CI（`c70b615`・growth-checks.yml の試験の段 93 段を手元で順に）：93 段すべて成功。
+
 ## 29. v1207：本部（OFFICE）の人も全部の AM に見せる（Moto さん 11/22「はい」・18 の P3-1 の答え・Claude（Personal・Claude Code）・ブランチ `claude/am-office-1207`・v1206（`claude/team-fixes-1206`）の上・関数 secure-state とアプリ・本番未反映）
 
 - 答え（Moto さん 11/22 18:42 HST・Claude の問い「本部（OFFICE）の人を AM にも見せるか」）：「はい」。v1195 から、所属の確認で全店（ALL）→ 本部（OFFICE）にした人は、AM には応援が担当の店のときだけ見えていた（18 の P3-1）。
@@ -757,4 +760,3 @@ Moto さんの答え「はい」＝Tip の個人額・シフトリーダー手�
 - 入れる一式：`deploy/am-office-v1207/`（関数 → マージと全部の端末を 1207 に）。1 ファイルの関数は `scripts/build-secure-state-one.mjs` が作る。v1197 の 1 ファイル（Moto さんが入れたもの・sha256 先頭 `dcbce29dbc4e`）との違いは piiScope の AM の 1 行とコメントだけ（試験で確かめる）。v1197 の 1 ファイルは sha256 で固定した。戻すとき：関数を v1197 の 1 ファイルに。
 - 試験（合成データ）：`tests/am-office-v1207.test.mjs` 5（1 ファイルとモジュールの答えが同じ・v1197 との違い・手順・アプリの 3 つの一覧を本物の関数で・シフト作成は ALL だけ・版）。`tests/secure-pii-server.test.mjs` に 1（OFFICE・空白と小文字・中身の所属が先・OFFICES と `---` は入らない・保険料は直せない）・`tests/aff-server-v1195.test.mjs` の piiScope の試験を v1207 の期待に（どちらも v1206 の handler で落ちる）・`tests/aff-app-v1195.test.mjs` の「変わること」の言い方。
 - 直したあとの独立レビューは無し。
-

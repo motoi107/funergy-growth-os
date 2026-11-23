@@ -8,7 +8,7 @@
 ## 2026-11-22 Team の変更の点検（v1206）と Career Score 2026 Q4
 
 1. 済（Claude・ブランチ `claude/team-fixes-1206`）：#201〜#210 の点検・main に残っていた Codex の P2 5 つの直し（`docs/UNIFIED_UI_V1191_JA.md` の 28）。次：PR → Codex → Moto さんがマージ → 端末を 1206 に。
-2. Moto さんに確かめる：v1197・v1202 の本番の配備／前の戻す SQL を流したか／#206 の P3（「読むだけ」とメモ）／AM に本部の人を見せるか。
+2. 済（Moto さん 11/22 18:42 HST）：v1197・v1202 は本番に入れた・前の戻す SQL は流していない・#206 の P3 は今のまま・AM に本部の人を見せる → v1207（ブランチ `claude/am-office-1207`）。
 3. 次（Claude）：Career Score 2026 Q4（CAREER_2026_Q4_V1・G／Prep／S Chef／S Office・Q3 は読むだけ）。Excel から評価表のデータ（生成と確かめ）→ 計算と試験 → 画面は UI 案を Moto さんに見せてから。先に聞くこと：Prep の時給の段（Excel は P1〜P6・アプリの v1106 は Lv1〜5）・だれがどの制度か。
 4. 前から：v1192〜v1195 の配備の残り（各節）。
 
