@@ -237,11 +237,18 @@ def main():
                 'categories': [{'key': k, 'name': n, 'short': s} for k, n, s in G_CATS],
                 'items': g,
                 'weights': g_weights,
+                # 主担当で分けるのは G1〜G3 の Kitchen中心・Server中心だけ（配点・基準点案の 3 の見出し）。
+                # 両部門育成と G4 以上（店長・管轄責任・全社責任）はサービスとキッチンの両方が主担当：
+                # それぞれの平均を G主担当の基準で見て、G他部門は使わない（Moto さん 11/23 06:01 HST の答え）
                 'mainMap': {
                     'Kitchen中心': {'main': ['KITCHEN'], 'other': ['SERVICE']},
                     'Server中心': {'main': ['SERVICE'], 'other': ['KITCHEN']},
+                    '両部門育成': {'main': ['SERVICE', 'KITCHEN'], 'each': True},
+                    '店長': {'main': ['SERVICE', 'KITCHEN'], 'each': True},
+                    '管轄責任': {'main': ['SERVICE', 'KITCHEN'], 'each': True},
+                    '全社責任': {'main': ['SERVICE', 'KITCHEN'], 'each': True},
                 },
-                'mainMapNote': '両部門育成・店長・管轄責任・全社責任の「G主担当」「G他部門」の対象カテゴリーは資料に書いていない（Moto さんに確かめる。決まるまでその 2 つの最低条件は判定を保留）',
+                'mainMapNote': '主担当で分けるのは G1〜G3 の Kitchen中心・Server中心だけ。両部門育成と G4 以上（店長・管轄責任・全社責任）はサービスとキッチンの両方が主担当で、それぞれの平均を G主担当の基準で見る（G他部門は使わない）。ほかの型は決まっていないので判定を保留',
             },
             'S_CHEF': {
                 'name': 'S Chef', 'unassigned': False,
