@@ -52,6 +52,13 @@ function val(a) { return a ? { exact: fstr(a), value: fnum(a), display: fixed1(a
 // ---------- 期間（Pacific/Honolulu）----------
 // 実入力の日時（ISO の文字列・Date・ミリ秒）からハワイの日付（YYYY-MM-DD）を出す。日時そのものは書き換えない
 const HNL_FMT = new Intl.DateTimeFormat('en-CA', { timeZone: 'Pacific/Honolulu', year: 'numeric', month: '2-digit', day: '2-digit' });
+// 暦にある日付だけ（YYYY-MM-DD・11/31・11/32・平年の 2/29 などは日付ではない。Codex #212 P3）
+export function csq4IsDate(x) {
+  if (typeof x !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(x)) return false;
+  const y = +x.slice(0, 4), m = +x.slice(5, 7), d = +x.slice(8, 10);
+  const t = new Date(Date.UTC(y, m - 1, d));
+  return t.getUTCFullYear() === y && t.getUTCMonth() === m - 1 && t.getUTCDate() === d;
+}
 export function csq4HnlDate(t) {
   const d = t instanceof Date ? t : new Date(t);
   if (Number.isNaN(d.getTime())) return null;
@@ -103,8 +110,7 @@ export function csq4CheckEntry(master, sys, id, e) {
     if (rt === NA_REASON.COMPANY) {
       if (e.periodOnly !== true) errs.push('company_na_period_only');
       const p = master.period;
-      const d = /^\d{4}-\d{2}-\d{2}$/;
-      if (!d.test(e.periodFrom || '') || !d.test(e.periodTo || '')) errs.push('company_na_period_required');
+      if (!csq4IsDate(e.periodFrom) || !csq4IsDate(e.periodTo)) errs.push('company_na_period_required');
       else if (e.periodFrom > e.periodTo || e.periodFrom < p.start || e.periodTo >= p.endExclusive) errs.push('company_na_period_out_of_quarter');
     } else if (e.periodOnly === true) {
       errs.push('period_only_company_only');
@@ -277,11 +283,12 @@ export function csq4Minimum(master, sys, gn, type, entries, sysDef) {
   const out = [];
   const items = sysDef.items;
   // 理念 5 分類の各平均
+  // 分類ごとの決まり（Codex #212 P2）：1 つでも未達なら未達・未評価があれば決まらない・どれかの分類の対象がすべて除外なら実務機会なし
   const classes = master.philoClasses.map((c) => avgCondition('philo:' + c.key, '理念：' + c.name, fdec(row.philoClass), items.filter((i) => i.cat === 'PHILO' && i.cls === c.key), entries));
   const cs = classes.map((c) => c.state);
   out.push({
     key: 'philoClass', label: '理念 5 分類の各平均', min: Number(row.philoClass), parts: classes,
-    state: cs.includes('not_met') ? 'not_met' : cs.includes('incomplete') ? 'incomplete' : cs.every((s) => s === 'no_opportunity') ? 'no_opportunity' : 'met',
+    state: cs.includes('not_met') ? 'not_met' : cs.includes('incomplete') ? 'incomplete' : cs.includes('no_opportunity') ? 'no_opportunity' : 'met',
   });
   if (sys === 'G') {
     out.push(avgCondition('basic', '基本業務', fdec(row.basic), items.filter((i) => i.cat === 'BASIC'), entries));
@@ -404,7 +411,7 @@ export function csq4PrepMeasure(m) {
   const days = new Set();
   let speed = null;
   for (const t of m.trials) {
-    if (!t || !/^\d{4}-\d{2}-\d{2}$/.test(t.date || '')) return { ok: false, reason: 'bad_trial_date' };
+    if (!t || !csq4IsDate(t.date)) return { ok: false, reason: 'bad_trial_date' };
     let g, a;
     try { g = fdec(t.goodStd); a = fdec(t.actual); } catch (e) { return { ok: false, reason: 'bad_trial_value' }; }
     if (a.n <= ZERO) return { ok: false, reason: 'zero_actual' };
