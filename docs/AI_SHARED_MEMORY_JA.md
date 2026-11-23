@@ -9,7 +9,8 @@
 - 試験（合成データ）：career-score-q4-ui 16（CI に足した）・わざと壊す 22/22・本物の Chromium（模擬サーバー・本物の関数 secure-state と本物の SQL を PGlite に＝`CSQ4_DB=1`）`tests/e2e-cs4/career-score-q4-v1208.mjs` 38/38・関係する 26 ファイルは通る・static release pass/1208。全体（重い 2 つ以外・4 並列・291 ファイル）：3,625 件のうち 32 件が落ちる＝同じ 11 ファイルを base（`a79738b`）で流して同じ名前・同じ数（bot-database・cooking-sake・cs-card-icons・cs-grade-rollback・cs-grade-view・cs-strengths・meeting-budget・meeting-sales・perf-v1098・specialist-career・toast-alias）。前の試験 2 つを直した（`am-office-v1207` の版は 1207 以上／芯を 2 文字下げて `grade-special` の同じ名前の確かめに当たらないように）。
 - Claude が決めたこと・限界（仕様の 8）：Q4 のグレード変更の区間も Q4 の評価 1 つ・グレード変更のときの評価の確定はまだ前の Career Score・2027 Q1 からは「不足」・GM は GM／CEO の人を見られない・1 段は 3 点で固定・個人設定の基準点は Q4 では使わない・賞与の締めの関数は ① の元を確かめない・ログインの印の無い人は前の採点を止めない。
 - 独立レビューは無し。Codex のレビューはまだ（#211〜#214 も）。実機（iPhone）・本番のデータは見ていない。
-- 入れる順：#211 → #213 → #212 → #214 → この PR（アプリだけ・3-1 の SQL と関数が入るまでは今までの Career Score のまま）。
+- PR #215（base main・この PR だけの差分は `a79738b..4d22aa2`）。
+- 入れる順：#211 → #213 → #212 → #214 → #215（アプリだけ・3-1 の SQL と関数が入るまでは今までの Career Score のまま）。
 
 ## 2026-11-22 Career Score 2026 Q4 段階 3-1：サーバー（表・関数・権限・競合・今の記録の写し）（Moto さん 11/22 19:51 HST「次お願いします」・Claude（Personal・Claude Code）・ブランチ `claude/career-score-q4-server`・#213（v1207）と #212（段階 1）の上・SQL `20261214090000`・関数 secure-state・アプリは 1207 のまま・本番未反映）
 
