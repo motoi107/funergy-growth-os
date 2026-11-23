@@ -313,3 +313,60 @@ test('Codex #208/#210 P2: with the expense card hidden (“screen visibility”)
   assert.equal(store.today(), ''); await store.settle();
   assert.equal(store.ctx._wrState().me, null, 'the store account does not start reading');
 });
+
+test('Codex #208 P2 (v1206): with the expense card hidden, the ① to-handle count follows the 10-second reread (0 → 1 when my request comes back), not the count read at login', async () => {
+  const s = await setup();
+  const r1 = await s.subOk('E6', 'reimburse', 'S1');
+  const me = wrApp(s, 'E6');   // ② の経費のカードを描かない（wrMyExpCard を呼ばない＝MY.counts は読まれない）
+  let off = 0;
+  const RealDate = Date;
+  class FakeDate extends RealDate { constructor(...a) { if (a.length) super(...a); else super(RealDate.now() + off); } static now() { return RealDate.now() + off; } }
+  me.ctx.Date = FakeDate;
+  me.today(); await me.settle();
+  me.today(); await me.settle();
+  assert.ok(me.ctx._wrState().me, 'read');
+  assert.doesNotMatch(me.today(), /申請の対応待ち/, 'nothing to do yet (the reimbursement waits for the GM)');
+  const back = await s.act('E2', await s.fresh(r1), 'return', { note: '領収書を付けて' });
+  assert.equal(back.status, 200, JSON.stringify(back.body));
+  me.today(); await me.settle();
+  assert.doesNotMatch(me.today(), /申請の対応待ち/, 'within 10 seconds the earlier read is kept');
+  off += 11000;   // 10 秒たった
+  me.today(); await me.settle();
+  const h = me.today();
+  assert.match(h, /申請の対応待ち 1 件/, 'the reread brings the new count (resubmitting is my turn)');
+  assert.match(h, new RegExp('戻ってきた申請[\\s\\S]*data-a="' + r1.code + '"'));
+  me.ctx.Date = RealDate;
+  // Codex の再現そのもの：GM の対応待ち 0 → ほかの人が申請 → 10 秒あとの ① に 1 件（経費のカードは出さない）
+  const s2 = await setup();
+  const gm = wrApp(s2, 'E2', { role: 'gm' });
+  let off2 = 0;
+  class FD2 extends RealDate { constructor(...a) { if (a.length) super(...a); else super(RealDate.now() + off2); } static now() { return RealDate.now() + off2; } }
+  gm.ctx.Date = FD2;
+  gm.today(); await gm.settle(); gm.today(); await gm.settle();
+  assert.doesNotMatch(gm.today(), /申請の対応待ち/, 'GM: nothing to do at first');
+  await s2.subOk('E6', 'mileage', 'S1');
+  off2 += 20000;
+  gm.today(); await gm.settle();
+  assert.match(gm.today(), /申請の対応待ち 1 件/, 'GM: the new request shows without wrRefresh');
+  gm.ctx.Date = RealDate;
+});
+
+test('v1206: when both the expense card (MY) and ① (the 10-second reread) have read a count, ① shows the newer one', async () => {
+  const s = await setup();
+  const g = wrApp(s, 'E2', { role: 'gm' });
+  const RealDate = Date;
+  let off = 0;
+  class FD extends RealDate { constructor(...a) { if (a.length) super(...a); else super(RealDate.now() + off); } static now() { return RealDate.now() + off; } }
+  g.ctx.Date = FD;
+  g.today(); await g.settle(); g.today(); await g.settle();   // ① だけ読む（対応待ち 0）
+  assert.doesNotMatch(g.today(), /申請の対応待ち/);
+  const m = await s.subOk('E6', 'mileage', 'S1');
+  off += 3000;
+  await g.load();   // 経費のカードを描く → MY を読む（対応待ち 1）。① の読み直しは 10 秒たっていないのでまだ
+  assert.match(g.today(), /申請の対応待ち 1 件/, 'the newer count read with the expense card wins over the older ① read');
+  assert.equal((await s.approve('E2', await s.fresh(m))).status, 200);
+  off += 8000;   // ① の読み直し（11 秒）。カードはまだ描き直さない（MY は 8 秒前の 1 件のまま）
+  g.today(); await g.settle();
+  assert.doesNotMatch(g.today(), /申請の対応待ち/, 'the newer ① read (0) wins over the older card read (1)');
+  g.ctx.Date = RealDate;
+});

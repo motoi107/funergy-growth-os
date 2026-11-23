@@ -24,7 +24,7 @@ const HQ = between('\nvar EMP_HQ_STORE', '\n/* 店舗のスキルマトリクス
 const AFF = between('/* ==== FUNERGY_AFF（v1195', '/* ==== FUNERGY_AFF end ==== */');
 const LOC = between('/* ==== FUNERGY_LOC（v1196', '/* ==== FUNERGY_LOC end ==== */');
 const FNS = ['myAmStores', 'amStoresOf', 'myStoreId', 'mySupportStores', 'getVisibleStores', 'accessibleStoresForUser', 'tbStoreName', 'locTopHtml',
-  'switchStore', 'openStoreSwitcher', 'initApp', 'groupOfPage'].map(fnFrom).join('\n');
+  'switchStore', 'openStoreSwitcher', 'initApp', 'groupOfPage', 'uiDirtyFields'].map(fnFrom).join('\n');
 const tick = () => new Promise(r => setImmediate(r));
 async function settle() { for (let i = 0; i < 10; i++) await tick(); }
 
@@ -55,14 +55,14 @@ function app(o = {}) {
     curRole: null, curRealRole: null, curStore: o.store || 'S1', curStoreLogin: !!o.storeLogin, curUserName: null, curLang: o.lang || 'ja', curPage: '',
     budgetTab: 'daily', workTab: 'today', officeMgrTab: 'dash', _acCat: 'docs', _acSub: 'x',
     TOASTS: [], NAVS: [], RENDERS: [], MODALS: [], CALLS: [], GOS: [], FOLLOW: [], EMPS: o.emps || EMPS0(), STORES0: STORES0.map(s => ({ ...s })),
-    ROWS: o.rows || ROWS0(), SSMODE: o.ssMode || 'ok', WRLAND: !!o.wrLand, TOP: { innerHTML: '' }, MODALOPEN: false, TYPING: false, PENDING: [], TIMERS: [],
+    ROWS: o.rows || ROWS0(), SSMODE: o.ssMode || 'ok', WRLAND: !!o.wrLand, TOP: { innerHTML: '' }, MODALOPEN: false, TYPING: false, PENDING: [], TIMERS: [], FIELDS: [],
     Date, JSON, Math, Object, Array, String, Number, Promise, console,
   };
   vm.createContext(c);
   vm.runInContext(`
     var window = this;
     window.scrollTo = function(){};
-    var MAIN = { contains: function(){ return TYPING; } };
+    var MAIN = { contains: function(){ return TYPING; }, querySelectorAll: function(){ return FIELDS; } };   /* v1206：画面の入力欄（本物の uiDirtyFields が読む） */
     var MO = { classList: { contains: function(){ return MODALOPEN; } } };
     var document = { getElementById: function(id){ if (id === 'topbar-store') return TOP; if (id === 'nav-bar') return { innerHTML:'' }; if (id === 'main-content') return MAIN; if (id === 'modal-overlay') return MO; return null; },
       get activeElement(){ return TYPING ? { tagName:'INPUT' } : null; } };
@@ -350,6 +350,39 @@ test('an answer after the app is shown: the top-left and nav are redrawn, the op
   run(e, "initApp(); curStore='ALL'"); e.TYPING = true; e.PENDING[0](); await settle();
   run(e, 'FUNERGY_LOC.onLogout()'); e.TYPING = false; e.TIMERS.filter(([, ms]) => ms === 1000).at(-1)[0]();
   assert.equal(e.curStore, 'ALL'); assert.equal(mode(e), null);
+});
+
+test('Codex #201/#204 P2 (v1206): a field changed but not saved still counts as input even after the focus leaves it (a click on blank space, Tab to a button) — the late answer waits; it applies once nothing is left unsaved', async () => {
+  const d = app({ ssMode: 'deferred' });
+  await login(d, 'Sal Lee', { store: 'S2' });
+  run(d, "initApp(); curStore='ALL'");
+  const field = { tagName: 'INPUT', type: 'text', id: 'tc-sales', value: '1200', defaultValue: '' };   // KPI設定の手入力欄：打ったが保存していない・フォーカスは外れた
+  d.FIELDS.push(field);
+  const r0 = d.RENDERS.length, n0 = d.NAVS.length;
+  d.PENDING[0](); await settle();
+  assert.equal(d.curStore, 'ALL', 'not applied while a field is unsaved'); assert.equal(mode(d), null);
+  assert.equal(d.RENDERS.length, r0, 'not redrawn (the typed value would be lost)'); assert.equal(d.NAVS.length, n0);
+  let waits = d.TIMERS.filter(([, ms]) => ms === 1000);
+  assert.equal(waits.length, 1, 'it looks again in a second');
+  waits[0][0]();
+  assert.equal(d.curStore, 'ALL', 'still unsaved: still waits'); assert.equal(d.TIMERS.filter(([, ms]) => ms === 1000).length, 2);
+  // a file chosen but not sent also waits (the list cannot keep it)
+  field.value = field.defaultValue = '1200'; d.FIELDS.push({ tagName: 'INPUT', type: 'file', id: 'f1', files: [{}] });
+  d.TIMERS.filter(([, ms]) => ms === 1000).at(-1)[0]();
+  assert.equal(d.curStore, 'ALL', 'a chosen file: waits'); assert.equal(d.TIMERS.filter(([, ms]) => ms === 1000).length, 3);
+  // saved (the page drew the saved value) → applied and redrawn
+  d.FIELDS.length = 0; d.FIELDS.push(field);
+  d.TIMERS.filter(([, ms]) => ms === 1000).at(-1)[0]();
+  assert.equal(d.curStore, 'S1', 'applied once nothing is unsaved');
+  assert.deepEqual(mode(d), { kind: 'store', opts: ['S1', 'S2'] });
+  assert.equal(d.RENDERS.at(-1), d.curPage); assert.ok(d.NAVS.length > n0);
+  // the untouched page (value = default) is not "input": an answer applies at once
+  const e = app({ ssMode: 'deferred' });
+  await login(e, 'Sal Lee', { store: 'S2' });
+  run(e, "initApp(); curStore='ALL'");
+  e.FIELDS.push({ tagName: 'INPUT', type: 'text', id: 'tc-x', value: '5', defaultValue: '5' }, { tagName: 'INPUT', type: 'checkbox', id: 'c1', checked: true, defaultChecked: true });
+  e.PENDING[0](); await settle();
+  assert.equal(e.curStore, 'S1', 'nothing unsaved: applied without waiting');
 });
 
 test('Codex #201: a late answer that changes what is shown redraws the page even when the top-left store stays the same; an answer that changes nothing redraws nothing', async () => {
