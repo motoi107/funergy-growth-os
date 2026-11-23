@@ -42,6 +42,7 @@
 //   ログインした人には自分の行だけ（aff_get）。この版では見え方は変えない（v1196 から）。docs/UNIFIED_UI_V1191_JA.md の 18。答えにはいつも affn:1。
 
 import { ltAsks, ltCompute, ltLoad, ltToday, LT_MAX_ASKS } from './labor.mjs';
+import { CSQ4, CSQ4_MASTER } from './csq4.gen.mjs';
 
 export const SS_KEYS = ['growth_karte', 'karte_pin', 'karte_bonus_config', 'bonus_q', 'bonus_eval', 'bonus_store_q', 'bonus_rules', 'bonus_pool_extra'];
 export const SS_PREFIX = ['spl_bonus_q_'];
@@ -726,6 +727,214 @@ export function pvProject(doc, emp) {
   return { cols: doc.cols, mine, only };
 }
 
+// ---- Career Score 2026 Q4（新制度・段階 3-1）：評価表・評価・本人への共有・見直しの申し出・今までの記録の写し（docs/CAREER_SCORE_Q4_JA.md の 7）。
+//   表は csq4_*（SQL 20261214090000。公開の鍵では読めない・書けない）。計算は careerscore/q4-core.mjs そのもの（csq4.gen.mjs）で、
+//   端末が送った総合点・状態は使わない（明細から毎回計算し直して SQL に渡す）。だれが何をできるかは下の cs4Ctx（Claude が決めた・Moto さんに確かめる）。
+export const CS4_PERIOD = CSQ4_MASTER.period.quarter;
+export const CS4_VERSION = CSQ4_MASTER.version;
+const CS4_SYSTEMS = ['G', 'S_CHEF', 'S_OFFICE', 'PREP'];
+const CS4_ITEMS = Object.fromEntries(CS4_SYSTEMS.map(s => [s, new Set(CSQ4.csq4System(CSQ4_MASTER, s).items.map(i => i.id))]));
+const CS4_STATUS = Object.values(CSQ4.STATUS);
+const CS4_NA = CSQ4.NA_REASON;
+// 端末が書ける欄・サーバーが付ける欄（送られてきても使わない）・変えたら理由が要る欄・文字の欄・本人に共有する欄
+const CS4_EDIT = ['status', 'score', 'naReasonType', 'naReason', 'unassignedReason', 'periodOnly', 'periodFrom', 'periodTo', 'evidence', 'feedbackComment', 'changeReason'];
+const CS4_SERVER = ['prevStatus', 'byEmp', 'byName', 'at'];
+const CS4_CORE = ['status', 'score', 'naReasonType', 'periodOnly', 'periodFrom', 'periodTo'];
+const CS4_TEXT = ['naReason', 'unassignedReason', 'evidence', 'feedbackComment', 'changeReason'];
+const CS4_SHARE = ['status', 'score', 'naReasonType', 'naReason', 'periodFrom', 'periodTo', 'unassignedReason', 'feedbackComment'];
+// 形の誤り（保存しない）。理由・期間の書き忘れは下書きに残せる（計算では未評価・確定できない＝result.entryErrors）
+const CS4_HARD = ['unknown_item', 'bad_entry', 'bad_status', 'unassigned_only_g', 'bad_score', 'na_reason_type_g_only'];
+const CS4_DAY = /^\d{4}-\d{2}-\d{2}$/;
+const CS4_DEC = /^\d{1,12}(\.\d{1,6})?$/;
+const CS4_TRACK = { kt: 'Kitchen中心', sv: 'Server中心', op: '両部門育成' };   // 賞与の G3 の職種（bonus_track）→ G の型（答え 2 A の初めの提案）
+const CS4_TITLE_TYPE = { 'Kitchen Leader': 'Kitchen中心', 'Server Leader': 'Server中心', 'Operation Leader': '両部門育成' };
+const CS4_TOP_TYPE = { 4: '店長', 5: '管轄責任', 6: '全社責任' };
+const CS4_OFFICE_TITLES = ['Office Crew', 'Office Staff', 'Office Crew Leader', 'Accounting Leader', 'Office Manager', 'Accountant'];
+const CS4_PREP_TITLES = ['Prep', 'Prep Specialist'];
+const CS4_Q = CSQ4.csq4System(CSQ4_MASTER, 'PREP').quality.map(q => q.id);
+const CS4_STEPS = CSQ4.csq4System(CSQ4_MASTER, 'PREP').pay.map(p => p.step);
+const CS4_OPEN = ['draft', 'submitted', 'returned'];
+
+function cs4Txt(v, max) {
+  if (v === undefined || v === null) return '';
+  if (typeof v !== 'string') return null;
+  const t = v.trim();
+  return t.length > max ? null : t;
+}
+// 1 項目の明細を確かめて、状態に要る欄だけにする。{ entry }（null＝未評価に戻す）か { error }
+export function cs4CleanEntry(sys, id, e) {
+  if (!CS4_ITEMS[sys] || typeof id !== 'string' || !CS4_ITEMS[sys].has(id)) return { error: 'unknown_item' };
+  if (e === null) return { entry: null };
+  if (!obj(e)) return { error: 'bad_entry' };
+  for (const k of Object.keys(e)) if (!CS4_EDIT.includes(k) && !CS4_SERVER.includes(k)) return { error: 'bad_field' };
+  const st = e.status;
+  if (!CS4_STATUS.includes(st)) return { error: 'bad_status' };
+  const out = { status: st };
+  for (const k of CS4_TEXT) {
+    const t = cs4Txt(e[k], 1000);
+    if (t === null) return { error: 'bad_text' };
+    if (t) out[k] = t;
+  }
+  const noScore = e.score === undefined || e.score === null;
+  if (st === 'SCORED') {
+    if (!Number.isInteger(e.score) || e.score < 0 || e.score > 3) return { error: 'bad_score' };
+    out.score = e.score;
+  } else if (st === 'UNASSIGNED') {
+    if (!noScore && e.score !== 0) return { error: 'bad_score' };
+    out.score = 0;     // 未担当は 0 点で分母に入る（G だけ）
+  } else {
+    if (!noScore) return { error: 'bad_score' };
+    out.score = null;
+  }
+  if (st !== 'NOT_APPLICABLE') delete out.naReason;
+  if (st !== 'UNASSIGNED') delete out.unassignedReason;
+  if (st === 'NOT_APPLICABLE') {
+    const rt = e.naReasonType;
+    if (rt !== undefined && rt !== null && rt !== CS4_NA.ROLE && rt !== CS4_NA.COMPANY) return { error: 'bad_na_type' };
+    if (sys !== 'G' && rt === CS4_NA.COMPANY) return { error: 'na_reason_type_g_only' };   // 答え 4 A：S・Prep は会社都合の今回非該当を使わない
+    out.naReasonType = rt || (sys === 'G' ? null : CS4_NA.ROLE);
+    if (out.naReasonType === CS4_NA.COMPANY) {
+      if (e.periodOnly !== undefined && e.periodOnly !== null && typeof e.periodOnly !== 'boolean') return { error: 'bad_period' };
+      out.periodOnly = e.periodOnly === true;
+      for (const k of ['periodFrom', 'periodTo']) {
+        const v = e[k];
+        if (v === undefined || v === null || v === '') continue;
+        if (typeof v !== 'string' || !CS4_DAY.test(v)) return { error: 'bad_period' };
+        out[k] = v;
+      }
+    }
+  }
+  if (st === 'UNASSESSED') {
+    const keep = ['evidence', 'feedbackComment', 'changeReason'].filter(k => out[k]);
+    if (!keep.length) return { entry: null };
+  }
+  const errs = CSQ4.csq4CheckEntry(CSQ4_MASTER, sys, id, out);
+  const hard = errs.find(x => CS4_HARD.includes(x));
+  if (hard) return { error: hard };
+  return { entry: out };
+}
+const cs4Pick = (e, ks) => { const o = {}; if (!e) return o; for (const k of ks) if (e[k] !== undefined) o[k] = e[k]; return o; };
+// 比べるための中身（null・未設定・periodOnly false は「無い」と同じ。未評価の項目と null は同じ）
+const cs4Norm = o => { const r = {}; for (const [k, v] of Object.entries(o)) if (v !== null && v !== undefined && v !== '' && v !== false) r[k] = v; return r; };
+const cs4CoreOf = e => canon(cs4Norm(e ? cs4Pick(e, CS4_CORE) : { status: 'UNASSESSED' }));
+const cs4BodyOf = e => canon(cs4Norm(e ? cs4Pick(e, [...CS4_CORE, ...CS4_TEXT]) : { status: 'UNASSESSED' }));
+export function cs4CleanFeedback(f) {
+  if (!obj(f)) return null;
+  const out = {};
+  for (const k of Object.keys(f)) {
+    if (!['good', 'improve', 'next'].includes(k)) return null;
+    const t = cs4Txt(f[k], 2000);
+    if (t === null) return null;
+    if (t) out[k] = t;
+  }
+  return out;
+}
+function cs4Dec(v) {
+  if (v === undefined || v === null || v === '') return '';
+  if (typeof v === 'number') v = Number.isFinite(v) && v >= 0 ? String(v) : 'x';
+  if (typeof v !== 'string') return null;
+  const t = v.trim();
+  return CS4_DEC.test(t) ? t : null;
+}
+export function cs4CleanPrep(p) {
+  if (!obj(p)) return null;
+  for (const k of Object.keys(p)) if (!['quality', 'measure', 'currentStep'].includes(k)) return null;
+  const quality = {};
+  if (p.quality !== undefined && p.quality !== null) {
+    if (!obj(p.quality)) return null;
+    for (const [k, v] of Object.entries(p.quality)) {
+      if (!CS4_Q.includes(k) || !['clear', 'not_clear', 'unconfirmed'].includes(v)) return null;
+      quality[k] = v;
+    }
+  }
+  let measure = null;
+  if (p.measure !== undefined && p.measure !== null) {
+    const m = p.measure;
+    if (!obj(m)) return null;
+    for (const k of Object.keys(m)) if (!['trials', 'independentStd', 'allStd'].includes(k)) return null;
+    const trials = m.trials === undefined || m.trials === null ? [] : m.trials;
+    if (!Array.isArray(trials) || trials.length > 20) return null;
+    const ts = [];
+    for (const t of trials) {
+      if (!obj(t)) return null;
+      for (const k of Object.keys(t)) if (!['date', 'goodStd', 'actual'].includes(k)) return null;
+      const date = t.date === undefined || t.date === null ? '' : t.date;
+      if (typeof date !== 'string' || (date && !CS4_DAY.test(date))) return null;
+      const goodStd = cs4Dec(t.goodStd), actual = cs4Dec(t.actual);
+      if (goodStd === null || actual === null) return null;
+      ts.push({ date, goodStd, actual });
+    }
+    const independentStd = cs4Dec(m.independentStd), allStd = cs4Dec(m.allStd);
+    if (independentStd === null || allStd === null) return null;
+    measure = { trials: ts, independentStd, allStd };
+  }
+  let currentStep = null;
+  if (p.currentStep !== undefined && p.currentStep !== null && p.currentStep !== '') {
+    if (!CS4_STEPS.includes(p.currentStep)) return null;
+    currentStep = p.currentStep;
+  }
+  return { quality, measure, currentStep };
+}
+// 評価表の行（GM・CEO が決める）を確かめる。G は Grade ごとの型（マスターの配点の行がある型）だけ
+export function cs4CleanAssign(x) {
+  if (!obj(x) || !CS4_SYSTEMS.includes(x.system)) return null;
+  const blank = v => v === undefined || v === null || v === '';
+  if (x.system === 'PREP') return blank(x.grade) && blank(x.type) ? { system: 'PREP', grade: null, type: null } : null;
+  if (x.system === 'G') {
+    if (typeof x.grade !== 'string' || !/^G[1-6]$/.test(x.grade)) return null;
+    const w = CSQ4.csq4System(CSQ4_MASTER, 'G').weights[x.grade] || {};
+    if (typeof x.type !== 'string' || !Object.prototype.hasOwnProperty.call(w, x.type)) return null;
+    return { system: 'G', grade: x.grade, type: x.type };
+  }
+  if (typeof x.grade !== 'string' || !/^S[1-6]$/.test(x.grade) || !blank(x.type)) return null;
+  return { system: x.system, grade: x.grade, type: null };
+}
+// 計算し直す（端末の総合点は使わない）
+export function cs4Compute(a, entries, prep) {
+  if (a.system === 'PREP') {
+    const p = prep || {};
+    return CSQ4.csq4Prep(CSQ4_MASTER, { entries: entries || {}, quality: p.quality || {}, measure: p.measure || null, currentStep: p.currentStep || null });
+  }
+  const r = CSQ4.csq4Score(CSQ4_MASTER, { system: a.system, grade: a.grade, type: a.type, entries: entries || {} });
+  if (!r.ok) throw err('db', 500);
+  return r;
+}
+// 一覧に出す短いまとめ
+export function cs4Brief(row) {
+  const r = obj(row && row.result) || {};
+  const base = { state: r.state || null, confirmable: r.confirmable === true, counts: obj(r.counts) || null };
+  if (row && row.system === 'PREP') return { ...base, score: r.score ? r.score.display : null, pay: obj(r.pay) ? { state: r.pay.state, step: r.pay.step || null } : null };
+  return { ...base, total: r.total ? r.total.display : null, provisional: r.totalProvisional !== false, baseMet: r.baseMet === undefined ? null : r.baseMet };
+}
+// 本人に共有する内容（根拠・変えた理由・だれがいつ書いたかは入れない）
+export function cs4Shared(row, entries, feedback, result) {
+  const items = {};
+  for (const [id, e] of Object.entries(entries || {})) if (e && e.status && e.status !== 'UNASSESSED') items[id] = cs4Pick(e, CS4_SHARE);
+  const r = result || {};
+  const res = row.system === 'PREP'
+    ? { state: r.state, score: r.score || null, counts: r.counts, quality: r.quality, qualityState: r.qualityState, measure: r.measure,
+        pay: obj(r.pay) ? { state: r.pay.state, step: r.pay.step || null, wageUsd: r.pay.wageUsd === undefined ? null : r.pay.wageUsd } : null }
+    : { state: r.state, total: r.total || null, totalProvisional: r.totalProvisional !== false, base: r.base, baseMet: r.baseMet === undefined ? null : r.baseMet,
+        counts: r.counts, categories: r.categories, minimum: r.minimum, unassignedList: r.unassignedList || [], roleNaList: r.roleNaList || [] };
+  return { v: 1, rev: row.rev, system: row.system, grade: row.grade || null, type: row.type || null, version: row.version || CS4_VERSION,
+    result: res, feedback: cs4Pick(feedback || {}, ['good', 'improve', 'next']), items };
+}
+// 評価表の初めの提案（答え 1 A・2 A：役職と肩書きから。GM・CEO が確かめて決める）。決められなければ型は null
+export function cs4Suggest(p, track) {
+  if (!p || p.out || p.role === 'ceo') return null;
+  const title = String(p.title || '');
+  if (CS4_PREP_TITLES.includes(title)) return { system: 'PREP', grade: null, type: null, from: 'title' };
+  const g = Number(p.gS);
+  if (!Number.isInteger(g) || g < 1 || g > 6) return null;
+  if (p.dept === '調理') return { system: 'S_CHEF', grade: 'S' + g, type: null, from: 'dept' };
+  if (p.dept === '経理' || OFFICE_ROLES.includes(p.role) || CS4_OFFICE_TITLES.includes(title)) return { system: 'S_OFFICE', grade: 'S' + g, type: null, from: 'dept' };
+  if (g >= 4) return { system: 'G', grade: 'G' + g, type: CS4_TOP_TYPE[g], from: 'grade' };
+  const t = track && CS4_TRACK[track] ? CS4_TRACK[track] : null;
+  if (t) return { system: 'G', grade: 'G' + g, type: t, from: 'track' };
+  if (CS4_TITLE_TYPE[title]) return { system: 'G', grade: 'G' + g, type: CS4_TITLE_TYPE[title], from: 'title' };
+  return { system: 'G', grade: 'G' + g, type: null, from: 'none' };
+}
+
 export function createHandler(deps) {
   const env = deps.env;
   const fetch = deps.fetch || globalThis.fetch.bind(globalThis);
@@ -1049,11 +1258,11 @@ export function createHandler(deps) {
         cfgView.push(...pick('csView'), ...cfgEdit, ...cfgApprove);   // 付ける・承認する役は見られる（アプリの cgCsGranted と同じ）
       }
       ids.add(id);
-      list.push({ id, name: e.name, confName: c && c.name && c.name !== e.name ? c.name : '', store: String(e.store || d.store || ''), support: support.filter(x => typeof x === 'string'), role, title, out, gS,
+      list.push({ id, name: e.name, confName: c && c.name && c.name !== e.name ? c.name : '', store: String(e.store || d.store || ''), support: support.filter(x => typeof x === 'string'), role, title, out, gS, dept,
         top: !!mr || !!(c && c.role === 'am'), boss: mr === 'ceo' || mr === 'gm', confAm: !!(c && c.role === 'am'), cfgView, cfgEdit, cfgApprove });
     }
     // 確かめた写しにだけある人（社員の表に行が無い）：その名前はだれにも見せない
-    for (const [id, c] of conf) if (!ids.has(id) && c.name) list.push({ id, name: c.name, confName: '', store: '', support: [], role: '', title: '', out: true, gS: 0, top: true, boss: false, confAm: c.role === 'am', cfgView: [], cfgEdit: [], cfgApprove: [] });
+    for (const [id, c] of conf) if (!ids.has(id) && c.name) list.push({ id, name: c.name, confName: '', store: '', support: [], role: '', title: '', out: true, gS: 0, dept: '', top: true, boss: false, confAm: c.role === 'am', cfgView: [], cfgEdit: [], cfgApprove: [] });
     return list;
   }
   // 見られる人（see）・申請を見られる人（req）・点（lss_emp_）を書ける人（emp：そのまま／ojt：分野の下限を上げるだけ＝名前 → 上げてよい上限）・
@@ -2374,8 +2583,355 @@ export function createHandler(deps) {
     return { ok: true, rows: r.rows, same: Number(r.same) || 0, at: r.at || null };
   }
 
-  const ACTIONS = { pull, get, put, hist: csHist, pin_check: pinCheck, pin_set: pinSet, hr_get: hrGet, hr_op: hrOp, hr_match: hrMatch, pii_get: piiGet, pii_op: piiOp, card_match: cardMatch, tcf_status: tcfStatus, change_log: clGet, labor: ltGet, pv_get: pvGet, pv_full: pvFull, pv_save: pvSave, pv_log: pvLog, aff_get: affGet, aff_full: affFull, aff_save: affSave };
-  const CODES = { forbidden: 403, bad_value: 400, conflict: 409, locked: 429, gone: 410, not_found: 404, not_installed: 503 };
+  // ---- Career Score 2026 Q4（新制度・段階 3-1）：評価表・評価・本人への共有・見直しの申し出・今までの記録（docs/CAREER_SCORE_Q4_JA.md の 7）。
+  //   表と関数は SQL 20261214090000（csq4_*）。SQL がまだ（404）なら読むものは nosql、書くものは not_installed。
+  //   だれができるか（Claude が決めた・Moto さんに確かめる。答え 7 A＝店で採点 → GM が確定 → 本人に公開・GM の評価は CEO が確定）：
+  //   ・採点（始める・下書き・本人に共有・確認待ちへ）：CEO＝だれでも／GM＝GM・CEO 以外／確かめた AM＝担当の店の人（AM・本部の人は除く）／
+  //     確かめた Head Chef＝下のグレードの調理の人（調理の評価表・Prep・G の Kitchen中心）／ほかの G4 以上（確かめた写しの店）＝自分の店の下のグレードの人／
+  //     経理（office）＝事務Crew。自分は採点しない（本人は見直しの申し出とコメントだけ）。退職の人は採点しない
+  //   ・確定・差戻し・取りやめ：CEO＝だれでも（自分を除く）／GM＝GM・CEO 以外
+  //   ・評価表を決める・今までの記録を写す：GM・CEO
+  const CS4_EV_COLS = 'id,emp_id,emp_name,period,system,grade,type,version,rev,status,entries,prep,feedback,result,shared,shared_at,shared_by_name,prev_id,change_reason,note,ver,'
+    + 'created_at,created_by_name,updated_at,updated_by_name,submitted_at,submitted_by_name,returned_at,returned_by_name,confirmed_at,confirmed_by_name,confirmed_by_role,closed_at,closed_by_name,superseded_by';
+  const CS4_HIST_COLS = 'id,kind,emp_id,emp_name,period,period_state,data,src_updated_at,copied_at';
+  const cs4Iso = () => new Date(now()).toISOString();
+  const cs4Int = (v, min = 0) => Number.isSafeInteger(v) && v >= min && v <= 2147483647;
+  const cs4Id = v => typeof v === 'string' && v.length >= 1 && v.length <= 64 && v.charAt(0) !== '_';
+  const cs4By = a => ({ p_by_emp: a.emp || null, p_by_name: a.name || null, p_by_role: a.role || null });
+  async function cs4Read(path) {
+    try { return await rest(path); } catch (e) { if (e && e.status === 404) return null; throw e; }
+  }
+  async function cs4Rpc(a, fn, args) {
+    let r;
+    try { r = await rest('rpc/' + fn, { method: 'POST', headers: fpHdr(a), body: JSON.stringify(args) }); }
+    catch (e) { if (e && e.status === 404) throw err('not_installed', 503); if (e && e.status === 400) throw bad(); throw e; }
+    if (!obj(r)) throw err('db', 500);
+    return r;
+  }
+  // SQL の答えの断り → 答えのコード
+  function cs4Fail(r) {
+    if (r.conflict === true) { const e = err('conflict', 409); if (Array.isArray(r.ids)) e.ids = r.ids; return e; }
+    if (r.open === true) { const e = err('open', 409); e.ids = Array.isArray(r.ids) ? r.ids : []; return e; }
+    const c = String(r.error || '');
+    if (c === 'not_found') return err('not_found', 404);
+    if (['state', 'not_complete', 'open_requests', 'no_assign', 'published', 'open', 'too_many'].includes(c)) {
+      const e = err(c, 409);
+      if (c === 'published' && Number.isSafeInteger(r.id)) e.ids = [String(r.id)];
+      return e;
+    }
+    return err('db', 500);
+  }
+  async function cs4Ctx(a) {
+    if (!a.emp) throw err('no_emp', 403);
+    const P = await csPeople();
+    const me = P.find(p => p.id === String(a.emp) && !p.out) || null;
+    if (!me) throw err('forbidden', 403);
+    const asg = await cs4Read('csq4_assign?period=eq.' + encodeURIComponent(CS4_PERIOD) + '&select=emp_id,system,grade,type,ver,updated_at,by_name&limit=5000');
+    const A = new Map((Array.isArray(asg) ? asg : []).map(x => [String(x.emp_id), x]));
+    const isChef = a.role === 'staff' && a.grade >= 4 && (me.role === 'chef' || CHEF_TITLES.includes(me.title)) && await confChef(a);
+    const S = a.role === 'am' ? [...new Set([...arr(a.am), ...arr(a.stores)])] : (a.role === 'staff' && a.grade >= 4 ? await protStores(a) : []);
+    const inStores = p => S.length > 0 && (S.includes(p.store) || p.support.some(x => S.includes(x)));
+    const kitchen = p => {
+      const x = A.get(p.id);
+      if (x) return x.system === 'S_CHEF' || x.system === 'PREP' || (x.system === 'G' && x.type === 'Kitchen中心');
+      return p.dept === '調理' || p.title === 'Kitchen Leader' || CS4_PREP_TITLES.includes(p.title);
+    };
+    const live = p => !!p && !p.out && p.id !== me.id;
+    const canScore = p => {
+      if (!live(p)) return false;
+      if (a.role === 'ceo') return true;
+      if (a.role === 'gm') return !p.boss;
+      if (a.role === 'am') return !p.top && inStores(p);
+      if (a.role === 'staff') {
+        if (isChef) return !p.top && !OFFICE_ROLES.includes(p.role) && p.gS < a.grade && kitchen(p);
+        if (a.grade >= 4) return !p.top && inStores(p) && p.gS < a.grade;
+        return false;
+      }
+      if (a.role === 'office') return p.role === 'office_crew' && !p.boss && !p.confAm;
+      return false;
+    };
+    const canConfirm = p => live(p) && (a.role === 'ceo' || (a.role === 'gm' && !p.boss));
+    const byId = new Map(P.filter(p => !p.out).map(p => [p.id, p]));
+    return { P, me, A, nosql: asg === null, byId, canScore, canConfirm, canSee: p => canScore(p) || canConfirm(p) };
+  }
+  function cs4Person(C, id) {
+    if (!cs4Id(id)) throw bad();
+    const p = C.byId.get(id);
+    if (!p || !C.canSee(p)) throw err('forbidden', 403);
+    return p;
+  }
+  async function cs4Row(id, cols = CS4_EV_COLS) {
+    if (!cs4Int(id, 1)) throw bad();
+    const rows = await cs4Read('csq4_evals?id=eq.' + id + '&select=' + cols);
+    if (rows === null) throw err('not_installed', 503);
+    const r = Array.isArray(rows) ? rows[0] : null;
+    if (!r || r.period !== CS4_PERIOD) throw err('not_found', 404);
+    return r;
+  }
+  async function cs4Tracks() {
+    const rows = await rest("app_state?select=value&key=eq.bonus_track");
+    const v = obj(kbPlain(Array.isArray(rows) && rows[0] ? rows[0].value : null)) || {};
+    const m = new Map(), pre = CS4_PERIOD + '|';
+    for (const [k, x] of Object.entries(v)) if (k.startsWith(pre) && obj(x) && typeof x.t === 'string') m.set(k.slice(pre.length), x.t);
+    return m;
+  }
+  const cs4AssignOut = x => x ? { system: x.system, grade: x.grade || null, type: x.type || null, ver: x.ver, at: x.updated_at || null, by_name: x.by_name || '' } : null;
+
+  // 本人：自分の評価表・本人に共有された内容（共有していない下書きは中身を出さない）・自分の申し出・今までの自分の記録
+  async function cs4Me(a) {
+    const base = { period: CS4_PERIOD, version: CS4_VERSION };
+    if (!a.emp) return { ...base, none: true };
+    const id = encodeURIComponent(a.emp), per = '&period=eq.' + encodeURIComponent(CS4_PERIOD);
+    const asg = await cs4Read('csq4_assign?emp_id=eq.' + id + per + '&select=system,grade,type,ver,updated_at,by_name');
+    if (asg === null) return { ...base, nosql: true };
+    const [evs, reqs, hist] = await Promise.all([
+      rest('csq4_evals?emp_id=eq.' + id + per + '&select=id,rev,status,system,grade,type,version,shared,shared_at,confirmed_at,confirmed_by_name,closed_at&order=rev.desc&limit=50'),
+      rest('csq4_reqs?emp_id=eq.' + id + per + '&select=id,eval_id,item_id,kind,note,status,answer,created_at,answered_at,answered_by_name&order=id.desc&limit=500'),
+      rest('csq4_hist?emp_id=eq.' + id + '&kind=in.(lss_emp,lss_history,lss_requests)&select=' + CS4_HIST_COLS + '&order=id.desc&limit=200'),
+    ]);
+    const E = Array.isArray(evs) ? evs : [];
+    const pub = E.find(r => r.status === 'published') || null;
+    const op = E.find(r => CS4_OPEN.includes(r.status)) || null;
+    const shown = r => ({ id: r.id, rev: r.rev, system: r.system, grade: r.grade || null, type: r.type || null, version: r.version });
+    const state = pub && !op ? 'published' : op ? (op.shared_at ? 'shared' : 'in_progress') : 'none';
+    return { ...base, state, assign: cs4AssignOut(Array.isArray(asg) ? asg[0] : null),
+      published: pub ? { ...shown(pub), confirmed_at: pub.confirmed_at, confirmed_by_name: pub.confirmed_by_name || '', shared: pub.shared || null } : null,
+      open: op ? { ...shown(op), shared_at: op.shared_at || null, shared: op.shared_at ? (op.shared || null) : null } : null,
+      past: E.filter(r => r.status === 'superseded' && r.confirmed_at).map(r => ({ ...shown(r), confirmed_at: r.confirmed_at, closed_at: r.closed_at, shared: r.shared || null })),
+      reqs: Array.isArray(reqs) ? reqs : [],
+      hist: (Array.isArray(hist) ? hist : []).map(h => ({ ...h, oldSystem: h.period === CS4_PERIOD })) };
+  }
+  // 評価する人の一覧（見られる人・初めの提案・評価表・今の評価の短いまとめ・申し出の数・できること）
+  async function cs4Roster(a) {
+    const C = await cs4Ctx(a);
+    const base = { period: CS4_PERIOD, version: CS4_VERSION };
+    if (C.nosql) return { ...base, rows: [], counts: null, nosql: true };
+    const ppl = [...C.byId.values()].filter(p => C.canSee(p));
+    const tracks = await cs4Tracks();
+    const ids = ppl.map(p => p.id), E = new Map(), R = new Map();
+    for (let i = 0; i < ids.length; i += 150) {
+      const part = ids.slice(i, i + 150);
+      const evs = await rest('csq4_evals?period=eq.' + encodeURIComponent(CS4_PERIOD) + '&status=in.(draft,submitted,returned,published)&emp_id=' + encodeURIComponent(IN(part))
+        + '&select=id,emp_id,rev,status,system,grade,type,result,ver,shared_at,updated_at,updated_by_name,confirmed_at&limit=2000');
+      for (const r of (Array.isArray(evs) ? evs : [])) { const k = String(r.emp_id); if (!E.has(k)) E.set(k, []); E.get(k).push(r); }
+      const rq = await rest('csq4_reqs?period=eq.' + encodeURIComponent(CS4_PERIOD) + '&status=eq.open&emp_id=' + encodeURIComponent(IN(part)) + '&select=emp_id&limit=5000');
+      for (const r of (Array.isArray(rq) ? rq : [])) R.set(String(r.emp_id), (R.get(String(r.emp_id)) || 0) + 1);
+    }
+    const counts = { not_started: 0, draft: 0, submitted: 0, returned: 0, published: 0 };
+    const sum = r => r ? { id: r.id, rev: r.rev, status: r.status, ver: r.ver, shared: !!r.shared_at, at: r.updated_at, by_name: r.updated_by_name || '', confirmed_at: r.confirmed_at || null, ...cs4Brief(r) } : null;
+    const rows = ppl.map(p => {
+      const es = E.get(p.id) || [];
+      const op = es.find(r => CS4_OPEN.includes(r.status)) || null, pub = es.find(r => r.status === 'published') || null;
+      counts[op ? op.status : pub ? 'published' : 'not_started']++;
+      return { emp: p.id, name: p.name, store: p.store, title: p.title, role: p.role, grade: p.gS,
+        suggest: cs4Suggest(p, tracks.get(p.id)), assign: cs4AssignOut(C.A.get(p.id)), open: sum(op), published: sum(pub), reqs: R.get(p.id) || 0,
+        can: { score: C.canScore(p), confirm: C.canConfirm(p), assign: SS_FULL_ROLES.includes(a.role) && C.canConfirm(p) } };
+    });
+    rows.sort((x, y) => String(x.store).localeCompare(String(y.store)) || String(x.name).localeCompare(String(y.name)));
+    return { ...base, rows, counts };
+  }
+  // 1 人の評価（全部の改訂・申し出・記録）
+  async function cs4Get(a, b) {
+    const C = await cs4Ctx(a);
+    if (C.nosql) return { period: CS4_PERIOD, nosql: true };
+    const p = cs4Person(C, b.emp);
+    const id = encodeURIComponent(p.id), per = '&period=eq.' + encodeURIComponent(CS4_PERIOD);
+    const [evs, reqs, log] = await Promise.all([
+      rest('csq4_evals?emp_id=eq.' + id + per + '&select=' + CS4_EV_COLS + '&order=rev.desc&limit=50'),
+      rest('csq4_reqs?emp_id=eq.' + id + per + '&select=id,eval_id,item_id,kind,note,status,answer,created_at,created_by_name,answered_at,answered_by_name&order=id.desc&limit=500'),
+      rest('csq4_log?emp_id=eq.' + id + per + '&select=id,at,eval_id,action,by_name,by_role,detail&order=id.desc&limit=200'),
+    ]);
+    return { period: CS4_PERIOD, version: CS4_VERSION, person: { emp: p.id, name: p.name, store: p.store, title: p.title, role: p.role, grade: p.gS },
+      assign: cs4AssignOut(C.A.get(p.id)), evals: Array.isArray(evs) ? evs : [], reqs: Array.isArray(reqs) ? reqs : [], log: Array.isArray(log) ? log : [],
+      can: { score: C.canScore(p), confirm: C.canConfirm(p), assign: SS_FULL_ROLES.includes(a.role) && C.canConfirm(p) } };
+  }
+  // 評価表を決める（GM・CEO。答え 1 A・2 A）
+  async function cs4Assign(a, b) {
+    await pvMgr(a);
+    const C = await cs4Ctx(a);
+    if (C.nosql) throw err('not_installed', 503);
+    const its = b.items;
+    if (!Array.isArray(its) || its.length < 1 || its.length > 200) throw bad();
+    const seen = new Set(), out = [];
+    for (const x of its) {
+      if (!obj(x) || !cs4Id(x.emp) || seen.has(x.emp) || !cs4Int(x.expect)) throw bad();
+      seen.add(x.emp);
+      const p = C.byId.get(x.emp);
+      if (!p || !C.canConfirm(p)) throw err('forbidden', 403);
+      const v = cs4CleanAssign(x);
+      if (!v) throw bad();
+      out.push({ emp: p.id, name: String(p.name || '').slice(0, 120), period: CS4_PERIOD, ...v, expect: x.expect });
+    }
+    const r = await cs4Rpc(a, 'csq4_assign_save', { p_items: out, ...cs4By(a) });
+    if (r.ok !== true || !Array.isArray(r.rows)) throw cs4Fail(r);
+    return { ok: true, rows: r.rows, same: Number(r.same) || 0, at: r.at || null };
+  }
+  // 評価を始める・再開する（開いている評価があればそれを返す＝何度押しても初期化しない）
+  async function cs4Start(a, b) {
+    const C = await cs4Ctx(a);
+    if (C.nosql) throw err('not_installed', 503);
+    const p = cs4Person(C, b.emp);
+    if (!C.canScore(p)) throw err('forbidden', 403);
+    const x = C.A.get(p.id);
+    if (!x) throw err('no_assign', 409);
+    if (b.assign !== undefined && b.assign !== null && b.assign !== x.ver) throw err('conflict', 409);
+    const result = cs4Compute(x, {}, x.system === 'PREP' ? {} : null);
+    const r = await cs4Rpc(a, 'csq4_eval_start', { p_emp: p.id, p_name: String(p.name || '').slice(0, 120), p_period: CS4_PERIOD, p_assign_ver: x.ver, p_result: result, ...cs4By(a) });
+    if (r.ok !== true) throw cs4Fail(r);
+    return { ok: true, id: r.id, rev: r.rev, ver: r.ver, status: r.status, resumed: r.resumed === true };
+  }
+  // 確定・公開のあとの再評価（新しい改訂。同じ評価表なら確定の明細を写して始める）
+  async function cs4Reeval(a, b) {
+    const C = await cs4Ctx(a);
+    if (C.nosql) throw err('not_installed', 503);
+    const p = cs4Person(C, b.emp);
+    if (!C.canScore(p)) throw err('forbidden', 403);
+    const reason = typeof b.reason === 'string' ? b.reason.trim() : '';
+    if (!reason || reason.length > 1000 || !cs4Int(b.pub, 1)) throw bad();
+    const x = C.A.get(p.id);
+    if (!x) throw err('no_assign', 409);
+    if (b.assign !== undefined && b.assign !== null && b.assign !== x.ver) throw err('conflict', 409);
+    const pub = await cs4Row(b.pub, 'id,emp_id,period,status,system,entries,prep');
+    if (pub.emp_id !== p.id || pub.status !== 'published') throw err('conflict', 409);
+    const copy = pub.system === x.system;
+    const entries = copy ? (obj(pub.entries) || {}) : {};
+    const prep = x.system === 'PREP' ? (copy ? (obj(pub.prep) || {}) : {}) : null;
+    const result = cs4Compute(x, entries, prep);
+    const r = await cs4Rpc(a, 'csq4_eval_reeval', { p_emp: p.id, p_name: String(p.name || '').slice(0, 120), p_period: CS4_PERIOD, p_pub_id: pub.id, p_assign_ver: x.ver,
+      p_copy: copy, p_reason: reason, p_result: result, ...cs4By(a) });
+    if (r.ok !== true) throw cs4Fail(r);
+    return { ok: true, id: r.id, rev: r.rev, ver: r.ver, status: r.status, copied: r.copied === true };
+  }
+  // 下書きを保存する（明細は変わった項目だけ送る。null＝未評価に戻す）。総合点・状態はサーバーが計算する
+  async function cs4Save(a, b) {
+    const C = await cs4Ctx(a);
+    const row = await cs4Row(b.id);
+    const p = C.byId.get(String(row.emp_id));
+    if (!p || !C.canScore(p)) throw err('forbidden', 403);
+    if (!cs4Int(b.expect, 1)) throw bad();
+    if (b.expect !== row.ver) throw err('conflict', 409);
+    if (!['draft', 'returned'].includes(row.status)) throw err('state', 409);
+    const sensitive = !!row.shared_at || row.rev > 1 || row.status === 'returned';   // 本人に共有した・再評価・差戻しのあとは、変えた理由が要る
+    const old = obj(row.entries) || {}, entries = { ...old }, changes = {}, need = [];
+    if (b.entries !== undefined) {
+      if (!obj(b.entries) || Object.keys(b.entries).length > 200) throw bad();
+      for (const [id, v] of Object.entries(b.entries)) {
+        const c = cs4CleanEntry(row.system, id, v);
+        if (c.error) { const e = bad(); e.ids = [id]; throw e; }
+        const before = obj(old[id]) || null, after = c.entry;
+        const coreChanged = cs4CoreOf(before) !== cs4CoreOf(after);
+        const bodyChanged = cs4BodyOf(before) !== cs4BodyOf(after);
+        if (!coreChanged && !bodyChanged) continue;
+        if (coreChanged && sensitive && before && before.status !== 'UNASSESSED' && !(after && after.changeReason)) { need.push(id); continue; }
+        if (after === null) delete entries[id];
+        else entries[id] = { ...after, prevStatus: coreChanged ? (before ? before.status : 'UNASSESSED') : (before && before.prevStatus ? before.prevStatus : 'UNASSESSED'),
+          byEmp: a.emp, byName: a.name || '', at: cs4Iso() };
+        changes[id] = coreChanged ? { before: before ? cs4Pick(before, CS4_CORE) : null, after: after ? cs4Pick(after, CS4_CORE) : null, reason: (after && after.changeReason) || '' } : { text: true };
+      }
+    }
+    if (need.length) { const e = err('reason_required', 400); e.ids = need; throw e; }
+    let feedback = obj(row.feedback) || {};
+    if (b.feedback !== undefined) {
+      const f = cs4CleanFeedback(b.feedback);
+      if (!f) throw bad();
+      if (canon(f) !== canon(feedback)) changes._feedback = true;
+      feedback = f;
+    }
+    let prep = row.system === 'PREP' ? (obj(row.prep) || {}) : null;
+    if (b.prep !== undefined) {
+      if (row.system !== 'PREP') throw bad();
+      const q = cs4CleanPrep(b.prep);
+      if (!q) throw bad();
+      if (canon(q) !== canon(prep)) changes._prep = true;
+      prep = q;
+    }
+    if (!Object.keys(changes).length) return { ok: true, id: row.id, ver: row.ver, same: true, result: row.result };
+    const result = cs4Compute(row, entries, prep);
+    const r = await cs4Rpc(a, 'csq4_eval_save', { p_id: row.id, p_expect: b.expect, p_entries: entries, p_prep: prep, p_feedback: feedback, p_result: result,
+      p_changes: changes, ...cs4By(a) });
+    if (r.ok !== true) throw cs4Fail(r);
+    return { ok: true, id: row.id, ver: r.ver, at: r.at || null, result };
+  }
+  // 状態を進める：share（本人に共有）・submit（確認待ちへ）＝採点する人／return・confirm・cancel＝確定する人
+  async function cs4Act(a, b) {
+    const C = await cs4Ctx(a);
+    if (!['share', 'submit', 'return', 'confirm', 'cancel'].includes(b.act) || !cs4Int(b.expect, 1)) throw bad();
+    const note = b.note === undefined || b.note === null ? '' : (typeof b.note === 'string' ? b.note.trim() : null);
+    if (note === null || note.length > 1000) throw bad();
+    if ((b.act === 'return' || b.act === 'cancel') && !note) throw bad();
+    const row = await cs4Row(b.id);
+    const p = C.byId.get(String(row.emp_id));
+    const may = b.act === 'share' || b.act === 'submit' ? (p && C.canScore(p)) : (p && C.canConfirm(p));
+    if (!may) throw err('forbidden', 403);
+    const result = cs4Compute(row, obj(row.entries) || {}, row.system === 'PREP' ? (obj(row.prep) || {}) : null);
+    const shared = b.act === 'share' || b.act === 'confirm' ? cs4Shared(row, obj(row.entries) || {}, obj(row.feedback) || {}, result) : null;
+    const r = await cs4Rpc(a, 'csq4_eval_act', { p_id: row.id, p_expect: b.expect, p_act: b.act, p_note: note, p_shared: shared, p_ok: result.confirmable === true, ...cs4By(a) });
+    if (r.ok !== true) throw cs4Fail(r);
+    return { ok: true, id: row.id, ver: r.ver, at: r.at || null };
+  }
+  // 本人の見直しの申し出（「任されていないため見直しを希望」＝not_assigned・項目）とコメント（comment）。本人の評価だけ
+  async function cs4Req(a, b) {
+    if (!a.emp) throw err('no_emp', 403);
+    if (!['not_assigned', 'comment'].includes(b.kind)) throw bad();
+    const note = b.note === undefined || b.note === null ? '' : (typeof b.note === 'string' ? b.note.trim() : null);
+    if (note === null || note.length > 1000 || (b.kind === 'comment' && !note)) throw bad();
+    const row = await cs4Row(b.id, 'id,emp_id,period,system,status,shared_at');
+    if (String(row.emp_id) !== String(a.emp)) throw err('not_found', 404);
+    let item = null;
+    if (b.item !== undefined && b.item !== null && b.item !== '') {
+      if (typeof b.item !== 'string' || !CS4_ITEMS[row.system] || !CS4_ITEMS[row.system].has(b.item)) throw bad();
+      item = b.item;
+    }
+    if (b.kind === 'not_assigned' && !item) throw bad();
+    const r = await cs4Rpc(a, 'csq4_req_add', { p_eval_id: row.id, p_item: item, p_kind: b.kind, p_note: note, p_by_emp: a.emp, p_by_name: a.name || null });
+    if (r.ok !== true) throw cs4Fail(r);
+    return { ok: true, id: r.id, same: r.same === true, at: r.at || null };
+  }
+  // 申し出に答える（その人を採点・確定できる人）
+  async function cs4Answer(a, b) {
+    const C = await cs4Ctx(a);
+    const answer = typeof b.answer === 'string' ? b.answer.trim() : '';
+    if (!answer || answer.length > 1000 || !cs4Int(b.id, 1)) throw bad();
+    const rows = await cs4Read('csq4_reqs?id=eq.' + b.id + '&select=id,emp_id,period,status');
+    if (rows === null) throw err('not_installed', 503);
+    const x = Array.isArray(rows) ? rows[0] : null;
+    if (!x || x.period !== CS4_PERIOD) throw err('not_found', 404);
+    const p = C.byId.get(String(x.emp_id));
+    if (!p || !C.canSee(p)) throw err('forbidden', 403);
+    const r = await cs4Rpc(a, 'csq4_req_answer', { p_id: x.id, p_answer: answer, ...cs4By(a) });
+    if (r.ok !== true) throw cs4Fail(r);
+    return { ok: true, id: x.id, at: r.at || null };
+  }
+  // 今までの記録（読むだけ）：{ emp }＝その人（見られる人）／{ legacy: true }＝人を決めない記録と写した回（GM・CEO）
+  async function cs4Hist(a, b) {
+    if (b.legacy === true) {
+      await pvMgr(a);
+      const [rows, runs] = await Promise.all([
+        cs4Read('csq4_hist?emp_id=is.null&select=' + CS4_HIST_COLS + '&order=id.desc&limit=500'),
+        cs4Read('csq4_runs?select=id,at,via,by_name,report&order=id.desc&limit=20'),
+      ]);
+      if (rows === null || runs === null) return { rows: [], runs: [], nosql: true };
+      return { rows: rows.map(h => ({ ...h, oldSystem: h.period === CS4_PERIOD })), runs };
+    }
+    const C = await cs4Ctx(a);
+    if (C.nosql) return { rows: [], nosql: true };
+    const p = cs4Person(C, b.emp);
+    const rows = await rest('csq4_hist?emp_id=eq.' + encodeURIComponent(p.id) + '&select=' + CS4_HIST_COLS + '&order=id.desc&limit=500');
+    return { rows: (Array.isArray(rows) ? rows : []).map(h => ({ ...h, oldSystem: h.period === CS4_PERIOD })) };
+  }
+  // 今までの記録を写す（GM・CEO。元は変えない・何度でも同じ）
+  async function cs4Copy(a) {
+    await pvMgr(a);
+    const r = await cs4Rpc(a, 'csq4_hist_copy', { p_via: 'fn', p_by_emp: a.emp || null, p_by_name: a.name || null });
+    if (!Number.isSafeInteger(r.run)) throw err('db', 500);
+    return { ok: true, report: r };
+  }
+
+  const ACTIONS = { pull, get, put, hist: csHist, pin_check: pinCheck, pin_set: pinSet, hr_get: hrGet, hr_op: hrOp, hr_match: hrMatch, pii_get: piiGet, pii_op: piiOp, card_match: cardMatch, tcf_status: tcfStatus, change_log: clGet, labor: ltGet, pv_get: pvGet, pv_full: pvFull, pv_save: pvSave, pv_log: pvLog, aff_get: affGet, aff_full: affFull, aff_save: affSave,
+    cs4_me: cs4Me, cs4_roster: cs4Roster, cs4_get: cs4Get, cs4_assign: cs4Assign, cs4_start: cs4Start, cs4_reeval: cs4Reeval, cs4_save: cs4Save, cs4_act: cs4Act,
+    cs4_req: cs4Req, cs4_answer: cs4Answer, cs4_hist: cs4Hist, cs4_copy: cs4Copy };
+  const CODES = { forbidden: 403, bad_value: 400, conflict: 409, locked: 429, gone: 410, not_found: 404, not_installed: 503,
+    no_emp: 403, state: 409, not_complete: 409, open_requests: 409, reason_required: 400, no_assign: 409, published: 409, open: 409, too_many: 409 };   // no_emp 以降は Career Score Q4（段階 3-1）
 
   return async function handle(req) {
     const origin = req.headers.get('origin');
@@ -2397,7 +2953,8 @@ export function createHandler(deps) {
     // ltfn:1＝人件費の合計（v1192・labor）を出す。アプリは ltfn の無い答え（unknown_action）を前の版とみなし、10 分は端末で数える
     // affn:1＝所属の確認（v1195・aff_get・aff_full・aff_save）を扱う。アプリは affn の無い答えを前の版とみなし、「所属の確認」で「関数を v1195 に」と出す
     // pvfn:1＝画面の表示の設定（v1193・pv_get など）を扱う。アプリは pvfn の無い答え（unknown_action）を前の版とみなし、画面を今までの決まりで出す
-    const json = (v, s = 200) => new Response(JSON.stringify({ ...v, fn: 1, csfn: 1, swfn: 1, hrfn: 1, sw2: 1, piifn: 1, ghfn: 1, tpfn: 1, scfn: 1, gbfn: 1, clfn: 1, ntfn: 1, ltfn: 1, pvfn: 1, affn: 1 }), { status: s, headers: { 'content-type': 'application/json', 'cache-control': 'no-store', ...cors } });
+    // cs4fn:1＝Career Score 2026 Q4（新制度・cs4_*）を扱う（段階 3-1）。アプリは cs4fn の無い答え（unknown_action）を前の版とみなし、新しい評価の画面を出さない
+    const json = (v, s = 200) => new Response(JSON.stringify({ ...v, fn: 1, csfn: 1, swfn: 1, hrfn: 1, sw2: 1, piifn: 1, ghfn: 1, tpfn: 1, scfn: 1, gbfn: 1, clfn: 1, ntfn: 1, ltfn: 1, pvfn: 1, affn: 1, cs4fn: 1 }), { status: s, headers: { 'content-type': 'application/json', 'cache-control': 'no-store', ...cors } });
     if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });
     if (req.method !== 'POST') return json({ error: 'method' }, 405);
     let body;

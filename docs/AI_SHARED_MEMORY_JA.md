@@ -1,5 +1,18 @@
 # Claude / Codex 共通記録
 
+## 2026-11-22 Career Score 2026 Q4 段階 3-1：サーバー（表・関数・権限・競合・今の記録の写し）（Moto さん 11/22 19:51 HST「次お願いします」・Claude（Personal・Claude Code）・ブランチ `claude/career-score-q4-server`・#213（v1207）と #212（段階 1）の上・SQL `20261214090000`・関数 secure-state・アプリは 1207 のまま・本番未反映）
+
+- 仕様：`docs/CAREER_SCORE_Q4_JA.md` の 7。UI案99 の答え（1 A・2 A・3 B・4〜8 A）どおり。画面は段階 3-2。
+- SQL `20261214090000_csq4.sql`：表 7（`csq4_periods`・`csq4_assign`・`csq4_evals`・`csq4_reqs`・`csq4_log`・`csq4_runs`・`csq4_hist`）・関数 11（security invoker・サーバーの鍵だけ）。開いている評価と公開は 1 人 1 つ（一意の索引）・保存と操作は版を確かめる・記録はサーバーの鍵でも直せない／どの表も消せない・前の形の表があれば STOP・戻す SQL は関数だけを消す。
+- 関数 secure-state：`cs4_*` の 12 の頼み（答えに `cs4fn:1`）。点数と合計はサーバーが `careerscore/q4-core.mjs` で計算し直す（生成 `csq4.gen.mjs`・`scripts/gen-secure-state-csq4.mjs --check`）。本人は点数を変えられず、共有された写し（根拠・評価者のメモ・変えた理由なし）と公開済みだけを見る。`csPeople` に `dept` を足した（ほかの頼みの答えは同じ）。
+- 今の記録の写し `csq4_hist_copy`（`lss_emp_`・Career Score の履歴と申請・前の統合行・賞与の確定の Career Score・`ocs_ev_`）：元は変えない・何度流しても同じ・名前だけの記録は同じ名前が 1 人のときだけ社員 ID・2026 Q4 の前の記録は「Q4・旧制度」で新しい評価に写さない。
+- 入れる一式 `deploy/career-score-q4-server/`（① → ② SQL → ③ → ④ 関数（1 ファイル・v1207 の関数の上に作った）→ ⑤ 写す → ③ をもう一度）。関数を先に入れても `not_installed`（503）／`nosql` で壊れない。戻すときは関数を v1207 の 1 ファイル → 戻す SQL（表は残る）。
+- 試験（合成データ）：csq4-server 9・csq4-deploy 3・関係する 658/658・static release pass/1207・わざと壊す 37 通りで 29（6 は二重の守り＝両方外すと 6/6 落ちる・2 は外から見えない）。CI に足した。
+- Claude が決めたこと（Moto さんに確かめる）：G3 と Crew は採点しない・経理が事務Crew を採点・確かめた Head Chef は全店のキッチンの人・取り消しは CEO・GM だけ・3 B の判定保留や基準点未達でも確定できる・AM は同じ店のほかの AM を採点しない。
+- #212 の Claude のルーティン（7092729712・`88821df`）：新しい P1・P2 なし・P3（記録だけ）＝消した見直しメモ 1 件は前のコミットの履歴に残る（履歴から消すなら force-push＝Moto さんの判断）。#211 のルーティン（7092028454）：記録の食い違い＝`claude/am-office-1207` の push の前に記録していた（今は #213 で push 済み）。#213 のルーティン（7092362810・7092376766）：新しい P1・P2・P3 なし。
+- 独立レビューは無し。Codex のレビューはまだ（#211・#212・#213 も）。
+- 次：PR → Codex → #211 → #213 → #212 → この PR → Moto さんが手順.md。そのあと段階 3-2（画面・前の採点を Q4 から止める・Q4 の賞与 ①）。
+
 ## 2026-11-22 v1207：本部（OFFICE）の人も全部の AM に見せる（Moto さん 11/22「はい」・Claude（Personal・Claude Code）・ブランチ `claude/am-office-1207`・v1206（#211）の上・関数 secure-state とアプリ・本番未反映）
 
 - 答え（Moto さん 11/22 18:42 HST）：AM に本部の人を見せるか →「はい」（v1195 の「AM の見える範囲は広げない」を変えた）。仕様 `docs/UNIFIED_UI_V1191_JA.md` の 29。

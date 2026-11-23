@@ -1,5 +1,12 @@
 # 改修・自動化の作業記録
 
+## 2026-11-22 Career Score 2026 Q4 段階 3-1（サーバー）
+
+1. 済（Claude・ブランチ `claude/career-score-q4-server`）：SQL `20261214090000`・関数 secure-state の `cs4_*`・今の記録の写し・入れる一式 `deploy/career-score-q4-server/`・試験（`docs/CAREER_SCORE_Q4_JA.md` の 7）。次：PR → Codex → #211 → #213 → #212 → この PR の順にマージ → Moto さんが手順.md（① → ② → ③ → ④ → ⑤ → ③）。
+2. Moto さんに確かめる：Claude が決めた採点できる人（仕様の 7 の「Claude が決めたこと」6 つ）・3 B の型ごとのカテゴリー。
+3. 次（Claude）：段階 3-2＝画面（UI案99：今期の評価・評価履歴・フィードバック・見直し・PC とスマホ）・2026 Q4 から前の採点を止める・Q4 の賞与 ①（6 A）。
+4. Moto さんの判断（任意）：#212 で消した見直しメモ 1 件を履歴からも消すか（force-push が要る）。
+
 ## 2026-11-22 AM に本部の人を見せる（v1207）
 
 1. 済（Moto さん 11/22「はい」）・済（Claude・ブランチ `claude/am-office-1207`）：v1207（関数 secure-state とアプリ・`docs/UNIFIED_UI_V1191_JA.md` の 29）。

@@ -10,6 +10,7 @@ import os from 'node:os';
 import path from 'node:path';
 import vm from 'node:vm';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import crypto from 'node:crypto';
 import { build, withoutTail, TAIL, OUT } from '../scripts/build-secure-state-one.mjs';
 import { createHandler, PII_KEY } from '../supabase/functions/secure-state/handler.mjs';
 import { makeWorld, URL0, ANON, SERVICE, ts6 } from './lib/secure-state-world.mjs';
@@ -21,9 +22,11 @@ const ONE = D + '1_関数_secure-state_index.ts';
 const V1197 = 'deploy/page-view-tab-v1197/1_関数_secure-state_index.ts';
 
 test('the one-file secure-state (v1207) is what the build script makes now, has no private part, and differs from v1197 only in the AM scope of piiScope', () => {
-  assert.equal(OUT, ONE, 'the build writes into the v1207 folder');
+  // Career Score Q4 の段階 3-1 から build() は deploy/career-score-q4-server/ に書く。v1207 の 1 ファイルは Moto さんに渡したときのまま（sha256 で固定）
+  assert.notEqual(OUT, ONE, 'the build now writes into a later folder');
+  assert.ok(build().length > 0);
   const one = rd(ONE);
-  assert.equal(one, build(), 'the one file is up to date with the sources (run node scripts/build-secure-state-one.mjs)');
+  assert.equal(crypto.createHash('sha256').update(one).digest('hex'), '725f84868e66cf2048ad158745fc4a40828b8fa224d9a339fbf66614494bef20', 'the v1207 one file is as handed over');
   assert.ok(one.startsWith('// secure-state の 1 ファイル（v1207）'));
   assert.ok(one.endsWith(TAIL));
   assert.ok(!/^import\s/m.test(one), 'no import left');
@@ -69,7 +72,7 @@ test('the one-file secure-state answers the same as the module handler (pii_get 
       { action: 'pii_op', id: 'E-S2', set: { dob: '' }, base: { dob: '1998-01-01' }, pin_session: 'tam' }];
     for (const body of cases) {
       const a = await run(mod.createHandler, body), b = await run(createHandler, body);
-      const strip = x => JSON.parse(JSON.stringify(x, (k, v) => (k === '_at' ? '*' : v)));
+      const strip = x => JSON.parse(JSON.stringify(x, (k, v) => (k === '_at' ? '*' : k === 'cs4fn' ? undefined : v)));   // cs4fn：段階 3-1 から handler が付ける
       assert.deepEqual(strip(a), strip(b), JSON.stringify(body));
     }
     const am = await run(mod.createHandler, cases[0]);

@@ -73,6 +73,7 @@ test('the one-file secure-state answers the same as the module handler (aff_get,
       const b = await ask(createHandler({ env, fetch: fetchStub, now }), body);
       assert.equal(a[0], 200, JSON.stringify(a));
       assert.equal(a[1].affn, 1, 'the v1195 one file says it knows the affiliation check');
+      delete b[1].cs4fn;   // Career Score Q4 の段階 3-1 から handler は答えに cs4fn:1 も付ける（この版の 1 ファイルは付けない）
       assert.deepEqual(a, b, body.action);
     }
     const g = await ask(mod.createHandler({ env, fetch: fetchStub, now }), { action: 'aff_get' });
