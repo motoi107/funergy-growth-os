@@ -1,5 +1,14 @@
 # Claude / Codex 共通記録
 
+## 2026-11-22 Career Score 2026 Q4（新制度）段階 1：評価表マスターと計算の芯（Claude・ブランチ `claude/career-score-q4-core`・main `b33d992` の上・画面・サーバー・本番のデータは変えない）
+
+- 依頼：Moto さん 11/22 18:02 HST の添付（指示書 `Funergy_Claude_CareerScore_2026Q4_Update.txt`・Excel `Funergy_評価制度_G_P_S (4).xlsx`＝sha256 先頭 `380884c8`）。Excel と指示書はリポジトリに入れない。仕様・決めたこと・Moto さんに聞くことは `docs/CAREER_SCORE_Q4_JA.md`。
+- 作ったもの：`careerscore/cs-q4-v1.json`（`scripts/gen-cs-q4-master.py` が Excel から作る・`--check` で同じかを確かめる・G 122・Prep 11（品質 Q1〜Q3 は別）・S Chef 52・S Office 46）と `careerscore/q4-core.mjs`（BigInt の分数・未担当は 0 点で分母・理由つきの非該当は外す・理念 5 分類・S Office の領域の平均・基準点は丸める前で判定・最低条件は総合点と別・Honolulu の期間・Prep の時給は表で決めて自動で下げない）。
+- 試験（合成データ）：`tests/career-score-q4-core.test.mjs` 24/24（指示書の確かめ 4・6・9〜17・19・20）・わざと壊す 24/24（Claude の手元）・`--check` は Excel が要るので手元だけ・CI に足した。
+- Claude が決めたこと（Moto さんに確かめる）：最低条件に「実務機会なし」があれば全体も達成にしない・入力に誤りのある項目は未評価・Prep は自動で下げない。
+- 独立レビューは無し。Codex のレビューはまだ。
+- 次：段階 2＝今の Career Score の記録（`lss_emp_`・専門職・オフィス用 `ocs_*`・プレップ Lv `prep_*`）の調べと移し方の案・UI 案（PC・スマホ）・決めてほしいこと 5（仕様の 5）。そのあと段階 3（サーバー・移し替え・画面）。
+
 ## 2026-11-20 T6 を GitHub へ・#201〜#205 はマージ済み・Codex #207（P1）と #208（P2 2）の直し（Claude（Personal・Claude Code）・ブランチ `claude/lost-wr-1202`・`claude/mypage-1203` とその上）
 
 - 引き継ぎ版 T6 を bundle で push（11/20・force なし）：#205 を `4ecefd7` へ早送り・新しいブランチ 6 つ（`acct-intake-1201`・`lost-wr-1202`・`mypage-ui98`・`mypage-1203`・`mypage-1204`・`mypage-1205`）・新しい PR #206（v1201）〜#210（v1205）。`mypage-ui98` は PR なし（#208 に入る）。Moto さんが #201〜#205 をマージ（main `465e352`・merge コミット）。
