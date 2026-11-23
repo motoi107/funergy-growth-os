@@ -172,11 +172,12 @@ function piiApp(answer) {
   c.localStorage = { getItem: () => '1' };
   vm.createContext(c);
   const pre = src.slice(src.indexOf('var _pii = {'), src.indexOf('\n', src.indexOf('var _pii = {')));
-  vm.runInContext([pre, 'var _piiCard = {}; var _piiEnsureAt = 0; var _piiSeq = 0;',
+  vm.runInContext([pre, 'var _piiCard = {}; var _piiEnsureAt = 0; var _piiSeq = 0; var _piiChk = {};',
     "function ssToken(){ return { g:1, u:'U-AM', st:'', id:'E-AM' }; }", 'function ssStale(){ return false; }',
     'async function ssCall(p){ calls++; return JSON.parse(JSON.stringify(ANSWER)); }',
     'function t(ja){ return ja; }',
-    fnBal('piiFnSeen'), fnBal('piiTid'), fnBal('piiWants'), fnBal('piiReady'), fnBal('piiLoad'), fnBal('piiFormState')].join('\n'), c);
+    fnBal('piiFnSeen'), fnBal('piiTid'), fnBal('piiWants'), fnBal('piiReady'), fnBal('piiLoad'), fnBal('piiFormState'),
+    ...(src.includes('function piiRecheck(') ? [fnBal('piiUnsent'), fnBal('piiRecheck')] : [])].join('\n'), c);
   return c;
 }
 test('the edit screen: an AM sees the fields of people in ids; a head-office person outside ids is locked with a note; GM (no ids) and an old function (no ids) as before', async () => {
@@ -185,9 +186,17 @@ test('the edit screen: an AM sees the fields of people in ids; a head-office per
   assert.deepEqual(JSON.parse(JSON.stringify(vm.runInContext('_pii.ids', c))), ['E-AM', 'E-GM', 'E-S1']);
   const st = id => JSON.parse(JSON.stringify(vm.runInContext('piiFormState(' + JSON.stringify(id) + ')', c)));
   for (const id of ['E-S1', 'E-GM']) assert.deepEqual(st(id), { note: '', lock: false, lockAmt: true }, id + ' (in scope, even with empty fields)');
+  // 本部の人（ids に無い）：初めて開いたときは止めたままサーバーに 1 回だけ確かめ直し（Codex #213 再レビュー P2）、一覧に無ければ止めたまま
+  const before = c.calls;
+  const hq0 = st('E-HQ');
+  assert.equal(hq0.lock, true); assert.equal(hq0.lockAmt, true);
+  assert.match(hq0.note, /サーバーに確かめています/);
+  assert.equal(await vm.runInContext("_piiChk[piiTid()+'#E-HQ'].p", c), 'out');
   const hq = st('E-HQ');
   assert.equal(hq.lock, true); assert.equal(hq.lockAmt, true);
   assert.match(hq.note, /この人の生年月日・カード・保険は、このアカウントでは見る・直すことはできません/);
+  st('E-HQ'); await new Promise((s) => setImmediate(s));
+  assert.equal(c.calls, before + 1, 'once per login (no request on the next open)');
   assert.deepEqual(st(''), { note: '', lock: false, lockAmt: true }, 'a new person: as before (the server decides once the row is there)');
   // GM（ids なし）：全員そのまま
   const g = piiApp({ ok: true, j: { level: 'full', data: {}, updated_at: null } });
@@ -207,19 +216,22 @@ test('the edit screen: an AM sees the fields of people in ids; a head-office per
 // 本物の piiLoad・piiPut・piiSave・piiFormState を VM で。サーバーの答えは合成（action ごと・遅らせられる）
 function piiApp2() {
   const c = { curRole: 'am', curStoreLogin: false, PII_ROLES: ['ceo', 'gm', 'office', 'office_crew', 'am', 'chef', 'g4', 'sl', 'g2', 'crew'],
-    PII_FN_KEY: 'k', window: {}, TOK: 'A', Q: [], log: [] };
+    PII_FN_KEY: 'k', window: {}, TOK: 'A', Q: [], log: [], DIRTY: {}, PUSH: null, PUSHES: 0, FILLS: [] };
   c.localStorage = { getItem: () => '1' };
   vm.createContext(c);
   const pre = src.slice(src.indexOf('var _pii = {'), src.indexOf('\n', src.indexOf('var _pii = {')));
-  const fns = ['piiFnSeen', 'piiTid', 'piiWants', 'piiReady', 'piiLoad', 'piiPut', 'piiSave', 'piiFormState'];
+  const fns = ['piiFnSeen', 'piiTid', 'piiWants', 'piiReady', 'piiLoad', 'piiPut', 'piiSave', 'piiFormState']
+    .concat(src.includes('function piiRecheck(') ? ['piiUnsent', 'piiRecheck'] : []);
   const seq = src.includes('var _piiSeq') ? src.slice(src.indexOf('var _piiSeq'), src.indexOf('\n', src.indexOf('var _piiSeq'))) : '';
   const skip = src.slice(src.indexOf('var PII_FIELDS'), src.indexOf('\n', src.indexOf('var PII_SKIP')));
-  vm.runInContext([skip, pre, 'var _piiCard = {}; var _piiEnsureAt = 0;', seq,
+  vm.runInContext([skip, pre, 'var _piiCard = {}; var _piiEnsureAt = 0; var _piiChk = {};', seq,
     // ログインは TOK（A／B）。ssStale は頼んだときのログインと今が違うか
     "function ssToken(){ return { g:1, u:'U-'+TOK, st:'', id:'E-AM' }; }", 'function ssStale(tk){ return tk.u !== ssToken().u; }',
     // ssCall：Q の先頭の答えを使う（{ action, r, wait }）。wait があれば Promise を返して、あとで解く
     'async function ssCall(p){ log.push(p.action); var a = Q.shift(); if(!a || a.action !== p.action) throw new Error("unexpected " + p.action); if(a.wait) await a.wait; return JSON.parse(JSON.stringify(a.r)); }',
-    'function t(ja){ return ja; }', 'function showToast(){}', 'async function empPushDirty(){}', 'function insTotalsRefresh(){}',
+    'function t(ja){ return ja; }', 'function showToast(){}', 'function insTotalsRefresh(){}',
+    // 社員の行を送る（PUSH で遅らせる・失敗させる）・送れていない行（DIRTY・新しい人は n）・開いている画面の描き直し（FILLS）
+    'async function empPushDirty(){ PUSHES++; return PUSH ? await PUSH() : true; }', 'function _empDirtyGet(){ return DIRTY; }', 'function piiFormFill(id){ FILLS.push(id); }',
     ...fns.map(fnBal)].join('\n'), c);
   return c;
 }
@@ -227,13 +239,18 @@ const GET = (ids, data = {}) => ({ action: 'pii_get', r: { ok: true, j: { level:
 const OK = (id) => ({ action: 'pii_op', r: { ok: true, j: { entry: { dob: '2000-02-02' }, level: 'hr' } } });
 const stOf = (c, id) => JSON.parse(JSON.stringify(vm.runInContext('piiFormState(' + JSON.stringify(id) + ')', c)));
 const defer = () => { let res; const p = new Promise((r) => { res = r; }); return { p, res }; };
+const tick = () => new Promise((s) => setImmediate(s));
+// ids に無い人を開いたときの確かめ直し（Codex #213 再レビュー P2）の終わりを待つ（直す前のコードには無い：null）
+const chkP = (c, id) => vm.runInContext("typeof _piiChk === 'undefined' ? null : ((_piiChk[piiTid() + '#' + " + JSON.stringify(id) + "] || {}).p || null)", c);
+// 開いて（確かめ直しが要るならサーバーの答えを 1 つ用意して）確かめ終わるまで待つ
+const openSettled = async (c, id, ans) => { if (ans) c.Q.push(ans); const s0 = stOf(c, id); await chkP(c, id); await tick(); return { first: s0, now: stOf(c, id) }; };
 
 test('Codex #213 P2：AM が新しい人を登録して保存できたら、読み直す前でももう一度開いて直せる（担当の外・失敗・ログインの切り替えでは増えない）', async () => {
   // 1) 新しい人 → 保存に成功 → 自分の変更の合図より前にもう一度開く（前は「担当の店の外」で止まっていた）
   const c = piiApp2();
   c.Q.push(GET(['E-AM', 'E-S1']));
   assert.equal(await vm.runInContext('piiLoad(true)', c), 'ok');
-  assert.equal(stOf(c, 'E-NEW').lock, true, '保存の前は止まる（サーバーの一覧に無い）');
+  assert.equal((await openSettled(c, 'E-NEW', GET(['E-AM', 'E-S1']))).now.lock, true, '保存の前は止まる（サーバーの一覧に無い）');
   c.Q.push(OK('E-NEW'));
   assert.equal(await vm.runInContext("piiSave('E-NEW', { dob:'2000-02-02' }, {}, true)", c), true);
   assert.deepEqual(stOf(c, 'E-NEW'), { note: '', lock: false, lockAmt: true }, '保存できた人はもう一度開いて直せる');
@@ -242,8 +259,8 @@ test('Codex #213 P2：AM が新しい人を登録して保存できたら、読�
   c.Q.push(GET(['E-AM', 'E-S1', 'E-NEW'], { 'E-NEW': { dob: '2000-02-02' } }));
   assert.equal(await vm.runInContext('piiLoad(true)', c), 'ok');
   assert.equal(stOf(c, 'E-NEW').lock, false);
-  // 担当の外（本部の人）は止まったまま
-  assert.equal(stOf(c, 'E-HQ').lock, true);
+  // 担当の外（本部の人）は止まったまま（確かめ直しても一覧に無い）
+  assert.equal((await openSettled(c, 'E-HQ', GET(['E-AM', 'E-S1', 'E-NEW']))).now.lock, true);
 
   // 2) 保存の前に始まった読み直しが、保存のあとに古い一覧で返っても、保存できた人を外さない
   const d = piiApp2();
@@ -260,7 +277,7 @@ test('Codex #213 P2：AM が新しい人を登録して保存できたら、読�
   // 保存のあとに始めた読み直しは、サーバーの答えそのまま（外されたら外れる）
   d.Q.push(GET(['E-AM']));
   await vm.runInContext('piiLoad(true)', d);
-  assert.equal(stOf(d, 'E-NEW2').lock, true, '保存のあとに読んだ一覧に無ければ止める（サーバーが正）');
+  assert.equal((await openSettled(d, 'E-NEW2', GET(['E-AM']))).now.lock, true, '保存のあとに読んだ一覧に無ければ止める（サーバーが正）');
 
   // 3) 失敗・403・競合では増えない
   for (const r of [{ ok: false, status: 500 }, { ok: false, status: 403 }, { ok: false, status: 409 }, { ok: false, net: true, status: 0 }]) {
@@ -271,8 +288,8 @@ test('Codex #213 P2：AM が新しい人を登録して保存できたら、読�
     if (r.status === 409) e.Q.push(GET(['E-AM']));   // 競合のあとの読み直し（今までどおり）
     const out = await vm.runInContext("piiSave('E-X', { dob:'2000-02-02' }, {}, true)", e);
     assert.notEqual(out, true, JSON.stringify(r));
-    await new Promise((s) => setImmediate(s));
-    assert.equal(stOf(e, 'E-X').lock, true, '失敗のあとも止まる ' + JSON.stringify(r));
+    await tick();
+    assert.equal((await openSettled(e, 'E-X', GET(['E-AM']))).now.lock, true, '失敗のあとも止まる ' + JSON.stringify(r));
     assert.equal(vm.runInContext("_pii.map['E-X']", e), undefined);
   }
 
@@ -290,7 +307,7 @@ test('Codex #213 P2：AM が新しい人を登録して保存できたら、読�
   await vm.runInContext('piiLoad(true)', f);
   slow.res();
   assert.equal(await save, 'failed', '古いログインの遅れた答えは使わない');
-  assert.equal(stOf(f, 'E-NEW3').lock, true, 'B の一覧は増えない');
+  assert.equal((await openSettled(f, 'E-NEW3', GET(['E-AM']))).now.lock, true, 'B の一覧は増えない');
   // B の読み直しのあとに A の遅れた読み直しが来ても使わない（今までどおり ssStale）
 });
 
@@ -306,4 +323,118 @@ test('Codex #213 P2：応援の店の人（サーバーの一覧にいる）は�
   assert.equal(await vm.runInContext("piiSave('E-NEW', { dob:'2000-02-02' }, {}, true)", o), true);
   assert.equal(vm.runInContext('_pii.ids', o), null, 'ids の無い前の版の関数では一覧を作らない');
   assert.equal(stOf(o, 'E-HQ').lock, false);
+});
+
+// ---- 5. Codex（#213 7111705389）再レビュー P2：個人の欄を空のまま登録した人（piiSave を通らない）を、同じタブでもう一度開くと「担当の店の外」で止まる ----
+// 直し：ids に無い人を開いたら、社員の行を送ってからサーバーに 1 回だけ確かめ直す（止めたまま・答えで描き直す）。ids に足すのはサーバーの答えだけ
+const pget = (c) => c.log.filter((x) => x === 'pii_get').length;
+async function amReady(ids = ['E-AM', 'E-S1']) {
+  const c = piiApp2();
+  c.Q.push(GET(ids));
+  assert.equal(await vm.runInContext('piiLoad(true)', c), 'ok');
+  return c;
+}
+
+test('Codex #213 再レビュー P2：個人の欄なしで登録 → 同じタブでもう一度開くと、確かめ終わったら直せる（社員の行が遅れて届く場合も）', async () => {
+  const c = await amReady();
+  c.DIRTY = { 'E-NEW': { n: 1, f: { name: 'New Person', store: 'S1' } } };   // saveEmp が送る前の新しい行
+  const late = defer();
+  c.PUSH = async () => { await late.p; c.DIRTY = {}; return true; };          // 社員の行が遅れて届く
+  const s0 = stOf(c, 'E-NEW');
+  assert.equal(s0.lock, true, '確かめ終わるまで止める');
+  assert.match(s0.note, /サーバーに確かめています/);
+  await tick();
+  assert.equal(pget(c), 1, '社員の行が届くまで読み直さない（届く前の一覧では決めない）');
+  assert.equal(stOf(c, 'E-NEW').lock, true, '送っているあいだも止めたまま');
+  c.Q.push(GET(['E-AM', 'E-S1', 'E-NEW']));
+  late.res();
+  assert.equal(await chkP(c, 'E-NEW'), 'in');
+  assert.equal(pget(c), 2, '行が届いてから 1 回だけ読み直す');
+  assert.deepEqual(stOf(c, 'E-NEW'), { note: '', lock: false, lockAmt: true }, 'もう一度開くと直せる');
+  assert.ok(c.FILLS.includes('E-NEW'), '開いたままの画面を描き直す（piiFormFill）');
+  assert.deepEqual(JSON.parse(JSON.stringify(vm.runInContext('_pii.ids', c))), ['E-AM', 'E-S1', 'E-NEW'], 'ids はサーバーの答えのまま');
+
+  // 保存の直後（saveEmp が開く前に確かめ直す）：もう一度開いたときは待たずに直せる
+  const e = await amReady();
+  e.DIRTY = { 'E-NEW': { n: 1, f: { name: 'New Person' } } };
+  e.PUSH = async () => { e.DIRTY = {}; return true; };
+  e.Q.push(GET(['E-AM', 'E-S1', 'E-NEW']));
+  assert.equal(await vm.runInContext("piiRecheck('E-NEW')", e), 'in');
+  assert.deepEqual(stOf(e, 'E-NEW'), { note: '', lock: false, lockAmt: true });
+  assert.equal(pget(e), 2);
+  // saveEmp：個人の欄を変えずに登録した新しい人は piiRecheck を呼ぶ（変えた人は今までどおり piiSave）
+  assert.ok(src.includes("if(_piiCh && _seP) piiSave(_seP.id, _piiCh.set, _piiCh.base, !empId);\n    /* Codex #213 再レビュー P2"));
+  assert.ok(src.includes("else if(!empId && _seP && typeof piiRecheck==='function') piiRecheck(_seP.id); }catch(e){}"));
+});
+
+test('Codex #213 再レビュー P2：社員の行を送れない・読めない・本部の人・ログインの切り替えでは止めたまま（ids を端末で足さない）', async () => {
+  // 社員の行を送れない（同期の失敗）：読み直さず「まだ届いていない」・15 秒たてば開き直しでもう一度
+  const c = await amReady();
+  c.DIRTY = { 'E-NEW': { n: 1, f: { name: 'New Person' } } };
+  c.PUSH = async () => false;
+  const r1 = await openSettled(c, 'E-NEW');
+  assert.equal(r1.now.lock, true);
+  assert.match(r1.now.note, /社員の行がまだサーバーに届いていない/);
+  assert.equal(pget(c), 1, '届いていない行のために読み直さない');
+  assert.ok(!vm.runInContext('_pii.ids', c).includes('E-NEW'), '端末の新しい ID を足さない');
+  stOf(c, 'E-NEW'); await tick();
+  assert.equal(c.PUSHES, 1, '15 秒たつまで開き直しても送り直さない');
+  vm.runInContext("_piiChk[piiTid() + '#E-NEW'].at -= 20000", c);
+  c.PUSH = async () => { c.DIRTY = {}; return true; };
+  const r2 = await openSettled(c, 'E-NEW', GET(['E-AM', 'E-S1', 'E-NEW']));
+  assert.equal(r2.first.lock, true);
+  assert.equal(r2.now.lock, false, '届いたあとは直せる');
+
+  // 読めない（pii_get が 500）：止めたまま「確かめられませんでした」・15 秒たてばもう一度
+  const f = await amReady();
+  const r3 = await openSettled(f, 'E-NEW', { action: 'pii_get', r: { ok: false, status: 500 } });
+  assert.equal(r3.now.lock, true);
+  assert.match(r3.now.note, /確かめられませんでした/);
+  stOf(f, 'E-NEW'); await tick();
+  assert.equal(pget(f), 2, '15 秒たつまで読み直さない');
+  vm.runInContext("_piiChk[piiTid() + '#E-NEW'].at -= 20000", f);
+  assert.equal((await openSettled(f, 'E-NEW', GET(['E-AM', 'E-S1', 'E-NEW']))).now.lock, false);
+
+  // 本部の人（担当の外）：確かめても一覧に無い → 止めたまま・このログインではもう聞かない
+  const h = await amReady();
+  const r4 = await openSettled(h, 'E-HQ', GET(['E-AM', 'E-S1']));
+  assert.equal(r4.now.lock, true);
+  assert.match(r4.now.note, /本部の人など、担当の店の外の人/);
+  stOf(h, 'E-HQ'); stOf(h, 'E-HQ'); await tick();
+  assert.equal(pget(h), 2, '1 回だけ');
+  assert.ok(!vm.runInContext('_pii.ids', h).includes('E-HQ'));
+
+  // ログインの切り替え：A の確かめ直しの答えが B のあとに届いても使わない。B は B で確かめる
+  const g = await amReady();
+  g.DIRTY = { 'E-NEW': { n: 1, f: { name: 'New Person' } } };
+  g.PUSH = async () => { g.DIRTY = {}; return true; };
+  const slow = defer();
+  g.Q.push({ ...GET(['E-AM', 'E-S1', 'E-NEW']), wait: slow.p });
+  stOf(g, 'E-NEW'); await tick();
+  g.TOK = 'B';
+  g.Q.push(GET(['E-AM']));
+  assert.equal(await vm.runInContext('piiLoad(true)', g), 'ok');
+  slow.res(); await tick(); await tick();
+  assert.deepEqual(JSON.parse(JSON.stringify(vm.runInContext('_pii.ids', g))), ['E-AM'], 'A の答えで B の一覧を変えない');
+  assert.equal((await openSettled(g, 'E-NEW', GET(['E-AM']))).now.lock, true, 'B の答えでは担当の外');
+  // ログアウトで確かめ直しの結果も消す
+  assert.ok(src.includes('_piiEnsureAt=0; _piiChk={}; piiPurgeLocal(); }'));
+});
+
+test('Codex #213 再レビュー P2：確かめ直しは、社員の行を送る前に始まっていた読みの答えを使わない（終わるのを待ってから読み直す）', async () => {
+  const c = await amReady();
+  c.DIRTY = { 'E-NEW': { n: 1, f: { name: 'New Person' } } };
+  c.PUSH = async () => { c.DIRTY = {}; return true; };
+  const old = defer();
+  c.Q.push({ ...GET(['E-AM', 'E-S1']), wait: old.p });       // 送る前に始まった読み（新しい人がまだいない）
+  const pending = vm.runInContext('piiLoad(true)', c);
+  await tick();
+  c.Q.push(GET(['E-AM', 'E-S1', 'E-NEW']));                    // 送ったあとの読み
+  const r = vm.runInContext("piiRecheck('E-NEW')", c);
+  await tick();
+  old.res();
+  assert.equal(await pending, 'ok');
+  assert.equal(await r, 'in');
+  assert.equal(pget(c), 3, '前の読みが終わってから、もう 1 回読む');
+  assert.equal(stOf(c, 'E-NEW').lock, false);
 });
