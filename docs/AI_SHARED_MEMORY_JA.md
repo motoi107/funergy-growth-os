@@ -1,5 +1,14 @@
 # Claude / Codex 共通記録
 
+## 2026-11-22 v1207：本部（OFFICE）の人も全部の AM に見せる（Moto さん 11/22「はい」・Claude（Personal・Claude Code）・ブランチ `claude/am-office-1207`・v1206（#211）の上・関数 secure-state とアプリ・本番未反映）
+
+- 答え（Moto さん 11/22 18:42 HST）：AM に本部の人を見せるか →「はい」（v1195 の「AM の見える範囲は広げない」を変えた）。仕様 `docs/UNIFIED_UI_V1191_JA.md` の 29。
+- 変えたもの：関数 secure-state の `piiScope`（AM の範囲に所属が本部（OFFICE・前後の空白と大文字小文字は見ない）の人）・アプリの AM の 3 つの一覧（従業員マスター・退職の手続きの対象・スタッフの成長）を `empAnyStore`（ALL か OFFICE）・所属の確認の「変わること」の AM の行。
+- 変えないもの：シフト作成の店の一覧（全店の人だけ）・Career Score の範囲・前の本部の値（`---`・`HQ`）・AM に金額は出さない・SQL なし。
+- 入れる一式 `deploy/am-office-v1207/`（関数の 1 ファイル（sha256 先頭 `725f84868e66`）→ マージと端末を 1207 に）。戻すときは v1197 の 1 ファイル。
+- 試験（合成データ）：am-office-v1207 5・secure-pii-server に 1（直す前の handler で落ちる）・aff-app／aff-server・pv-tab-deploy を v1207 に合わせた・関係する 8 ファイル 63/63・static release pass/1207。独立レビューは無し。Codex のレビューはまだ。
+- 次：PR → Codex → #211 → この PR の順にマージ → Moto さんが関数 secure-state を 1 ファイルで差し替え → 端末を 1207 に。
+
 ## 2026-11-22 Team で入った変更（#201〜#210）の点検と v1206 の直し（Claude（Personal・Claude Code）・ブランチ `claude/team-fixes-1206`・main `b33d992`（v1205）の上・戻す SQL とアプリ・本番未反映）
 
 - 依頼：Moto さん 11/22 18:02 HST「会社でClaude Teamの契約をしたので、そちらでも開発を進めました／メインはこちらで更新していのは変わりません／Teamで更新した内容が問題ないか点検が必要です／追加で取り組む内容も添付します」（添付：Career Score 2026 Q4 の更新の指示書と G・Prep・S の評価表の Excel）。

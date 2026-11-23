@@ -327,7 +327,7 @@ export function hrApStrip(rec) {
 //   従業員の表（公開の鍵で読める）から外し、app_state の 1 行 emp_pii（社員 ID → 欄）に置く。読み書きはこの関数で（pii_get・pii_op）。
 //   SQL 20261113090000 が、従業員の表に残っている欄を emp_pii に写して消す（それまでは、emp_pii に無い人は従業員の表の値を読む）。
 //   見られる人（Moto さん 11/09：今の従業員マスターと同じ）：CEO・GM＝全員の 5 つ／経理・Head Chef＝全員の 4 つ（保険料を除く）／
-//   AM＝担当の店（応援も）と本部（ALL）の人の 4 つ／事務Crew＝生年月日があるかだけ（エラーセンターの確かめ）／ほか＝なし。
+//   AM＝担当の店（応援も）と全店（ALL）・本部（OFFICE・v1207 から）の人の 4 つ／事務Crew＝生年月日があるかだけ（エラーセンターの確かめ）／ほか＝なし。
 //   Head Chef は、今の社員の表と GM・CEO が確かめた写し（wr_people.chef・SQL 20261113080000）の両方で Head Chef の人だけ（Codex #138 P1-1）。
 //   保険料（人ごと）は GM・CEO だけ（今の画面で直せる人）。店ごとの合計（人件費に入れる）はだれにでも返す（ins_totals・ログイン不要。
 //   店舗の PIN のタブレットでも人件費が今と同じになるように。Moto さん 11/09）。
@@ -1947,13 +1947,14 @@ export function createHandler(deps) {
     if (a.role === 'office') return { lv: 'hr', ok: () => true, newOk: true, amt: false };
     if (a.role === 'office_crew') return { lv: 'flag', ok: () => true, newOk: false, amt: false };
     if (!me) return none;
-    if (a.role === 'am') {   // 担当の店（応援も）と本部（ALL）の人：アプリの従業員マスターの絞り込みと同じ
+    if (a.role === 'am') {   // 担当の店（応援も）と全店（ALL）・本部（OFFICE・v1207 から）の人：アプリの従業員マスターの絞り込みと同じ
       const S = [...new Set([...a.am, ...a.stores])];
       const ok = e => {
         const d = obj(e && e.data) || {};
         const st = String((d.store != null && d.store !== '') ? d.store : ((e && e.store) || ''));
         const sup = Array.isArray(d.support) ? d.support : (Array.isArray(e && e.support) ? e.support : []);
-        return st === 'ALL' || S.includes(st) || sup.some(x => S.includes(String(x)));
+        // v1207（Moto さん 11/22「はい」）：本部（OFFICE・前後の空白と大文字小文字は見ない＝アプリの empOfficeStore と同じ）の人も全部の AM に見せる
+        return st === 'ALL' || st.trim().toUpperCase() === 'OFFICE' || S.includes(st) || sup.some(x => S.includes(String(x)));
       };
       return { lv: 'hr', ok, newOk: false, amt: false };
     }

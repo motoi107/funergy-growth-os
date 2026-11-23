@@ -1,5 +1,10 @@
 # 改修・自動化の作業記録
 
+## 2026-11-22 AM に本部の人を見せる（v1207）
+
+1. 済（Moto さん 11/22「はい」）・済（Claude・ブランチ `claude/am-office-1207`）：v1207（関数 secure-state とアプリ・`docs/UNIFIED_UI_V1191_JA.md` の 29）。
+2. 次：PR → Codex → #211 のあとにマージ → Moto さんが `deploy/am-office-v1207/手順.md`（関数の 1 ファイル → 端末を 1207 に）。
+
 ## 2026-11-22 Team の変更の点検（v1206）と Career Score 2026 Q4
 
 1. 済（Claude・ブランチ `claude/team-fixes-1206`）：#201〜#210 の点検・main に残っていた Codex の P2 5 つの直し（`docs/UNIFIED_UI_V1191_JA.md` の 28）。次：PR → Codex → Moto さんがマージ → 端末を 1206 に。

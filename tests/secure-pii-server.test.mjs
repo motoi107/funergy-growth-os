@@ -341,3 +341,27 @@ test('the other paths do not read or write emp_pii; every answer says piifn:1', 
   assert.ok(!JSON.stringify(pl.j).includes('1990-04-04'), 'pull does not carry emp_pii');
   for (const r of [pl, await call({ action: 'nope', ...as('gm') }), await call({ action: 'pii_get' })]) assert.equal(r.j.piifn, 1);
 });
+
+// v1207（Moto さん 11/22「はい」）：本部（OFFICE）の人も、全店（ALL）の人と同じく全部の AM に見せる（従業員マスターと同じ）
+test('v1207: an AM sees and may change a head-office (OFFICE) person like an ALL person; old head-office values and other stores stay out', async () => {
+  const more = [
+    { id: 'E-HQ', name: 'Hana HQ', store: 'OFFICE', role: 'office', title: 'Accountant', data: P('1980-01-01', '6666', true, false, 200) },
+    { id: 'E-HQ2', name: 'Hugo HQ', store: ' office ', role: 'crew', title: 'Crew', data: { dob: '1981-01-01' } },           // 前後の空白・小文字も本部
+    { id: 'E-HQ3', name: 'Hal Data', store: 'S1', role: 'crew', title: 'Crew', data: { dob: '1982-01-01', store: 'Office' } },  // 中身の所属が先（アプリと同じ）
+    { id: 'E-HQX', name: 'Not Office', store: 'OFFICES', role: 'crew', title: 'Crew', data: { dob: '1983-01-01' } },        // 似ているが本部ではない
+    { id: 'E-HQO', name: 'Old Hq', store: '---', role: 'crew', title: 'Crew', data: { dob: '1984-01-01' } },                  // 前の本部の値（所属の確認の前）は今までどおり
+  ];
+  const { call, as } = setup({ emps: EMPS.map(e => JSON.parse(JSON.stringify(e))).concat(more) });
+  const am = await call({ action: 'pii_get', ...as('am') });
+  assert.equal(am.status, 200); assert.equal(am.j.level, 'hr');
+  assert.deepEqual(ids(am.j.data), ['E-1B', 'E-CEO', 'E-G2', 'E-HQ', 'E-HQ2', 'E-HQ3', 'E-SL', 'E-SUP']);
+  assert.deepEqual(am.j.data['E-HQ'], { dob: '1980-01-01', cardLast4: '6666', insurance: true, dental: false }, 'the AM sees the 4 fields, not the amount');
+  const op = (who, id, set, base) => call({ action: 'pii_op', id, set, base, ...as(who) });
+  assert.equal((await op('am', 'E-HQ', { cardLast4: '7777' }, { cardLast4: '6666' })).status, 200, 'AM: a head-office (OFFICE) person');
+  assert.equal((await op('am', 'E-HQ2', { dob: '' }, { dob: '1981-01-01' })).status, 200);
+  assert.equal((await op('am', 'E-HQX', { dob: '' }, { dob: '1983-01-01' })).status, 403, 'OFFICES is not head office');
+  assert.equal((await op('am', 'E-HQO', { dob: '' }, { dob: '1984-01-01' })).status, 403, 'an old head-office value stays as before (until the GM/CEO confirm the affiliation)');
+  assert.equal((await op('am', 'E-HQ', { insuranceAmt: 1 }, { insuranceAmt: 200 })).status, 403, 'the amount is still GM/CEO only');
+  // ほかの人は変わらない（確かめがまだの AM・店長は今までどおり何も）
+  for (const who of ['amu', 'sm', 'sl', 'g2', 'g1']) assert.equal((await call({ action: 'pii_get', ...as(who) })).j.level, 'none', who);
+});

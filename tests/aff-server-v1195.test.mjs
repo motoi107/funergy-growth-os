@@ -343,8 +343,8 @@ test('aff_get: my own row only; nothing about the other people; null when not de
   assert.equal(S2.affCalls.length, 0);
 });
 
-// ---------- 3. 従業員の個人の欄：v1195 は AM の範囲を広げない ----------
-test('piiScope: v1195 does not widen an AM: OFFICE people only through a supported store; ALL as before', async () => {
+// ---------- 3. 従業員の個人の欄：v1207 から本部（OFFICE）の人も全部の AM に（Moto さん 11/22「はい」・v1195 は広げなかった） ----------
+test('piiScope (v1207): an AM sees OFFICE people like ALL people (any case, spaces trimmed); OFFICES and other stores stay out', async () => {
   const P = (dob, store) => ({ dob, store });
   const emps = [
     { id: 'E-AM', name: 'Amy Area', store: 'S1', role: 'am', title: 'Area Manager', data: { store: 'S1' } },
@@ -365,5 +365,5 @@ test('piiScope: v1195 does not widen an AM: OFFICE people only through a support
     body: JSON.stringify({ action: 'pii_get', pin_session: 'tam' }) }));
   const j = await r.json();
   assert.equal(r.status, 200); assert.equal(j.level, 'hr');
-  assert.deepEqual(Object.keys(j.data || {}).sort(), ['E-ALL', 'E-HQS', 'E-S1']);
+  assert.deepEqual(Object.keys(j.data || {}).sort(), ['E-ALL', 'E-HQ', 'E-HQ2', 'E-HQS', 'E-S1']);
 });

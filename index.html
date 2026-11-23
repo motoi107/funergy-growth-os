@@ -50141,7 +50141,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1206';
+const APP_VERSION = '1207';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -50995,8 +50995,9 @@ function empHqState(e) {
 }
 function empIsHq(e) { return empHqState(e) === 'hq'; }
 /* v1195：所属の値 OFFICE（本部・大文字小文字は見ない）。所属の確認（FUNERGY_AFF）で本部にした人はこの値になる（前は ALL のことが多かった）。
-   empAnyStore＝「特定の店ではない」（ALL か OFFICE）。自分の店を 1 つ決める所（既定の店に戻す所）だけで使う。
-   全店の一覧に入れる所（シフト作成・AM の従業員マスター）は ALL のままにする＝本部の人は応援の店だけ（見える範囲を広げない） */
+   empAnyStore＝「特定の店ではない」（ALL か OFFICE）。自分の店を 1 つ決める所（既定の店に戻す所）で使う。
+   全店の一覧に入れる所（シフト作成）は ALL のままにする＝本部の人は応援の店だけ。
+   v1207（Moto さん 11/22「はい」）：AM の見える範囲（従業員マスター・退職の対象・スタッフの成長・サーバーの piiScope）は ALL と OFFICE の両方＝本部の人も全部の AM に */
 function empOfficeStore(v) { return v != null && String(v).trim().toUpperCase() === 'OFFICE'; }
 function empAnyStore(v) { return v === 'ALL' || empOfficeStore(v); }
 function empStoreLabel(v) { return v === 'ALL' ? '全店' : (empOfficeStore(v) ? '本部' : ''); }
@@ -64408,9 +64409,9 @@ function renderStaffMaster() {
       </div>`;
   }
   var emps = getEmployees();
-  // 管轄スコープ（AMは担当店舗のみ）
+  // 管轄スコープ（AMは担当店舗のみ）。v1207：全店（ALL）と本部（OFFICE）の人は全部の AM に（Moto さん 11/22・サーバーの piiScope と同じ）
   if (curRole==='am') {
-    emps = emps.filter(e=>e.store==='ALL'||myAmStores().includes(e.store)||(e.support||[]).some(s=>myAmStores().includes(s)));
+    emps = emps.filter(e=>empAnyStore(e.store)||myAmStores().includes(e.store)||(e.support||[]).some(s=>myAmStores().includes(s)));
   }
   var active = emps.filter(e=>e.status!=='退職');
   var resigned = emps.filter(e=>e.status==='退職');
@@ -65507,7 +65508,7 @@ function removeOffboardTemplateItem(i){
 function offboardEligibleEmps(){
   var emps=getEmployees().filter(function(e){ return e.status!=='退職'; });
   if(['ceo','gm','office'].indexOf(curRole)>=0) return emps;
-  if(curRole==='am'){ var ms=myAmStores(); return emps.filter(function(e){ return e.store==='ALL'||ms.indexOf(e.store)>=0||(e.support||[]).some(function(s){return ms.indexOf(s)>=0;}); }); }
+  if(curRole==='am'){ var ms=myAmStores(); return emps.filter(function(e){ return empAnyStore(e.store)||ms.indexOf(e.store)>=0||(e.support||[]).some(function(s){return ms.indexOf(s)>=0;}); }); }   /* v1207：本部（OFFICE）も全店と同じ */
   if(curRole==='sl'){ var st=curStore; return emps.filter(function(e){ return (e.store===st||(e.support||[]).indexOf(st)>=0) && ['sl','crew'].indexOf(e.role)>=0 && e.name!==curUserName; }); }
   return [];
 }
@@ -107034,8 +107035,8 @@ function visibleStaffForManager() {
   var emps = getEmployees().filter(e=>e.status!=='退職');
   if (curRole==='gm'||curRole==='ceo'||curRole==='office') return emps;
   if (curRole==='am') {
-    var scope = myAmStores().concat(['ALL']);
-    return emps.filter(e=>scope.includes(e.store) || (e.support||[]).some(s=>myAmStores().includes(s)));
+    var scope = myAmStores();   /* v1207：全店（ALL）と本部（OFFICE）の人は全部の AM に（従業員マスターと同じ） */
+    return emps.filter(e=>empAnyStore(e.store) || scope.includes(e.store) || (e.support||[]).some(s=>myAmStores().includes(s)));
   }
   if (curRole==='sl') {
     var sid = curStore==='ALL'?null:curStore;
@@ -118276,8 +118277,8 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
      そのあと従業員マスターの所属（店・応援）を今までの道（m_employees）で書く。本部は所属の値 OFFICE（前は ALL のことが多かった）。
    ・この版では左上の店・メニューの見え方は変えない（v1196 から。マスターと写しが同じ人だけ新しい見え方・違えば狭いほう）。
    ・ただし従業員マスターの所属が変わるので、v1195 でも変わること：スキルマトリクス（本部の人は出ない＝v1184）・店の一覧
-     （シフト作成・AM の従業員マスター：全店の人は全部の店・本部の人は応援の店だけ）・ログインで名前が出る場所（店の役割の人）。
-     画面の「変わること」に人ごとに出す。AM が見られる範囲は広げない（本部の人は応援が担当の店のときだけ）。
+     （シフト作成：全店の人は全部の店・本部の人は応援の店だけ）・AM の従業員マスター（v1207 から全店と本部の人は全部の AM）・
+     ログインで名前が出る場所（店の役割の人）。画面の「変わること」に人ごとに出す。
    ・この端末には何も残さない（写しはメモリだけ・ログインが変わったら捨てる）。 */
 (function(){
   'use strict';
@@ -118407,11 +118408,13 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   function valLbl(d){ if (!d) return T('（まだ）','(none)'); return (d.aff === 'hq' ? T('本部','Head office') : storeName(d.store)) + (d.support && d.support.length ? '（' + T('応援 ','support ') + supLbl(d.support) + '）' : ''); }
   /* 従業員マスターに書く値 */
   function newStoreOf(d){ return d.aff === 'hq' ? 'OFFICE' : d.store; }
-  /* 店の一覧（シフト作成・AM の従業員マスター）に出る店：全店の人は全部の店・それ以外は所属の店（本当の店のとき）と応援の店 */
+  /* 店の一覧（シフト作成）に出る店：全店の人は全部の店・それ以外は所属の店（本当の店のとき）と応援の店 */
   function listStores(store, sup){
     if (store === 'ALL') return { all:true, ids:[] };
     return { all:false, ids:uniq((isStoreId(store) ? [store] : []).concat(sup || [])) };
   }
+  /* v1207：AM の従業員マスター（退職の対象・スタッフの成長・個人の欄も同じ）：全店（ALL）と本部（OFFICE）の人は全部の AM・それ以外は所属の店と応援の店の AM */
+  function amAll(store){ return store === 'ALL' || empOfficeStore(store); }
   /* ログインで名前が出る場所（店の役割の人だけ）：所属の店と応援の店。所属が OFFICE（ちょうど）なら Office */
   function loginLocs(store, sup){ return uniq((isStoreId(store) ? [store] : (store === 'OFFICE' ? ['OFFICE'] : [])).concat(sup || [])); }
   function locLbl(a){ return a.length ? a.map(function(x){ return x === 'OFFICE' ? 'Office' : storeName(x); }).join('・') : T('どこにも出ない','nowhere'); }
@@ -118424,12 +118427,15 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     if (stStaff && st !== 'hq' && d.aff === 'hq') out.push(T('スキルマトリクスに出なくなる（本部）','Leaves the skill matrix (head office)'));
     if (stStaff && st === 'hq' && d.aff === 'store') out.push(T('スキルマトリクスに出る（','Joins the skill matrix (') + storeName(d.store) + '）');
     var b = listStores(v, sup0), a = listStores(ns, sup1);
-    if (b.all) out.push(T('店の一覧（シフト作成・AM の従業員マスター）：全店 → ','Store lists (shift building, AM staff master): all stores → ') + (a.ids.length ? a.ids.map(storeName).join('・') : T('どの店にも出ない','none')));
+    if (b.all) out.push(T('店の一覧（シフト作成）：全店 → ','Store lists (shift building): all stores → ') + (a.ids.length ? a.ids.map(storeName).join('・') : T('どの店にも出ない','none')));
     else {
       var lost = b.ids.filter(function(x){ return a.ids.indexOf(x) < 0; }), got = a.ids.filter(function(x){ return b.ids.indexOf(x) < 0; });
       if (lost.length) out.push(T('店の一覧から外れる：','Leaves store lists: ') + lost.map(storeName).join('・'));
       if (got.length) out.push(T('店の一覧に入る：','Joins store lists: ') + got.map(storeName).join('・'));
     }
+    var am0 = amAll(v), am1 = amAll(ns);   /* 全店 → 本部はどちらも全部の AM（変わらない） */
+    if (am0 && !am1) out.push(T('AM の従業員マスター：全部の AM → ','AM staff master: every AM → ') + (a.ids.length ? T('担当の AM（','the AMs of ') + a.ids.map(storeName).join('・') + T('）','') : T('どの AM にも出ない','no AM')));
+    else if (!am0 && am1) out.push(T('AM の従業員マスター：全部の AM に出る','AM staff master: every AM sees this person'));
     if (STORE_ROLES[String(e.role || '')]) {
       var l0 = loginLocs(v, sup0), l1 = loginLocs(ns, sup1);
       if (!sameSet(l0, l1)) out.push(T('ログインで名前が出る場所：','Login location: ') + locLbl(l0) + ' → ' + locLbl(l1));
