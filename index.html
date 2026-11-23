@@ -16280,6 +16280,7 @@ var _pii = { tid:'', lv:'', map:null, ids:null, at:0, p:null };   /* メモリ�
 var _piiCard = {};                                      /* 下 4 桁 → { tid, t, list:[{id,name}] }（メモリだけ） */
 var _piiEnsureAt = 0;
 var _piiSeq = 0;   /* Codex #213 P2：保存に成功した人を見られる人（ids）に足した順。読み直しが保存の前に始まっていたら、その答えで外さない */
+var _piiChk = {};  /* Codex #213 再レビュー P2：ids に無い人を開いたとき、サーバーに 1 回だけ確かめ直した結果（ログインごと・メモリだけ）。{ st:'run'|'out'|'unsent'|'fail', at, p } */
 /* Codex #138 P1-2：emp_pii の行は、SQL 20261113090000 の前は公開の鍵で読める。通常の取り込み（_kvPullRows・_applyKvRows）で
    取らず・置かず、前に置いた写し（localStorage・IndexedDB・送信待ち）も消す。起動（IndexedDB を読み終えたあと）・取り込み・ログアウトのたび。
    画面の個人の欄は pii_get の答え（メモリだけ）から出すので、この行の写しはどこでも使わない */
@@ -16337,7 +16338,14 @@ async function piiLoad(force){
   if(!piiWants()) return 'none';
   var tk=ssToken(), tid=piiTid(tk);
   if(!force && _pii.map && _pii.tid===tid && Date.now()-_pii.at<60000) return 'ok';
-  if(_pii.p && _pii.p.tid===tid) return _pii.p.p;
+  if(_pii.p && _pii.p.tid===tid){
+    if(force!=='fresh') return _pii.p.p;
+    /* Codex #213 再レビュー P2：確かめ直し（piiRecheck）は、社員の行を送ったあとに始めた読みの答えが要る。
+       前から読んでいる途中なら終わるのを待ってから読み直す（待つあいだにほかで始まった読みは、呼んだあとに始まったので使ってよい） */
+    try{ await _pii.p.p; }catch(e){}
+    if(ssStale(tk)) return 'stale';
+    if(_pii.p && _pii.p.tid===tid) return _pii.p.p;
+  }
   var s0=_piiSeq;
   var p=(async function(){
     var r=await ssCall({ action:'pii_get', ms:30000 });
@@ -16387,6 +16395,39 @@ function piiPut(id, entry, lv){
     _pii.add[k]=++_piiSeq;
   }
 }
+/* この端末で新しく登録した人の社員の行が、まだサーバーに届いていないか（送れていない新しい行の印 n） */
+function piiUnsent(id){
+  try{ if(typeof _empDirtyGet!=='function') return false; var e=_empDirtyGet()[String(id)]; return !!(e && e.n); }catch(err){ return false; }
+}
+/* Codex #213 再レビュー P2：見られる人（ids）に無い人を開いたとき、そのログインで 1 回だけサーバーに確かめ直す。
+   新しく登録した人（個人の欄を空のまま保存して piiSave を通らなかった人など）は、社員の行を送ってから読み直す。
+   確かめているあいだ・確かめられなかったとき・行がまだ届いていないときは止めたまま。ids に足すのはサーバーの答えだけ
+   （端末で作った ID を足さない・本部の人などをまとめて通さない）。確かめられなかった・届いていないときは 15 秒たてば開き直しでもう一度 */
+function piiRecheck(id){
+  id=String(id||'');
+  if(!id || !piiReady() || !Array.isArray(_pii.ids) || _pii.ids.indexOf(id)>=0) return null;
+  var tk=ssToken(), k=piiTid(tk)+'#'+id, cur=_piiChk[k];
+  if(cur && (cur.st==='run' || cur.st==='out' || cur.st==='in' || Date.now()-cur.at<15000)) return cur.p||null;   /* in：確かめたときは入っていた（そのあとの読みで外れたならサーバーが正） */
+  var o={ st:'run', at:Date.now(), p:null };
+  _piiChk[k]=o;
+  o.p=(async function(){
+    var st='fail';
+    try{
+      try{ if(typeof empPushDirty==='function') await empPushDirty(); }catch(e){}
+      if(ssStale(tk)) return 'stale';
+      if(piiUnsent(id)) st='unsent';
+      else {
+        var r=await piiLoad('fresh');
+        if(ssStale(tk)) return 'stale';
+        if(r==='ok') st=(!Array.isArray(_pii.ids) || _pii.ids.indexOf(id)>=0) ? 'in' : (piiUnsent(id) ? 'unsent' : 'out');
+      }
+    }catch(e){ st='fail'; }
+    if(_piiChk[k]===o){ o.st=st; o.at=Date.now(); }
+    try{ if(typeof piiFormFill==='function') piiFormFill(id); }catch(e){}
+    return st;
+  })();
+  return o.p;
+}
 /* 画面を描くときに呼ぶ：読めていなければ読み、読めたらその画面を描き直す */
 function piiEnsure(page){
   if(!piiFnSeen() || !piiWants() || piiReady()) return;
@@ -16413,7 +16454,17 @@ function piiFormState(empId){
   if(lv!=='full' && lv!=='hr') return { note:'<div id="e-pii-note" style="font-size:11px;color:var(--muted);margin:2px 0 8px"><i class="ti ti-lock"></i> '+T('このアカウントでは生年月日・カード・保険を見る・直すことはできません','This account cannot see or edit birthday / card / insurance')+'</div>', lock:true, lockAmt:true };
   /* v1207（Moto さん 11/23「C」）：AM の一覧には本部（OFFICE）の人も出すが、その人の生年月日・カード・保険はサーバーの範囲の外（応援が担当の店でなければ）。
      サーバーが返した見られる人（ids）に無い人は止める（空の欄を直せると見せない。保存してもサーバーは 403） */
-  if(empId && Array.isArray(_pii.ids) && _pii.ids.indexOf(String(empId))<0) return { note:'<div id="e-pii-note" style="font-size:11px;color:var(--muted);margin:2px 0 8px"><i class="ti ti-lock"></i> '+T('この人の生年月日・カード・保険は、このアカウントでは見る・直すことはできません（本部の人など、担当の店の外の人）','This account cannot see or edit this person\'s birthday / card / insurance (head office or another store)')+'</div>', lock:true, lockAmt:true };
+  if(empId && Array.isArray(_pii.ids) && _pii.ids.indexOf(String(empId))<0){
+    /* Codex #213 再レビュー P2：一覧を読んだあとに担当の範囲に入った人（AM が登録した新しい人など）もいる。初めて開いたときに 1 回だけサーバーに確かめ直す。
+       止めたまま確かめ、答えで描き直す（piiRecheck → piiFormFill）。本部の人など、確かめても一覧に無い人は止めたまま */
+    piiRecheck(empId);
+    var ck=_piiChk[piiTid()+'#'+String(empId)], cst=ck ? ck.st : 'run';
+    var pn=function(ic, ja, en){ return { note:'<div id="e-pii-note" style="font-size:11px;color:var(--muted);margin:2px 0 8px"><i class="ti '+ic+'"></i> '+T(ja, en)+'</div>', lock:true, lockAmt:true }; };
+    if(cst==='run') return pn('ti-loader-2', 'この人の生年月日・カード・保険を直せるか、サーバーに確かめています（確かめ終わるまで直せません）', 'Checking with the server whether you can edit this person\'s birthday / card / insurance (you can edit them once checked)');
+    if(cst==='unsent') return pn('ti-cloud-upload', 'この人の社員の行がまだサーバーに届いていないため、生年月日・カード・保険はまだ直せません（届いてから開き直すと直せます）', 'This person\'s staff record has not reached the server yet, so birthday / card / insurance cannot be edited yet (reopen after it has been sent)');
+    if(cst==='fail') return pn('ti-alert-triangle', '生年月日・カード・保険を直せるか確かめられませんでした（通信を確かめて、開き直すともう一度確かめます）', 'Could not check whether you can edit birthday / card / insurance (check the connection and reopen to try again)');
+    return pn('ti-lock', 'この人の生年月日・カード・保険は、このアカウントでは見る・直すことはできません（本部の人など、担当の店の外の人）', 'This account cannot see or edit this person\'s birthday / card / insurance (head office or another store)');
+  }
   return { note:'', lock:false, lockAmt:lv!=='full' };
 }
 /* 読み込めたら、開いている編集の画面の欄を埋めて直せるように（その人の画面が開いたままのときだけ） */
@@ -16509,7 +16560,7 @@ function piiAfterLogin(){
   try{ insTotalsRefresh(true); }catch(e){}
   try{ if(piiWants()) piiLoad(true); }catch(e){}
 }
-function piiOnLogout(){ _pii={ tid:'', lv:'', map:null, ids:null, at:0, p:null }; _piiCard={}; _piiEnsureAt=0; piiPurgeLocal(); }
+function piiOnLogout(){ _pii={ tid:'', lv:'', map:null, ids:null, at:0, p:null }; _piiCard={}; _piiEnsureAt=0; _piiChk={}; piiPurgeLocal(); }
 
 /* ============================================================
    v1192（Moto さん 11/18「サーバーで合計を出す」）：経理・AM の端末の人件費は、関数 secure-state の合計（頼み labor・ltfn:1）。
@@ -64985,7 +65036,9 @@ function saveEmp(empId) {
   }catch(err){ if(!_gtx) throw err; _gtx.err=err; }
   if(_gtx && !ghTxnEnd(_gtx)){ showToast(ghTxnFailMsg(_gtx, '役職とグレード履歴'),'danger'); return; }   /* 編集の画面は開いたまま */
   try{ var _se = empId ? emps.find(function(x){return x.id===empId;}) : emps[emps.length-1]; if(_se) saveEmpPrivate(_se.id, _se.wage, _se.email, _se.phone, _se.monthlySalary); }catch(e){}
-  try{ var _seP = empId ? emps.find(function(x){return x.id===empId;}) : emps[emps.length-1]; if(_piiCh && _seP) piiSave(_seP.id, _piiCh.set, _piiCh.base, !empId); }catch(e){}   /* v1144 */
+  try{ var _seP = empId ? emps.find(function(x){return x.id===empId;}) : emps[emps.length-1]; if(_piiCh && _seP) piiSave(_seP.id, _piiCh.set, _piiCh.base, !empId);
+    /* Codex #213 再レビュー P2：個人の欄を空のまま登録した新しい人は piiSave を通らない。社員の行を送ってからサーバーに確かめ直し、もう一度開いたとき直せるように（AM など ids のある人だけ・待たない） */
+    else if(!empId && _seP && typeof piiRecheck==='function') piiRecheck(_seP.id); }catch(e){}   /* v1144 */
   // シフト条件を保存（配属店舗がある場合）。最大時間のみ更新、曜日×区分の詳細はシフト画面で。
   var store = data.store;
   if (store && !empAnyStore(store) && typeof setWorkCondition==='function') {
