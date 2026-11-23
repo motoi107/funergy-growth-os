@@ -16276,7 +16276,7 @@ var PII_KEY = 'emp_pii';                          /* app_state の行（全員�
 var PII_SKIP = PII_FIELDS.concat(['_dobSet']);   /* 関数が v1144 のとき、従業員の表（端末の写しも）に書かない欄 */
 var PII_FN_KEY = '_ss_pii_fn';                    /* この端末が v1144 の関数の答えを見た（端末だけ・_ で始まるので同期しない） */
 var PII_ROLES = ['ceo','gm','office','office_crew','am','chef'];
-var _pii = { tid:'', lv:'', map:null, at:0, p:null };   /* メモリだけ（ログアウトで消す） */
+var _pii = { tid:'', lv:'', map:null, ids:null, at:0, p:null };   /* メモリだけ（ログアウトで消す）。ids：見られる人の社員 ID（全員ではない人＝AM のとき。v1207） */
 var _piiCard = {};                                      /* 下 4 桁 → { tid, t, list:[{id,name}] }（メモリだけ） */
 var _piiEnsureAt = 0;
 /* Codex #138 P1-2：emp_pii の行は、SQL 20261113090000 の前は公開の鍵で読める。通常の取り込み（_kvPullRows・_applyKvRows）で
@@ -16345,8 +16345,10 @@ async function piiLoad(force){
     var d=r.j && r.j.data;
     if(!d || typeof d!=='object' || Array.isArray(d)) return 'fail';
     var before='', lv=String(r.j.level||''), after='';
-    try{ before=(_pii.map && _pii.tid===tid) ? (_pii.lv+'|'+JSON.stringify(_pii.map)) : ''; after=lv+'|'+JSON.stringify(d); }catch(e){ before=''; after='?'; }
-    _pii={ tid:tid, lv:lv, map:d, at:Date.now(), p:_pii.p };
+    /* v1207：全員ではない人（AM）には見られる人の社員 ID が来る（来ない＝前の版の関数か全員：今までどおり） */
+    var ids=(r.j && Array.isArray(r.j.ids)) ? r.j.ids.map(function(x){ return String(x); }) : null;
+    try{ before=(_pii.map && _pii.tid===tid) ? (_pii.lv+'|'+JSON.stringify(_pii.map)+'|'+JSON.stringify(_pii.ids)) : ''; after=lv+'|'+JSON.stringify(d)+'|'+JSON.stringify(ids); }catch(e){ before=''; after='?'; }
+    _pii={ tid:tid, lv:lv, map:d, ids:ids, at:Date.now(), p:_pii.p };
     /* 端末には残さない（メモリだけ）ので、画面の「データが変わった」の見張り（端末の保存を見る）に届かない。前に読んだ中身から変わったら知らせる
        （Codex #145 6846570741 P2-3：前は変更の合図で読み直しても、画面を描き直さなかった）。初めて読んだときは知らせない（読む画面が自分で描く。Claude #145 6847734306 P3-2） */
     if(before && before!==after){ try{ var ux=window.FUNERGY_UX; if(ux && typeof ux.noteDataChange==='function') ux.noteDataChange(); }catch(e){} }
@@ -16395,6 +16397,9 @@ function piiFormState(empId){
   }
   var lv=_pii.lv;
   if(lv!=='full' && lv!=='hr') return { note:'<div id="e-pii-note" style="font-size:11px;color:var(--muted);margin:2px 0 8px"><i class="ti ti-lock"></i> '+T('このアカウントでは生年月日・カード・保険を見る・直すことはできません','This account cannot see or edit birthday / card / insurance')+'</div>', lock:true, lockAmt:true };
+  /* v1207（Moto さん 11/23「C」）：AM の一覧には本部（OFFICE）の人も出すが、その人の生年月日・カード・保険はサーバーの範囲の外（応援が担当の店でなければ）。
+     サーバーが返した見られる人（ids）に無い人は止める（空の欄を直せると見せない。保存してもサーバーは 403） */
+  if(empId && Array.isArray(_pii.ids) && _pii.ids.indexOf(String(empId))<0) return { note:'<div id="e-pii-note" style="font-size:11px;color:var(--muted);margin:2px 0 8px"><i class="ti ti-lock"></i> '+T('この人の生年月日・カード・保険は、このアカウントでは見る・直すことはできません（本部の人など、担当の店の外の人）','This account cannot see or edit this person\'s birthday / card / insurance (head office or another store)')+'</div>', lock:true, lockAmt:true };
   return { note:'', lock:false, lockAmt:lv!=='full' };
 }
 /* 読み込めたら、開いている編集の画面の欄を埋めて直せるように（その人の画面が開いたままのときだけ） */
@@ -16490,7 +16495,7 @@ function piiAfterLogin(){
   try{ insTotalsRefresh(true); }catch(e){}
   try{ if(piiWants()) piiLoad(true); }catch(e){}
 }
-function piiOnLogout(){ _pii={ tid:'', lv:'', map:null, at:0, p:null }; _piiCard={}; _piiEnsureAt=0; piiPurgeLocal(); }
+function piiOnLogout(){ _pii={ tid:'', lv:'', map:null, ids:null, at:0, p:null }; _piiCard={}; _piiEnsureAt=0; piiPurgeLocal(); }
 
 /* ============================================================
    v1192（Moto さん 11/18「サーバーで合計を出す」）：経理・AM の端末の人件費は、関数 secure-state の合計（頼み labor・ltfn:1）。
@@ -50997,7 +51002,8 @@ function empIsHq(e) { return empHqState(e) === 'hq'; }
 /* v1195：所属の値 OFFICE（本部・大文字小文字は見ない）。所属の確認（FUNERGY_AFF）で本部にした人はこの値になる（前は ALL のことが多かった）。
    empAnyStore＝「特定の店ではない」（ALL か OFFICE）。自分の店を 1 つ決める所（既定の店に戻す所）で使う。
    全店の一覧に入れる所（シフト作成）は ALL のままにする＝本部の人は応援の店だけ。
-   v1207（Moto さん 11/22「はい」）：AM の見える範囲（従業員マスター・退職の対象・スタッフの成長・サーバーの piiScope）は ALL と OFFICE の両方＝本部の人も全部の AM に */
+   v1207（Moto さん 11/22「はい」）：AM の見える範囲（従業員マスター・退職の対象・スタッフの成長）は ALL と OFFICE の両方＝本部の人も全部の AM に。
+   ただし本部の人の個人の欄（生年月日・カード・保険）は出さない・直させない（Moto さん 11/23「C」・サーバーの piiScope は v1197 のまま。piiFormState が ids で止める） */
 function empOfficeStore(v) { return v != null && String(v).trim().toUpperCase() === 'OFFICE'; }
 function empAnyStore(v) { return v === 'ALL' || empOfficeStore(v); }
 function empStoreLabel(v) { return v === 'ALL' ? '全店' : (empOfficeStore(v) ? '本部' : ''); }
@@ -64409,7 +64415,7 @@ function renderStaffMaster() {
       </div>`;
   }
   var emps = getEmployees();
-  // 管轄スコープ（AMは担当店舗のみ）。v1207：全店（ALL）と本部（OFFICE）の人は全部の AM に（Moto さん 11/22・サーバーの piiScope と同じ）
+  // 管轄スコープ（AMは担当店舗のみ）。v1207：全店（ALL）と本部（OFFICE）の人は全部の AM に（Moto さん 11/22）。本部の人の個人の欄は出さない（11/23「C」・piiFormState）
   if (curRole==='am') {
     emps = emps.filter(e=>empAnyStore(e.store)||myAmStores().includes(e.store)||(e.support||[]).some(s=>myAmStores().includes(s)));
   }
@@ -118413,7 +118419,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     if (store === 'ALL') return { all:true, ids:[] };
     return { all:false, ids:uniq((isStoreId(store) ? [store] : []).concat(sup || [])) };
   }
-  /* v1207：AM の従業員マスター（退職の対象・スタッフの成長・個人の欄も同じ）：全店（ALL）と本部（OFFICE）の人は全部の AM・それ以外は所属の店と応援の店の AM */
+  /* v1207：AM の従業員マスター（退職の対象・スタッフの成長も同じ）：全店（ALL）と本部（OFFICE）の人は全部の AM・それ以外は所属の店と応援の店の AM（本部の人の個人の欄は出さない＝11/23「C」） */
   function amAll(store){ return store === 'ALL' || empOfficeStore(store); }
   /* ログインで名前が出る場所（店の役割の人だけ）：所属の店と応援の店。所属が OFFICE（ちょうど）なら Office */
   function loginLocs(store, sup){ return uniq((isStoreId(store) ? [store] : (store === 'OFFICE' ? ['OFFICE'] : [])).concat(sup || [])); }

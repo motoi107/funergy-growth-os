@@ -4,6 +4,8 @@
 
 1. 済（Moto さん 11/22「はい」）・済（Claude・ブランチ `claude/am-office-1207`）：v1207（関数 secure-state とアプリ・`docs/UNIFIED_UI_V1191_JA.md` の 29）。
 2. 次：PR → Codex → #211 のあとにマージ → Moto さんが `deploy/am-office-v1207/手順.md`（関数の 1 ファイル → 端末を 1207 に）。
+3. 済（Moto さん 11/23「C」）・済（Claude 11/23）：本部の人の個人の欄は AM に出さない（サーバーは v1197 の範囲・`ids` で画面が止める）。次：Codex のレビュー（#213 の最新の head）。
+4. あとで（別の PR）：打刻なしの検知・HR 福利厚生の絞り込みが ALL だけを本部として扱う（ルーティンの P3-2）。
 
 ## 2026-11-22 Team の変更の点検（v1206）と Career Score 2026 Q4
 
