@@ -2602,7 +2602,7 @@ export function createHandler(deps) {
   //   だれができるか（Claude が決めた・Moto さんに確かめる。答え 7 A＝店で採点 → GM が確定 → 本人に公開・GM の評価は CEO が確定）：
   //   ・採点（始める・下書き・本人に共有・確認待ちへ）：CEO・GM＝だれでも／確かめた AM＝担当の店の人（AM・本部の人は除く）／
   //     確かめた Head Chef＝下のグレードの調理の人（調理の評価表・Prep・G の Kitchen中心）／ほかの G4 以上（確かめた写しの店）＝自分の店の下のグレードの人／
-  //     確かめた G3（確かめた写しの店）＝自分の店の G2 の人（Moto さん 11/23「G3はG2を採点できる様(申請できる様に)」。確定は CEO・GM）／
+  //     確かめた G3（確かめた写しの店）＝自分の店の G2 の人の G の評価表だけ（Moto さん 11/23「G3はG2を採点できる様(申請できる様に)」・「G の評価表だけ」。確定は CEO・GM）／
   //     経理（office）＝事務Crew（Moto さん 11/23「経理は事務crewを採点できる様に」）。自分は採点しない（本人は見直しの申し出とコメントだけ）。退職の人は採点しない
   //   ・確定・差戻し・取りやめ：CEO・GM＝だれでも（自分を除く）
   //   GM は CEO と同じにすべて（閲覧・採点・変更・確定・取り消し。ほかの GM・CEO の人も。Moto さん 11/23「GMは全ての閲覧、評価、変更、承認の権限を持たせてください」）。
@@ -2654,7 +2654,8 @@ export function createHandler(deps) {
       return p.dept === '調理' || p.title === 'Kitchen Leader' || CS4_PREP_TITLES.includes(p.title);
     };
     const live = p => !!p && !p.out && p.id !== me.id;
-    const canScore = p => {
+    // sys：評価の行の評価表（保存・共有・確認待ち）。無ければ割り当ての評価表で見る
+    const canScore = (p, sys) => {
       if (!live(p)) return false;
       if (a.role === 'ceo' || a.role === 'gm') return true;
       if (a.role === 'am') return !p.top && inStores(p);
@@ -2662,8 +2663,14 @@ export function createHandler(deps) {
         // グレードの分からない人（肩書きも役割も決まりに無い）は「自分より下」と決められないので採点しない（#214 のレビュー）
         if (isChef) return !p.top && !OFFICE_ROLES.includes(p.role) && p.known && p.gS < a.grade && kitchen(p);
         if (a.grade >= 4) return !p.top && inStores(p) && p.known && p.gS < a.grade;
-        // 確かめた G3：自分の店の G2 の人だけ（本部の人・グレードの分からない人は除く。Moto さん 11/23）
-        if (a.grade === 3) return !p.top && !OFFICE_ROLES.includes(p.role) && inStores(p) && p.known && p.gS === 2;
+        // 確かめた G3：自分の店の G2 の人だけ（本部の人・グレードの分からない人は除く。Moto さん 11/23）。
+        // G の評価表だけ（Moto さん 11/23 07:3x「G の評価表だけ」・Codex #214）：評価の行・割り当てのどちらかが G 以外（S_CHEF・S_OFFICE・PREP）なら採点しない。
+        // 評価表がまだ決まっていない人は一覧に出す（始めるには割り当てが要る＝no_assign）
+        if (a.grade === 3) {
+          const f = (A.get(p.id) || {}).system;
+          if ((sys !== undefined && sys !== 'G') || (f !== undefined && f !== 'G')) return false;
+          return !p.top && !OFFICE_ROLES.includes(p.role) && inStores(p) && p.known && p.gS === 2;
+        }
         return false;
       }
       if (a.role === 'office') return p.role === 'office_crew' && !p.boss && !p.confAm;
@@ -2840,7 +2847,7 @@ export function createHandler(deps) {
     const C = await cs4Ctx(a);
     const row = await cs4Row(b.id);
     const p = C.byId.get(String(row.emp_id));
-    if (!p || !C.canScore(p)) throw err('forbidden', 403);
+    if (!p || !C.canScore(p, row.system)) throw err('forbidden', 403);
     if (!cs4Int(b.expect, 1)) throw bad();
     if (b.expect !== row.ver) throw err('conflict', 409);
     if (!['draft', 'returned'].includes(row.status)) throw err('state', 409);
@@ -2895,7 +2902,7 @@ export function createHandler(deps) {
     if ((b.act === 'return' || b.act === 'cancel') && !note) throw bad();
     const row = await cs4Row(b.id);
     const p = C.byId.get(String(row.emp_id)) || C.all.get(String(row.emp_id));
-    const may = b.act === 'share' || b.act === 'submit' ? (p && C.canScore(p)) : b.act === 'cancel' ? (p && (C.canConfirm(p) || C.canCancelOut(p))) : (p && C.canConfirm(p));
+    const may = b.act === 'share' || b.act === 'submit' ? (p && C.canScore(p, row.system)) : b.act === 'cancel' ? (p && (C.canConfirm(p) || C.canCancelOut(p))) : (p && C.canConfirm(p));
     if (!may) throw err('forbidden', 403);
     const result = cs4Compute(row, obj(row.entries) || {}, row.system === 'PREP' ? (obj(row.prep) || {}) : null);
     const shared = b.act === 'share' || b.act === 'confirm' ? cs4Shared(row, obj(row.entries) || {}, obj(row.feedback) || {}, result) : null;
