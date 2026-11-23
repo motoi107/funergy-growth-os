@@ -586,6 +586,12 @@ test('ルーティンのレビュー（#212）：入力に誤りのある項目�
   }
 });
 
+test('Moto さんの答え 8 A（11/22）：見直しメモは公開の JSON に入れない', () => {
+  const raw = fs.readFileSync(new URL('../careerscore/cs-q4-v1.json', import.meta.url), 'utf8');
+  assert.ok(!raw.includes('"memo"'), 'JSON に memo の欄が無い');
+  for (const s of Object.values(M.systems)) for (const it of [...(s.items || []), ...(s.quality || [])]) assert.ok(!('memo' in it), it.id);
+});
+
 test('分数：10 進の文字列だけ・ゼロ割りは断る', () => {
   assert.equal(C.fstr(C.fdec('0.80')), '4/5');
   assert.equal(C.fstr(C.fdec(0.81)), '81/100');

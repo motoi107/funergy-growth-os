@@ -9,6 +9,7 @@ JSON に Excel の sha256 を残す。読み方の決まり（2026Q4 の指示�
   - 結合セルは左上の値だけを読む（openpyxl は結合の中の隠れた値を捨てる。隠れた値があることは確かめる）
   - ID は書いてある文字列のまま（「OF-Q-01／HR-Q-01」は 1 項目）。欠番を埋めない
   - G は E 列＝画面の説明・G 列＝評価者向け詳細（G 列は 23 項目だけに書いてある）、S は D 列・F 列、Prep は D 列。見直しメモは別の欄（スタッフ向けの説明に混ぜない）
+  - 見直しメモは JSON に入れない（このリポジトリは公開。Moto さん 11/22 の答え 8 A＝どこにも出さない）
   - 配点・基準点・最低条件は「配点・基準点案」の表（G 23〜35 行・S Chef 60〜66 行・S Office 70〜76 行・基準点 12〜18 行・最低条件 40〜46 行）
 """
 import hashlib, json, os, re, sys
@@ -304,7 +305,14 @@ def main():
     if base['G'] != {'1': 55, '2': 65, '3': 75, '4': 85, '5': 90, '6': 95} or base['S'] != {'1': 65, '2': 70, '3': 75, '4': 85, '5': 90, '6': 95}:
         fail('基準点が指示書の表と違う')
 
+    # 見直しメモは公開の JSON に入れない（Moto さん 11/22 の答え 8 A）
+    for sysdef in data['systems'].values():
+        for key in ('items', 'quality'):
+            for it in sysdef.get(key, []):
+                it.pop('memo', None)
     out = json.dumps(data, ensure_ascii=False, indent=1) + '\n'
+    if '"memo"' in out:
+        fail('見直しメモが JSON に残っている')
     if check:
         cur = open(OUT, encoding='utf-8').read()
         if cur != out:

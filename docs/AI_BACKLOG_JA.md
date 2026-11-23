@@ -4,7 +4,7 @@
 
 1. 済（Claude・ブランチ `claude/career-score-q4-core`）：段階 1＝評価表マスターと計算の芯・試験 24（`docs/CAREER_SCORE_Q4_JA.md`）。済：PR #212。次：Codex。
 2. 済（Claude 11/22）：段階 2＝今の記録の見え方（移し方の案）と UI案99（PC・スマホ 8 枚）。
-3. 次（Moto さん）：UI案99 の決めてほしいこと 8（`docs/CAREER_SCORE_Q4_JA.md` の 5）。
+3. 済（Moto さん 11/22 19:44 HST）：UI案99 は 1 A・2 A・3 B・4〜8 A。済（Claude）：8 A（見直しメモを公開の JSON から外した）。次（Moto さん）：3 B の型ごとの G主担当・G他部門のカテゴリー。
 4. そのあと：段階 3（サーバーの表・関数・権限・競合・移し替え・画面）。
 
 ## 2026-11-20 Codex #207・#208 の直し（T6 のあと）
