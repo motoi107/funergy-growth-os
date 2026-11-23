@@ -328,7 +328,8 @@ export function hrApStrip(rec) {
 //   従業員の表（公開の鍵で読める）から外し、app_state の 1 行 emp_pii（社員 ID → 欄）に置く。読み書きはこの関数で（pii_get・pii_op）。
 //   SQL 20261113090000 が、従業員の表に残っている欄を emp_pii に写して消す（それまでは、emp_pii に無い人は従業員の表の値を読む）。
 //   見られる人（Moto さん 11/09：今の従業員マスターと同じ）：CEO・GM＝全員の 5 つ／経理・Head Chef＝全員の 4 つ（保険料を除く）／
-//   AM＝担当の店（応援も）と全店（ALL）・本部（OFFICE・v1207 から）の人の 4 つ／事務Crew＝生年月日があるかだけ（エラーセンターの確かめ）／ほか＝なし。
+//   AM＝担当の店（応援も）と全店（ALL）の人の 4 つ（本部（OFFICE）の人は応援が担当の店のときだけ。v1207 で一覧には出すが、個人の欄は出さない＝Moto さん 11/23「C」）／
+//   事務Crew＝生年月日があるかだけ（エラーセンターの確かめ）／ほか＝なし。全員ではない人（AM）には、見られる人の社員 ID（ids）も返す（アプリが個人の欄を止める）。
 //   Head Chef は、今の社員の表と GM・CEO が確かめた写し（wr_people.chef・SQL 20261113080000）の両方で Head Chef の人だけ（Codex #138 P1-1）。
 //   保険料（人ごと）は GM・CEO だけ（今の画面で直せる人）。店ごとの合計（人件費に入れる）はだれにでも返す（ins_totals・ログイン不要。
 //   店舗の PIN のタブレットでも人件費が今と同じになるように。Moto さん 11/09）。
@@ -2159,24 +2160,26 @@ export function createHandler(deps) {
       me = Array.isArray(es) ? es[0] || null : null;
       if (!me || empOut(me)) return none;
     }
-    if (a.role === 'ceo' || a.role === 'gm') return { lv: 'full', ok: () => true, newOk: true, amt: true };
-    if (a.role === 'office') return { lv: 'hr', ok: () => true, newOk: true, amt: false };
-    if (a.role === 'office_crew') return { lv: 'flag', ok: () => true, newOk: false, amt: false };
+    // all：全員が範囲（見られる人の一覧 ids を返さない）
+    if (a.role === 'ceo' || a.role === 'gm') return { lv: 'full', ok: () => true, all: true, newOk: true, amt: true };
+    if (a.role === 'office') return { lv: 'hr', ok: () => true, all: true, newOk: true, amt: false };
+    if (a.role === 'office_crew') return { lv: 'flag', ok: () => true, all: true, newOk: false, amt: false };
     if (!me) return none;
-    if (a.role === 'am') {   // 担当の店（応援も）と全店（ALL）・本部（OFFICE・v1207 から）の人：アプリの従業員マスターの絞り込みと同じ
+    if (a.role === 'am') {   // 担当の店（応援も）と全店（ALL）の人（v1197 と同じ）
+      // v1207 の一覧（アプリの従業員マスター）には本部（OFFICE）の人も全部の AM に出すが、個人の欄はこの範囲のまま（Moto さん 11/23「C」：
+      // 本部の人の生年月日・カード・保険は、応援が担当の店でなければ AM に出さない・直させない）。アプリは pii_get の ids でその人の欄を止める
       const S = [...new Set([...a.am, ...a.stores])];
       const ok = e => {
         const d = obj(e && e.data) || {};
         const st = String((d.store != null && d.store !== '') ? d.store : ((e && e.store) || ''));
         const sup = Array.isArray(d.support) ? d.support : (Array.isArray(e && e.support) ? e.support : []);
-        // v1207（Moto さん 11/22「はい」）：本部（OFFICE・前後の空白と大文字小文字は見ない＝アプリの empOfficeStore と同じ）の人も全部の AM に見せる
-        return st === 'ALL' || st.trim().toUpperCase() === 'OFFICE' || S.includes(st) || sup.some(x => S.includes(String(x)));
+        return st === 'ALL' || S.includes(st) || sup.some(x => S.includes(String(x)));
       };
-      return { lv: 'hr', ok, newOk: false, amt: false };
+      return { lv: 'hr', ok, all: false, newOk: false, amt: false };
     }
     // Head Chef（Corporate Chef も）：全員（v950 から従業員マスターで全店の人を見る）。今の社員の表と、GM・CEO が確かめた写し（wr_people.chef）の
     // 両方で Head Chef のときだけ（Codex #138 P1-1：確かめた店長が自分の肩書きを Head Chef に書き換えるだけでは広げない）
-    if (a.role === 'staff' && a.grade >= 4 && liveChef(me) && await confChef(a)) return { lv: 'hr', ok: () => true, newOk: false, amt: false };
+    if (a.role === 'staff' && a.grade >= 4 && liveChef(me) && await confChef(a)) return { lv: 'hr', ok: () => true, all: true, newOk: false, amt: false };
     return none;
   }
   async function piiLoad() {
@@ -2204,17 +2207,21 @@ export function createHandler(deps) {
     const sc = await piiScope(a);
     if (sc.lv === 'none') return { level: 'none', data: {}, updated_at: null };
     const { row, map, emps } = await piiLoad();
-    const data = {}, seen = new Set();
+    const data = {}, seen = new Set(), ids = [];
     for (const e of emps) {
       const id = String(e.id);
       seen.add(id);
       if (!sc.ok(e)) continue;
+      ids.push(id);
       const p = piiProject(piiOf(map, id, e), sc.lv);
       if (p) data[id] = p;
     }
     // 社員の表にまだ無い人（登録した端末がまだ送れていない）：書ける人（CEO・GM・経理）にだけ
     if (sc.newOk) for (const id of Object.keys(map)) if (!seen.has(id) && PII_ID_RE.test(id) && obj(map[id])) { const p = piiProject(piiOf(map, id, null), sc.lv); if (p) data[id] = p; }
-    return { level: sc.lv, data, updated_at: row ? row.updated_at : null };
+    const out = { level: sc.lv, data, updated_at: row ? row.updated_at : null };
+    // v1207：全員ではない人（AM）には、見られる人の社員 ID も返す。アプリはここに無い人（本部の人など）の個人の欄を止める（空の欄を直せると見せない）
+    if (!sc.all) out.ids = ids;
+    return out;
   }
   // 1 人の欄を直す。base＝画面を開いたときの値。サーバーの今の値が base と違い、送った値とも違う欄があれば 409（ほかの端末が同じ欄を直した）。
   // 読んだ行が変わっていないときだけ書く（5 回まで）。書くとき、その人の欄を全部 emp_pii に持たせる（従業員の表の値も写す）
@@ -2595,8 +2602,10 @@ export function createHandler(deps) {
   //   だれができるか（Claude が決めた・Moto さんに確かめる。答え 7 A＝店で採点 → GM が確定 → 本人に公開・GM の評価は CEO が確定）：
   //   ・採点（始める・下書き・本人に共有・確認待ちへ）：CEO＝だれでも／GM＝GM・CEO 以外／確かめた AM＝担当の店の人（AM・本部の人は除く）／
   //     確かめた Head Chef＝下のグレードの調理の人（調理の評価表・Prep・G の Kitchen中心）／ほかの G4 以上（確かめた写しの店）＝自分の店の下のグレードの人／
-  //     経理（office）＝事務Crew。自分は採点しない（本人は見直しの申し出とコメントだけ）。退職の人は採点しない
+  //     確かめた G3（確かめた写しの店）＝自分の店の G2 の人（Moto さん 11/23「G3はG2を採点できる様(申請できる様に)」。確定は CEO・GM）／
+  //     経理（office）＝事務Crew（Moto さん 11/23「経理は事務crewを採点できる様に」）。自分は採点しない（本人は見直しの申し出とコメントだけ）。退職の人は採点しない
   //   ・確定・差戻し・取りやめ：CEO＝だれでも（自分を除く）／GM＝GM・CEO 以外
+  //   ・見るだけ：GM＝ほかの GM・CEO の人の確定・公開した評価（Moto さん 11/23「c B」）。下書き・確認待ち・申し出・操作の記録は出さない。採点・確定・取り消しは CEO だけのまま
   //   ・評価表を決める・今までの記録を写す：GM・CEO
   const CS4_EV_COLS = 'id,emp_id,emp_name,period,system,grade,type,version,rev,status,entries,prep,feedback,result,shared,shared_at,shared_by_name,prev_id,change_reason,note,ver,'
     + 'created_at,created_by_name,updated_at,updated_by_name,submitted_at,submitted_by_name,returned_at,returned_by_name,confirmed_at,confirmed_by_name,confirmed_by_role,closed_at,closed_by_name,superseded_by';
@@ -2636,7 +2645,7 @@ export function createHandler(deps) {
     const asg = await cs4Read('csq4_assign?period=eq.' + encodeURIComponent(CS4_PERIOD) + '&select=emp_id,system,grade,type,ver,updated_at,by_name&limit=5000');
     const A = new Map((Array.isArray(asg) ? asg : []).map(x => [String(x.emp_id), x]));
     const isChef = a.role === 'staff' && a.grade >= 4 && (me.role === 'chef' || CHEF_TITLES.includes(me.title)) && await confChef(a);
-    const S = a.role === 'am' ? [...new Set([...arr(a.am), ...arr(a.stores)])] : (a.role === 'staff' && a.grade >= 4 ? await protStores(a) : []);
+    const S = a.role === 'am' ? [...new Set([...arr(a.am), ...arr(a.stores)])] : (a.role === 'staff' && a.grade >= 3 ? await protStores(a) : []);
     const inStores = p => S.length > 0 && (S.includes(p.store) || p.support.some(x => S.includes(x)));
     const kitchen = p => {
       const x = A.get(p.id);
@@ -2653,6 +2662,8 @@ export function createHandler(deps) {
         // グレードの分からない人（肩書きも役割も決まりに無い）は「自分より下」と決められないので採点しない（#214 のレビュー）
         if (isChef) return !p.top && !OFFICE_ROLES.includes(p.role) && p.known && p.gS < a.grade && kitchen(p);
         if (a.grade >= 4) return !p.top && inStores(p) && p.known && p.gS < a.grade;
+        // 確かめた G3：自分の店の G2 の人だけ（本部の人・グレードの分からない人は除く。Moto さん 11/23）
+        if (a.grade === 3) return !p.top && !OFFICE_ROLES.includes(p.role) && inStores(p) && p.known && p.gS === 2;
         return false;
       }
       if (a.role === 'office') return p.role === 'office_crew' && !p.boss && !p.confAm;
@@ -2661,16 +2672,21 @@ export function createHandler(deps) {
     const canConfirm = p => live(p) && (a.role === 'ceo' || (a.role === 'gm' && !p.boss));
     // 退職した人の開いたままの評価：CEO・GM（GM は CEO・GM の人を除く）が取り消せる（読むのと取り消しだけ。#214 のレビュー）
     const canCancelOut = p => !!p && p.out && p.id !== me.id && (a.role === 'ceo' || (a.role === 'gm' && !p.boss));
+    // 見るだけ（GM がほかの GM・CEO の人の確定・公開した評価を見る。Moto さん 11/23「c B」）。採点・確定・取り消し・申し出への答えには使わない
+    const canView = p => a.role === 'gm' && live(p) && p.boss && !canScore(p) && !canConfirm(p);
     const byId = new Map(P.filter(p => !p.out).map(p => [p.id, p]));
     const all = new Map(P.map(p => [p.id, p]));
-    return { P, me, A, nosql: asg === null, byId, all, canScore, canConfirm, canCancelOut, canSee: p => canScore(p) || canConfirm(p) };
+    return { P, me, A, nosql: asg === null, byId, all, canScore, canConfirm, canCancelOut, canView, canSee: p => canScore(p) || canConfirm(p) };
   }
+  // 読める人か（採点・確定できる人・退職の人の取り消し・見るだけ）。書く頼みはこのあとでそれぞれの権限を確かめる
   function cs4Person(C, id) {
     if (!cs4Id(id)) throw bad();
     const p = C.byId.get(id) || C.all.get(id);
-    if (!p || !(C.canSee(p) || C.canCancelOut(p))) throw err('forbidden', 403);
+    if (!p || !(C.canSee(p) || C.canCancelOut(p) || C.canView(p))) throw err('forbidden', 403);
     return p;
   }
+  // 見るだけの人に出す改訂：確定・公開したもの（今の公開と、置き換わった前の確定）
+  const cs4Confirmed = r => !!r && (r.status === 'published' || (r.status === 'superseded' && !!r.confirmed_at));
   async function cs4Row(id, cols = CS4_EV_COLS) {
     if (!cs4Int(id, 1)) throw bad();
     const rows = await cs4Read('csq4_evals?id=eq.' + id + '&select=' + cols);
@@ -2718,7 +2734,7 @@ export function createHandler(deps) {
     const C = await cs4Ctx(a);
     const base = { period: CS4_PERIOD, version: CS4_VERSION };
     if (C.nosql) return { ...base, rows: [], counts: null, nosql: true };
-    const ppl = [...C.byId.values()].filter(p => C.canSee(p));
+    const ppl = [...C.byId.values()].filter(p => C.canSee(p) || C.canView(p));
     if (SS_FULL_ROLES.includes(a.role)) {   // CEO・GM：退職した人で開いたままの評価がある人も出す（取り消すため）
       const op = await rest('csq4_evals?period=eq.' + encodeURIComponent(CS4_PERIOD) + '&status=in.(draft,submitted,returned)&select=emp_id&limit=5000');
       const seen = new Set(ppl.map(p => p.id));
@@ -2742,12 +2758,17 @@ export function createHandler(deps) {
       shared: !!r.shared_at, at: r.updated_at, by_name: r.updated_by_name || '', confirmed_at: r.confirmed_at || null, ...cs4Brief(r) } : null;
     const rows = ppl.map(p => {
       const es = E.get(p.id) || [];
-      const op = es.find(r => CS4_OPEN.includes(r.status)) || null, pub = es.find(r => r.status === 'published') || null;
+      const pub = es.find(r => r.status === 'published') || null;
+      if (!C.canSee(p) && !C.canCancelOut(p)) {   // 見るだけ：確定・公開した評価がある人だけ（開いている評価・申し出・評価表の案は出さない。数にも入れない）
+        return pub ? { emp: p.id, name: p.name, store: p.store, title: p.title, role: p.role, grade: p.gS, out: !!p.out,
+          suggest: null, assign: null, open: null, published: sum(pub), reqs: 0, view: true, can: cs4Can(a, C, p) } : null;
+      }
+      const op = es.find(r => CS4_OPEN.includes(r.status)) || null;
       counts[op ? op.status : pub ? 'published' : 'not_started']++;
       return { emp: p.id, name: p.name, store: p.store, title: p.title, role: p.role, grade: p.gS, out: !!p.out,
         suggest: cs4Suggest(p, tracks.get(p.id)), assign: cs4AssignOut(C.A.get(p.id)), open: sum(op), published: sum(pub), reqs: R.get(p.id) || 0,
         can: cs4Can(a, C, p) };
-    });
+    }).filter(Boolean);
     rows.sort((x, y) => String(x.store).localeCompare(String(y.store)) || String(x.name).localeCompare(String(y.name)));
     return { ...base, rows, counts };
   }
@@ -2757,12 +2778,18 @@ export function createHandler(deps) {
     if (C.nosql) return { period: CS4_PERIOD, nosql: true };
     const p = cs4Person(C, b.emp);
     const id = encodeURIComponent(p.id), per = '&period=eq.' + encodeURIComponent(CS4_PERIOD);
+    const person = { emp: p.id, name: p.name, store: p.store, title: p.title, role: p.role, grade: p.gS, out: !!p.out };
+    if (!C.canSee(p) && !C.canCancelOut(p)) {   // 見るだけ：確定・公開した改訂だけ（下書き・確認待ち・申し出・操作の記録は出さない）
+      const evs = await rest('csq4_evals?emp_id=eq.' + id + per + '&status=in.(published,superseded)&select=' + CS4_EV_COLS + '&order=rev.desc&limit=50');
+      return { period: CS4_PERIOD, version: CS4_VERSION, person, assign: null, evals: (Array.isArray(evs) ? evs : []).filter(cs4Confirmed), reqs: [], log: [],
+        view: true, can: cs4Can(a, C, p) };
+    }
     const [evs, reqs, log] = await Promise.all([
       rest('csq4_evals?emp_id=eq.' + id + per + '&select=' + CS4_EV_COLS + '&order=rev.desc&limit=50'),
       rest('csq4_reqs?emp_id=eq.' + id + per + '&select=id,eval_id,item_id,kind,note,status,answer,created_at,created_by_name,answered_at,answered_by_name&order=id.desc&limit=500'),
       rest('csq4_log?emp_id=eq.' + id + per + '&select=id,at,eval_id,action,by_name,by_role,detail&order=id.desc&limit=200'),
     ]);
-    return { period: CS4_PERIOD, version: CS4_VERSION, person: { emp: p.id, name: p.name, store: p.store, title: p.title, role: p.role, grade: p.gS, out: !!p.out },
+    return { period: CS4_PERIOD, version: CS4_VERSION, person,
       assign: cs4AssignOut(C.A.get(p.id)), evals: Array.isArray(evs) ? evs : [], reqs: Array.isArray(reqs) ? reqs : [], log: Array.isArray(log) ? log : [],
       can: cs4Can(a, C, p) };
   }
@@ -2940,7 +2967,9 @@ export function createHandler(deps) {
     const C = await cs4Ctx(a);
     if (C.nosql) return { rows: [], nosql: true };
     const p = cs4Person(C, b.emp);
-    const rows = await rest('csq4_hist?emp_id=eq.' + encodeURIComponent(p.id) + '&select=' + CS4_HIST_COLS + '&order=id.desc&limit=500');
+    // 見るだけ：今までの記録も決まった点・履歴・賞与の固定だけ（申請中の記録 lss_requests・オフィスの評価 ocs_ev は出さない）
+    const kinds = !C.canSee(p) && !C.canCancelOut(p) ? '&kind=in.(lss_emp,lss_history,bonus_csfreeze)' : '';
+    const rows = await rest('csq4_hist?emp_id=eq.' + encodeURIComponent(p.id) + kinds + '&select=' + CS4_HIST_COLS + '&order=id.desc&limit=500');
     return { rows: (Array.isArray(rows) ? rows : []).map(h => ({ ...h, oldSystem: h.period === CS4_PERIOD })) };
   }
   // 今までの記録を写す（GM・CEO。元は変えない・何度でも同じ）

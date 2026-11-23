@@ -1,7 +1,9 @@
-// v1207（Moto さん 11/22「はい」）：本部（OFFICE）の人も、全店（ALL）の人と同じく全部の AM に見せる。
+// v1207（Moto さん 11/22「はい」）：本部（OFFICE）の人も、全店（ALL）の人と同じく全部の AM の一覧に出す。
+// ただし本部の人の個人の欄（生年月日・カードの下 4 桁・保険の加入）は AM に出さない・直させない（Moto さん 11/23「C」）。
 //  1. 入れる一式（deploy/am-office-v1207/）：secure-state の 1 ファイルが今のソースから作ったものと同じ・秘密の部分が無い・
-//     モジュールの handler と同じ答え（AM の pii_get に本部の人）・v1197 の 1 ファイルとの違いは piiScope の 1 行だけ・手順の順番
+//     モジュールの handler と同じ答え（AM の pii_get に本部の人は入らない・見られる人の ids）・v1197 の 1 ファイルとの違いは ids の数行だけ・手順の順番
 //  2. アプリの AM の範囲（従業員マスター・退職の対象・スタッフの成長）：index.html の本物の関数を VM で動かす。シフト作成は ALL だけのまま
+//  3. アプリの従業員の編集の画面：ids に無い人（本部の人など）の個人の欄を止める（本物の piiFormState・piiLoad を VM で）
 // 合成データだけ（架空の人・店）。本番には接続しない。
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -21,30 +23,36 @@ const D = 'deploy/am-office-v1207/';
 const ONE = D + '1_関数_secure-state_index.ts';
 const V1197 = 'deploy/page-view-tab-v1197/1_関数_secure-state_index.ts';
 
-test('the one-file secure-state (v1207) is what the build script makes now, has no private part, and differs from v1197 only in the AM scope of piiScope', () => {
-  // Career Score Q4 の段階 3-1 から build() は deploy/career-score-q4-server/ に書く。v1207 の 1 ファイルは Moto さんに渡したときのまま（sha256 で固定）
+test('the one-file secure-state (v1207) stays as it was made, has no private part, and differs from v1197 only in the ids of pii_get (the AM scope stays)', () => {
+  // Career Score Q4 の段階 3-1 から build() は deploy/career-score-q4-server/ に書く。v1207 の 1 ファイルは #213 で作ったときのまま（sha256 で固定）
   assert.notEqual(OUT, ONE, 'the build now writes into a later folder');
   assert.ok(build().length > 0);
   const one = rd(ONE);
-  assert.equal(crypto.createHash('sha256').update(one).digest('hex'), '725f84868e66cf2048ad158745fc4a40828b8fa224d9a339fbf66614494bef20', 'the v1207 one file is as handed over');
+  assert.equal(crypto.createHash('sha256').update(one).digest('hex'), 'fdcac7439776009857acbd813e1b4cc11f11bf5f00373db8bb4774132f1b60e7', 'the v1207 one file is as made in #213 (Moto 11/23 "C")');
   assert.ok(one.startsWith('// secure-state の 1 ファイル（v1207）'));
   assert.ok(one.endsWith(TAIL));
   assert.ok(!/^import\s/m.test(one), 'no import left');
   assert.ok(!/verifyPin/.test(one), 'no private part');
   assert.match(one, /affn: 1/); assert.match(one, /pvfn: 1/); assert.match(one, /ltfn: 1/); assert.match(one, /piifn: 1/);
-  assert.match(one, /return st === 'ALL' \|\| st\.trim\(\)\.toUpperCase\(\) === 'OFFICE' \|\| S\.includes\(st\)/);
-  // v1197（入れた 1 ファイル）と比べて、変わった行はコメントと piiScope の AM の 1 行だけ（見出しの版の行も）
+  // AM の範囲は v1197 のまま（本部（OFFICE）は入れない＝Moto さん 11/23「C」）
+  assert.match(one, /return st === 'ALL' \|\| S\.includes\(st\) \|\| sup\.some\(x => S\.includes\(String\(x\)\)\);/);
+  assert.ok(!/toUpperCase\(\) === 'OFFICE'/.test(one), 'no OFFICE in the AM scope');
+  // v1197（入れた 1 ファイル）と比べて、変わったのは全員の範囲の印（all）と pii_get の ids だけ（コメントと見出しの版の行も）
   const a = rd(V1197).split('\n'), b = one.split('\n');
   const removed = a.filter(x => !b.includes(x)), added = b.filter(x => !a.includes(x));
   const code = l => !/^\s*(\/\/|\/\*)/.test(l) && l.trim() !== '';
-  assert.deepEqual(removed.filter(code).map(s => s.trim()), ["if (a.role === 'am') {   // 担当の店（応援も）と本部（ALL）の人：アプリの従業員マスターの絞り込みと同じ",
-    "return st === 'ALL' || S.includes(st) || sup.some(x => S.includes(String(x)));"]);
-  assert.deepEqual(added.filter(code).map(s => s.trim()), ["if (a.role === 'am') {   // 担当の店（応援も）と全店（ALL）・本部（OFFICE・v1207 から）の人：アプリの従業員マスターの絞り込みと同じ",
-    "return st === 'ALL' || st.trim().toUpperCase() === 'OFFICE' || S.includes(st) || sup.some(x => S.includes(String(x)));"]);
-  assert.ok(removed.length <= 4 && added.length <= 5, 'only a few lines');
+  const norm = l => l.trim().replace(/ all: (true|false),/, '').replace(/   \/\/ .*$/, '');
+  const rem = removed.filter(code).map(norm), add = added.filter(code).map(norm);
+  // all の印とコメントを外すと同じになる行（scope の 6 行）
+  const same = rem.filter(x => add.includes(x));
+  assert.equal(same.length, 6, JSON.stringify(rem));
+  assert.deepEqual(rem.filter(x => !same.includes(x)), ['const data = {}, seen = new Set();', 'return { level: sc.lv, data, updated_at: row ? row.updated_at : null };']);
+  assert.deepEqual(add.filter(x => !same.includes(x)), ['const data = {}, seen = new Set(), ids = [];', 'ids.push(id);',
+    'const out = { level: sc.lv, data, updated_at: row ? row.updated_at : null };', 'if (!sc.all) out.ids = ids;']);
+  assert.ok(removed.length <= 12 && added.length <= 20, 'only a few lines');
 });
 
-test('the one-file secure-state answers the same as the module handler (pii_get as an AM: ALL and OFFICE people; pii_get as GM; pii_op as an AM on an OFFICE person)', async () => {
+test('the one-file secure-state answers the same as the module handler (pii_get as an AM: ALL people and ids, no OFFICE person; pii_get as GM; pii_op as an AM on an OFFICE person is refused)', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'amoffice-one-test-'));
   try {
     const f = path.join(dir, 'one.mjs');
@@ -76,9 +84,14 @@ test('the one-file secure-state answers the same as the module handler (pii_get 
       assert.deepEqual(strip(a), strip(b), JSON.stringify(body));
     }
     const am = await run(mod.createHandler, cases[0]);
-    assert.deepEqual(Object.keys(am[1].data).sort(), ['E-GM', 'E-HQ', 'E-S1'], 'the AM: the store, ALL and OFFICE people; not another store');
-    assert.ok(!('insuranceAmt' in am[1].data['E-HQ']), 'no amount for the AM');
-    assert.equal((await run(mod.createHandler, cases[2]))[0], 200, 'the AM may change an OFFICE person');
+    assert.deepEqual(Object.keys(am[1].data).sort(), ['E-GM', 'E-S1'], 'the AM: the store and ALL people; not OFFICE, not another store');
+    assert.deepEqual(am[1].ids.slice().sort(), ['E-AM', 'E-GM', 'E-S1'], 'ids: who is in scope (the AM herself too)');
+    assert.ok(!('insuranceAmt' in am[1].data['E-GM']), 'no amount for the AM');
+    const gm = await run(mod.createHandler, cases[1]);
+    assert.ok('E-HQ' in gm[1].data && !('ids' in gm[1]), 'GM: everybody, no ids');
+    const hq = await run(mod.createHandler, cases[2]);
+    assert.equal(hq[0], 403, 'the AM may not change an OFFICE person (Moto 11/23 "C")');
+    assert.deepEqual(hq[2], {}, 'nothing written');
     assert.equal((await run(mod.createHandler, cases[3]))[0], 403, 'not another store');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
@@ -146,4 +159,51 @@ test('the version is 1207 or later, the same in the page and the service worker'
   const v = (src.match(/^const APP_VERSION = '(\d+)';/m) || [])[1], w = (rd('sw.js').match(/^const SW_BUILD = '(\d+)';/m) || [])[1];
   assert.ok(Number(v) >= 1207, v);
   assert.equal(v, w);
+});
+
+// ---- 3. アプリの従業員の編集の画面（Moto さん 11/23「C」）：本物の piiLoad・piiFormState を VM で ----
+// 1 行の関数も取り出せるように、中かっこの数で終わりを決める（文字列の中のかっこは、この 6 つの関数には無い）
+function fnBal(name) {
+  const i = src.indexOf('function ' + name + '(');
+  assert.ok(i >= 0, name);
+  let d = 0, j = src.indexOf('{', i);
+  for (; j < src.length; j++) { if (src[j] === '{') d++; else if (src[j] === '}' && --d === 0) break; }
+  const k = src.slice(i - 6, i) === 'async ' ? i - 6 : i;
+  return src.slice(k, j + 1);
+}
+function piiApp(answer) {
+  const c = { curRole: 'am', curStoreLogin: false, PII_ROLES: ['ceo', 'gm', 'office', 'office_crew', 'am', 'chef', 'g4', 'sl', 'g2', 'crew'],
+    PII_FN_KEY: 'k', calls: 0, ANSWER: answer, window: {} };
+  c.localStorage = { getItem: () => '1' };
+  vm.createContext(c);
+  const pre = src.slice(src.indexOf('var _pii = {'), src.indexOf('\n', src.indexOf('var _pii = {')));
+  vm.runInContext([pre, 'var _piiCard = {}; var _piiEnsureAt = 0;',
+    "function ssToken(){ return { g:1, u:'U-AM', st:'', id:'E-AM' }; }", 'function ssStale(){ return false; }',
+    'async function ssCall(p){ calls++; return JSON.parse(JSON.stringify(ANSWER)); }',
+    'function t(ja){ return ja; }',
+    fnBal('piiFnSeen'), fnBal('piiTid'), fnBal('piiWants'), fnBal('piiReady'), fnBal('piiLoad'), fnBal('piiFormState')].join('\n'), c);
+  return c;
+}
+test('the edit screen: an AM sees the fields of people in ids; a head-office person outside ids is locked with a note; GM (no ids) and an old function (no ids) as before', async () => {
+  const c = piiApp({ ok: true, j: { level: 'hr', data: { 'E-S1': { dob: '1999-01-01' } }, ids: ['E-AM', 'E-GM', 'E-S1'], updated_at: null } });
+  assert.equal(await vm.runInContext('piiLoad(true)', c), 'ok');
+  assert.deepEqual(JSON.parse(JSON.stringify(vm.runInContext('_pii.ids', c))), ['E-AM', 'E-GM', 'E-S1']);
+  const st = id => JSON.parse(JSON.stringify(vm.runInContext('piiFormState(' + JSON.stringify(id) + ')', c)));
+  for (const id of ['E-S1', 'E-GM']) assert.deepEqual(st(id), { note: '', lock: false, lockAmt: true }, id + ' (in scope, even with empty fields)');
+  const hq = st('E-HQ');
+  assert.equal(hq.lock, true); assert.equal(hq.lockAmt, true);
+  assert.match(hq.note, /この人の生年月日・カード・保険は、このアカウントでは見る・直すことはできません/);
+  assert.deepEqual(st(''), { note: '', lock: false, lockAmt: true }, 'a new person: as before (the server decides once the row is there)');
+  // GM（ids なし）：全員そのまま
+  const g = piiApp({ ok: true, j: { level: 'full', data: {}, updated_at: null } });
+  g.curRole = 'gm';
+  assert.equal(await vm.runInContext('piiLoad(true)', g), 'ok');
+  assert.equal(vm.runInContext('_pii.ids', g), null);
+  assert.deepEqual(JSON.parse(JSON.stringify(vm.runInContext("piiFormState('E-HQ')", g))), { note: '', lock: false, lockAmt: false });
+  // 前の版の関数（ids を返さない）：今までどおり止めない（保存すればサーバーが 403）
+  const o = piiApp({ ok: true, j: { level: 'hr', data: {}, updated_at: null } });
+  assert.equal(await vm.runInContext('piiLoad(true)', o), 'ok');
+  assert.deepEqual(JSON.parse(JSON.stringify(vm.runInContext("piiFormState('E-HQ')", o))), { note: '', lock: false, lockAmt: true });
+  // ログアウトで ids も消える
+  assert.ok(src.includes("function piiOnLogout(){ _pii={ tid:'', lv:'', map:null, ids:null, at:0, p:null };"));
 });
