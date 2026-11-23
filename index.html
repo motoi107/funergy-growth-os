@@ -126277,7 +126277,7 @@ window.FUNERGY_CSQ4_MASTER = {"version":"CAREER_2026_Q4_V1","note":"Career Score
 
   /* ---------------------------------------------------------------- 1 人の評価（採点・確認） */
   var OPEN = ['draft', 'submitted', 'returned'];
-  function newCu(emp){ return { emp:emp, ld:true, err:'', d:null, ev:null, items:[], srv:{}, pend:{}, fbS:{}, fb:{}, prepS:{}, prep:null, prepErr:'', reason:'', need:[], bad:[], conflicts:[], lost:0, st:'', msg:'', at:0, cat:'', saving:null, again:false, timer:null, edit:false, retried:false, rk:'', lock:'', lockTold:false }; }
+  function newCu(emp){ return { emp:emp, ld:true, err:'', d:null, ev:null, items:[], srv:{}, pend:{}, fbS:{}, fb:{}, prepS:{}, prep:null, prepErr:'', reason:'', need:[], bad:[], conflicts:[], lost:0, st:'', msg:'', at:0, cat:'', saving:null, again:false, timer:null, edit:false, retried:false, rk:'', lock:'', lockTold:false, lockRd:false }; }
   async function openP(emp){
     sync();
     if (E.cu && E.cu.emp !== emp && !(await leaveCu())) return;
@@ -126291,7 +126291,18 @@ window.FUNERGY_CSQ4_MASTER = {"version":"CAREER_2026_Q4_V1","note":"Career Score
     var r = await call({ action:'cs4_get', emp:cu.emp }, 30000);
     if (stale(t0) || E.cu !== cu) return;
     cu.ld = false;
-    if (r.ok && r.j && !r.j.nosql) { cu.err = ''; setD(cu, r.j); }
+    if (r.ok && r.j && !r.j.nosql) {
+      cu.err = '';
+      /* 読み込むあいだに入った・残っていた保存していない変更は、黙って消さずに新しい版の上に重ねる（Codex #215 再レビュー P2） */
+      if (cu.d && cu.edit && unsaved()) {
+        var ok = mergeIn(cu, r.j);
+        paint();
+        if (!ok && cu.lost) toast(lead() + '状態が変わったため、保存していない変更 ' + cu.lost + ' 件は保存できませんでした', 'warning');
+        else if (ok && unsaved()) toast(lead() + '保存していない変更は残しています（保存してください）' + (cu.conflicts.length ? '。重なった ' + cu.conflicts.length + ' 項目はほかの人の内容にしました' : ''), 'warning');
+        return;
+      }
+      setD(cu, r.j);
+    }
     else cu.err = (r.ok && r.j && r.j.nosql) ? ERR.not_installed : errTxt(r);
     paint();
   }
@@ -126503,6 +126514,11 @@ window.FUNERGY_CSQ4_MASTER = {"version":"CAREER_2026_Q4_V1","note":"Career Score
     var r = await call({ action:'cs4_get', emp:cu.emp }, 30000);
     if (stale(t0) || E.cu !== cu) return false;
     if (!(r.ok && r.j)) { cu.st = 'err'; cu.msg = errTxt(r); return false; }
+    return mergeIn(cu, r.j);
+  }
+  /* 読み直した内容（j）に、保存していない変更を重ねる。重なった項目はほかの人の内容に、保存できない状態なら数えて伝える */
+  function mergeIn(cu, j){
+    var r = { j:j };
     var x = evPick(r.j), op = x.op;
     cu.conflicts = []; cu.lost = 0;
     if (!op || op.id !== cu.ev.id || (op.status !== 'draft' && op.status !== 'returned') || !(r.j.can && r.j.can.score)) {
@@ -126763,7 +126779,7 @@ window.FUNERGY_CSQ4_MASTER = {"version":"CAREER_2026_Q4_V1","note":"Career Score
     var cu = E.cu, ev = cu.ev, can = (cu.d && cu.d.can) || {}, a = [];
     if (!ev) return '';
     /* 状態を変える答えを待つあいだは、どのボタンも押せない・入力も止める（Codex #215 P2-1） */
-    if (cu.lock) return '<div class="cs4-warn">状態を変えています（' + esc(ACT_LABEL[cu.lock] || cu.lock) + '）。終わるまで点・コメントは変えられません。</div>';
+    if (cu.lock) return '<div class="cs4-warn">状態を変えています（' + esc(ACT_LABEL[cu.lock] || cu.lock) + (cu.lockRd ? '・読み直し中' : '') + '）。終わるまで点・コメントは変えられません。</div>';
     if (cu.edit) a.push('<button class="btn btn-secondary btn-sm"' + (pendCount() && cu.st !== 'saving' ? '' : ' disabled') + ' onclick="FUNERGY_CS4.h.save()">保存する</button>');
     if ((ev.status === 'draft' || ev.status === 'returned') && can.score) {
       a.push('<button class="btn btn-secondary btn-sm" onclick="FUNERGY_CS4.h.act(\'share\')">本人に共有（見直し中）</button>');
@@ -126844,26 +126860,27 @@ window.FUNERGY_CSQ4_MASTER = {"version":"CAREER_2026_Q4_V1","note":"Career Score
     if (moved()) return;
     /* 答えを待つあいだは入力を止める（Codex #215 P2-1：待つあいだに打った点が答えのあとの読み直しで黙って消えていた） */
     var t0 = tok(), e0 = E, r;
-    e0.busy = 'act'; cu.lock = kind; cu.lockTold = false;
+    e0.busy = 'act'; cu.lock = kind; cu.lockTold = false; cu.lockRd = false;
     if (cu.timer) { clearTimeout(cu.timer); cu.timer = null; }
     if (E.cu === cu && byId('cs4-main')) { paintMain(); cu.rk = '\u0000'; refresh(); }
-    try{ r = await call({ action:'cs4_act', id:ev.id, expect:ev.ver, act:kind, note:note }, 30000); }
-    finally{ cu.lock = ''; e0.busy = ''; }
-    if (stale(t0)) return;
-    if (r.ok && r.j) toast({ share:'本人に共有しました', submit:'確認待ちに出しました', return:'差し戻しました', confirm:'確定・公開しました', cancel:'取り消しました' }[kind], 'success');
-    else toast(errTxt(r), 'warning');
-    E.rosAt = 0; E.hist = {}; E.fbc = {};
-    if (E.cu !== cu) return;
-    if (unsaved()) {
-      /* 念のため：止めていても入った変更は消さずに、新しい版の上に重ねる（重なった項目・保存できない状態ならそう伝える） */
-      var ok = await rebase(cu);
+    /* 答えのあとの読み直し（成功・失敗・409 とも）が終わるまで止めたまま（Codex #215 再レビュー P2：
+       答えのあと止めを外してから読み直していたので、読み直しのあいだに打った点が読み直しで黙って消えていた） */
+    try{
+      r = await call({ action:'cs4_act', id:ev.id, expect:ev.ver, act:kind, note:note }, 30000);
+      if (stale(t0)) return;
+      if (r.ok && r.j) toast({ share:'本人に共有しました', submit:'確認待ちに出しました', return:'差し戻しました', confirm:'確定・公開しました', cancel:'取り消しました' }[kind], 'success');
+      else toast(errTxt(r), 'warning');
+      E.rosAt = 0; E.hist = {}; E.fbc = {};
       if (E.cu !== cu) return;
-      paint();
-      if (!ok && cu.lost) toast(lead() + '状態が変わったため、保存していない変更 ' + cu.lost + ' 件は保存できませんでした', 'warning');
-      else if (ok && unsaved()) toast(lead() + '保存していない変更は残しています（保存してください）', 'warning');
-      return;
+      cu.lockRd = true; cu.ld = true;
+      if (byId('cs4-main')) refresh();
+      /* 止めていても入った変更（念のため）は、loadP が新しい版の上に重ねる */
+      await loadP(cu);
     }
-    cu.ld = true; await loadP(cu);
+    finally{
+      cu.lock = ''; cu.lockRd = false; e0.busy = '';
+      if (!stale(t0) && E.cu === cu) paint();
+    }
   }
 
   /* ---------------------------------------------------------------- 本人に見せる形（共有・確定した評価） */

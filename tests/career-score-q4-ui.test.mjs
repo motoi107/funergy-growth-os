@@ -667,12 +667,19 @@ function actApp(opts = {}) {
   const A = items[0].id, B = items[1].id;
   const ev = Object.assign({ id: 81, rev: 1, ver: 3, status: 'draft', system: 'G', grade: 'G3', type: 'Kitchen中心', version: 'CAREER_2026_Q4_V1',
     entries: { [A]: { status: 'SCORED', score: 2 } }, feedback: {} }, opts.ev || {});
-  const st = { ev: JSON.parse(JSON.stringify(ev)), saves: [], acts: [], rel: [], getHook: null };
+  const st = { ev: JSON.parse(JSON.stringify(ev)), saves: [], acts: [], rel: [], getHook: null, holdGet: false, grel: [], gets: 0 };
   const c = app({ page: 'leadership' });
+  const asg = opts.assign || { system: 'G', grade: 'G3', type: 'Kitchen中心', ver: 1 };
   c._reply = (p) => {
     if (p.action === 'cs4_me') return { ok: true, j: meJ(null) };
     if (p.action === 'cs4_roster') return { ok: true, j: rosterJ([rosterRow('E1', 'Sue One', null)]) };
-    if (p.action === 'cs4_get') { if (st.getHook) st.getHook(); return { ok: true, j: { person: { emp: 'E1', name: 'Sue One' }, assign: { system: 'G', grade: 'G3', type: 'Kitchen中心', ver: 1 }, evals: [JSON.parse(JSON.stringify(st.ev))], reqs: [], log: [], can: { score: true, confirm: !!opts.confirm, cancel: !!opts.confirm } } }; }
+    if (p.action === 'cs4_get') {
+      st.gets++;
+      if (st.getHook) st.getHook();
+      // 答えは返すときの状態で作る（読み直しを遅らせる試験：Codex #215 再レビュー P2）
+      const mk = () => ({ ok: true, j: { person: { emp: 'E1', name: 'Sue One' }, assign: asg, evals: [JSON.parse(JSON.stringify(st.ev))], reqs: [], log: [], can: { score: true, confirm: !!opts.confirm, cancel: !!opts.confirm } } });
+      return st.holdGet ? new Promise((r) => st.grel.push((res) => r(res || mk()))) : mk();
+    }
     if (p.action === 'cs4_save') {
       st.saves.push(JSON.parse(JSON.stringify(p)));
       const go = () => { for (const [k, v] of Object.entries(p.entries || {})) st.ev.entries[k] = v; st.ev.ver++; return { ok: true, j: { ver: st.ev.ver } }; };
@@ -769,6 +776,164 @@ test('Codex #215 P2-1: changes that got in while waiting (any way) are kept and 
   assert.equal(F.unsaved(), true, 'the change is kept');
   assert.equal(scoreOf(F, A), 3);
   assert.ok(F._t.E().cu.ev.shared_at, 'reloaded the new version under it');
+});
+
+/* ---------------------------------------------------------------- Codex #215 再レビュー P2：答えのあとの読み直し（cs4_get）が遅いとき */
+// 前は答えが届いたところで止めを外し、そのあとの読み直しのあいだに打った点・コメントが、読み直しの答え（setD）で黙って消えていた。
+// 今は読み直しが終わるまで止めたまま。止めていても入った変更（念のため）は、読み直しの答えに重ねて残し、そう伝える。
+const catOf = (h, label) => { const m = h.match(new RegExp('FUNERGY_CS4\\.h\\.cat\\((\\d+)\\)"><span>' + label)); assert.ok(m, label); return Number(m[1]); };
+test('Codex #215 re-review P2: after the reply, while the follow-up read is slow (success / 500 / net / 409), every input stays stopped and nothing typed is lost', async () => {
+  for (const res of [undefined, { status: 500, error: 'x' }, { net: true }, { status: 409, error: 'conflict' }]) {
+    const tag = JSON.stringify(res || 'ok');
+    const { c, st, A, B } = actApp();
+    const F = await actOpen(c);
+    F.h.act('share'); await settle();
+    if (res && res.status === 409) st.ev.ver = 9;   // ほかの人が先に保存した
+    st.holdGet = true;
+    const g0 = st.gets;
+    st.rel.shift()(res); await settle(); await settle();
+    assert.equal(st.gets, g0 + 1, 'the follow-up read was asked (' + tag + ')');
+    assert.equal(st.grel.length, 1, 'and is still waiting (' + tag + ')');
+    const cu = F._t.E().cu;
+    assert.equal(cu.lock, 'share', 'still stopped while the follow-up read waits (' + tag + ')');
+    assert.equal(F._t.E().busy, 'act', 'still busy (' + tag + ')');
+    // 点・根拠・本人へのコメント・未担当・非該当とその理由・まとめ・変えた理由・カテゴリーの移動
+    F.h.st(0, 'S3'); F.h.st(1, 'S1'); F.h.st(1, 'NR'); F.h.st(1, 'UN');
+    F.h.tx(0, 'feedbackComment', 'よくできた'); F.h.tx(0, 'evidence', '11/20'); F.h.tx(1, 'naReason', '担当外');
+    F.h.fb('good', '早い'); F.h.rsn('理由');
+    const h0 = F.pageHtml();
+    F.h.cat(catOf(h0, 'フィードバック')); F.h.fb('next', 'つぎ');
+    const h1 = F.pageHtml();
+    assert.match(h1, /状態を変えています（本人に共有・読み直し中）/, 'told it is reading again (' + tag + ')');
+    assert.ok(/<textarea[^>]*disabled/.test(h1), 'the summary boxes are stopped after a category move (' + tag + ')');
+    F.h.cat(Number(h1.match(/FUNERGY_CS4\.h\.cat\((\d+)\)/)[1]));   // 点の分野へ戻っても止めたまま
+    F.h.st(0, 'S3');
+    const h2 = F.pageHtml();
+    assert.match(h2, /onclick="FUNERGY_CS4\.h\.st\(0,'S3'\)" disabled>/, 'the score buttons are shown stopped after a category move (' + tag + ')');
+    assert.match(h2, /onclick="FUNERGY_CS4\.h\.st\(\d+,'NR'\)" disabled>/, 'the not-applicable buttons too (' + tag + ')');
+    assert.equal(F.unsaved(), false, 'nothing was taken while the follow-up read waits (' + tag + ')');
+    assert.equal(cu.reason || '', '', 'the change reason was not taken (' + tag + ')');
+    F.h.save(); await settle();
+    assert.equal(st.saves.length, 0, 'no save while the follow-up read waits (' + tag + ')');
+    F.h.act('submit'); await settle();
+    assert.equal(st.acts.length, 1, 'no second state change while the follow-up read waits (' + tag + ')');
+    // 読み直しが届く
+    st.holdGet = false;
+    st.grel.shift()(); await settle(); await settle();
+    const cu2 = F._t.E().cu;
+    assert.equal(cu2.lock, '', 'unlocked after the follow-up read (' + tag + ')');
+    assert.equal(F._t.E().busy, '', 'not busy after the follow-up read (' + tag + ')');
+    assert.doesNotMatch(F.pageHtml(), /状態を変えています/, 'the stopped note is gone (' + tag + ')');
+    assert.equal(scoreOf(F, A), 2); assert.equal(scoreOf(F, B), undefined);
+    if (!res) assert.ok(cu2.ev.shared_at, 'reloaded the shared draft');
+    if (res && res.status === 409) assert.equal(cu2.ev.ver, 9, 'reloaded the newer version');
+    // また入力できる
+    F.h.st(0, 'S3');
+    assert.equal(F.unsaved(), true, 'editable again (' + tag + ')');
+    assert.equal(scoreOf(F, A), 3);
+  }
+});
+
+test('Codex #215 re-review P2: Prep fields (quality, speed, range, step) stay stopped while the follow-up read is slow', async () => {
+  const { c, st } = actApp({ ev: { system: 'PREP', grade: null, type: null, entries: {}, prep: {} }, assign: { system: 'PREP', grade: null, type: null, ver: 1 } });
+  const F = await actOpen(c);
+  const cu = F._t.E().cu;
+  assert.equal(cu.ev.system, 'PREP');
+  F.h.act('share'); await settle();
+  st.holdGet = true;
+  st.rel.shift()(); await settle(); await settle();
+  assert.equal(st.grel.length, 1);
+  assert.equal(cu.lock, 'share');
+  F.h.cat(catOf(F.pageHtml(), '品質・時給の段'));
+  const h = F.pageHtml();
+  const q = h.match(/FUNERGY_CS4\.h\.pq\((\d+),'clear'\)"( disabled)?/);
+  assert.ok(q, 'the quality buttons are shown');
+  assert.equal(q[2], ' disabled', 'the quality buttons are stopped');
+  assert.match(h, /h\.pstep\(this\.value\)" disabled/, 'the step is stopped');
+  const before = JSON.stringify(cu.prep);
+  F.h.pq(Number(q[1]), 'clear'); F.h.padd(); F.h.pstd('ind', '30'); F.h.pstd('all', '60'); F.h.pstep('P2');
+  F.h.pt(0, 'goodStd', '5');
+  assert.equal(JSON.stringify(cu.prep), before, 'nothing changed in Prep while waiting');
+  assert.equal(F.unsaved(), false);
+  st.holdGet = false;
+  st.grel.shift()(); await settle(); await settle();
+  const cu2 = F._t.E().cu;
+  assert.equal(cu2.lock, '');
+  F.h.cat(catOf(F.pageHtml(), '品質・時給の段'));
+  const q2 = F.pageHtml().match(/FUNERGY_CS4\.h\.pq\((\d+),'clear'\)"( disabled)?/);
+  assert.equal(q2[2], undefined, 'the quality buttons work again');
+  F.h.pq(Number(q2[1]), 'clear');
+  assert.equal(F.unsaved(), true, 'Prep is editable again');
+});
+
+test('Codex #215 re-review P2: changes that got in during the follow-up read (any way) are kept on the new version and told, not reset', async () => {
+  for (const res of [undefined, { status: 500, error: 'x' }, { status: 409, error: 'conflict' }]) {
+    const tag = JSON.stringify(res || 'ok');
+    const { c, st, A } = actApp();
+    const F = await actOpen(c);
+    F.h.act('share'); await settle();
+    st.holdGet = true;
+    st.rel.shift()(res); await settle(); await settle();
+    const cu = F._t.E().cu;
+    // 画面の外の道で入った変更（念のための守り）
+    cu.pend[A] = { status: 'SCORED', score: 3 };
+    cu.fb.good = '早い';
+    const n0 = c._toasts.length;
+    st.holdGet = false;
+    st.grel.shift()(); await settle(); await settle();
+    assert.equal(F.unsaved(), true, 'kept (' + tag + ')');
+    assert.equal(scoreOf(F, A), 3, 'the score is kept (' + tag + ')');
+    assert.equal(F._t.E().cu.fb.good, '早い', 'the summary is kept (' + tag + ')');
+    assert.ok(c._toasts.slice(n0).some(([m]) => /保存していない変更は残しています/.test(m)), 'told (' + tag + ')');
+  }
+});
+
+test('Codex #215 re-review P2: reading the same person again (open / もう一度) keeps unsaved changes; overlaps take the other person’s content and a changed state counts what could not be kept', async () => {
+  // 1) 重ならない：残す
+  {
+    const { c, st, A, B } = actApp();
+    const F = await actOpen(c);
+    F.h.st(0, 'S3');
+    st.holdGet = true;
+    F.h.open(0); await settle();
+    assert.equal(st.grel.length, 1);
+    F.h.st(1, 'S1');   // 読み直しのあいだに打つ
+    st.ev.entries.X9 = { status: 'SCORED', score: 1 };   // ほかの人が別の所を保存
+    st.ev.ver = 7;
+    st.holdGet = false; st.grel.shift()(); await settle(); await settle();
+    assert.equal(scoreOf(F, A), 3, 'kept'); assert.equal(scoreOf(F, B), 1, 'kept (typed during the read)');
+    assert.equal(F._t.E().cu.ev.ver, 7, 'on the new version');
+    assert.ok(c._toasts.some(([m]) => /保存していない変更は残しています/.test(m)));
+  }
+  // 2) 重なる：ほかの人の内容にして、そう出す
+  {
+    const { c, st, A } = actApp();
+    const F = await actOpen(c);
+    F.h.st(0, 'S3');
+    st.holdGet = true;
+    F._t.E().cu.ld = true; F.h.reloadP(); await settle();
+    st.ev.entries[A] = { status: 'SCORED', score: 1 }; st.ev.ver = 8;
+    st.holdGet = false; st.grel.shift()(); await settle(); await settle();
+    const cu = F._t.E().cu;
+    assert.equal(scoreOf(F, A), 1, 'the other person’s content');
+    assert.deepEqual([...cu.conflicts], [A]);
+    assert.match(F.pageHtml(), /ほかの人が同じ所を先に保存しました/);
+  }
+  // 3) 状態が変わった（確認待ち）：残せない数を出す
+  {
+    const { c, st } = actApp();
+    const F = await actOpen(c);
+    F.h.st(0, 'S3'); F.h.fb('good', '早い');
+    st.holdGet = true;
+    F.h.open(0); await settle();
+    st.ev.status = 'submitted'; st.ev.ver = 9;
+    st.holdGet = false; st.grel.shift()(); await settle(); await settle();
+    const cu = F._t.E().cu;
+    assert.equal(cu.edit, false);
+    assert.equal(cu.lost, 2, 'counted');
+    assert.ok(c._toasts.some(([m]) => /保存していない変更 2 件は保存できませんでした/.test(m)));
+    assert.match(F.pageHtml(), /保存していない変更 2 件は保存できませんでした/);
+  }
 });
 
 test('Codex #215 P2-1: pressing 本人に共有 while a save runs waits for the save, then shares the saved version; a change that needs a reason stops the share and is kept', async () => {
