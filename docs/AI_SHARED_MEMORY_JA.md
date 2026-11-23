@@ -1,5 +1,17 @@
 # Claude / Codex 共通記録
 
+## 2026-11-23 v1209：Google の評価・口コミ（Places API（新））を押したときだけ・見られる店だけ・回数の上限（Moto さん 11/23 10:49 HST の依頼・Claude（Personal・Claude Code）・ブランチ `claude/google-places-1209`・#215（`d4cd923`）の上・SQL `20261215090000`・関数 google-reviews・アプリ 1209・本番未反映）
+
+- 依頼：各店の Google の評価・件数・口コミ（最大 5 件・関連性の順と明記）・帰属表示・投稿者・元の口コミのリンク。鍵はサーバーだけ・今の認証と店の閲覧権限・登録済みの店だけ・回数を決める・要る項目だけ。Moto さんは Places API (New)・API の制限・Secrets `GOOGLE_PLACES_API_KEY` を済ませていた（Application restrictions は None）。仕様：`docs/GOOGLE_PLACES_V1209_JA.md`。入れる一式：`deploy/google-places-v1209/`（① → ② SQL → ③ → ④ 関数（1 ファイル・鍵なし）→ マージ・戻す.md）。
+- v1157（本番）の問題：会議のカードを描くたびに Places を呼んでいた（料金）・関数に入れる人ならどの店でも見られた・結べる店を形だけで確かめていた。
+- 直し：アプリは「Google の評価と口コミを見る」を押したときだけ（会議のカード・KPI設定の表・このタブのメモリに 10 分）。サーバーは見られる店だけ（CEO・GM・経理・事務Crew と確かめた Head Chef は全店・ほかは whoami の stores ∪ am_stores。KPI の答え・月の口コミも）・店舗マスターにある店だけ結べる・Google を呼ぶ前に SQL `gr_places_take` で数える（1 日 40・1 店 10・1 人 25・月 900／探す 1 日 40・月 400・太平洋時間・断られた回も数える）・項目は表示に要るものだけ＋帰属。口コミのリンクは https の Google のアドレスだけ。GM・CEO は住所の目安で候補を照らす・まとめて探す。
+- Application restrictions：Supabase の Edge Functions は出ていく IP が決まっていない → IP の制限は固定 IP の中継が無いと使えない・リファラー／アプリの制限は合わない → 「なし」のまま、API の制限＋Secrets だけ＋Google Cloud の割り当てと予算のアラートで守る（手順.md の B）。
+- 料金：Place Details Enterprise + Atmosphere 月 1,000 回まで無料・超えると 1,000 回 25 ドル／Text Search Pro 月 5,000 回まで無料・32 ドル（請求先アカウントごと・区分ごと）。上限だけなら無料の範囲。
+- 試験（合成データ）：google-places-server 8（わざと壊す 15/15）・google-places-deploy 5・v1157 の server 15・app 13・deploy 5（v1209 に合わせた）・career-score-q4-ui の版の確かめを 1208 以上に・版を見る 61 ファイルの失敗は d4cd923 と同じ 6 件だけ・static release pass/1209。CI に足した。実機・本物の Google は未確認。
+- 確認事項（Moto さん）：店の place ID（GM・CEO が画面で選ぶ。Claude は Google マップを開けず未照合）・LaLa が Google マップにあるか・ToriTon と Tenkichi／Totoya Piikoi と LaLa は同じ建物・Google の決まりの利用規約とプライバシーポリシー・上限の数・Head Chef／経理／事務Crew に全店。
+- 独立レビューは無し。Codex のレビューはまだ。
+- 次：PR → Codex → #211 → #213 → #212 → #214 → #215 → この PR の順にマージ → Moto さんが手順.md（SQL・関数・Google Cloud の割り当てと予算）→ 端末を 1209 に → GM・CEO が店を選ぶ。
+
 ## 2026-11-23 Career Score 2026 Q4 段階 3-2：画面（UI案99）・Q4 から前の採点を止める・Q4 の賞与 ①（Moto さん 11/22 23:09 HST「次お願いします」・Claude（Personal・Claude Code）・ブランチ `claude/career-score-q4-ui`・#214（`a79738b`）の上・アプリ 1208・SQL と関数は変えていない・本番未反映）
 
 - 仕様：`docs/CAREER_SCORE_Q4_JA.md` の 8。UI案99 の答え（1 A・2 A・3 B・4〜8 A）どおり。

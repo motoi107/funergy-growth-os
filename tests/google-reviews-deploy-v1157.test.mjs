@@ -3,6 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import { createHash } from 'node:crypto';
 
 const { PGlite } = await import(process.env.BOT_PGLITE_MODULE || './runtime/node_modules/@electric-sql/pglite/dist/index.js');
 const D = new URL('../deploy/google-reviews-v1157/', import.meta.url);
@@ -16,7 +17,11 @@ test('the SQL to paste is the migration, letter for letter; the one-file functio
   const fn = read('4_関数_google-reviews_index.ts');
   assert.ok(fn.startsWith('// @ts-nocheck\n'), 'no type check on the plain JavaScript');
   const body = fn.split('\n').slice(4).join('\n');   // 先頭の 4 行（ts-nocheck・説明 2 行・空行）を除く
-  assert.equal(body, HANDLER + '\nDeno.serve(createHandler({ env: (key) => Deno.env.get(key) }));\n', 'the handler, unchanged, then the same serve line as index.ts');
+  // v1209 で handler が変わった。v1157 の 1 ファイルは本番に入れたときのまま（中身を sha256 で固定）。
+  // 今の handler の 1 ファイルは deploy/google-places-v1209（tests/google-places-deploy-v1209.test.mjs）
+  assert.equal(createHash('sha256').update(fn).digest('hex'), 'ed60d3a93f98c67d7782e36baafcf99c09643db89bc3a1884d8d4218f6516de1', 'the v1157 one-file as it was delivered');
+  assert.ok(body.endsWith('\nDeno.serve(createHandler({ env: (key) => Deno.env.get(key) }));\n'), 'the same serve line as index.ts');
+  void HANDLER;
   assert.match(INDEX, /Deno\.serve\(createHandler\(\{ env: \(key: string\) => Deno\.env\.get\(key\) \}\)\);/);
   assert.doesNotMatch(fn, /^import /m, 'one file: nothing to import');
   const h = read('手順.md');

@@ -1,5 +1,12 @@
 # 改修・自動化の作業記録
 
+## 2026-11-23 Google の評価・口コミ（Places API（新）・v1209）
+
+1. 済（Claude・ブランチ `claude/google-places-1209`）：押したときだけ・見られる店だけ・店舗マスターの店だけ・回数の上限・帰属表示（`docs/GOOGLE_PLACES_V1209_JA.md`・`deploy/google-places-v1209/`）。試験・わざと壊す 15/15。
+2. 次：PR → Codex → #215 のあとにマージ → Moto さんが手順.md（① → ② → ③ → ④）→ Google Cloud の割り当て（1 日 60 回くらい）と予算のアラート → 端末を 1209 に → GM・CEO が店を選ぶ（LaLa が Google マップにあるか）。
+3. Moto さんの判断：利用規約とプライバシーポリシー（Google の決まり）・上限の数・Head Chef／経理／事務Crew に全店を見せるか。
+4. あとで（要るなら）：固定 IP の中継で IP の制限・店の Google の評価だけの新しいページ（UI 案から）。
+
 ## 2026-11-23 Career Score 2026 Q4 段階 3-2（画面・前の採点を止める・Q4 の賞与 ①）
 
 1. 済（Claude・ブランチ `claude/career-score-q4-ui`）：アプリ 1208（`docs/CAREER_SCORE_Q4_JA.md` の 8）・試験 16・わざと壊す 22/22・Chromium 38/38。済：PR #215。次：Codex → #211 → #213 → #212 → #214 → この PR → 端末を 1208 に → 実機（iPhone で採点・PC で確定）。

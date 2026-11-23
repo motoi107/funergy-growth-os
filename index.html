@@ -50214,7 +50214,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1208';
+const APP_VERSION = '1209';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -122679,7 +122679,12 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
    ・Places API：店の総合評価・件数・Google が返す最近の口コミ（最大 5 件）。Google の決まりで残せないので、見るときに取ってこのタブのメモリだけに置く。
    ・Business Profile API：自分の店の口コミを毎日 4:30（ハワイ）にサーバーが取って残す。結んだ店は会議の実績（その月の平均・件数）が自動になり、手入力は使わない。
      つなぐまで（Google の審査待ちのあいだも）は今までどおり手入力。
-   ・この端末（共通データ・localStorage・IndexedDB）には何も書かない。ログアウトで世代を進めて捨てる。 */
+   ・この端末（共通データ・localStorage・IndexedDB）には何も書かない。ログアウトで世代を進めて捨てる。
+   v1209（docs/GOOGLE_PLACES_V1209_JA.md・Moto さん 11/23 10:49 HST の依頼）：
+   ・Places は「Google の評価と口コミを見る」を押したときだけ取る（前は会議のカードを描くたびに取っていた＝Google の料金）。
+   ・出すのは評価・口コミの件数・Google が関連性の高い順に選んだ口コミ（最大 5 件・新しい順ではない）。投稿者（写真・名前・プロフィール）・
+     元の口コミ・報告のリンク・「Google Maps」の表示（Google の決まり）。取ったものはこのタブのメモリだけ・10 分か、会議と KPI設定から離れたら捨てる。
+   ・サーバーは見られる店だけ・回数の上限（SQL 20261215090000）。GM・CEO は店を選ぶ画面で住所の目安と照らせる。 */
 (function(){
   'use strict';
   var W = window, D = document;
@@ -122706,6 +122711,9 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     bp_failed:['Business Profile から読めませんでした','Could not read from Business Profile'],
     bp_auth_revoked:['Google で許可が取り消されました。つなぎ直してください','Access was revoked in Google. Connect again'],
     gr_missing:['Google の口コミのサーバー（SQL）がまだ入っていません（Moto さんに知らせてください）','The Google reviews database is not set up yet (tell Moto)'],
+    gr_old:['Google の口コミのサーバー（SQL）が前の版です（v1209 の SQL を入れてください・Moto さんに知らせてください）','The Google reviews database is an older version (it needs the v1209 SQL; tell Moto)'],
+    forbidden_store:['この店の Google の評価は見られません（見られる店だけ・サーバーで確かめました）','You cannot see this store’s Google rating (only stores you can see; checked by the server)'],
+    unknown_store:['店舗マスターに無い店です（店を選び直してください）','This store is not in the store master'],
     fn_missing:['Google の口コミのサーバー（関数 google-reviews）がまだ入っていません（Moto さんに知らせてください）','The Google reviews server (google-reviews) is not set up yet (tell Moto)'],
     network:['Google の口コミのサーバーにつながりません（通信を確かめてください）','Cannot reach the Google reviews server (check the network)']
   };
@@ -122723,12 +122731,36 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   };
   function T(ja, en){ try{ return typeof t === 'function' ? t(ja, en) : ja; }catch(e){ return ja; } }
   function esc(s){ return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
-  function errText(code, status){
+  /* v1209：回数の上限（サーバーの gr_places_take）。日は太平洋時間で変わる（Google の割り当てと同じ） */
+  function capText(x){
+    var cap = x && x.cap, max = x && Number.isInteger(x.max) ? x.max : null, mx = max != null ? T('（' + max + ' 回）',' (' + max + ')') : '';
+    if (cap === 'month') return T('今月の Google への問い合わせの上限' + mx + 'に達しました。来月まで取れません（GM・CEO が上限を変えられます）','This month’s limit of requests to Google' + mx + ' is reached. Not available until next month (GM and CEO can change the limit)');
+    if (cap === 'day') return T('今日の Google への問い合わせの上限' + mx + 'に達しました。太平洋時間の 0 時（ハワイの 21〜22 時）に戻ります','Today’s limit of requests to Google' + mx + ' is reached. It resets at midnight Pacific time');
+    if (cap === 'store') return T('この店の今日の上限' + mx + 'に達しました。太平洋時間の 0 時に戻ります','Today’s limit for this store' + mx + ' is reached. It resets at midnight Pacific time');
+    if (cap === 'person') return T('あなたの今日の上限' + mx + 'に達しました。太平洋時間の 0 時に戻ります','Your limit for today' + mx + ' is reached. It resets at midnight Pacific time');
+    return T('Google への問い合わせの上限に達しました','The limit of requests to Google is reached');
+  }
+  function errText(code, status, extra){
+    if (code === 'places_cap') return capText(extra);
     if (Object.prototype.hasOwnProperty.call(ERR, code)) return T(ERR[code][0], ERR[code][1]);
     var c = /^[a-z_]{1,40}$/.test(String(code || '')) ? code : '';
     return T('うまくいきませんでした','Something went wrong') + (c ? '（' + c + '）' : (status ? '（HTTP ' + status + '）' : ''));
   }
-  function mk(code, status){ var e = new Error(errText(code, status)); e.code = code; e.status = status || 0; return e; }
+  function mk(code, status, extra){ var e = new Error(errText(code, status, extra)); e.code = code; e.status = status || 0; e.extra = (extra && typeof extra === 'object') ? { cap:extra.cap, max:extra.max } : null; return e; }
+  /* v1209：https の Google のアドレスだけをリンクにする（サーバーでも確かめている・二重の守り） */
+  function gurl(v){
+    if (typeof v !== 'string' || !v || v.length > 600 || /[\u0000-\u001f\u007f\s]/.test(v)) return '';
+    try { var u = new URL(v), h = u.hostname.toLowerCase();
+      if (u.protocol !== 'https:' || u.username || u.password) return '';
+      return (h === 'google.com' || /\.google\.com$/.test(h) || /\.googleusercontent\.com$/.test(h) || /\.ggpht\.com$/.test(h) || h === 'goo.gl' || h === 'maps.app.goo.gl') ? v : '';
+    } catch(e) { return ''; }
+  }
+  function hurl(v){
+    if (typeof v !== 'string' || !v || v.length > 600 || /[\u0000-\u001f\u007f\s]/.test(v)) return '';
+    try { var u = new URL(v); return (u.protocol === 'https:' && !u.username && !u.password) ? v : ''; } catch(e) { return ''; }
+  }
+  function lnk(u, inner, cls){ return '<a' + (cls ? ' class="' + cls + '"' : '') + ' href="' + esc(u) + '" target="_blank" rel="noopener nofollow">' + inner + '</a>'; }
+  function langOf(){ try{ return curLang === 'en' ? 'en' : 'ja'; }catch(e){ return 'ja'; } }
   function toast(m, k){ try{ if (typeof showToast === 'function') showToast(m, k || 'info'); }catch(e){} }
   function pinTok(){ var w = W._hwSession; return (typeof w === 'string' && w) ? w : null; }
   function canUse(){ try{ return !curStoreLogin && !!curRole && !!pinTok(); }catch(e){ return false; } }
@@ -122744,7 +122776,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   function stars(n){ n = Math.max(0, Math.min(5, Math.round(Number(n) || 0))); return '★★★★★'.slice(0, n) + '☆☆☆☆☆'.slice(0, 5 - n); }
 
   function fresh(gen){ return { gen:gen || 0, tok:null, st:'', who:null, kpi:null, kpiAt:0, kpiFail:0, kpiP:null, kpiErr:'',
-    status:null, statusSt:'', statusErr:'', statusP:null, statusFail:0, now:{}, month:{}, busy:'', search:null, locs:null, timer:null }; }
+    status:null, statusSt:'', statusErr:'', statusP:null, statusFail:0, now:{}, month:{}, busy:'', search:null, bulk:null, locs:null, timer:null }; }
   var G = fresh(0);
   W._grState = function(){ return G; };
 
@@ -122760,7 +122792,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     try { j = await r.json(); } catch(e) { j = null; }
     if (g !== G.gen || pinTok() !== tok) throw mk('signin_changed');
     if (r.status === 404 && !(j && j.error)) { G.st = 'missing'; throw mk('fn_missing', 404); }
-    if (!r.ok) { var code = (j && typeof j.error === 'string') ? j.error : ''; if (code === 'gr_missing') G.st = 'sql'; throw mk(code, r.status); }
+    if (!r.ok) { var code = (j && typeof j.error === 'string') ? j.error : ''; if (code === 'gr_missing') G.st = 'sql'; throw mk(code, r.status, j); }
     if (G.st === 'missing' || G.st === 'sql') G.st = '';
     return j;
   }
@@ -122786,6 +122818,12 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
         if (w.firstElementChild) el.replaceWith(w.firstElementChild);
       });
       Array.prototype.forEach.call(D.querySelectorAll('[data-grtab]'), function(el){ el.outerHTML = W.grTabHtml(); });
+      /* v1209：KPI設定の「評価と口コミを見る」の窓 */
+      Array.prototype.forEach.call(D.querySelectorAll('[data-grplm]'), function(el){
+        var s2 = String(el.getAttribute('data-grplm') || '');
+        if (sid && sid !== '-' && s2 !== sid) return;
+        if (sidOk(s2)) el.innerHTML = placesSection(s2);
+      });
     }catch(e){}
   }
 
@@ -122833,22 +122871,81 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     return { rating:isFinite(r) ? r : null, total:isFinite(n) ? n : null, at:o.at || null };
   };
 
-  /* ---------------------------------------------------------------- Places（見るときに取る・残さない） */
-  function loadNow(sid, force){
+  /* ---------------------------------------------------------------- Places（押したときだけ取る・残さない）
+     v1209：前は会議のカードを描くたびに取っていた（Google の料金）。いまは「Google の評価と口コミを見る」を押したときだけ。
+     取ったものはこのタブのメモリだけ。10 分たつか、会議・KPI設定から離れたら捨てる（また押すと取る）。 */
+  function nowEntry(sid){
+    var e = G.now[sid];
+    if (e && e.st !== 'loading' && nowMs() - e.at >= NOW_MS) { delete G.now[sid]; e = null; }
+    return e || null;
+  }
+  function onGrPage(){ try{ return curPage === 'meeting' || curPage === 'kpi_master'; }catch(e){ return false; } }
+  function purgeNow(){
+    var keep = onGrPage(), gone = false;
+    Object.keys(G.now).forEach(function(k){ var e = G.now[k]; if (!e || e.st === 'loading') return; if (!keep || nowMs() - e.at >= NOW_MS) { delete G.now[k]; gone = true; } });
+    if (gone && keep) patchCards('');
+  }
+  function loadNow(sid){
     if (!canUse() || !sidOk(sid) || G.st === 'missing' || G.st === 'sql') return;
     var e = G.now[sid];
-    if (e && (e.st === 'loading' || (!force && nowMs() - e.at < (e.st === 'ok' ? NOW_MS : FAIL_MS)))) return;
-    var g = G.gen;
-    G.now[sid] = { st:'loading', at:nowMs(), data:e ? e.data : null, err:'' };
-    api({ action:'places_now', store:sid }).then(function(j){
+    if (e && e.st === 'loading') return;
+    var g = G.gen, lang = langOf();
+    G.now[sid] = { st:'loading', at:nowMs(), data:null, err:'' };
+    api({ action:'places_now', store:sid, lang:lang }).then(function(j){
       if (g !== G.gen) return;
-      G.now[sid] = { st:'ok', at:nowMs(), data:j, err:'' }; patchCards(sid);
+      G.now[sid] = { st:'ok', at:nowMs(), data:(j && typeof j === 'object') ? j : null, err:'' }; patchCards(sid);
     }, function(err){
       if (g !== G.gen) return;
-      G.now[sid] = { st:'err', at:nowMs(), data:null, err:err.code || 'error' }; patchCards(sid);
+      G.now[sid] = { st:'err', at:nowMs(), data:null, err:err.code || 'error', extra:err.extra || null }; patchCards(sid);
     });
   }
-  W.grRetryNow = function(sid){ loadNow(sid, true); patchCards(sid); };
+  W.grLoadPlaces = function(sid){ loadNow(sid); patchCards(sid); };
+  W.grPurgeNow = purgeNow;
+  W.grRetryNow = W.grLoadPlaces;
+  /* Google マップの店を結んであるか（KPI の答えの places。読めていなければ null＝分からない） */
+  function placeKnown(sid){ var k = G.kpi; if (!k || !Array.isArray(k.places)) return null; return k.places.indexOf(sid) >= 0; }
+  function placesRow(x){
+    var au = gurl(x.author_uri), ph = gurl(x.author_photo), rv = gurl(x.uri), fl = gurl(x.flag);
+    var who = (typeof x.author === 'string' && x.author) ? x.author : T('Google のユーザー','Google user');
+    var img = ph ? '<img class="gr-av" src="' + esc(ph) + '" alt="" width="24" height="24" loading="lazy" referrerpolicy="no-referrer">'
+      : '<span class="gr-av gr-av0" aria-hidden="true">' + esc(Array.from(who)[0] || '?') + '</span>';
+    var when = x.relative ? esc(x.relative) : (x.time ? esc(hstDate(x.time)) : '');
+    return '<div class="gr-rv"><div class="gr-rv-h">' + (au ? lnk(au, img, 'gr-avl') : img) + (au ? lnk(au, esc(who), 'gr-who') : '<span class="gr-who">' + esc(who) + '</span>')
+      + '<span class="gr-st" aria-label="' + esc((x.rating || 0) + ' / 5') + '">' + stars(x.rating) + '</span>'
+      + (when ? '<span class="k2-note">' + when + '</span>' : '') + '</div>'
+      + (x.text ? '<div class="gr-rv-t"' + ((typeof x.lang === 'string' && /^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})?$/.test(x.lang)) ? ' lang="' + esc(x.lang) + '"' : '') + '>' + esc(x.text) + '</div>' : '<div class="gr-rv-t k2-note">' + T('（星だけ）','(stars only)') + '</div>')
+      + ((rv || fl) ? '<div class="gr-rv-l">' + (rv ? lnk(rv, T('Google マップで見る','View on Google Maps')) : '') + (fl ? lnk(fl, T('報告','Report')) : '') + '</div>' : '')
+      + '</div>';
+  }
+  /* 店の評価・件数・口コミ（Google が関連性の高い順に選んだもの）と帰属表示 */
+  function placesView(d){
+    var rs = Array.isArray(d.reviews) ? d.reviews : [], mu = gurl(d.uri);
+    var rt = Number(d.rating), ok = d.rating != null && isFinite(rt);
+    var h = '<div class="gr-pv"><div class="gr-pv-h">' + (d.name ? '<b>' + esc(d.name) + '</b>' : '')
+      + (ok ? '<span class="gr-st" aria-label="' + esc(rt.toFixed(1) + ' / 5') + '">' + stars(rt) + '</span><b>' + rt.toFixed(1) + '</b>' : '<span class="k2-note">' + T('評価なし','No rating') + '</span>')
+      + (d.count != null ? '<span class="k2-note">' + T('口コミ ' + d.count + ' 件', d.count + ' reviews') + '</span>' : '')
+      + (mu ? lnk(mu, T('Google マップで見る','View on Google Maps'), 'k2-note') : '') + '</div>'
+      + (d.address ? '<div class="k2-note">' + esc(d.address) + '</div>' : '')
+      + '<div class="k2-note gr-pv-o">' + T('Google が関連性の高い順に選んだ口コミです（新しい順ではありません）。最大 5 件で、すべての口コミではありません。','Reviews selected by Google in order of relevance (not newest first). Up to 5; not all reviews.') + '</div>';
+    h += rs.length ? '<div class="gr-list">' + rs.map(placesRow).join('') + '</div>' : '<div class="k2-note">' + T('Google が返した口コミはありません','Google returned no reviews') + '</div>';
+    var at = (Array.isArray(d.attributions) ? d.attributions : []).filter(function(a){ return a && typeof a.provider === 'string' && a.provider; })
+      .map(function(a){ var u = hurl(a.uri); return u ? lnk(u, esc(a.provider)) : esc(a.provider); }).join('・');
+    h += '<div class="gr-pv-f"><span class="gr-gm" translate="no">Google Maps</span>' + (at ? '<span class="k2-note">' + at + '</span>' : '')
+      + (d.at ? '<span class="k2-note">' + T('取った時刻 ' + hstTime(d.at) + '（ハワイ）','Read ' + hstTime(d.at) + ' (Hawaii)') + '</span>' : '') + '</div>';
+    return h + '</div>';
+  }
+  function placesSection(sid){
+    var e = nowEntry(sid), d = e && e.data, sq = esc(sid);
+    var btn = '<button class="btn btn-secondary btn-sm" onclick="grLoadPlaces(\'' + sq + '\')"><i class="ti ti-brand-google"></i> ' + T('Google の評価と口コミを見る','See Google rating and reviews') + '</button>';
+    if (e && e.st === 'ok' && d && d.linked) return placesView(d);
+    if (e && e.st === 'ok') return '<div class="k2-note">' + T('Google マップの店がまだ選ばれていません（GM・CEO が KPI設定 › Google の口コミ で選びます）','No Google Maps place is picked yet (GM or CEO picks it in KPI settings › Google reviews)') + '</div>';
+    if (e && e.st === 'loading') return '<div class="k2-note">' + T('Google から取っています…','Reading from Google…') + '</div>';
+    if (e && e.st === 'err') return '<div class="k2-note" style="color:var(--red)">' + esc(errText(e.err, 0, e.extra)) + '</div>'
+      + (e.err === 'places_cap' || e.err === 'forbidden_store' ? '' : '<div style="margin-top:4px">' + btn + '</div>');
+    if (placeKnown(sid) === false) return '<div class="k2-note">' + T('Google マップの店がまだ選ばれていません（GM・CEO が KPI設定 › Google の口コミ で選びます）','No Google Maps place is picked yet (GM or CEO picks it in KPI settings › Google reviews)') + '</div>';
+    return btn + '<div class="k2-note" style="margin-top:4px">' + T('押したときだけ Google から取ります（1 回ごとに Google の料金の対象・10 分たつと消えます）','Read from Google only when pressed (each read counts toward Google’s billing; cleared after 10 minutes)') + '</div>';
+  }
+  W.grPlacesHtml = function(sid){ return sidOk(sid) ? placesSection(sid) : ''; };
   /* その月の口コミ（自動の店だけ・すべて・新しい順） */
   function loadMonth(sid, ym, force){
     if (!canUse() || !sidOk(sid) || !ymOk(ym)) return;
@@ -122912,8 +123009,8 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     var col = _meetStatColor(st), diff = (avg != null && tgt != null) ? _meetDiffStr('google', avg, tgt, false, '', false) : '';
     /* 総合評価：自動の店は Business Profile の数、ほかは Places（見るとき・Google の料金がかかるので要るときだけ）、どちらも無ければ手入力 */
     var bpo = auto ? W.grOverallOf(sid) : null;
-    if (use && !bpo) loadNow(sid);
-    var nw = bpo ? null : (G.now[sid] || null), nd = nw && nw.st === 'ok' ? nw.data : (nw && nw.data) || null;
+    /* v1209：ここでは取らない（「Google の評価と口コミを見る」を押したときだけ） */
+    var nw = nowEntry(sid), nd = nw && nw.st === 'ok' ? nw.data : null;
     var linked = !!(nd && nd.linked);
     var ovr = bpo ? bpo.rating : (linked && nd.rating != null ? nd.rating : _k2Num(man.reviewScore));
     var ovrN = bpo ? bpo.total : (linked && nd.count != null ? nd.count : _k2Num(man.gTotalCnt));
@@ -122921,7 +123018,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     var chip = auto ? T('自動（Google）','Auto (Google)') : (linked ? T('総合評価は自動・月の平均は手入力','Overall auto · month average manual') : T('手入力','Manual'));
     var can = (typeof canSetKpiStore === 'function') && canSetKpiStore(sid);
     var off = (typeof _ymToOffset === 'function') ? _ymToOffset(ym) : 0;
-    var url = (linked && nd.uri) ? nd.uri : k2GoogleUrl(store);
+    var url = (linked && gurl(nd.uri)) ? gurl(nd.uri) : k2GoogleUrl(store);
     var h = '<div class="card" data-grcard="' + esc(sid + '|' + ym) + '"><div class="card-title" style="flex-wrap:wrap;row-gap:4px"><i class="ti ti-brand-google" style="color:var(--accent)"></i><span style="white-space:nowrap">' + T('Googleレビュー','Google reviews') + '</span>'
       + '<span class="k2-chip" style="margin-left:auto;color:' + (auto ? 'var(--green)' : 'var(--muted)') + ';background:var(--surface2)">' + chip + '</span></div>'
       + '<div class="k2-gcols">'
@@ -122955,20 +123052,12 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       if (kst === 'expired' || kst === 'error' || kst === 'pending') h += '<div class="k2-note" style="margin-top:8px;color:var(--red)">'
         + T('いまは Google から取れていません（KPI設定 › Google の口コミ で確かめてください）。','Not reading from Google right now (check KPI settings › Google reviews).')
         + (G.kpi.last_ok_at ? T('最後に取れた時刻 ' + hstTime(G.kpi.last_ok_at) + '（ハワイ）',' Last read ' + hstTime(G.kpi.last_ok_at) + ' (Hawaii)') : '') + '</div>';
+      if (use) h += '<div class="gr-plw" style="margin-top:10px">' + placesSection(sid) + '</div>';
       h += '<div class="k2-note" style="margin-top:8px;line-height:1.6">' + T('Business Profile から毎日 4:30（ハワイ時間）に取ります。月はハワイ時間の投稿日で決めます。星だけの口コミも数えます。','Read from Business Profile every day at 4:30 (Hawaii time). The month is the posting date in Hawaii time; star-only reviews count.')
         + (kr && kr.at ? T('（総合評価 ' + hstTime(kr.at) + ' 時点）',' (overall as of ' + hstTime(kr.at) + ')') : '') + '</div>';
     } else {
-      /* Business Profile をつなぐまで：月の平均は手入力。Google が返す最近の口コミ（最大 5 件）は見るだけ（残さない） */
-      var pr = (linked && Array.isArray(nd.reviews)) ? nd.reviews : [];
-      var inMonth = pr.filter(function(x){ return hstYm(x.time) === ym; });
-      if (linked) {
-        h += '<div class="k2-note" style="margin-top:10px;font-weight:700;color:var(--tm)">' + T('Google が返す最近の口コミ（最大 5 件・この月の分 ' + inMonth.length + ' 件）','Recent reviews from Google (up to 5 · ' + inMonth.length + ' this month)') + '</div>';
-        if (pr.length) h += '<div class="gr-list" style="max-height:320px;overflow:auto">' + pr.map(function(x){ return reviewRow(x, 'places'); }).join('') + '</div>';
-        else h += '<div class="k2-note">' + T('口コミはありません','No reviews') + '</div>';
-        h += '<div class="k2-note" style="margin-top:4px">' + T('Google マップのデータ・見るたびに Google から取ります（Google の決まりで残しません）','Google Maps data · read from Google each time (not stored, per Google’s terms)') + (nd.at ? '・' + esc(hstTime(nd.at)) : '') + '</div>';
-      } else if (nw && nw.st === 'err') {
-        h += '<div class="k2-note" style="margin-top:8px;color:var(--red)">' + esc(errText(nw.err)) + ' <button class="btn btn-secondary btn-sm" onclick="grRetryNow(\'' + esc(sid) + '\')">' + T('もう一度','Retry') + '</button></div>';
-      }
+      /* Business Profile をつなぐまで：月の平均は手入力。Google の評価と口コミ（関連性の順・最大 5 件）は押したときだけ見る（残さない） */
+      if (use) h += '<div class="gr-plw" style="margin-top:10px">' + placesSection(sid) + '</div>';
       h += '<div class="k2-note" style="margin-top:8px;line-height:1.6">' + T('月はハワイ時間の投稿日で決めます。星だけの口コミも数えます。Business Profile をつなぐまでは、Google の画面で数えて「KPI設定 › 実績入力/対象指定」に入れてください（つないだら自動になります）。',
         'The month is the posting date in Hawaii time; star-only reviews count. Until Business Profile is connected, count them on Google and enter them in KPI settings › Inputs (it becomes automatic once connected).') + '</div>';
     }
@@ -123019,8 +123108,10 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       + ' <button class="btn btn-secondary btn-sm" onclick="grReloadTab()">' + T('もう一度','Retry') + '</button></div>';
     /* つなぎ方 */
     h += '<div class="card"><div class="card-title"><i class="ti ti-plug-connected" style="color:var(--accent)"></i>' + T('つなぎ方','Connections') + '</div>'
-      + '<div class="gr-conn"><div><b>' + T('① 総合評価（Places API）','① Overall rating (Places API)') + '</b><div class="k2-note">' + T('店ごとに Google の店を選ぶと、会議に総合評価と Google が返す最近の口コミ（最大 5 件）が出ます。見るたびに Google から取ります（Google の決まりで残しません）。','Pick the Google place for each store to show the overall rating and up to 5 recent reviews in the meeting. Read from Google each time (not stored, per Google’s terms).') + '</div>'
-        + '<div class="k2-note" style="color:' + (who.places === false ? 'var(--red)' : 'var(--green)') + '">' + (who.places === false ? esc(errText('places_not_configured')) : T('サーバーに鍵が入っています','The server has the key')) + '</div></div>'
+      + '<div class="gr-conn"><div><b>' + T('① 総合評価（Places API）','① Overall rating (Places API)') + '</b><div class="k2-note">' + T('店ごとに Google マップの店を選ぶと、会議と下の表で「評価と口コミを見る」を押したときに、Google の評価・口コミの件数・Google が関連性の高い順に選んだ口コミ（最大 5 件・新しい順ではありません）を取って出します。押したときだけ取り、残しません（Google の決まり）。見られるのは自分が見られる店だけです。','Pick the Google Maps place for each store. When someone presses “See rating and reviews” in the meeting or below, the Google rating, the number of reviews and up to 5 reviews Google selects by relevance (not newest first) are read and shown. Read only when pressed and not stored (Google’s terms). Each person sees only the stores they can see.') + '</div>'
+        + '<div class="k2-note" style="color:' + (who.places === false ? 'var(--red)' : 'var(--green)') + '">' + (who.places === false ? esc(errText('places_not_configured')) : T('サーバーに鍵が入っています','The server has the key')) + '</div>'
+        + (mgr && who.fn != null && Number(who.fn) < 2 ? '<div class="k2-note" style="color:var(--red)">' + T('関数 google-reviews が前の版です（v1209 を入れると、見られる店だけ・回数の上限が効きます）','The google-reviews function is an older version (install v1209 for store scoping and limits)') + '</div>' : '')
+        + (mgr ? usageLine(S.usage) : '') + '</div>'
       + '<div><b>' + T('② その月の口コミ（Business Profile API）','② Reviews by month (Business Profile API)') + '</b><div class="k2-note">' + T('自分の店の口コミを毎日 4:30（ハワイ）に取って残し、結んだ店は会議の月の平均・件数が自動になります（手入力は使いません）。Google の審査が要ります。','Reads your own reviews every day at 4:30 (Hawaii) and keeps them; linked stores get the meeting month average and count automatically (no manual entry). Needs Google approval.') + '</div>'
         + '<div class="k2-note" style="color:' + bl[0] + '">' + bl[1] + (bp.connected && bp.account ? '・' + esc(bp.account) : '') + '</div>'
         + (bp.last_ok_at ? '<div class="k2-note">' + T('最後に取れた時刻 ','Last read ') + esc(hstTime(bp.last_ok_at)) + T('（ハワイ）',' (Hawaii)') + '</div>' : '')
@@ -123045,6 +123136,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       h += '<div class="gr-tr" role="row"><div><b>' + esc(s.name || s.id) + '</b><div class="k2-note">' + (isAuto ? '<span style="color:var(--green)">' + T('自動','Auto') + (fy ? T('（' + fy + ' から）',' (from ' + fy + ')') : '') + '</span>'
           : (x.loc && bp.connected ? T('手入力（初めて取り終えるまで）','Manual (until the first read)') : T('手入力','Manual'))) + '</div></div>'
         + '<div data-l="' + esc(T('Google の店（①）','Google place (①)')) + '">' + (x.place ? '<span style="color:var(--green)">' + T('選んであります','Set') + '</span>' : '<span class="k2-note">' + T('未設定','Not set') + '</span>')
+          + (x.place ? ' <button class="btn btn-secondary btn-sm" onclick="grPlacesOpen(\'' + sq + '\')">' + T('評価と口コミを見る','See rating and reviews') + '</button>' : '')
           + (mgr ? ' <button class="btn btn-secondary btn-sm" onclick="grSearchOpen(\'' + sq + '\')">' + (x.place ? T('変える','Change') : T('選ぶ','Pick')) + '</button>' + (x.place ? ' <button class="btn btn-secondary btn-sm" onclick="grPlaceUnset(\'' + sq + '\')">' + T('外す','Remove') + '</button>' : '') : '') + '</div>'
         + '<div data-l="' + esc(T('Business Profile の店（②）','Business Profile location (②)')) + '">' + (x.loc ? esc(x.title || T('結んであります','Linked')) : '<span class="k2-note">' + T('未設定','Not set') + '</span>')
           + ((mgr && bp.connected) ? ' <button class="btn btn-secondary btn-sm" onclick="grLocsOpen(\'' + sq + '\')">' + (x.loc ? T('変える','Change') : T('結ぶ','Link')) + '</button>' + (x.loc ? ' <button class="btn btn-secondary btn-sm" onclick="grLocUnset(\'' + sq + '\')">' + T('外す','Remove') + '</button>' : '') : '') + '</div>'
@@ -123052,6 +123144,9 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
         + '<div data-l="' + esc(T('今月の平均','This month')) + '">' + (mo ? (mo.avg != null ? '★' + mo.avg.toFixed(1) + ' <span class="k2-note">（' + mo.cnt + T(' 件',' reviews') + '）</span>' : '<span class="k2-note">' + T('まだなし','None yet') + '</span>') : '<span class="k2-note">' + T('手入力','Manual') + '</span>') + '</div>'
         + '</div>';
     });
+    var unl = list.filter(function(s){ return s && sidOk(s.id) && !(stores[s.id] && stores[s.id].place); });
+    if (mgr && unl.length) h += '</div><div style="margin-top:8px"><button class="btn btn-secondary btn-sm" ' + (G.busy ? 'disabled' : '') + ' onclick="grBulkOpen()"><i class="ti ti-search"></i> '
+      + T('Google マップの店の候補をまとめて探す（' + unl.length + ' 店）','Find Google Maps candidates for all (' + unl.length + ' stores)') + '</button>';
     h += '</div><div class="k2-note" style="margin-top:8px;line-height:1.6">' + T('Business Profile の店を結んで口コミを初めて取り終えると、その店は会議の実績（その月の平均・件数）が自動になり、手入力の欄は出なくなります（初めて取り終えた月の前の月から。それより前の月は手入力のまま）。つなぐまでと、Google の審査が通るまでは手入力です。','Once a store is linked to a Business Profile location and its reviews have been read once, the meeting actual (month average and count) becomes automatic and the manual fields go away (from the month before the first read; earlier months stay manual). Until connected and approved by Google, enter them by hand.') + '</div></div>';
     return h + '</div>';
   };
@@ -123065,14 +123160,46 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     catch(e) { toast(e.message || errText(e.code), 'error'); }
     finally { G.busy = ''; loadStatus(true); W.grLoadKpi(true); patchCards('-'); }
   }
+  /* v1209：住所の目安（公開されている店の住所・GM が Google マップで確かめる）。名前の目印で同じ建物の店を分ける */
+  var GR_HINT = {
+    'F01':   { q:'ToriTon 2334 S King St Honolulu', ad:'2334 S King St, Honolulu, HI 96826', no:'2334', st:'king', nm:'toriton' },
+    'F02':   { q:'Tenkichi 2334 S King St Honolulu', ad:'2334 S King St（2 階）, Honolulu, HI 96826', no:'2334', st:'king', nm:'tenkichi' },
+    'F04-K': { q:'Totoya Kaimuki 1127 12th Ave Honolulu', ad:'1127 12th Ave, Honolulu, HI 96816', no:'1127', st:'12th', nm:'totoya' },
+    'F04-P': { q:'Totoya Piikoi 436 Piikoi St Honolulu', ad:'436 Piikoi St, Honolulu, HI 96814', no:'436', st:'piikoi', nm:'totoya' },
+    'F04-A': { q:'Totoya Aiea 99-115 Aiea Heights Dr Aiea', ad:'99-115 Aiea Heights Dr, Aiea, HI 96701', no:'99-115', st:'aiea', nm:'totoya' },
+    'F05':   { q:'Marujuu 1145 12th Ave Honolulu', ad:'1145 12th Ave, Honolulu, HI 96816', no:'1145', st:'12th', nm:'marujuu' },
+    'F06':   { q:'LaLa 436 Piikoi St Honolulu', ad:'436 Piikoi St（2 階）, Honolulu, HI 96814', no:'436', st:'piikoi', nm:'lala', unsure:true }
+  };
+  W._grHint = function(sid){ return GR_HINT[sid] || null; };
+  function hintAddr(h){ return h ? h.ad : ''; }
+  /* 候補の住所・名前が目安と合うか：'ok'（住所と名前）・'addr'（住所だけ）・'no'（違う）・''（目安なし） */
+  function matchOf(sid, x){
+    var h = GR_HINT[sid]; if (!h || !x) return '';
+    var a = ' ' + String(x.address || '').toLowerCase().replace(/[,.]/g, ' ') + ' ', n = String(x.name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    var addr = a.indexOf(' ' + h.no + ' ') >= 0 && a.indexOf(h.st) >= 0;
+    return addr ? (n.indexOf(h.nm) >= 0 ? 'ok' : 'addr') : 'no';
+  }
+  function matchHtml(sid, x){
+    var m = matchOf(sid, x), h = GR_HINT[sid];
+    if (!m) return '<div class="k2-note">' + T('住所の目安がありません（Google マップで確かめてください）','No address hint (check on Google Maps)') + '</div>';
+    var txt = m === 'ok' ? T('住所と名前が目安と合っています','Address and name match the hint') : (m === 'addr' ? T('住所は合っています（同じ建物のほかの店かもしれません・名前を確かめてください）','The address matches (it may be another store in the same building; check the name)') : T('住所が目安と違います（確かめてください）','The address differs from the hint (check it)'));
+    return '<div class="gr-match ' + (m === 'ok' && !(h && h.unsure) ? 'gr-ok' : 'gr-warn') + '">' + txt + (h && h.unsure ? T('・LaLa は看板が無く、Google マップに店が無いことがあります',' · LaLa has no sign and may not be on Google Maps') : '') + '</div>';
+  }
+  function candHtml(sid, x, pick){
+    var u = gurl(x.uri), cl = x.status === 'CLOSED_PERMANENTLY' ? T('閉店（Google）','Permanently closed (Google)') : (x.status === 'CLOSED_TEMPORARILY' ? T('休業中（Google）','Temporarily closed (Google)') : '');
+    return '<div class="gr-pick"><div><b>' + esc(x.name) + '</b><div class="k2-note">' + esc(x.address) + '</div>'
+      + (cl ? '<div class="k2-note" style="color:var(--red)">' + cl + '</div>' : '') + matchHtml(sid, x)
+      + (u ? '<div>' + lnk(u, T('Google マップで確かめる','Check on Google Maps'), 'k2-note') + '</div>' : '') + '</div>' + pick + '</div>';
+  }
   W.grSearchOpen = function(sid){
     if (!sidOk(sid) || typeof openModal !== 'function') return;
-    var s = storeOf(sid);
+    var s = storeOf(sid), hn = GR_HINT[sid];
     G.search = { sid:sid, items:null, err:'' };
-    openModal('<div class="modal-title">' + T('Google の店を選ぶ','Pick the Google place') + '・' + esc(s.name || sid) + '</div>'
-      + '<div style="display:flex;gap:6px;margin:8px 0"><input class="form-input" id="gr-q" maxlength="120" value="' + esc((s.name || '') + ' Hawaii') + '" onkeydown="if(event.key===\'Enter\'&&!event.isComposing){event.preventDefault();grSearchRun();}">'
+    openModal('<div class="modal-title">' + T('Google マップの店を選ぶ','Pick the Google Maps place') + '・' + esc(s.name || sid) + '</div>'
+      + (hn ? '<div class="k2-note">' + T('住所の目安：','Address hint: ') + esc(hintAddr(hn)) + T('（公開されている住所から・Google マップで確かめてください）',' (from public information; check on Google Maps)') + '</div>' : '<div class="k2-note">' + T('この店の住所の目安はありません','No address hint for this store') + '</div>')
+      + '<div style="display:flex;gap:6px;margin:8px 0"><input class="form-input" id="gr-q" maxlength="120" value="' + esc(hn ? hn.q : ((s.name || '') + ' Honolulu Hawaii')) + '" onkeydown="if(event.key===\'Enter\'&&!event.isComposing){event.preventDefault();grSearchRun();}">'
       + '<button class="btn btn-primary btn-sm" onclick="grSearchRun()">' + T('探す','Search') + '</button></div>'
-      + '<div id="gr-res" class="k2-note">' + T('名前と地域で探して、合う店を選んでください','Search by name and area, then pick the matching place') + '</div>'
+      + '<div id="gr-res" class="k2-note">' + T('名前と住所で探して、住所が合う店を選んでください（1 回ごとに Google の料金の対象）','Search by name and address, then pick the place whose address matches (each search counts toward Google’s billing)') + '</div>'
       + '<div style="display:flex;justify-content:flex-end;margin-top:10px"><button class="btn btn-secondary" onclick="closeModalDirect()">' + T('閉じる','Close') + '</button></div>');
   };
   W.grSearchRun = async function(){
@@ -123082,27 +123209,98 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     if (box) box.textContent = T('探しています…','Searching…');
     var g = G.gen;
     try {
-      var j = await api({ action:'places_search', q:q });
+      var j = await api({ action:'places_search', q:q, lang:langOf() });
       if (g !== G.gen || G.search !== S0) return;
       S0.items = (j && Array.isArray(j.items)) ? j.items : [];
       if (!box) return;
       box.innerHTML = S0.items.length ? S0.items.map(function(x, i){
-        return '<div class="gr-pick"><div><b>' + esc(x.name) + '</b><div class="k2-note">' + esc(x.address) + '</div>'
-          + '<div class="k2-note">' + (x.rating != null ? '★' + Number(x.rating).toFixed(1) : '—') + (x.count != null ? '（' + x.count + '）' : '') + '</div></div>'
-          + '<button class="btn btn-primary btn-sm" onclick="grSearchPick(' + i + ')">' + T('この店にする','Use this') + '</button></div>';
-      }).join('') + '<div class="k2-note" style="margin-top:6px">' + T('Google マップのデータ','Google Maps data') + '</div>' : T('見つかりませんでした','Nothing found');
+        return candHtml(S0.sid, x, '<button class="btn btn-primary btn-sm" onclick="grSearchPick(' + i + ')">' + T('この店にする','Use this') + '</button>');
+      }).join('') + '<div class="gr-pv-f"><span class="gr-gm" translate="no">Google Maps</span></div>' : T('見つかりませんでした','Nothing found');
     } catch(e) { if (box && G.search === S0) box.textContent = e.message || errText(e.code); }
   };
   W.grSearchPick = function(i){
     var S0 = G.search, x = S0 && S0.items && S0.items[i];
     if (!x) return;
+    if (matchOf(S0.sid, x) === 'no' && !confirm(T('住所が目安と違います。この店にしますか？','The address differs from the hint. Use this place?'))) return;
     act('place', async function(){
       await api({ action:'places_set', store:S0.sid, place_id:x.place_id });
       delete G.now[S0.sid];
       try{ closeModalDirect(); }catch(e){}
-      toast(T('Google の店を選びました','The Google place is set'), 'success');
+      toast(T('Google マップの店を選びました','The Google Maps place is set'), 'success');
     });
   };
+  /* v1209：まだ選んでいない店の候補をまとめて探す（1 店 1 回・GM・CEO だけ・サーバーの上限あり） */
+  W.grBulkOpen = async function(){
+    if (!isMgr() || typeof openModal !== 'function' || G.busy) return;
+    var st = (G.status && G.status.stores) || {}, list = []; try{ list = (typeof kpiSettableStores === 'function' ? kpiSettableStores() : activeStores()) || []; }catch(e){ list = []; }
+    var todo = list.filter(function(s){ return s && sidOk(s.id) && !(st[s.id] && st[s.id].place); });
+    if (!todo.length) return;
+    if (!confirm(T('まだ選んでいない ' + todo.length + ' 店の候補を Google で探します（' + todo.length + ' 回・1 回ごとに Google の料金の対象。Text Search は月 5,000 回まで無料）。結んだ店は自分で選びます。続けますか？','Search Google for ' + todo.length + ' stores not picked yet (' + todo.length + ' searches; each counts toward Google’s billing; Text Search is free up to 5,000 a month). You still pick each place yourself. Continue?'))) return;
+    var B0 = { rows:todo.map(function(s){ return { sid:s.id, name:s.name || s.id, st:'wait', items:null, err:'', extra:null }; }) };
+    G.bulk = B0;
+    openModal('<div class="modal-title">' + T('Google マップの店の候補','Google Maps candidates') + '</div><div id="gr-bulk" style="margin:8px 0"></div>'
+      + '<div class="gr-pv-f"><span class="gr-gm" translate="no">Google Maps</span></div>'
+      + '<div style="display:flex;justify-content:flex-end;margin-top:10px"><button class="btn btn-secondary" onclick="closeModalDirect()">' + T('閉じる','Close') + '</button></div>');
+    var g = G.gen;
+    function paint(){
+      var box = D.getElementById('gr-bulk'); if (!box || G.bulk !== B0) return;
+      box.innerHTML = B0.rows.map(function(r, ri){
+        var hn = GR_HINT[r.sid];
+        var h = '<div class="gr-bk"><b>' + esc(r.name) + '</b>' + (hn ? '<div class="k2-note">' + T('住所の目安：','Address hint: ') + esc(hintAddr(hn)) + '</div>' : '<div class="k2-note">' + T('住所の目安なし','No address hint') + '</div>');
+        if (r.st === 'wait' || r.st === 'run') return h + '<div class="k2-note">' + (r.st === 'run' ? T('探しています…','Searching…') : T('順番待ち','Waiting')) + '</div></div>';
+        if (r.st === 'err') return h + '<div class="k2-note" style="color:var(--red)">' + esc(errText(r.err, 0, r.extra)) + '</div></div>';
+        if (r.st === 'done') return h + '<div class="k2-note" style="color:var(--green)">' + T('選びました','Set') + '</div></div>';
+        if (!r.items || !r.items.length) return h + '<div class="k2-note">' + T('見つかりませんでした（Google マップに店が無いかもしれません）','Nothing found (the store may not be on Google Maps)') + '</div></div>';
+        return h + r.items.map(function(x, i){ return candHtml(r.sid, x, '<button class="btn btn-primary btn-sm" onclick="grBulkPick(' + ri + ',' + i + ')">' + T('この店にする','Use this') + '</button>'); }).join('') + '</div>';
+      }).join('');
+    }
+    paint();
+    for (var i = 0; i < B0.rows.length; i++) {
+      var r = B0.rows[i];
+      if (g !== G.gen || G.bulk !== B0) return;
+      r.st = 'run'; paint();
+      var hn = GR_HINT[r.sid];
+      try {
+        var j = await api({ action:'places_search', q:hn ? hn.q : (r.name + ' Honolulu Hawaii'), lang:langOf() });
+        if (g !== G.gen || G.bulk !== B0) return;
+        r.items = (j && Array.isArray(j.items)) ? j.items : []; r.st = 'ok';
+      } catch(e) {
+        if (g !== G.gen || G.bulk !== B0) return;
+        r.st = 'err'; r.err = e.code || 'error'; r.extra = e.extra || null;
+        if (e.code === 'places_cap' || e.code === 'forbidden' || e.code === 'places_not_configured' || e.code === 'places_denied') {
+          for (var k = i + 1; k < B0.rows.length; k++) { B0.rows[k].st = 'err'; B0.rows[k].err = r.err; B0.rows[k].extra = r.extra; }
+          paint(); return;
+        }
+      }
+      paint();
+    }
+  };
+  W.grBulkPick = function(ri, i){
+    var B0 = G.bulk, r = B0 && B0.rows[ri], x = r && r.items && r.items[i];
+    if (!x || r.st !== 'ok') return;
+    if (matchOf(r.sid, x) === 'no' && !confirm(T('住所が目安と違います。この店にしますか？','The address differs from the hint. Use this place?'))) return;
+    act('place', async function(){
+      await api({ action:'places_set', store:r.sid, place_id:x.place_id });
+      delete G.now[r.sid]; r.st = 'done';
+      var box = D.getElementById('gr-bulk'); if (box && G.bulk === B0) { var row = box.children[ri]; if (row) row.innerHTML = '<b>' + esc(r.name) + '</b><div class="k2-note" style="color:var(--green)">' + T('選びました','Set') + '</div>'; }
+      toast(T(r.name + '：Google マップの店を選びました', r.name + ': the Google Maps place is set'), 'success');
+    });
+  };
+  /* v1209：KPI設定の表から、その店の評価と口コミを見る（押したときだけ取る） */
+  W.grPlacesOpen = function(sid){
+    if (!sidOk(sid) || typeof openModal !== 'function') return;
+    var s = storeOf(sid);
+    openModal('<div class="modal-title">' + T('Google の評価と口コミ','Google rating and reviews') + '・' + esc(s.name || sid) + '</div>'
+      + '<div data-grplm="' + esc(sid) + '" style="margin:8px 0">' + placesSection(sid) + '</div>'
+      + '<div style="display:flex;justify-content:flex-end;margin-top:10px"><button class="btn btn-secondary" onclick="closeModalDirect()">' + T('閉じる','Close') + '</button></div>');
+  };
+  /* GM・CEO：Google への問い合わせの回数（今日・今月・太平洋時間） */
+  function usageLine(u){
+    if (!u || typeof u !== 'object' || !u.now) return '';
+    var n = u.now, q = u.search || {}, num = function(v){ return isFinite(Number(v)) ? Number(v) : 0; };
+    return '<div class="k2-note">' + T('Google への問い合わせ（評価と口コミ）：今日 ' + num(n.day) + ' / ' + num(n.day_max) + ' 回・今月 ' + num(n.month) + ' / ' + num(n.month_max) + ' 回（店ごとに 1 日 ' + num(n.store_day_max) + ' 回・1 人 1 日 ' + num(n.person_day_max) + ' 回まで）・店を探す：今日 ' + num(q.day) + ' / ' + num(q.day_max) + ' 回・今月 ' + num(q.month) + ' / ' + num(q.month_max) + ' 回（日と月は太平洋時間）',
+      'Requests to Google (rating and reviews): today ' + num(n.day) + ' / ' + num(n.day_max) + ', this month ' + num(n.month) + ' / ' + num(n.month_max) + ' (per store ' + num(n.store_day_max) + ' a day, per person ' + num(n.person_day_max) + ' a day) · searches: today ' + num(q.day) + ' / ' + num(q.day_max) + ', this month ' + num(q.month) + ' / ' + num(q.month_max) + ' (Pacific time)') + '</div>';
+  }
   W.grPlaceUnset = function(sid){
     if (!sidOk(sid) || !confirm(T('この店の Google の店（総合評価）を外しますか？','Remove the Google place (overall rating) for this store?'))) return;
     act('place', async function(){ await api({ action:'places_set', store:sid, place_id:null }); delete G.now[sid]; toast(T('外しました','Removed'), 'success'); });
@@ -123169,7 +123367,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     var tok = pinTok();
     if (G.tok && G.tok !== tok) W.grReset();
     G.tok = tok;
-    if (!G.timer) { try{ G.timer = setInterval(function(){ if (!D.hidden) kick(); }, 60000); }catch(e){} try{ D.addEventListener('visibilitychange', onVis); }catch(e){} }
+    if (!G.timer) { try{ G.timer = setInterval(function(){ purgeNow(); if (!D.hidden) kick(); }, 60000); }catch(e){} try{ D.addEventListener('visibilitychange', onVis); }catch(e){} }
     W.grLoadKpi(false);
     /* Google のログインから戻ってきた：結果を知らせて、GM・CEO なら KPI設定の Google のタブへ */
     var back = W._grBack; W._grBack = null;
@@ -123196,6 +123394,14 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
         + '.gr-table .gr-tr{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1.4fr) minmax(0,1.6fr) minmax(0,.8fr) minmax(0,1fr);gap:8px;padding:9px 0;border-top:1px solid var(--border);font-size:12.5px;align-items:center}'
         + '.gr-table .gr-th{font-weight:700;color:var(--muted);border-top:0;font-size:11.5px}'
         + '.gr-pick{display:flex;gap:10px;justify-content:space-between;align-items:center;padding:8px 0;border-top:1px solid var(--border)}'
+        + '.gr-pv-h{display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:13px}.gr-pv-o{margin-top:4px;line-height:1.6}'
+        + '.gr-av{width:24px;height:24px;border-radius:50%;object-fit:cover;flex:none;display:inline-block}.gr-av0{background:var(--surface2);color:var(--muted);font-size:12px;line-height:24px;text-align:center}'
+        + '.gr-avl{display:inline-flex}.gr-who{font-weight:700;font-size:12.5px}'
+        + '.gr-rv-l{display:flex;gap:12px;flex-wrap:wrap;margin-top:2px;font-size:11.5px}'
+        + '.gr-pv-f{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:6px}'
+        + '.gr-gm{font-family:Roboto,Arial,sans-serif;font-weight:400;font-size:12px;color:#5E5E5E;white-space:nowrap;letter-spacing:normal}'
+        + '.gr-match{font-size:11.5px;margin-top:2px}.gr-ok{color:var(--green)}.gr-warn{color:var(--amber, #b7791f)}'
+        + '.gr-bk{padding:8px 0;border-top:1px solid var(--border)}.gr-bk:first-child{border-top:0}'
         + '@media (max-width:820px){.gr-conn{grid-template-columns:minmax(0,1fr)}.gr-table .gr-tr{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}.gr-table .gr-th{display:none}.gr-table .gr-tr>div[data-l]::before{content:attr(data-l);display:block;font-size:10.5px;font-weight:700;color:var(--muted);margin-bottom:2px}}';
       (D.head || D.body).appendChild(cs);
     }

@@ -6,6 +6,12 @@
 // ・だれか：PIN のログインの印（本文の pin_session）を関数 work-requests の whoami に確かめてもらう（PIN を確かめるコードは入れない）。
 //   店のタブレット（店舗の PIN）は whoami が断る。決める・つなぐのは GM・CEO だけ。
 // ・鍵（Places の API キー・Business Profile の refresh token）は画面にも答えにも出さない。
+// v1209（docs/GOOGLE_PLACES_V1209_JA.md・Moto さん 11/23 10:49 HST の依頼）：
+// ・店の評価と口コミ（places_now）は、その人が見られる店だけ（work-requests の whoami の stores・am_stores。CEO・GM・経理・事務Crew と
+//   GM・CEO が確かめた Head Chef は全店）。Google を呼ぶ前に SQL の gr_places_take で回数を数え、上限なら呼ばない（費用の守り）。
+// ・取る項目は表示に要るものだけ（評価・件数・口コミ最大 5 件・Google マップのリンク・帰属表示）。口コミは Google が関連性の順で返すもの。
+// ・店を探す（places_search）は GM・CEO だけ・Text Search Pro の項目だけ（評価・件数は取らない）・オアフ島の近くを先に。
+// ・口コミの中のリンク（投稿者・写真・元の口コミ・報告）は https の Google のアドレスだけを返す。
 
 export function postgrestDb({ fetch, url, key }) {
   const h = { apikey: key, authorization: 'Bearer ' + key, 'content-type': 'application/json' };
@@ -29,7 +35,7 @@ const TOKEN_URL = 'https://oauth2.googleapis.com/token';
 const STARS = { ONE: 1, TWO: 2, THREE: 3, FOUR: 4, FIVE: 5 };
 const MGR = ['ceo', 'gm'];
 
-const E = (code, status) => { const e = new Error(code); e.code = code; e.status = status || 400; e.gr = true; return e; };
+const E = (code, status, extra) => { const e = new Error(code); e.code = code; e.status = status || 400; e.gr = true; if (extra) e.extra = extra; return e; };
 const bad = () => E('bad_value', 400);
 const obj = v => (v && typeof v === 'object' && !Array.isArray(v) ? v : null);
 const STORE = v => { if (typeof v !== 'string' || !/^[A-Za-z0-9_-]{1,30}$/.test(v)) throw bad(); return v; };
@@ -39,6 +45,25 @@ const ACCT = v => { if (typeof v !== 'string' || !/^accounts\/[0-9]{1,30}$/.test
 const YM = v => { if (typeof v !== 'string' || !/^20\d{2}-(0[1-9]|1[0-2])$/.test(v)) throw bad(); return v; };
 const CTRL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g;
 const txt = (v, n) => (typeof v === 'string' ? v.replace(CTRL, '').slice(0, n) : '');
+// v1209：店の ID の並び（whoami の stores・am_stores）
+const ids = v => (Array.isArray(v) ? [...new Set(v.filter(s => typeof s === 'string' && /^[A-Za-z0-9_-]{1,30}$/.test(s)))].slice(0, 60) : []);
+// v1209：https の Google のアドレスだけ（投稿者・写真・元の口コミ・報告・店の Google マップ）。それ以外は空
+const GHOST = h => h === 'google.com' || h.endsWith('.google.com') || h.endsWith('.googleusercontent.com') || h.endsWith('.ggpht.com') || h === 'goo.gl' || h === 'maps.app.goo.gl';
+export function gurl(v) {
+  if (typeof v !== 'string' || !v || v.length > 600 || /[\u0000-\u001f\u007f\s]/.test(v)) return '';
+  let u; try { u = new URL(v); } catch { return ''; }
+  return u.protocol === 'https:' && !u.username && !u.password && GHOST(u.hostname.toLowerCase()) ? v : '';
+}
+// 帰属表示（attributions）のリンクはほかの提供元のこともある：https だけ
+function hurl(v) {
+  if (typeof v !== 'string' || !v || v.length > 600 || /[\u0000-\u001f\u007f\s]/.test(v)) return '';
+  let u; try { u = new URL(v); } catch { return ''; }
+  return u.protocol === 'https:' && !u.username && !u.password ? v : '';
+}
+// 店の評価と口コミで取る項目（Place Details：Enterprise + Atmosphere の料金）。店を探すときの項目（Text Search Pro の料金）
+export const NOW_MASK = 'id,displayName,formattedAddress,googleMapsUri,rating,userRatingCount,reviews,attributions';
+export const SEARCH_MASK = 'places.id,places.displayName,places.formattedAddress,places.googleMapsUri,places.businessStatus';
+const ALL_STORES = ['ceo', 'gm', 'office', 'office_crew'];   // 全店を見る役（アプリの getVisibleStores と同じ）
 const enc = new TextEncoder();
 const hex = buf => [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('');
 export async function sha256Text(s) { return hex(await crypto.subtle.digest('SHA-256', enc.encode(s))); }
@@ -101,7 +126,7 @@ export function createHandler(deps) {
     let a;
     if (typeof deps.whoami === 'function') {
       try { a = await deps.whoami(tok); } catch { return { err: 'auth_unavailable' }; }
-      a = a ? { emp: a.emp, role: a.role, name: a.name || '' } : { deny: 'pin' };
+      a = a ? { emp: a.emp, role: a.role, name: a.name || '', stores: ids(a.stores), am_stores: ids(a.am_stores) } : { deny: 'pin' };
     } else {
       const r = await timed(wrUrl, { method: 'POST', headers: { apikey: anon, authorization: 'Bearer ' + anon, 'content-type': 'application/json' },
         body: JSON.stringify({ action: 'whoami', pin_session: tok }) }, 8000);
@@ -110,7 +135,8 @@ export function createHandler(deps) {
       else {
         const me = obj(r.j && r.j.me);
         a = me && typeof me.emp === 'string' && me.emp && me.emp.length <= 64
-          ? { emp: me.emp, role: typeof me.role === 'string' ? me.role : '', name: typeof me.name === 'string' ? me.name.slice(0, 120) : '' }
+          ? { emp: me.emp, role: typeof me.role === 'string' ? me.role : '', name: typeof me.name === 'string' ? me.name.slice(0, 120) : '',
+              stores: ids(me.stores), am_stores: ids(me.am_stores) }
           : { deny: 'pin' };
       }
     }
@@ -121,6 +147,32 @@ export function createHandler(deps) {
   }
   const who = a => ({ emp: a.emp, name: a.name || '' });
   const mgrOnly = a => { if (!MGR.includes(a.role)) throw E('forbidden', 403); };
+  // v1209：見られる店（null＝全店）。Head Chef（GM・CEO が確かめた人）は全店。確かめは 60 秒（だれかの覚えと同じ間）覚える
+  async function scopeOf(a) {
+    if (ALL_STORES.includes(a.role)) return null;
+    if (a.chef === undefined) {
+      try { a.chef = (await db.rpc('gr_is_chef', { emp: a.emp })) === true; } catch { return new Set([...(a.stores || []), ...(a.am_stores || [])]); }
+    }
+    if (a.chef) return null;
+    return new Set([...(a.stores || []), ...(a.am_stores || [])]);
+  }
+  async function mustSee(a, store) { const s = await scopeOf(a); if (s && !s.has(store)) throw E('forbidden_store', 403); }
+  // v1209：Google を呼ぶ前に 1 回分を取る（上限なら呼ばない）。SQL が v1157 のままなら gr_old
+  async function take(a, kind, store) {
+    let t;
+    try { t = await db.rpc('gr_places_take', { kind, emp: a.emp, ...(store ? { store } : {}) }); }
+    catch (e) {
+      const m = String((e && e.message) || '');
+      if ((e && e.status === 404) || /gr_places_take|gr_store_known|gr_places_use|places_day_max|search_day_max/.test(m)) throw E('gr_old', 503);
+      throw e;
+    }
+    if (obj(t) && t.ok === true) return t;
+    const cap = obj(t) && typeof t.cap === 'string' && /^[a-z_]{1,20}$/.test(t.cap) ? t.cap : 'unknown';
+    if (cap === 'not_linked') return null;
+    if (cap === 'unknown_store') throw E('unknown_store', 400);
+    const max = obj(t) && Number.isInteger(t.max) ? t.max : null;
+    throw E('places_cap', 429, { cap, ...(max != null ? { max } : {}) });
+  }
 
   // ---- Places API（新）：見るときに取る（残さない）
   function placesErr(status) {
@@ -137,27 +189,37 @@ export function createHandler(deps) {
     if (hits.size > 500) hits.clear();
   }
   async function placesNow(a, b) {
-    const store = STORE(b.store), key = placesKey();
+    const store = STORE(b.store);
+    await mustSee(a, store);
+    const key = placesKey();
     if (!key) throw E('places_not_configured', 503);
     const pid = await db.rpc('gr_place_of', { store });
     if (!pid) return { store, linked: false };
     rate(a);
-    const r = await timed(PLACES + '/places/' + encodeURIComponent(pid), { headers: { 'X-Goog-Api-Key': key,
-      'X-Goog-FieldMask': 'id,displayName,formattedAddress,rating,userRatingCount,reviews,googleMapsUri' } }, 15000);
+    if (!(await take(a, 'now', store))) return { store, linked: false };
+    const lang = b.lang === 'en' ? 'en' : 'ja';
+    const r = await timed(PLACES + '/places/' + encodeURIComponent(pid) + '?' + new URLSearchParams({ languageCode: lang, regionCode: 'us' }).toString(),
+      { headers: { 'X-Goog-Api-Key': key, 'X-Goog-FieldMask': NOW_MASK } }, 15000);
     if (!r.ok || !obj(r.j)) throw E(placesErr(r.status), 502);
     const p = r.j;
+    // 口コミ：Google が関連性の順で返すもの（最大 5 件・新しい順ではない）。原文を先に（無ければ Google の訳）
     const reviews = (Array.isArray(p.reviews) ? p.reviews : []).slice(0, 5).map(x => {
-      const t = obj(x.originalText) || obj(x.text) || {}, au = obj(x.authorAttribution) || {};
-      const rt = Number(x.rating);
+      if (!obj(x)) return null;
+      const ot = obj(x.originalText), tt = obj(x.text), t = (ot && typeof ot.text === 'string' && ot.text) ? ot : (tt || {});
+      const au = obj(x.authorAttribution) || {}, rt = Number(x.rating);
       return { rating: Number.isFinite(rt) ? Math.max(1, Math.min(5, Math.round(rt))) : null, text: txt(t.text, 2000),
+        lang: typeof t.languageCode === 'string' && /^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})?$/.test(t.languageCode) ? t.languageCode : '',
+        relative: txt(x.relativePublishTimeDescription, 60),
         time: typeof x.publishTime === 'string' && Number.isFinite(Date.parse(x.publishTime)) ? x.publishTime : null,
-        author: txt(au.displayName, 120), author_uri: typeof au.uri === 'string' && /^https:\/\//.test(au.uri) ? au.uri.slice(0, 500) : '' };
-    }).filter(x => x.rating);
+        author: txt(au.displayName, 120), author_uri: gurl(au.uri), author_photo: gurl(au.photoUri),
+        uri: gurl(x.googleMapsUri), flag: gurl(x.flagContentUri) };
+    }).filter(x => x && x.rating);
+    const attributions = (Array.isArray(p.attributions) ? p.attributions : []).slice(0, 5)
+      .map(x => (obj(x) ? { provider: txt(x.provider, 120), uri: hurl(x.providerUri) } : null)).filter(x => x && x.provider);
     const rating = Number(p.rating), count = Number(p.userRatingCount);
     return { store, linked: true, name: txt(obj(p.displayName) ? p.displayName.text : '', 200), address: txt(p.formattedAddress, 300),
-      rating: Number.isFinite(rating) ? Math.round(rating * 10) / 10 : null, count: Number.isInteger(count) ? count : null,
-      uri: typeof p.googleMapsUri === 'string' && /^https:\/\//.test(p.googleMapsUri) ? p.googleMapsUri.slice(0, 500) : '',
-      reviews, at: new Date(now()).toISOString() };
+      rating: Number.isFinite(rating) ? Math.round(rating * 10) / 10 : null, count: Number.isInteger(count) && count >= 0 ? count : null,
+      uri: gurl(p.googleMapsUri), attributions, order: 'relevance', lang, reviews, at: new Date(now()).toISOString() };
   }
   async function placesSearch(a, b) {
     mgrOnly(a);
@@ -166,14 +228,16 @@ export function createHandler(deps) {
     const q = txt(b.q, 120).trim();
     if (q.length < 2) throw bad();
     rate(a);
-    const r = await timed(PLACES + '/places:searchText', { method: 'POST', headers: { 'X-Goog-Api-Key': key, 'content-type': 'application/json',
-      'X-Goog-FieldMask': 'places.id,places.displayName,places.formattedAddress,places.rating,places.userRatingCount' },
-      body: JSON.stringify({ textQuery: q, maxResultCount: 5 }) }, 15000);
+    await take(a, 'search');
+    const lang = b.lang === 'en' ? 'en' : 'ja';
+    // オアフ島の近くを先に（ほかの州の同じ名前の店を出しにくくする）
+    const r = await timed(PLACES + '/places:searchText', { method: 'POST', headers: { 'X-Goog-Api-Key': key, 'content-type': 'application/json', 'X-Goog-FieldMask': SEARCH_MASK },
+      body: JSON.stringify({ textQuery: q, maxResultCount: 5, languageCode: lang, regionCode: 'us',
+        locationBias: { circle: { center: { latitude: 21.40, longitude: -157.97 }, radius: 45000 } } }) }, 15000);
     if (!r.ok || !obj(r.j)) throw E(placesErr(r.status), 502);
-    const items = (Array.isArray(r.j.places) ? r.j.places : []).filter(x => typeof x.id === 'string' && /^[A-Za-z0-9_-]{10,300}$/.test(x.id)).slice(0, 5)
-      .map(x => ({ place_id: x.id, name: txt(obj(x.displayName) ? x.displayName.text : '', 200), address: txt(x.formattedAddress, 300),
-        rating: Number.isFinite(Number(x.rating)) ? Math.round(Number(x.rating) * 10) / 10 : null,
-        count: Number.isInteger(Number(x.userRatingCount)) ? Number(x.userRatingCount) : null }));
+    const items = (Array.isArray(r.j.places) ? r.j.places : []).filter(x => obj(x) && typeof x.id === 'string' && /^[A-Za-z0-9_-]{10,300}$/.test(x.id)).slice(0, 5)
+      .map(x => ({ place_id: x.id, name: txt(obj(x.displayName) ? x.displayName.text : '', 200), address: txt(x.formattedAddress, 300), uri: gurl(x.googleMapsUri),
+        status: ['OPERATIONAL', 'CLOSED_TEMPORARILY', 'CLOSED_PERMANENTLY'].includes(x.businessStatus) ? x.businessStatus : '' }));
     return { items };
   }
   async function placeSet(a, b) {
@@ -364,20 +428,42 @@ export function createHandler(deps) {
   }
 
   // ---- 読む
-  async function status(a) { return db.rpc('gr_status', { mgr: MGR.includes(a.role) }); }
-  async function kpi() { return db.rpc('gr_kpi', {}); }
+  // v1209：GM・CEO には Places の回数（今日・今月）も。SQL が v1157 のままなら出さない
+  async function status(a) {
+    const mgr = MGR.includes(a.role);
+    const st = await db.rpc('gr_status', { mgr });
+    if (mgr && obj(st)) { try { const u = await db.rpc('gr_places_usage', {}); if (obj(u)) st.usage = u; } catch { /* v1157 の SQL のまま */ } }
+    return st;
+  }
+  // v1209：Google の店を結んだ店（会議のカードで「見る」を出すため・place ID は出さない）。SQL が v1157 のままなら出さない
+  // v1209：見られる店の分だけ返す（ほかの店の月の平均・総合評価・結んだかは出さない）
+  async function kpi(a) {
+    const k = await db.rpc('gr_kpi', {});
+    if (obj(k)) { try { const l = await db.rpc('gr_places_linked', {}); if (Array.isArray(l)) k.places = ids(l); } catch { /* v1157 の SQL のまま */ } }
+    const s = obj(k) ? await scopeOf(a) : null;
+    if (s) {
+      const pick = o => { const r = {}; if (obj(o)) for (const id of Object.keys(o)) if (s.has(id)) r[id] = o[id]; return r; };
+      if (Array.isArray(k.auto)) k.auto = k.auto.filter(id => s.has(id));
+      if (Array.isArray(k.places)) k.places = k.places.filter(id => s.has(id));
+      if (obj(k.from)) k.from = pick(k.from);
+      if (obj(k.overall)) k.overall = pick(k.overall);
+      if (obj(k.months)) { const m = {}; for (const ym of Object.keys(k.months)) { const v = pick(k.months[ym]); if (Object.keys(v).length) m[ym] = v; } k.months = m; }
+    }
+    return k;
+  }
   // #151 のレビュー：200 件ずつ。続きは before（gr_month が返した next）
   const BEFORE = v => { if (v == null) return null; if (!obj(v) || typeof v.c !== 'string' || !Number.isFinite(Date.parse(v.c)) || typeof v.h !== 'string' || !/^[0-9a-f]{32}$/.test(v.h)) throw bad(); return { c: v.c, h: v.h }; };
-  async function month(a, b) { const before = BEFORE(b.before); return db.rpc('gr_month', { store: STORE(b.store), ym: YM(b.ym), ...(before ? { before } : {}) }); }
+  async function month(a, b) { const store = STORE(b.store); await mustSee(a, store); const before = BEFORE(b.before); return db.rpc('gr_month', { store, ym: YM(b.ym), ...(before ? { before } : {}) }); }
 
   const ACTIONS = {
-    whoami: async a => ({ me: { emp: a.emp, role: a.role, name: a.name }, fn: 1, places: !!placesKey(), oauth: !!(client().id && client().secret) }),
-    status: a => status(a), kpi: () => kpi(), month: (a, b) => month(a, b),
+    // fn 2（v1209）：見られる店だけ・回数の上限・帰属表示の項目
+    whoami: async a => ({ me: { emp: a.emp, role: a.role, name: a.name }, fn: 2, places: !!placesKey(), oauth: !!(client().id && client().secret) }),
+    status: a => status(a), kpi: a => kpi(a), month: (a, b) => month(a, b),
     places_now: (a, b) => placesNow(a, b), places_search: (a, b) => placesSearch(a, b), places_set: (a, b) => placeSet(a, b),
     bp_connect: a => bpConnect(a), bp_locations: a => bpLocations(a), bp_link: (a, b) => bpLink(a, b), bp_disconnect: a => bpDisconnect(a),
     sync_now: async a => { mgrOnly(a); return syncAll('manual'); },
   };
-  const ERR = { bad_value: 400, forbidden: 403, not_found: 404, conflict: 409, bad_state: 400, too_many: 429, bp_not_connected: 409 };
+  const ERR = { bad_value: 400, forbidden: 403, not_found: 404, conflict: 409, bad_state: 400, too_many: 429, bp_not_connected: 409, unknown_store: 400 };
 
   return async function handler(req) {
     const origin = req.headers.get('origin');
@@ -408,7 +494,7 @@ export function createHandler(deps) {
       if (a.deny) return json({ error: 'unauthorized' }, 401);
       return json(await fn(a, body));
     } catch (e) {
-      if (e && e.gr) return json({ error: e.code }, e.status);
+      if (e && e.gr) return json({ error: e.code, ...(e.extra || {}) }, e.status);
       const code0 = String((e && e.message) || 'error').split(/[\s:]/)[0];
       if (ERR[code0]) return json({ error: code0 }, ERR[code0]);
       if (/gr_[a-z_]+|function public\.gr_|relation .*gr_/.test(String(e && e.message || '')) || (e && e.status === 404)) return json({ error: 'gr_missing' }, 503);

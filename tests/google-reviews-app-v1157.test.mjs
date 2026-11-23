@@ -13,6 +13,9 @@ const sw = fs.readFileSync(new URL('../sw.js', import.meta.url), 'utf8');
 const B = '/* ==== FUNERGY_GR（v1157）', E = '/* ==== FUNERGY_GR end ==== */';
 const MOD = html.slice(html.indexOf(B), html.indexOf(E) + E.length);
 const SQL = fs.readFileSync(new URL('../supabase/migrations/20261122090000_google_reviews.sql', import.meta.url), 'utf8');
+// v1209：見られる店・Places の回数の上限（この試験では上限を大きくする。上限そのものは google-places-v1209 の試験）
+const SQL1209 = fs.readFileSync(new URL('../supabase/migrations/20261215090000_google_places_caps.sql', import.meta.url), 'utf8');
+const SEES = { E5: { stores: [], am_stores: ['S1', 'S2'] }, E8: { stores: ['S1', 'S2'], am_stores: [] } };
 const NOW0 = Date.parse('2026-11-13T20:00:00Z');   // ハワイ 11/13 10:00
 const PEOPLE = { E1: ['ceo', 'Cora CEO'], E2: ['gm', 'Gabe GM'], E5: ['am', 'Ami Area'], E8: ['crew', 'Cam Crew'] };
 const ACC = 'accounts/111', LOC1 = 'locations/901';
@@ -20,14 +23,18 @@ const PLACE = 'ChIJ_test_place_000001';
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 function fakeGoogle() {
-  const g = { calls: [], places: {} };
+  const g = { calls: [], heads: [], places: {} };
   g.places[PLACE] = { id: PLACE, displayName: { text: 'Store Two' }, formattedAddress: '1 Test St', rating: 4.3, userRatingCount: 210, googleMapsUri: 'https://maps.google.com/?cid=1',
+    attributions: [{ provider: 'Some <i>Data</i>', providerUri: 'https://data.example/' }],
     reviews: [
-      { rating: 5, originalText: { text: 'Great <b>bowl</b>' }, publishTime: '2026-11-10T03:00:00Z', authorAttribution: { displayName: 'Pat', uri: 'https://www.google.com/maps/contrib/1' } },
-      { rating: 2, text: { text: 'Slow' }, publishTime: '2026-10-02T03:00:00Z', authorAttribution: { displayName: 'Rae', uri: 'javascript:alert(1)' } },
+      { rating: 5, originalText: { text: 'Great <b>bowl</b>', languageCode: 'en' }, relativePublishTimeDescription: '2 weeks ago', publishTime: '2026-11-10T03:00:00Z',
+        googleMapsUri: 'https://www.google.com/maps/reviews/data=1', flagContentUri: 'https://www.google.com/local/review/rap/report?r=1',
+        authorAttribution: { displayName: 'Pat', uri: 'https://www.google.com/maps/contrib/1', photoUri: 'https://lh3.googleusercontent.com/a/pat' } },
+      { rating: 2, text: { text: 'Slow' }, publishTime: '2026-10-02T03:00:00Z', authorAttribution: { displayName: 'Rae', uri: 'javascript:alert(1)', photoUri: 'http://lh3.googleusercontent.com/a/rae' } },
     ] };
-  g.fetch = async (url) => {
+  g.fetch = async (url, init) => {
     const u = new URL(String(url)); g.calls.push(u.hostname + u.pathname);
+    g.heads.push(Object.fromEntries(Object.entries((init && init.headers) || {}).map(([k, v]) => [k.toLowerCase(), v])));
     const m = /^\/v1\/places\/(.+)$/.exec(u.pathname);
     if (u.hostname === 'places.googleapis.com' && m && g.places[decodeURIComponent(m[1])]) return new Response(JSON.stringify(g.places[decodeURIComponent(m[1])]), { status: 200 });
     return new Response('{}', { status: 404 });
@@ -41,6 +48,8 @@ async function server({ connect = true, from = '2026-10', loc = true } = {}) {
     alter default privileges in schema public grant all on tables to anon, authenticated;
     alter default privileges in schema public grant all on functions to anon, authenticated;`);
   await pg.exec(SQL);
+  await pg.exec(SQL1209);
+  await pg.exec('update public.gr_settings set places_day_max = 5000, places_store_day_max = 5000, places_person_day_max = 5000, places_month_max = 100000, search_day_max = 5000, search_month_max = 100000');
   if (connect) await pg.exec(`update public.gr_bp set refresh_token = 'rt-secret', account = 'owner@example.test', status = 'ok', connected_at = now(), last_ok_at = '2026-11-13T14:30:00Z' where id = 1`);
   if (loc) {
     await pg.query(`insert into public.gr_bp_loc (store_id, account, location, title, rating, total, rating_at, synced_at, from_ym) values ('S1', $1, $2, 'Store One BP', 4.62, 318, now(), now(), $3)`, [ACC, LOC1, from]);
@@ -64,7 +73,7 @@ async function server({ connect = true, from = '2026-10', loc = true } = {}) {
   const g = fakeGoogle();
   const handler = createHandler({ env: k => ({ SUPABASE_URL: 'https://db.test', SUPABASE_SERVICE_ROLE_KEY: 'service', SUPABASE_ANON_KEY: 'anon', GOOGLE_PLACES_API_KEY: 'places-key-xyz',
     GBP_OAUTH_CLIENT_ID: 'cid', GBP_OAUTH_CLIENT_SECRET: 'csecret' })[k], db, fetch: g.fetch, now: () => NOW0,
-    whoami: async tok => { const m = /^pin-(E\d+)$/.exec(tok); return m && PEOPLE[m[1]] ? { emp: m[1], role: PEOPLE[m[1]][0], name: PEOPLE[m[1]][1] } : null; } });
+    whoami: async tok => { const m = /^pin-(E\d+)$/.exec(tok); return m && PEOPLE[m[1]] ? { emp: m[1], role: PEOPLE[m[1]][0], name: PEOPLE[m[1]][1], ...(SEES[m[1]] || { stores: [], am_stores: [] }) } : null; } });
   return { pg, db, g, handler };
 }
 
@@ -197,23 +206,53 @@ test('3: the meeting card of an auto store shows every review of the month (esca
   assert.match(h9, />手入力</); assert.match(h9, /★4\.5/); assert.match(h9, /入力する/);
 });
 
-test('2 and terms: a store without Business Profile stays manual; Places shows the overall and recent reviews live and nothing is kept', async () => {
+test('2 and terms (v1209): a store without Business Profile stays manual; Google is read only when tapped — relevance order, attributions, links; nothing is kept', async () => {
   const s = await server();
   const a = await app(s, 'E8');
   a.ctx.grStart(); await a.idle();
-  let h = a.ctx.grCardHtml({ id: 'S2', name: 'Store Two', googleUrl: 'https://maps.example/s2' }, '2026-11');
+  const st = { id: 'S2', name: 'Store Two', googleUrl: 'https://maps.example/s2' };
+  let h = a.ctx.grCardHtml(st, '2026-11');
   assert.match(h, /手入力/); assert.match(h, /★4\.4/, 'the manual month average'); assert.match(h, /入力する/);
   assert.match(h, /Business Profile をつなぐまでは/);
-  await a.idle();
-  h = a.ctx.grCardHtml({ id: 'S2', name: 'Store Two', googleUrl: 'https://maps.example/s2' }, '2026-11');
+  assert.match(h, /grLoadPlaces\('S2'\)/); assert.match(h, /Google の評価と口コミを見る/); assert.match(h, /押したときだけ Google から取ります/);
+  // v1209：描いただけでは Google に聞かない（前は会議を開くたびに取っていた）
+  await a.idle(); a.ctx.grCardHtml(st, '2026-11'); await a.idle();
+  assert.ok(!a.calls.includes('places_now'), 'no Places call until tapped');
+  assert.deepEqual(s.g.calls, []);
+  // 押す
+  a.ctx.grLoadPlaces('S2'); await a.idle();
+  assert.equal(a.calls.filter(x => x === 'places_now').length, 1);
+  assert.equal(s.g.calls.length, 1);
+  const hd = s.g.heads[0];
+  assert.equal(hd['x-goog-fieldmask'], 'id,displayName,formattedAddress,googleMapsUri,rating,userRatingCount,reviews,attributions', 'only the fields that are shown');
+  assert.equal(hd['x-goog-api-key'], 'places-key-xyz', 'the key goes to Google only from the server');
+  h = a.ctx.grCardHtml(st, '2026-11');
   assert.match(h, /総合評価は自動・月の平均は手入力/);
   assert.match(h, /総合評価・Google（今）/); assert.match(h, /★4\.3/); assert.match(h, /累計 210 件/);
-  assert.match(h, /Google が返す最近の口コミ（最大 5 件・この月の分 1 件）/);
-  assert.ok(h.includes('Great &lt;b&gt;bowl&lt;/b&gt;'), 'escaped');
-  assert.ok(h.includes('href="https://www.google.com/maps/contrib/1"'), 'author attribution link');
+  assert.match(h, /口コミ 210 件/);
+  assert.match(h, /Google が関連性の高い順に選んだ口コミです（新しい順ではありません）。最大 5 件で、すべての口コミではありません。/);
+  assert.ok(h.includes('<span class="gr-gm" translate="no">Google Maps</span>'), 'the Google Maps text attribution');
+  assert.ok(h.includes('Great &lt;b&gt;bowl&lt;/b&gt;') && !h.includes('<b>bowl</b>'), 'escaped');
+  assert.ok(h.includes('lang="en"'));
+  assert.ok(h.includes('href="https://www.google.com/maps/contrib/1" target="_blank" rel="noopener nofollow"'), 'author attribution link');
+  assert.ok(h.includes('src="https://lh3.googleusercontent.com/a/pat"'), 'author photo');
+  assert.ok(!h.includes('http://lh3.googleusercontent.com/a/rae'), 'no http photo');
+  assert.ok(h.includes('href="https://www.google.com/maps/reviews/data=1"'), 'the review’s own link');
+  assert.ok(h.includes('href="https://www.google.com/local/review/rap/report?r=1"') && h.includes('>報告<'), 'report link');
+  assert.match(h, /2 weeks ago/);
+  assert.ok(h.includes('Some &lt;i&gt;Data&lt;/i&gt;') && h.includes('href="https://data.example/"'), 'place attributions');
   assert.ok(!h.includes('javascript:'), 'no unsafe link');
-  assert.match(h, /Google の決まりで残しません/);
   assert.ok(h.includes('href="https://maps.google.com/?cid=1"'), 'Google’s own link');
+  assert.ok(!h.includes('places-key-xyz'), 'the key is never on the screen');
+  // 10 分たつと捨てる（また押すと取る）
+  a.S().now.S2.at -= 11 * 60000;
+  h = a.ctx.grCardHtml(st, '2026-11');
+  assert.ok(!/口コミ 210 件/.test(h)); assert.match(h, /Google の評価と口コミを見る/);
+  // 会議・KPI設定から離れたら捨てる
+  a.ctx.grLoadPlaces('S2'); await a.idle();
+  assert.ok(a.S().now.S2 && a.S().now.S2.st === 'ok');
+  a.ctx.curPage = 'mypage'; a.ctx.grPurgeNow();
+  assert.equal(a.S().now.S2, undefined);
   // サーバーにも残らない（place_id だけ）
   await s.pg.exec('reset role');
   const cols = (await s.pg.query("select column_name from information_schema.columns where table_schema='public' and table_name='gr_places' order by 1")).rows.map(r => r.column_name);
