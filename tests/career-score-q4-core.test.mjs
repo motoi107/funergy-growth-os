@@ -661,3 +661,67 @@ test('分数：10 進の文字列だけ・ゼロ割りは断る', () => {
   assert.equal(C.fcmp(C.frac(2124, 25), C.frac(85)), -1);
   assert.equal(C.fcmp(C.frac(170, 2), C.frac(85)), 0);
 });
+
+// ---------- Codex（#212 7108122301）P2：理念 5 分類の 1 つがすべて職務上の非該当なら、理念の条件は「実務機会なし」 ----------
+// 分類ごとの決まり（G主担当のそれぞれと同じ）：未達 → 未評価 → 実務機会なし → 達成。総合点の計算は変えない
+test('Codex #212 P2：理念の 1 分類が全部非該当なら最低条件は「実務機会なし」（G・S Chef・S Office）', () => {
+  const minOf = (r) => r.minimum.conditions.find((c) => c.key === 'philoClass');
+  const part = (c, k) => c.parts.find((p) => p.key === 'philo:' + k).state;
+  const cases = [['G', 'G2', 'Kitchen中心'], ['S_CHEF', 'S2', undefined], ['S_OFFICE', 'S2', undefined]];
+  for (const [sys, grade, type] of cases) {
+    const run = (fn) => C.csq4Score(M, { system: sys, grade, type, entries: fill(sys, (it) => (it.cat === 'PHILO' ? fn(it) : S(3))) });
+    // すべて達成
+    const met = run(() => S(3));
+    assert.equal(minOf(met).state, 'met', sys + ' 達成');
+    // 1 分類（THANK）がすべて職務上の非該当・ほかは達成 → 実務機会なし（前は「達成」になっていた）
+    const one = run((it) => (it.cls === 'THANK' ? NR() : S(3)));
+    assert.equal(part(minOf(one), 'THANK'), 'no_opportunity', sys);
+    assert.equal(part(minOf(one), 'ENJOY'), 'met', sys);
+    assert.equal(minOf(one).state, 'no_opportunity', sys + ' 1 分類が全部非該当');
+    assert.equal(one.minimum.overall, 'no_opportunity', sys + ' 全体も達成にしない');
+    assert.ok(one.minimum.noOpportunity.includes('philoClass'), sys);
+    // すべての分類が非該当 → 実務機会なし
+    const all = run(() => NR());
+    assert.equal(minOf(all).state, 'no_opportunity', sys + ' 全分類が非該当');
+    // 未達と非該当 → 未達（未達が先）
+    const nm = run((it) => (it.cls === 'THANK' ? NR() : it.cls === 'CARE' ? S(0) : S(3)));
+    assert.equal(minOf(nm).state, 'not_met', sys + ' 未達と非該当');
+    assert.equal(nm.minimum.overall, 'not_met', sys);
+    // 未評価と非該当 → 未評価で決まらない
+    const un = run((it) => (it.cls === 'THANK' ? NR() : it.cls === 'GROW' ? UN() : S(3)));
+    assert.equal(minOf(un).state, 'incomplete', sys + ' 未評価と非該当');
+    // 総合点の計算は変えない（1 分類が非該当でも、残りが 3 点なら 100 点）
+    assert.equal(one.total.exact, met.total.exact, sys + ' 総合点は同じ');
+  }
+});
+
+// ---------- Codex（#212 7108122301）P3：暦にない日付（11/31・11/32・平年の 2/29）を日付として扱わない ----------
+test('Codex #212 P3：会社都合の期間と Prep の測定日は暦にある日付だけ（測定期間の決まりは足さない）', () => {
+  const chk = (e) => C.csq4CheckEntry(M, 'G', '04-01', e);
+  // 会社都合の今回非該当：暦にない日付は「期間が要る」と同じ誤り
+  assert.deepEqual(chk(NC('2026-11-31', '2026-11-99')), ['company_na_period_required']);
+  assert.deepEqual(chk(NC('2026-11-31', '2026-11-31')), ['company_na_period_required']);
+  assert.deepEqual(chk(NC('2026-10-01', '2026-11-32')), ['company_na_period_required']);
+  assert.deepEqual(chk(NC('2026-10-00', '2026-12-31')), ['company_na_period_required']);
+  assert.deepEqual(chk(NC('2026-13-01', '2026-12-31')), ['company_na_period_required']);
+  // 正しい日付・Q4 の境界・逆順は今までどおり
+  assert.deepEqual(chk(NC('2026-11-30', '2026-12-31')), []);
+  assert.deepEqual(chk(NC('2026-10-01', '2026-10-01')), []);
+  assert.deepEqual(chk(NC('2026-12-01', '2026-11-30')), ['company_na_period_out_of_quarter']);
+  assert.deepEqual(chk(NC('2026-12-31', '2027-01-01')), ['company_na_period_out_of_quarter']);
+  // Prep：暦にない日付は別日に数えない（前は 11/30・11/31・11/32 で別日 3 回になり P6・raise まで出た）
+  const at = (dates, speeds = ['1.50', '2', '2'], range = '0.90') => ({ trials: dates.map((d, i) => ({ date: d, goodStd: speeds[i], actual: '1' })), independentStd: range, allStd: '1' });
+  const bad = prep({ currentStep: 'P1', measure: at(['2026-11-30', '2026-11-31', '2026-11-32']) });
+  assert.deepEqual([bad.pay.state, bad.pay.step, bad.pay.reason], ['unmeasured', null, 'bad_trial_date']);
+  assert.ok(!('compare' in bad.pay), '暦にない日付で時給の判定・raise を出さない');
+  assert.equal(prep({ measure: at(['2026-11-31', '2026-12-01', '2026-12-02']) }).pay.reason, 'bad_trial_date');
+  assert.equal(prep({ measure: at(['2027-02-27', '2027-02-28', '2027-02-29']) }).pay.reason, 'bad_trial_date', '平年の 2/29');
+  // うるう年の 2/29・正しい別日 3 回は判定する
+  const leap = prep({ currentStep: 'P1', measure: at(['2028-02-28', '2028-02-29', '2028-03-01']) });
+  assert.deepEqual([leap.pay.state, leap.pay.step, leap.pay.compare], ['judged', 'P6', 'raise']);
+  const ok = prep({ measure: at(['2026-11-29', '2026-11-30', '2026-12-01']) });
+  assert.deepEqual([ok.pay.state, ok.pay.step], ['judged', 'P6']);
+  // 同じ日の 3 回は 1 日
+  assert.equal(prep({ measure: at(['2026-11-30', '2026-11-30', '2026-11-30']) }).pay.reason, 'need_3_days');
+  assert.deepEqual(C.csq4PrepMeasure(at(['2026-11-30', '2026-11-31', '2026-12-01'])), { ok: false, reason: 'bad_trial_date' });
+});
