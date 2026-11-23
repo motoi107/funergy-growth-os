@@ -756,3 +756,39 @@ test('before the SQL: reads say nosql and writes say not_installed', async () =>
   fail(await email('gm', { action: 'cs4_copy' }), 503, 'not_installed');
   fail(await pin('am', { action: 'cs4_save', id: 1, expect: 1, entries: {} }), 503, 'not_installed');
 });
+
+// Codex（#214 7108123737）・Moto さん 11/23 07:3x HST「G の評価表だけ」：G3 が採点できるのは自分の店の G2 の人の G の評価表だけ。
+// S（S_CHEF・S_OFFICE）・PREP の評価表は、一覧に出さず、始める・保存・本人に共有・確認待ち・再評価・読むのどれでも断る（S は AM と G4 以上）
+test('Moto 11/23 (Codex #214): a G3 scores only the G form of G2 people; S and PREP forms are refused at every step', async () => {
+  const G2 = (id, name, store, support) => ({ id, name, store, role: 'g2', title: 'Crew Leader', status: '', ...(support ? { support } : {}), data: { name, store } });
+  const { db, pin, email } = await setup({ extra: [G2('E-2L', 'Lia Lead', 'S1'), G2('E-2K', 'Kat Cook', 'S1'), G2('E-2P', 'Pia Prep', 'S1')] });
+  const ros = async (who) => okj(await pin(who, { action: 'cs4_roster' }), who + ' roster').rows.map(x => x.emp).sort();
+  assert.deepEqual(await ros('g3'), ['E-2K', 'E-2L', 'E-2P'], 'before the forms are decided: G2 people of the own store (as before)');
+  okj(await email('gm', { action: 'cs4_assign', items: [
+    { emp: 'E-2L', system: 'G', grade: 'G2', type: 'Kitchen中心', expect: 0 },
+    { emp: 'E-2K', system: 'S_CHEF', grade: 'S2', expect: 0 },
+    { emp: 'E-2P', system: 'PREP', expect: 0 }] }), 'assign');
+  assert.deepEqual(await ros('g3'), ['E-2L'], 'the G3 list keeps only the G form');
+  for (const e of ['E-2K', 'E-2P']) {
+    fail(await pin('g3', { action: 'cs4_start', emp: e }), 403, 'forbidden', 'G3 start ' + e);
+    fail(await pin('g3', { action: 'cs4_get', emp: e }), 403, 'forbidden', 'G3 get ' + e);
+  }
+  // S の評価は店長（G4）が始めて付ける。G3 は保存・共有・確認待ち・再評価のどれもできない（前は全部できた）
+  const k = okj(await pin('g4', { action: 'cs4_start', emp: 'E-2K' }), 'G4 starts S_CHEF');
+  let r = okj(await pin('g4', { action: 'cs4_save', id: k.id, expect: 1, entries: all('S_CHEF', 2) }), 'G4 saves S_CHEF');
+  fail(await pin('g3', { action: 'cs4_save', id: k.id, expect: r.ver, entries: { [ids('S_CHEF')[0]]: { status: 'SCORED', score: 3 } } }), 403, 'forbidden', 'G3 save S');
+  fail(await pin('g3', { action: 'cs4_act', id: k.id, expect: r.ver, act: 'share' }), 403, 'forbidden', 'G3 share S');
+  fail(await pin('g3', { action: 'cs4_act', id: k.id, expect: r.ver, act: 'submit' }), 403, 'forbidden', 'G3 submit S');
+  assert.equal((await evalRow(db, k.id)).ver, r.ver, 'nothing written by the G3');
+  r = okj(await pin('g4', { action: 'cs4_act', id: k.id, expect: r.ver, act: 'submit' }), 'G4 submits');
+  okj(await email('gm', { action: 'cs4_act', id: k.id, expect: r.ver, act: 'confirm' }), 'GM confirms S_CHEF');
+  fail(await pin('g3', { action: 'cs4_reeval', emp: 'E-2K', pub: k.id, reason: '見直し' }), 403, 'forbidden', 'G3 re-evaluates S');
+  // G の評価表の G2 の人は今までどおり（始める・保存・共有・確認待ち）
+  const g = okj(await pin('g3', { action: 'cs4_start', emp: 'E-2L' }), 'G3 starts G');
+  r = okj(await pin('g3', { action: 'cs4_save', id: g.id, expect: 1, entries: all('G', 2) }), 'G3 saves G');
+  r = okj(await pin('g3', { action: 'cs4_act', id: g.id, expect: r.ver, act: 'share' }), 'G3 shares G');
+  okj(await pin('g3', { action: 'cs4_act', id: g.id, expect: r.ver, act: 'submit' }), 'G3 submits G');
+  // AM・店長（G4）・GM は S も今までどおり
+  assert.ok((await ros('am')).includes('E-2K'));
+  assert.ok((await ros('g4')).includes('E-2K'));
+});

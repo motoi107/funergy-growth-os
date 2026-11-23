@@ -584,7 +584,7 @@ test('v1151（Codex #145 6846570741 P2-3）：関数から読んだ個人の欄�
   env.ctx.document.getElementById = id => (id === 'app-shell' ? shell : id === 'main-content' ? main : null);
   vm.runInContext('var curRole = "gm", curPage = "employees", curStoreLogin = false; var _pii = { tid: "", lv: "", map: null, at: 0, p: null };', env.ctx);
   vm.runInContext(uxBlock(), env.ctx);
-  vm.runInContext(fnFrom('piiLoad') + '\nfunction piiTid(){ return "T1"; } function piiWants(){ return true; } function ssToken(){ return {}; } function ssStale(){ return false; }', env.ctx);
+  vm.runInContext(fnFrom('piiLoad') + '\nvar _piiSeq = 0; function piiTid(){ return "T1"; } function piiWants(){ return true; } function ssToken(){ return {}; } function ssStale(){ return false; }', env.ctx);
   const UX = env.ctx.window.FUNERGY_UX;
   const tk = ms => new Promise(r => setTimeout(r, ms));
   assert.equal(await env.ctx.piiLoad(true), 'ok');
@@ -610,7 +610,7 @@ test('v1151（Claude #145 6847734306 P3-2）：個人の欄を初めて読んだ
   env.ctx.document.getElementById = id => (id === 'app-shell' ? shell : id === 'main-content' ? main : null);
   vm.runInContext('var curRole = "gm", curPage = "employees", curStoreLogin = false; var _pii = { tid: "", lv: "", map: null, at: 0, p: null };', env.ctx);
   vm.runInContext(uxBlock(), env.ctx);
-  vm.runInContext(fnFrom('piiLoad') + '\nfunction piiTid(){ return "T1"; } function piiWants(){ return true; } function ssToken(){ return {}; } function ssStale(){ return false; }', env.ctx);
+  vm.runInContext(fnFrom('piiLoad') + '\nvar _piiSeq = 0; function piiTid(){ return "T1"; } function piiWants(){ return true; } function ssToken(){ return {}; } function ssStale(){ return false; }', env.ctx);
   const tk = ms => new Promise(r => setTimeout(r, ms));
   vm.runInContext('renderPage("employees")', env.ctx);
   await tk(5);
