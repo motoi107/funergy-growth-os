@@ -425,3 +425,161 @@ test('kevCareer4: coefficient from the published total and base; capped by the r
   assert.equal(r.coef, null);
   assert.ok(r.miss.some((m) => /新しい決まり/.test(m)));
 });
+
+/* ---------------------------------------------------------------- 4. #215 のルーティンのレビューの直し（P2-B・P3） */
+function tabsDom(c, periods) {
+  // 期間のタブ（選ばれているもの）：このページの ocsDetailHtml と Office のモジュールは同じ形で描く
+  const tabs = periods.map((p) => ({ getAttribute: (k) => (k === 'onclick' ? "ocsSetPeriod('" + p + "')" : null) }));
+  const main = { querySelectorAll: (q) => (q === '.phase-tab.active[onclick^="ocsSetPeriod("]' ? tabs : []) };
+  c.document.getElementById = (id) => (id === 'main-content' ? main : null);
+}
+function newServer(c) {
+  c._reply = (p) => (p.action === 'cs4_me' ? { ok: true, j: meJ(null) } : { ok: true, j: rosterJ([]) });
+}
+
+test('office (module mode): the period comes from the selected tab, not the stale window._ocsPeriod / _ocsEdit', async () => {
+  const c = app({ page: 'office_career' });
+  newServer(c);
+  const F = c.FUNERGY_CS4;
+  F.on(); await settle();
+  assert.equal(F._t.srv(), 'new');
+  // モジュールが動いているときは、このページの _ocsPeriod・_ocsEdit は変わらない（空のまま・前の値のまま）
+  c._ocsPeriod = undefined; c._ocsEdit = null;
+  tabsDom(c, ['2026-Q3']);
+  c._ocs = null; c.ocsStartEdit();
+  assert.equal(c._ocs, 'start', 'Q3 tab: start goes');
+  c._ocs = null; await c.ocsSaveEdit();
+  assert.equal(c._ocs, 'save', 'Q3 tab: save goes');
+  tabsDom(c, ['2026-Q4']);
+  c._ocs = null; c.ocsStartEdit();
+  assert.equal(c._ocs, null, 'Q4 tab: start stopped');
+  c._ocs = null; await c.ocsSaveEdit();
+  assert.equal(c._ocs, null, 'Q4 tab: save stopped');
+  // 前に残った _ocsPeriod が Q4 でも、Q3 のタブなら Q3
+  c._ocsPeriod = '2026-Q4';
+  tabsDom(c, ['2026-Q3']);
+  assert.equal(F._t.ocsPer('ocsStartEdit', []), '2026-Q3');
+  // 前に残った _ocsPeriod が Q3 でも、Q4 のタブなら止める（前はここで Q3 として通っていた）
+  c._ocsPeriod = '2026-Q3'; c._ocsEdit = { period: '2026-Q3' };
+  tabsDom(c, ['2026-Q4']);
+  assert.equal(F._t.ocsPer('ocsStartEdit', []), '2026-Q4');
+  assert.equal(F._t.ocsPer('ocsSaveEdit', []), '2026-Q4');
+  c._ocs = null; c.ocsStartEdit();
+  assert.equal(c._ocs, null);
+  // タブが見つからないときは前と同じ（_ocsPeriod → 今の期間）
+  tabsDom(c, []);
+  c._ocsPeriod = undefined; c._ocsEdit = null;
+  assert.equal(F._t.ocsPer('ocsStartEdit', []), '2026-Q4');
+  assert.equal(F._t.ocsPer('ocsSaveEdit', []), '2026-Q4');
+  assert.equal(F._t.ocsPer('ocsConfirm', ['E9', '2026-Q3']), '2026-Q3');
+});
+
+test('store tablet (store login) in Q4: the old Career Score is stopped with a message that says to log in with your own PIN; nothing is asked of the server', async () => {
+  const c = app({ page: 'leadership' });
+  c.curStoreLogin = 'S1';
+  newServer(c);
+  const F = c.FUNERGY_CS4;
+  assert.match(F.oldBlocked('score'), /店のタブレット/);
+  assert.match(F.oldBlocked('score'), /自分の PIN/);
+  assert.doesNotMatch(F.oldBlocked('score'), /確かめています/);
+  assert.match(F.oldBlocked('approve'), /店のタブレット/);
+  assert.match(F.oldBlocked('ojt'), /OJT/);
+  assert.match(F.oldBlocked('ojt'), /自分の PIN/);
+  assert.match(F._t.ocsBlocked('2026-Q4'), /2026 Q3 まで/);
+  assert.equal(F._t.ocsBlocked('2026-Q3'), '');
+  await settle();
+  assert.equal(c._calls.length, 0, 'no call from a store login');
+  // Q4 より前は今までどおり
+  const c2 = app({ page: 'leadership', today: '2026-09-30' });
+  c2.curStoreLogin = 'S1';
+  assert.equal(c2.FUNERGY_CS4.oldBlocked('score'), '');
+  assert.equal(c2.FUNERGY_CS4.oldBlocked('ojt'), '');
+});
+
+function editApp(ev, saveReply) {
+  const c = app({ page: 'leadership' });
+  c._reply = (p) => {
+    if (p.action === 'cs4_me') return { ok: true, j: meJ(null) };
+    if (p.action === 'cs4_roster') return { ok: true, j: rosterJ([rosterRow('E1', 'Sue One', null)]) };
+    if (p.action === 'cs4_get') return { ok: true, j: { person: { emp: 'E1', name: 'Sue One' }, assign: { system: 'G', grade: 'G3', type: 'Kitchen', ver: 1 }, evals: [ev], reqs: [], log: [], can: { score: true } } };
+    if (p.action === 'cs4_save') return saveReply(p);
+    return { status: 400, error: 'bad_value' };
+  };
+  return c;
+}
+async function openE1(c) {
+  const F = c.FUNERGY_CS4;
+  F.on(); await settle();
+  const E0 = F._t.E();
+  E0.ix.push('E1'); E0.ixm.E1 = 0;
+  F.h.open(0); await settle();
+  assert.equal(F._t.E().cu.edit, true);
+  return F;
+}
+
+test('logout with changes that need no reason: they are saved first, then the logout goes (no question); pressing again does not save twice', async () => {
+  const c0 = app();
+  const items = c0.FUNERGY_CSQ4_MASTER.systems.G.items;
+  const EV = { id: 78, rev: 1, ver: 3, status: 'draft', system: 'G', grade: 'G3', type: 'Kitchen', version: 'CAREER_2026_Q4_V1', entries: { [items[0].id]: { status: 'SCORED', score: 2 } }, feedback: {} };
+  let release;
+  const c = editApp(EV, () => new Promise((r) => { release = () => r({ ok: true, j: { ver: 4 } }); }));
+  const F = await openE1(c);
+  F.h.st(0, 'S3');
+  assert.equal(F.unsaved(), true);
+  assert.ok(F._t.buildSave(false), 'autosavable (rev 1: no reason needed)');
+  let asked = 0; c.confirm = () => { asked++; return false; };
+  c._out = false;
+  const p1 = c.doLogout();
+  const p2 = c.doLogout();
+  assert.equal(p1, p2, 'second press waits on the same save');
+  await settle();
+  assert.equal(c._out, false, 'not logged out while saving');
+  assert.equal(c._calls.filter((x) => x.action === 'cs4_save').length, 1, 'one save');
+  release();
+  await p1; await settle();
+  assert.equal(c._out, true, 'logged out after the save');
+  assert.equal(asked, 0, 'no question');
+  assert.ok(c._toasts.some(([m]) => /保存してからログアウト/.test(m)));
+});
+
+test('logout with changes that need no reason but the save fails: ask before losing them', async () => {
+  const items = app().FUNERGY_CSQ4_MASTER.systems.G.items;
+  const EV = { id: 79, rev: 1, ver: 3, status: 'draft', system: 'G', grade: 'G3', type: 'Kitchen', version: 'CAREER_2026_Q4_V1', entries: { [items[0].id]: { status: 'SCORED', score: 2 } }, feedback: {} };
+  const c = editApp(EV, () => ({ status: 500, error: 'x' }));
+  const F = await openE1(c);
+  F.h.st(0, 'S3');
+  let asked = 0; c.confirm = () => { asked++; return false; };
+  c._out = false;
+  await c.doLogout(); await settle();
+  assert.equal(asked, 1);
+  assert.equal(c._out, false, 'stays when the person says no');
+  c.confirm = () => true;
+  await c.doLogout(); await settle();
+  assert.equal(c._out, true, 'goes when the person says yes');
+});
+
+test('pressing 保存する again while a save is running sends the changes that need a reason next (the reason is kept for it)', async () => {
+  const items = app().FUNERGY_CSQ4_MASTER.systems.G.items;
+  const A = items[0].id, B = items[1].id;
+  const EV = { id: 80, rev: 2, ver: 5, status: 'draft', system: 'G', grade: 'G3', type: 'Kitchen', version: 'CAREER_2026_Q4_V1',
+    entries: { [A]: { status: 'SCORED', score: 2 }, [B]: { status: 'SCORED', score: 1 } }, feedback: {} };
+  const saves = []; const rel = [];
+  const c = editApp(EV, (p) => { saves.push(JSON.parse(JSON.stringify(p))); return new Promise((r) => rel.push(() => r({ ok: true, j: { ver: p.expect + 1 } }))); });
+  const F = await openE1(c);
+  F.h.st(0, 'S3');
+  F._t.E().cu.reason = '観察した日を足した';
+  F.h.save(); await settle();
+  assert.equal(saves.length, 1);
+  assert.deepEqual(Object.keys(saves[0].entries), [A]);
+  // 保存を待っているあいだに B も変えて、もう一度「保存する」
+  F.h.st(1, 'S2');
+  F.h.save(); await settle();
+  assert.equal(saves.length, 1, 'waits for the first save');
+  rel[0](); await settle(); await settle();
+  assert.equal(saves.length, 2, 'the second press is sent after the first save');
+  assert.ok(saves[1].entries && saves[1].entries[B], 'B (needs a reason) is sent');
+  assert.equal(saves[1].entries[B].changeReason, '観察した日を足した');
+  rel[1](); await settle(); await settle();
+  assert.equal(F.unsaved(), false);
+  assert.equal(F._t.E().cu.reason, '', 'reason cleared after the last save');
+});

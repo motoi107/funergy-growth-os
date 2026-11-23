@@ -78724,7 +78724,7 @@ function ghEvalStop(p){
 }
 function ghEvalBlockHtml(p){
   if(!ghEvalNeeded(p)) return '';
-  var sum=(typeof lssSummary==='function') ? lssSummary(ghEvalName(p)) : null, ev=p.ev, can=ghEvalCan(), noCs=!(sum && sum.hasData), T=ghEvalTrack(p);
+  var c4=ghEvalCs4(p), sum=(!c4 && typeof lssSummary==='function') ? lssSummary(ghEvalName(p)) : null, ev=p.ev, can=ghEvalCan(), noCs=!(sum && sum.hasData), T=ghEvalTrack(p);
   var h='<div style="border:1.5px solid '+(ev?'var(--green)':'var(--accent)')+';border-radius:12px;padding:10px 12px;margin-bottom:10px">';
   h+='<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:4px"><b style="font-size:13px"><i class="ti ti-lock-check" style="color:var(--accent)"></i> '+escapeHtml(p.g0)+' の期間の評価を確定（日割り）</b>'
     +(ev?'<span class="tag tag-green" style="margin-left:auto">確定済み・'+escapeHtml(String(ev.at||'').slice(5,16))+' '+escapeHtml(ev.by||'')+'</span>':'<span class="tag tag-yellow" style="margin-left:auto">まだ確定していません</span>')+'</div>';
@@ -78737,10 +78737,12 @@ function ghEvalBlockHtml(p){
     +['op','sv','kt'].map(function(tr){ return '<option value="'+tr+'"'+(p.track===tr?' selected':'')+'>'+escapeHtml(cscTrackName(tr))+'</option>'; }).join('')+'</select>'
     +'<div style="font-size:10.5px;color:var(--red)">役職名'+(p.t0?' '+escapeHtml(p.t0):'')+' から職種が決まりません。選んでください。</div>';
   var cs;
-  if(ev) cs='<b>'+(_lssHasPts(ev.csScore, ev.csMax) ? cscPts(ev.csScore, ev.csMax) : cscN(ev.csPct)+'%')+'</b>（確定した点）';   /* v1099：% ではなく点 */
+  if(ev && ev.cs4 && ev.csPct==null) cs='<b>今期の評価（新しい Career Score）</b><div style="font-size:10.5px;color:var(--muted)">2026 Q4 からの賞与 ① は「Career Score」→「今期の評価」で確定・公開した評価で決めます（前の Career Score の点は固定しません）。</div>';   /* v1208 */
+  else if(ev) cs='<b>'+(_lssHasPts(ev.csScore, ev.csMax) ? cscPts(ev.csScore, ev.csMax) : cscN(ev.csPct)+'%')+'</b>（確定した点）';   /* v1099：% ではなく点 */
+  else if(c4) cs='<b>今期の評価（新しい Career Score）</b><div style="font-size:10.5px;color:var(--muted)">2026 Q4 からの賞与 ① は「Career Score」→「今期の評価」で確定・公開した評価で決めます。前の Career Score は使わないので、ここでは前の点を固定しません（職種だけを決めます）。</div>';   /* v1208 */
   else if(noCs) cs='<span style="color:var(--red);font-weight:700">まだ評価がありません</span><div style="font-size:10.5px;color:var(--muted)">先に Career Score を付けてください（未評価のままでは確定できません）。</div>';
   else cs='<b>'+cscPts(sum.totalScore, sum.totalMax)+'</b>（今の点・確定すると、この点で固定）';
-  var cats=ev ? (ev.cats||[]) : ((sum && sum.hasData) ? sum.cats : []);
+  var cats=ev ? (ev.cats||[]) : ((!c4 && sum && sum.hasData) ? sum.cats : []);
   if(cats.length) cs+='<table style="width:100%;border-collapse:collapse;font-size:11px;margin-top:4px">'+cats.map(function(c){
     var bar=Math.max(0, Math.min(100, Number(c.pct)||0));
     return '<tr><td style="padding:1.5px 0;white-space:nowrap">'+escapeHtml(c.name||c.key||'')+'</td><td style="padding:1.5px 6px;width:100%"><div style="background:var(--border);border-radius:3px;height:5px;overflow:hidden"><div style="width:'+bar+'%;height:5px;background:'+(bar>=75?'var(--green)':(bar>=50?'var(--accent)':'var(--red)'))+'"></div></div></td><td style="padding:1.5px 0;text-align:right;white-space:nowrap">'+cscPts(c.score, c.max, true)+'</td></tr>';
@@ -78752,7 +78754,7 @@ function ghEvalBlockHtml(p){
   h+='<div style="font-size:10.5px;color:var(--muted);line-height:1.6;margin-top:6px">・'+escapeHtml(p.g1)+' の期間は、四半期の終わりに '+escapeHtml(p.g1)+' の評価で日割りして計算します。<br>・予算達成率・店舗利益・係数・原資の調整は、今までどおり四半期の終わりにほかの人と一緒に計算します。<br>・金額はここには出しません（成長カルテで見られます）。</div>';
   if(!ev){
     if(!can) h+='<div class="alert alert-warning" style="margin:8px 0 0;padding:6px 10px"><i class="ti ti-lock"></i> 前のグレードの期間の評価は GM・CEO が確定します。GM・CEO に頼んでください。</div>';
-    else if(noCs) h+='<div class="btn-row" style="margin-top:8px"><button class="btn btn-secondary btn-sm" onclick="ghEvalOpenCs()"><i class="ti ti-trending-up"></i> Career Score を開く</button></div>'
+    else if(noCs && !c4) h+='<div class="btn-row" style="margin-top:8px"><button class="btn btn-secondary btn-sm" onclick="ghEvalOpenCs()"><i class="ti ti-trending-up"></i> Career Score を開く</button></div>'
       +'<div style="font-size:10.5px;color:var(--muted);margin-top:4px">評価をせずに変えるときは、上の「特例でグレードを変更する」を選べます（理由が必要）。</div>';   /* v1115 */
     else h+='<div class="btn-row" style="margin-top:8px"><button class="btn btn-primary btn-sm"'+((p.g0==='G3' && !T.t)?' disabled style="opacity:.45"':'')+' onclick="ghEvalConfirm()"><i class="ti ti-lock-check"></i> この評価で確定する</button></div>';
   }
@@ -78761,13 +78763,28 @@ function ghEvalBlockHtml(p){
 function ghEvalMissing(p){ return ghEvalNeeded(p) && !p.ev; }
 function ghEvalSetTrack(tr){ var p=window._ghPend; if(!p) return; p.track=CSC_TRACK_NAME[tr] ? tr : null; ghEvalKeep(p); openModal(ghConfirmHtml(p)); }
 function ghEvalKeep(p){ var d=document.getElementById('gh-cf-date'), n=document.getElementById('gh-cf-note'), r=document.getElementById('gh-sp-reason'); if(d && d.value) p.d=d.value; if(n) p.note=n.value; if(r) p.reason=r.value; }
+/* v1208（#215 のルーティンの P2）：2026 Q4 からの賞与 ① は新しい Career Score（今期の評価）の確定・公開した評価で決める（kevCareer4）。
+   前の Career Score の採点は Q4 から止めたので、Q4 に終わる区間の確定では前の Career Score を求めない（点は固定しない・職種は今までどおり決める） */
+function ghEvalCs4(p){
+  try{
+    if(!p || !window.FUNERGY_CS4 || typeof window.FUNERGY_CS4.bonusQ!=='function') return false;
+    var pr=ghEvalPeriod(p), d=(pr && !pr.err && pr.to) ? pr.to : ghDate(p.d);
+    var q=d ? ghQOf(d) : '';
+    return !!(q && window.FUNERGY_CS4.bonusQ(q));
+  }catch(e){ return false; }
+}
 function ghEvalConfirm(){
   var p=window._ghPend; if(!p || !ghEvalNeeded(p)) return;
   if(!ghEvalCan()){ showToast('前のグレードの期間の評価は GM・CEO が確定します','warning'); return; }
   ghEvalKeep(p);
   var pr=ghEvalPeriod(p); if(!pr || pr.err){ showToast(pr ? pr.err : '確定日を入れてください','warning'); return; }
-  var sum=lssSummary(ghEvalName(p)); if(!sum || !sum.hasData){ showToast('先に Career Score を付けてください','warning'); return; }
+  var cs4=ghEvalCs4(p);
+  var sum=cs4 ? null : lssSummary(ghEvalName(p)); if(!cs4 && (!sum || !sum.hasData)){ showToast('先に Career Score を付けてください','warning'); return; }
   var tr=null; if(p.g0==='G3'){ tr=ghEvalTrack(p).t; if(!tr){ showToast('G3 の職種を選んでください','warning'); return; } }
+  if(cs4){   /* v1208：前の点は固定しない（cats は null＝前の決め方の画面は四半期の評価に戻る） */
+    p.ev={ g:p.g0, track:tr, cs4:1, csPct:null, csScore:null, csMax:null, cats:null, at:_ghNow(), by:_ghWho() };
+    openModal(ghConfirmHtml(p)); return;
+  }
   var _kx=(typeof kevFreezeExtra==='function') ? kevFreezeExtra(ghEvalName(p)) : null;   /* v1065：2026 Q3 からの賞与は、この評価の理念を使う（未採点は 0 点にしない） */
   if(_kx && Number(_kx.hUn)>0 && typeof KEV_START!=='undefined' && String(ghQOf(pr.to||p.d)||'')>=KEV_START){ showToast('理念の '+Number(_kx.hUn)+' 項目が未採点です。Career Score で採点してから確定してください（'+KEV_START+' からの賞与に使います）','warning'); return; }
   /* v1099：2026 Q3 からの賞与 ① は総合点。数えるカテゴリーに未評価があると、その区間の賞与を計算できないので、採点してから確定する */
@@ -79024,7 +79041,7 @@ function ghSpecialHtml(r){
 function ghPrevEvalHtml(r){
   var ev=r && r.prevEval; if(!ev || typeof ev!=='object') return '';
   return '<div style="font-size:10.5px;margin-top:2px"><span style="color:var(--green);font-weight:700"><i class="ti ti-lock-check"></i> '+escapeHtml(ghNormG(ev.g))+' の期間の評価 確定済み</span> '
-    +(ev.track?escapeHtml('G3 '+cscTrackName(ev.track))+'・':'')+'Career Score '+(_lssHasPts(ev.csScore, ev.csMax) ? cscPts(ev.csScore, ev.csMax) : cscN(ev.csPct)+'%')   /* v1099：確定したときの点 */
+    +(ev.track?escapeHtml('G3 '+cscTrackName(ev.track))+'・':'')+'Career Score '+((ev.cs4 && ev.csPct==null) ? '今期の評価（2026 Q4 からの新しい Career Score）' : (_lssHasPts(ev.csScore, ev.csMax) ? cscPts(ev.csScore, ev.csMax) : cscN(ev.csPct)+'%'))   /* v1099：確定したときの点／v1208：Q4 は今期の評価 */
     +(ev.from&&ev.to?'（'+ghMD(ev.from)+'〜'+ghMD(ev.to)+'）':'')+'<span style="color:var(--muted)"> '+escapeHtml(String(ev.at||'').slice(0,16))+' '+escapeHtml(ev.by||'')+'</span></div>';
 }
 /* 個人ページのタイル：区間ごとの Career Score係数（「G3 ×1.11・G2/G4 ×1.13」） */
@@ -125885,6 +125902,10 @@ window.FUNERGY_CSQ4_MASTER = {"version":"CAREER_2026_Q4_V1","note":"Career Score
   function oldBlocked(kind){
     sync();
     if (!inQ4()) return '';
+    if (!E.k) {   /* 店のタブレット（店舗のログイン）：新しい Career Score の画面は自分の PIN のログインだけ（#215 のルーティンの P3。前は「確かめています」が出続けた） */
+      if (kind === 'ojt') return '2026 Q4 からは OJT の合格で前の Career Score の下限を上げません（新しい Career Score は自分の PIN でログインして「Career Score」→「今期の評価」で）';
+      return '2026 Q4 からは前の Career Score の採点・申請を止めました。店のタブレット（店舗のログイン）では新しい Career Score は使えません。自分の PIN でログインして「Career Score」→「今期の評価」で入力してください';
+    }
     var s = srv();
     if (s === 'old') return '';
     if (s === 'unknown') { probe(true); return '新しい Career Score に対応しているか確かめています。少し待ってからもう一度押してください'; }
@@ -126299,7 +126320,7 @@ window.FUNERGY_CSQ4_MASTER = {"version":"CAREER_2026_Q4_V1","note":"Career Score
     if (fbChanged()) { fb = normFb(cu.fb); body.feedback = fb; }
     if (cu.ev.system === 'PREP' && prepChanged() && !cu.prepErr) { pp = prepOut(cu.prep).v; body.prep = pp; }
     if (!body.entries && !body.feedback && !body.prep) return null;
-    return { body:body, ids:ids, snap:snap, fb:fb, prep:pp, used:used };
+    return { body:body, ids:ids, snap:snap, fb:fb, prep:pp, used:used, rsn:reason };
   }
   function sched(ms){
     var cu = E.cu; if (!cu) return;
@@ -126312,7 +126333,7 @@ window.FUNERGY_CSQ4_MASTER = {"version":"CAREER_2026_Q4_V1","note":"Career Score
   async function save(manual){
     var cu = E.cu; if (!cu || !cu.edit) return;
     if (cu.timer) { clearTimeout(cu.timer); cu.timer = null; }
-    if (cu.saving) { cu.again = true; return cu.saving; }
+    if (cu.saving) { cu.again = true; if (manual) cu.againM = true; return cu.saving; }   /* 手で押し直したときは、理由の要る項目も次に送る（#215 のルーティンの P3） */
     var b = buildSave(manual);
     if (!b) { if (manual && needIds().length && !String(cu.reason || '').trim()) toast('変えた理由を書いてください', 'warning'); refresh(); return; }
     cu.st = 'saving'; paintChip();
@@ -126326,7 +126347,7 @@ window.FUNERGY_CSQ4_MASTER = {"version":"CAREER_2026_Q4_V1","note":"Career Score
     })();
     cu.saving = pr;
     try{ await pr; }catch(e){ if (E.cu === cu) { cu.saving = null; cu.st = 'err'; cu.msg = '保存できませんでした'; refresh(); } }
-    if (E.cu === cu && cu.again) { cu.again = false; sched(0); }
+    if (E.cu === cu && cu.again) { var m = !!cu.againM; cu.again = false; cu.againM = false; if (m) save(true); else sched(0); }
   }
   function applySaved(cu, j, b){
     if (typeof j.ver === 'number') cu.ev.ver = j.ver;
@@ -126338,7 +126359,8 @@ window.FUNERGY_CSQ4_MASTER = {"version":"CAREER_2026_Q4_V1","note":"Career Score
     });
     if (b.fb) cu.fbS = b.fb;
     if (b.prep) cu.prepS = b.prep;
-    if (b.used) cu.reason = '';
+    /* 理由は送ったら空に。ただし保存を待つあいだに理由を書き直した・もう一度「保存する」を押した（次の保存に使う）ときは残す */
+    if (b.used && !cu.againM && String(cu.reason || '').trim() === b.rsn) cu.reason = '';
     cu.need = []; cu.bad = []; cu.st = 'saved'; cu.at = Date.now(); cu.msg = ''; cu.retried = false;
     E.rosAt = 0; delete E.hist[cu.emp]; delete E.fbc[cu.emp];
     refresh();
@@ -126350,9 +126372,9 @@ window.FUNERGY_CSQ4_MASTER = {"version":"CAREER_2026_Q4_V1","note":"Career Score
       if (E.cu !== cu) return;
       paint();
       if (ok) {
-        toast('ほかの人が先に保存しました。読み直しました' + (cu.conflicts.length ? '（重なった ' + cu.conflicts.length + ' 項目はほかの人の内容にしました）' : ''), 'warning');
+        toast(lead() + 'ほかの人が先に保存しました。読み直しました' + (cu.conflicts.length ? '（重なった ' + cu.conflicts.length + ' 項目はほかの人の内容にしました）' : ''), 'warning');
         if (unsaved() && !cu.rebased) { cu.rebased = true; sched(0); } else cu.rebased = false;
-      } else toast(cu.lost ? 'ほかの人が状態を変えたため、保存していない変更 ' + cu.lost + ' 件は保存できませんでした' : ERR.state, 'warning');
+      } else toast(lead() + (cu.lost ? 'ほかの人が状態を変えたため、保存していない変更 ' + cu.lost + ' 件は保存できませんでした' : ERR.state), 'warning');
       return;
     }
     if (r && r.status === 400 && e === 'reason_required') { cu.need = (r.ids || []).slice(0, 200); cu.st = 'need'; refresh(); toast('変えた理由が要ります', 'warning'); return; }
@@ -126363,6 +126385,8 @@ window.FUNERGY_CSQ4_MASTER = {"version":"CAREER_2026_Q4_V1","note":"Career Score
     cu.st = 'err'; cu.msg = errTxt(r); refresh();
     if (r && r.net && !cu.retried) { cu.retried = true; setTimeout(function(){ if (E.cu === cu && cu.st === 'err') save(false); }, 5000); }
   }
+  /* 画面を離れたあとに届いた保存の結果は、どの画面のことか分かるように（#215 のルーティンの P3：離れるときの保存は待たずに移る） */
+  function lead(){ try{ if (!byId('cs4-root')) { var cu = E.cu, nm = cu && cu.d && cu.d.person && cu.d.person.name; return 'Career Score' + (nm ? '（' + nm + '）' : '') + '：'; } }catch(e){} return ''; }
   /* ほかの人が先に保存した：読み直して、重ならない変更は残す（重なった項目はほかの人の内容に） */
   async function rebase(cu){
     var t0 = tok();
@@ -127217,9 +127241,25 @@ window.FUNERGY_CSQ4_MASTER = {"version":"CAREER_2026_Q4_V1","note":"Career Score
     try{ if (a[0] !== 'score' && !guardLeave()) return; }catch(e){}
     return o.apply(this, a);
   });
+  var LO = null;   /* ログアウトの前の保存を待っているあいだ */
   wrap('doLogout', function(o, a){
+    var self = this;
     try{
-      if (!W._forceLogout && E.cu && unsaved() && !confirm('Career Score に保存していない変更があります（' + pendCount() + ' 件）。ログアウトすると消えます。ログアウトしますか？')) return;
+      if (!W._forceLogout && E.cu && unsaved()) {
+        if (autosavable()) {   /* 理由の要らない変更は、保存してからログアウト（#215 のルーティンの P3。ほかの画面へ移るときと同じ） */
+          if (LO) return LO;   /* 保存を待っているあいだにもう一度押した */
+          var cu = E.cu, t0 = tok();
+          toast('Career Score の変更を保存してからログアウトします', 'info');
+          LO = Promise.race([Promise.resolve(save(false)).catch(function(){}), new Promise(function(r){ setTimeout(r, 8000); })]).then(function(){
+            LO = null;
+            if (stale(t0)) return;   /* その間にほかの人がログインした・もうログアウトした */
+            if (E.cu === cu && unsaved() && !confirm('Career Score の変更を保存できませんでした（' + pendCount() + ' 件）。ログアウトすると消えます。ログアウトしますか？')) return;
+            return o.apply(self, a);
+          }, function(){ LO = null; });
+          return LO;
+        }
+        if (!confirm('Career Score に保存していない変更があります（' + pendCount() + ' 件・変えた理由が要るものなど）。ログアウトすると消えます。ログアウトしますか？')) return;
+      }
     }catch(e){}
     return o.apply(this, a);
   });
@@ -127238,15 +127278,35 @@ window.FUNERGY_CSQ4_MASTER = {"version":"CAREER_2026_Q4_V1","note":"Career Score
     period = String(period || '');
     if (!period || period < Q) return '';
     sync();
-    var s = srv();
+    var s = E.k ? srv() : 'new';   /* 店のタブレット（店舗のログイン）は確かめられない：Q4 は止める（賞与の ① と同じ） */
     if (s === 'old') return '';
     if (s === 'unknown') { probe(true); return '新しい Career Score に対応しているか確かめています。少し待ってからもう一度押してください'; }
     return 'オフィス用 Career Score は 2026 Q3 までです。2026 Q4 からは「Career Score」→「今期の評価」（S Office・経理・人事）で評価してください（前の記録は読むだけ）';
   }
+  /* 画面に出ている期間（期間のタブの選ばれているもの）。Office の保存の守りのモジュールが動いているときは、
+     期間と入力中の内容をモジュールが自分で持ち、このページの window._ocsPeriod・window._ocsEdit は変わらない（#215 のルーティンの P2）。
+     モジュールもこのページも、入力の画面は表示中の期間のときだけ出すので、選ばれているタブ＝入力している期間 */
+  function ocsShown(){
+    try{
+      var root = byId('main-content') || document;
+      var b = root.querySelectorAll ? root.querySelectorAll('.phase-tab.active[onclick^="ocsSetPeriod("]') : [];
+      var out = '';
+      for (var i = 0; i < b.length; i++) {
+        var m = /^ocsSetPeriod\('(\d{4}-Q[1-4])'\)$/.exec(b[i].getAttribute('onclick') || '');
+        if (m && m[1] > out) out = m[1];
+      }
+      return out;
+    }catch(e){ return ''; }
+  }
   function ocsPer(name, a){
     try{
-      if (name === 'ocsStartEdit') return W._ocsPeriod || (typeof ocsPeriodNow === 'function' ? ocsPeriodNow() : '');
-      if (name === 'ocsSaveEdit') return W._ocsEdit && W._ocsEdit.period;
+      var shown = ocsShown(), now = (typeof ocsPeriodNow === 'function') ? ocsPeriodNow() : '';
+      if (name === 'ocsStartEdit') return shown || W._ocsPeriod || now;
+      if (name === 'ocsSaveEdit') {
+        var ed = (W._ocsEdit && W._ocsEdit.period) || '';
+        var p = shown > ed ? shown : ed;
+        return p || now;   /* どちらも分からないときは今の期間（このページの ocsStartEdit と同じ決め方） */
+      }
       if (name === 'ocsConfirm') return a[1];
     }catch(e){}
     return '';
@@ -127330,7 +127390,7 @@ window.FUNERGY_CSQ4_MASTER = {"version":"CAREER_2026_Q4_V1","note":"Career Score
     on:on, oldView:oldView, oldBlocked:oldBlocked, pageHtml:pageHtml, myCardHtml:myCardHtml, onLogout:onLogout,
     bonusQ:bonusQ, bonusRow:bonusRow, unsaved:function(){ return !!E.cu && unsaved(); }, h:h,
     _t:{ E:function(){ return E; }, srv:srv, setMe:setMe, preview:function(){ return E.cu ? preview() : null; }, buildSave:function(m){ return E.cu ? buildSave(m) : null; },
-      shape:shape, guardLeave:guardLeave, ocsBlocked:ocsBlocked, fromPub:fromPub, Q:Q }
+      shape:shape, guardLeave:guardLeave, ocsBlocked:ocsBlocked, ocsPer:ocsPer, fromPub:fromPub, Q:Q }
   };
 })();
 
