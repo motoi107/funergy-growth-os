@@ -741,6 +741,7 @@ const CS4_EDIT = ['status', 'score', 'naReasonType', 'naReason', 'unassignedReas
 const CS4_SERVER = ['prevStatus', 'byEmp', 'byName', 'at'];
 const CS4_CORE = ['status', 'score', 'naReasonType', 'periodOnly', 'periodFrom', 'periodTo'];
 const CS4_TEXT = ['naReason', 'unassignedReason', 'evidence', 'feedbackComment', 'changeReason'];
+const CS4_KEEP = CS4_TEXT.filter(k => k !== 'changeReason');   // 明細に残す文（変えた理由は記録（csq4_log）にだけ。#214 のレビュー：前の理由を次の変更に使わせない）
 const CS4_SHARE = ['status', 'score', 'naReasonType', 'naReason', 'periodFrom', 'periodTo', 'unassignedReason', 'feedbackComment'];
 // 形の誤り（保存しない）。理由・期間の書き忘れは下書きに残せる（計算では未評価・確定できない＝result.entryErrors）
 const CS4_HARD = ['unknown_item', 'bad_entry', 'bad_status', 'unassigned_only_g', 'bad_score', 'na_reason_type_g_only'];
@@ -817,7 +818,7 @@ const cs4Pick = (e, ks) => { const o = {}; if (!e) return o; for (const k of ks)
 // 比べるための中身（null・未設定・periodOnly false は「無い」と同じ。未評価の項目と null は同じ）
 const cs4Norm = o => { const r = {}; for (const [k, v] of Object.entries(o)) if (v !== null && v !== undefined && v !== '' && v !== false) r[k] = v; return r; };
 const cs4CoreOf = e => canon(cs4Norm(e ? cs4Pick(e, CS4_CORE) : { status: 'UNASSESSED' }));
-const cs4BodyOf = e => canon(cs4Norm(e ? cs4Pick(e, [...CS4_CORE, ...CS4_TEXT]) : { status: 'UNASSESSED' }));
+const cs4BodyOf = e => canon(cs4Norm(e ? cs4Pick(e, [...CS4_CORE, ...CS4_KEEP]) : { status: 'UNASSESSED' }));
 export function cs4CleanFeedback(f) {
   if (!obj(f)) return null;
   const out = {};
@@ -1258,11 +1259,12 @@ export function createHandler(deps) {
         cfgView.push(...pick('csView'), ...cfgEdit, ...cfgApprove);   // 付ける・承認する役は見られる（アプリの cgCsGranted と同じ）
       }
       ids.add(id);
-      list.push({ id, name: e.name, confName: c && c.name && c.name !== e.name ? c.name : '', store: String(e.store || d.store || ''), support: support.filter(x => typeof x === 'string'), role, title, out, gS, dept,
+      // known：グレードが分かる（肩書きか役割が決まりにある・GM・CEO が確かめた写しにグレードがある）。どちらも空の人は wrGrade が 1 とみなすが「分からない」
+      list.push({ id, name: e.name, confName: c && c.name && c.name !== e.name ? c.name : '', store: String(e.store || d.store || ''), support: support.filter(x => typeof x === 'string'), role, title, out, gS, known: !!ag || !!(c && c.grade > 0), dept,
         top: !!mr || !!(c && c.role === 'am'), boss: mr === 'ceo' || mr === 'gm', confAm: !!(c && c.role === 'am'), cfgView, cfgEdit, cfgApprove });
     }
     // 確かめた写しにだけある人（社員の表に行が無い）：その名前はだれにも見せない
-    for (const [id, c] of conf) if (!ids.has(id) && c.name) list.push({ id, name: c.name, confName: '', store: '', support: [], role: '', title: '', out: true, gS: 0, dept: '', top: true, boss: false, confAm: c.role === 'am', cfgView: [], cfgEdit: [], cfgApprove: [] });
+    for (const [id, c] of conf) if (!ids.has(id) && c.name) list.push({ id, name: c.name, confName: '', store: '', support: [], role: '', title: '', out: true, gS: 0, known: false, dept: '', top: true, boss: false, confAm: c.role === 'am', cfgView: [], cfgEdit: [], cfgApprove: [] });
     return list;
   }
   // 見られる人（see）・申請を見られる人（req）・点（lss_emp_）を書ける人（emp：そのまま／ojt：分野の下限を上げるだけ＝名前 → 上げてよい上限）・
@@ -2643,21 +2645,25 @@ export function createHandler(deps) {
       if (a.role === 'gm') return !p.boss;
       if (a.role === 'am') return !p.top && inStores(p);
       if (a.role === 'staff') {
-        if (isChef) return !p.top && !OFFICE_ROLES.includes(p.role) && p.gS < a.grade && kitchen(p);
-        if (a.grade >= 4) return !p.top && inStores(p) && p.gS < a.grade;
+        // グレードの分からない人（肩書きも役割も決まりに無い）は「自分より下」と決められないので採点しない（#214 のレビュー）
+        if (isChef) return !p.top && !OFFICE_ROLES.includes(p.role) && p.known && p.gS < a.grade && kitchen(p);
+        if (a.grade >= 4) return !p.top && inStores(p) && p.known && p.gS < a.grade;
         return false;
       }
       if (a.role === 'office') return p.role === 'office_crew' && !p.boss && !p.confAm;
       return false;
     };
     const canConfirm = p => live(p) && (a.role === 'ceo' || (a.role === 'gm' && !p.boss));
+    // 退職した人の開いたままの評価：CEO・GM（GM は CEO・GM の人を除く）が取り消せる（読むのと取り消しだけ。#214 のレビュー）
+    const canCancelOut = p => !!p && p.out && p.id !== me.id && (a.role === 'ceo' || (a.role === 'gm' && !p.boss));
     const byId = new Map(P.filter(p => !p.out).map(p => [p.id, p]));
-    return { P, me, A, nosql: asg === null, byId, canScore, canConfirm, canSee: p => canScore(p) || canConfirm(p) };
+    const all = new Map(P.map(p => [p.id, p]));
+    return { P, me, A, nosql: asg === null, byId, all, canScore, canConfirm, canCancelOut, canSee: p => canScore(p) || canConfirm(p) };
   }
   function cs4Person(C, id) {
     if (!cs4Id(id)) throw bad();
-    const p = C.byId.get(id);
-    if (!p || !C.canSee(p)) throw err('forbidden', 403);
+    const p = C.byId.get(id) || C.all.get(id);
+    if (!p || !(C.canSee(p) || C.canCancelOut(p))) throw err('forbidden', 403);
     return p;
   }
   async function cs4Row(id, cols = CS4_EV_COLS) {
@@ -2675,6 +2681,7 @@ export function createHandler(deps) {
     for (const [k, x] of Object.entries(v)) if (k.startsWith(pre) && obj(x) && typeof x.t === 'string') m.set(k.slice(pre.length), x.t);
     return m;
   }
+  const cs4Can = (a, C, p) => ({ score: C.canScore(p), confirm: C.canConfirm(p), assign: SS_FULL_ROLES.includes(a.role) && C.canConfirm(p), cancel: C.canConfirm(p) || C.canCancelOut(p) });
   const cs4AssignOut = x => x ? { system: x.system, grade: x.grade || null, type: x.type || null, ver: x.ver, at: x.updated_at || null, by_name: x.by_name || '' } : null;
 
   // 本人：自分の評価表・本人に共有された内容（共有していない下書きは中身を出さない）・自分の申し出・今までの自分の記録
@@ -2707,6 +2714,14 @@ export function createHandler(deps) {
     const base = { period: CS4_PERIOD, version: CS4_VERSION };
     if (C.nosql) return { ...base, rows: [], counts: null, nosql: true };
     const ppl = [...C.byId.values()].filter(p => C.canSee(p));
+    if (SS_FULL_ROLES.includes(a.role)) {   // CEO・GM：退職した人で開いたままの評価がある人も出す（取り消すため）
+      const op = await rest('csq4_evals?period=eq.' + encodeURIComponent(CS4_PERIOD) + '&status=in.(draft,submitted,returned)&select=emp_id&limit=5000');
+      const seen = new Set(ppl.map(p => p.id));
+      for (const r of (Array.isArray(op) ? op : [])) {
+        const p = C.all.get(String(r.emp_id));
+        if (p && !seen.has(p.id) && C.canCancelOut(p)) { seen.add(p.id); ppl.push(p); }
+      }
+    }
     const tracks = await cs4Tracks();
     const ids = ppl.map(p => p.id), E = new Map(), R = new Map();
     for (let i = 0; i < ids.length; i += 150) {
@@ -2723,9 +2738,9 @@ export function createHandler(deps) {
       const es = E.get(p.id) || [];
       const op = es.find(r => CS4_OPEN.includes(r.status)) || null, pub = es.find(r => r.status === 'published') || null;
       counts[op ? op.status : pub ? 'published' : 'not_started']++;
-      return { emp: p.id, name: p.name, store: p.store, title: p.title, role: p.role, grade: p.gS,
+      return { emp: p.id, name: p.name, store: p.store, title: p.title, role: p.role, grade: p.gS, out: !!p.out,
         suggest: cs4Suggest(p, tracks.get(p.id)), assign: cs4AssignOut(C.A.get(p.id)), open: sum(op), published: sum(pub), reqs: R.get(p.id) || 0,
-        can: { score: C.canScore(p), confirm: C.canConfirm(p), assign: SS_FULL_ROLES.includes(a.role) && C.canConfirm(p) } };
+        can: cs4Can(a, C, p) };
     });
     rows.sort((x, y) => String(x.store).localeCompare(String(y.store)) || String(x.name).localeCompare(String(y.name)));
     return { ...base, rows, counts };
@@ -2741,9 +2756,9 @@ export function createHandler(deps) {
       rest('csq4_reqs?emp_id=eq.' + id + per + '&select=id,eval_id,item_id,kind,note,status,answer,created_at,created_by_name,answered_at,answered_by_name&order=id.desc&limit=500'),
       rest('csq4_log?emp_id=eq.' + id + per + '&select=id,at,eval_id,action,by_name,by_role,detail&order=id.desc&limit=200'),
     ]);
-    return { period: CS4_PERIOD, version: CS4_VERSION, person: { emp: p.id, name: p.name, store: p.store, title: p.title, role: p.role, grade: p.gS },
+    return { period: CS4_PERIOD, version: CS4_VERSION, person: { emp: p.id, name: p.name, store: p.store, title: p.title, role: p.role, grade: p.gS, out: !!p.out },
       assign: cs4AssignOut(C.A.get(p.id)), evals: Array.isArray(evs) ? evs : [], reqs: Array.isArray(reqs) ? reqs : [], log: Array.isArray(log) ? log : [],
-      can: { score: C.canScore(p), confirm: C.canConfirm(p), assign: SS_FULL_ROLES.includes(a.role) && C.canConfirm(p) } };
+      can: cs4Can(a, C, p) };
   }
   // 評価表を決める（GM・CEO。答え 1 A・2 A）
   async function cs4Assign(a, b) {
@@ -2822,11 +2837,12 @@ export function createHandler(deps) {
         const coreChanged = cs4CoreOf(before) !== cs4CoreOf(after);
         const bodyChanged = cs4BodyOf(before) !== cs4BodyOf(after);
         if (!coreChanged && !bodyChanged) continue;
-        if (coreChanged && sensitive && before && before.status !== 'UNASSESSED' && !(after && after.changeReason)) { need.push(id); continue; }
+        const why = after && after.changeReason && after.changeReason !== (before && before.changeReason) ? after.changeReason : '';   // 前に残った理由は使わない
+        if (coreChanged && sensitive && before && before.status !== 'UNASSESSED' && !why) { need.push(id); continue; }
         if (after === null) delete entries[id];
-        else entries[id] = { ...after, prevStatus: coreChanged ? (before ? before.status : 'UNASSESSED') : (before && before.prevStatus ? before.prevStatus : 'UNASSESSED'),
+        else entries[id] = { ...cs4Pick(after, [...CS4_CORE, ...CS4_KEEP]), prevStatus: coreChanged ? (before ? before.status : 'UNASSESSED') : (before && before.prevStatus ? before.prevStatus : 'UNASSESSED'),
           byEmp: a.emp, byName: a.name || '', at: cs4Iso() };
-        changes[id] = coreChanged ? { before: before ? cs4Pick(before, CS4_CORE) : null, after: after ? cs4Pick(after, CS4_CORE) : null, reason: (after && after.changeReason) || '' } : { text: true };
+        changes[id] = coreChanged ? { before: before ? cs4Pick(before, CS4_CORE) : null, after: after ? cs4Pick(after, CS4_CORE) : null, reason: why } : { text: true };
       }
     }
     if (need.length) { const e = err('reason_required', 400); e.ids = need; throw e; }
@@ -2860,8 +2876,8 @@ export function createHandler(deps) {
     if (note === null || note.length > 1000) throw bad();
     if ((b.act === 'return' || b.act === 'cancel') && !note) throw bad();
     const row = await cs4Row(b.id);
-    const p = C.byId.get(String(row.emp_id));
-    const may = b.act === 'share' || b.act === 'submit' ? (p && C.canScore(p)) : (p && C.canConfirm(p));
+    const p = C.byId.get(String(row.emp_id)) || C.all.get(String(row.emp_id));
+    const may = b.act === 'share' || b.act === 'submit' ? (p && C.canScore(p)) : b.act === 'cancel' ? (p && (C.canConfirm(p) || C.canCancelOut(p))) : (p && C.canConfirm(p));
     if (!may) throw err('forbidden', 403);
     const result = cs4Compute(row, obj(row.entries) || {}, row.system === 'PREP' ? (obj(row.prep) || {}) : null);
     const shared = b.act === 'share' || b.act === 'confirm' ? cs4Shared(row, obj(row.entries) || {}, obj(row.feedback) || {}, result) : null;
@@ -2872,6 +2888,8 @@ export function createHandler(deps) {
   // 本人の見直しの申し出（「任されていないため見直しを希望」＝not_assigned・項目）とコメント（comment）。本人の評価だけ
   async function cs4Req(a, b) {
     if (!a.emp) throw err('no_emp', 403);
+    const P = await csPeople();   // 退職した人（OS 無効を含む）は申し出ない（#214 のレビュー）
+    if (!P.some(p => p.id === String(a.emp) && !p.out)) throw err('forbidden', 403);
     if (!['not_assigned', 'comment'].includes(b.kind)) throw bad();
     const note = b.note === undefined || b.note === null ? '' : (typeof b.note === 'string' ? b.note.trim() : null);
     if (note === null || note.length > 1000 || (b.kind === 'comment' && !note)) throw bad();

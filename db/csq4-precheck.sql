@@ -1,16 +1,17 @@
 -- 読むだけ（Career Score 2026 Q4・段階 3-1）。20261214090000_csq4.sql を入れる「前」に、Supabase の SQL Editor で流す。
 -- 最後に rollback するので何も変わりません。STOP が無ければ SQL に進めます。表は Claude との会話にだけ貼ってください（名前は出ません。数だけ）。
 -- 4〜9 行目：今の Career Score の記録（app_state）の数。SQL のあとの「今の記録を写す」でこの数が写ります（元は変えません・消しません）。
--- 10 行目：同じ名前の社員（退職の人も数える）。その名前の記録は人を決めずに写します（本人の画面には出ません）。
+-- 10 行目：同じ名前の人（社員の表の列と中身・確かめた写し。退職の人も数える）。その名前の記録は人を決めずに写します（本人の画面には出ません）。
 -- 2・3・12 行目：新しい表がもうあれば「2 回目」（流し直しても行は消えません）。形が違えば STOP（SQL も何も変えずに止まります）。
 begin;
 create temp table csq4_pre(n int, what text, value text, ok text) on commit drop;
 do $$
 declare shape_ok boolean; n bigint;
 begin
-  insert into csq4_pre values (1, '表 app_state・employees（前からある表）',
-    concat_ws(' ', case when to_regclass('public.app_state') is not null then 'app_state' end, case when to_regclass('public.employees') is not null then 'employees' end),
-    case when to_regclass('public.app_state') is not null and to_regclass('public.employees') is not null then 'OK' else 'STOP（無い）' end);
+  insert into csq4_pre values (1, '表 app_state・employees・wr_people（前からある表）',
+    concat_ws(' ', case when to_regclass('public.app_state') is not null then 'app_state' end, case when to_regclass('public.employees') is not null then 'employees' end,
+              case when to_regclass('public.wr_people') is not null then 'wr_people' end),
+    case when to_regclass('public.app_state') is not null and to_regclass('public.employees') is not null and to_regclass('public.wr_people') is not null then 'OK' else 'STOP（無い）' end);
   if to_regclass('public.csq4_evals') is null then
     insert into csq4_pre values (2, '表 csq4_evals（新しい評価）', 'まだ無い', 'OK');
   else
@@ -53,10 +54,15 @@ begin
 end $$;
 do $$
 begin
-  if to_regclass('public.employees') is null then return; end if;
-  insert into csq4_pre
-  select 10, '同じ名前の社員（退職の人も数える）', count(*)::text || ' 組（その名前の記録は人を決めずに写す）', 'info'
-    from (select name from public.employees where name is not null group by name having count(*) > 1) x;
+  if to_regclass('public.employees') is null or to_regclass('public.wr_people') is null then return; end if;
+  -- 名前を持つ人：社員の表の名前（列と中身）・確かめた写しの名前。2 人以上が持つ名前の記録は人を決めずに写す
+  execute $q$insert into csq4_pre
+  select 10, '同じ名前の人（社員の表の列と中身・確かめた写し。退職の人も数える）', count(*)::text || ' 組（その名前の記録は人を決めずに写す）', 'info'
+    from (select o.name from (
+            select e.id::text as id, e.name as name from public.employees e where coalesce(e.name, '') <> ''
+            union select e.id::text, e.data->>'name' from public.employees e where jsonb_typeof(e.data) = 'object' and coalesce(e.data->>'name', '') <> ''
+            union select w.emp_id, w.name from public.wr_people w where coalesce(w.name, '') <> '') o
+          group by o.name having count(distinct o.id) > 1) x$q$;
 end $$;
 insert into csq4_pre
 select 11, '関数 csq4_hist_copy（今の記録を写す）', case when to_regprocedure('public.csq4_hist_copy(text,text,text)') is null then 'まだ無い' else 'もうある' end, 'OK';

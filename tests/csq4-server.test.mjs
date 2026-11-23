@@ -43,6 +43,7 @@ async function mkdb() {
     alter default privileges in schema public grant all on sequences to anon, authenticated, service_role;
     alter default privileges in schema public grant execute on functions to anon, authenticated, service_role;
     create table public.employees(id text primary key, name text, store text, status text, data jsonb);
+    create table public.wr_people(emp_id text primary key, name text not null, role text, grade integer);
     create table public.app_state(key text primary key, value jsonb, updated_at timestamptz not null default now());`);
   return db;
 }
@@ -204,6 +205,29 @@ test('copying the old records: the source is not changed, the same content is co
   assert.deepEqual((await H()).filter(x => x.src_key === 'lss_emp_Kai One').map(x => x.data), [{ 'H-01': 2, 'A-01': 3 }, { 'H-01': 3, 'A-01': 3 }], 'the old row stays');
 });
 
+test('copying: a name owned by two people (the column, the data name or the confirmed copy) gets no person (#214 review)', async () => {
+  const db = await mkdb(); await seed(db);
+  await db.exec(`insert into public.employees(id, name, store, status, data) values
+      ('E-C1', 'Col Name', 'S1', '', '{"name":"Data Twin"}'), ('E-C2', 'Data Twin', 'S2', '', '{}'),
+      ('E-C3', 'Only Data', 'S1', '', '{"name":"Only Data"}'), ('E-C4', 'Conf Twin', 'S1', '', '{}');
+    insert into public.wr_people(emp_id, name, role, grade) values ('E-W9', 'Conf Twin', 'staff', 2), ('E-C3', 'Only Data', 'staff', 1);
+    insert into public.app_state(key, value, updated_at) values
+      ('lss_emp_Data Twin', '{"H-01":2}', '2026-11-01 00:00:00+00'), ('lss_emp_Conf Twin', '{"H-01":2}', '2026-11-01 00:00:00+00'),
+      ('lss_emp_Only Data', '{"H-01":2}', '2026-11-01 00:00:00+00');`);
+  await db.exec(MIG);
+  await copySql(db);
+  const who = async k => (await db.query('select emp_id from public.csq4_hist where src_key = $1', [k])).rows.map(r => r.emp_id);
+  assert.deepEqual(await who('lss_emp_Data Twin'), [null], 'one person has it as the column, another in the data');
+  assert.deepEqual(await who('lss_emp_Conf Twin'), [null], 'another person has it in the confirmed copy');
+  assert.deepEqual(await who('lss_emp_Only Data'), ['E-C3'], 'one person in several places is still one person');
+  assert.deepEqual(await who('lss_emp_Kai One'), ['E-1']);
+  const pre = await table(await (async () => { const d = await mkdb(); await d.exec(`insert into public.employees(id, name, data) values ('A', 'X', '{}'), ('B', 'Y', '{"name":"X"}')`); return d; })(), PRE);
+  assert.match(row(pre, 10).value, /^1 組/, 'the precheck counts the same owners');
+  const noW = await mkdb(); await noW.exec('drop table public.wr_people');
+  await assert.rejects(() => noW.exec(MIG), /STOP: public\.wr_people/);
+  assert.equal(row(await table(noW, PRE), 1).ok, 'STOP（無い）');
+});
+
 // ---------- 3. 関数 ----------
 const U = n => 'cccccccc-0000-0000-0000-00000000000' + n;
 const E = (id, name, store, role, title, status = '') => ({ id, name, store, role, title, status, data: { name, store } });
@@ -228,11 +252,11 @@ const SIG = {
 const unq = s => s.replace(/^"|"$/g, '').replace(/\\"/g, '"').replace(/\\\\/g, '\\');
 const splitList = s => { const out = []; let cur = '', q = false; for (const ch of s) { if (ch === '"') q = !q; if (ch === ',' && !q) { out.push(cur); cur = ''; } else cur += ch; } if (cur) out.push(cur); return out.map(unq); };
 
-async function setup({ sql = true } = {}) {
+async function setup({ sql = true, extra = [] } = {}) {
   const db = await mkdb(); await seed(db);
   if (sql) await db.exec(MIG);
   const W = makeWorld({
-    emps: EMPS.map(e => ({ ...e, data: { ...e.data } })),
+    emps: [...EMPS, ...extra].map(e => ({ ...e, data: { ...e.data } })),
     mgr: { [U(1)]: { emp_id: 'E-GM', role: 'gm' }, [U(2)]: { emp_id: 'E-OF', role: 'office' }, [U(3)]: { emp_id: 'E-CEO', role: 'ceo' },
            [U(4)]: { emp_id: null, role: 'gm' }, [U(5)]: { emp_id: 'E-OC', role: 'office_crew' } },
     users: { gm: U(1), of: U(2), ceo: U(3), gmx: U(4) },
@@ -557,6 +581,51 @@ test('other forms: G6 by the CEO, PREP by the Head Chef, G3 by the store manager
   okj(await email('of', { action: 'cs4_act', id: o.id, expect: 2, act: 'submit' }), 'submit office');
   fail(await email('of', { action: 'cs4_act', id: o.id, expect: 3, act: 'confirm' }), 403, 'forbidden');
   fail(await email('of', { action: 'cs4_start', emp: 'E-1' }), 403, 'forbidden', 'office scores office crew only');
+});
+
+test('#214 review: unknown grades, retired people\'s open evaluations and change reasons', async () => {
+  const { db, W, pin, email } = await setup({ extra: [E('E-U', 'Uma Unknown', 'S1', '', '')] });
+  const ros = async (r, what) => okj(await r, what).rows;
+  // 肩書きも役割も決まりに無い人：G4 は採点しない（「自分より下」と決められない）・AM・GM は採点する
+  assert.ok(!(await ros(pin('g4', { action: 'cs4_roster' }), 'g4')).some(x => x.emp === 'E-U'));
+  assert.ok((await ros(pin('am', { action: 'cs4_roster' }), 'am')).some(x => x.emp === 'E-U'));
+  okj(await email('gm', { action: 'cs4_assign', items: [{ emp: 'E-U', system: 'G', grade: 'G1', type: 'Server中心', expect: 0 }] }), 'assign U');
+  fail(await pin('g4', { action: 'cs4_start', emp: 'E-U' }), 403, 'forbidden', 'G4 and an unknown grade');
+
+  // 退職した人の開いた評価：CEO・GM は一覧に出て取り消せる（採点・確定はしない）・AM・G4 は触れない・本人は申し出ない
+  okj(await email('gm', { action: 'cs4_assign', items: [{ emp: 'E-1B', system: 'G', grade: 'G1', type: 'Server中心', expect: 0 }] }), 'assign 1B');
+  const st = okj(await pin('am', { action: 'cs4_start', emp: 'E-1B' }), 'start 1B');
+  let r = okj(await pin('am', { action: 'cs4_save', id: st.id, expect: 1, entries: { '01-01': { status: 'SCORED', score: 2 } } }), 'save');
+  r = okj(await pin('am', { action: 'cs4_act', id: st.id, expect: r.ver, act: 'share' }), 'share');
+  // 共有のあと：変えた理由は記録にだけ残す（明細には残さない）
+  r = okj(await pin('am', { action: 'cs4_save', id: st.id, expect: r.ver, entries: { '01-01': { status: 'SCORED', score: 3, changeReason: '10/20 の朝の様子' } } }), 'reason');
+  let ev = await evalRow(db, st.id);
+  assert.equal(ev.entries['01-01'].changeReason, undefined, 'the reason is not kept in the entry');
+  const lg = (await db.query(`select detail from public.csq4_log where eval_id = $1 and action = 'save' order by id desc limit 1`, [st.id])).rows[0].detail;
+  assert.equal(lg.changes['01-01'].reason, '10/20 の朝の様子');
+  fail(await pin('am', { action: 'cs4_save', id: st.id, expect: r.ver, entries: { '01-01': { status: 'SCORED', score: 1 } } }), 400, 'reason_required', 'a new change needs a new reason');
+  // 前の版が明細に残した理由は使えない
+  await db.query(`update public.csq4_evals set entries = jsonb_set(entries, '{01-01,changeReason}', '"前の理由"') where id = $1`, [st.id]);
+  assert.deepEqual(fail(await pin('am', { action: 'cs4_save', id: st.id, expect: r.ver, entries: { '01-01': { status: 'SCORED', score: 1, changeReason: '前の理由' } } }), 400, 'reason_required', 'the old reason').ids, ['01-01']);
+  r = okj(await pin('am', { action: 'cs4_save', id: st.id, expect: r.ver, entries: { '01-01': { status: 'UNASSESSED', changeReason: '見直すため未評価に戻す' } } }), 'back to unassessed with a reason');
+  okj(await pin('g1b', { action: 'cs4_req', id: st.id, kind: 'comment', note: '確認したい' }), 'comment before');
+  W.emps.find(e => e.id === 'E-1B').status = '退職';
+  fail(await pin('g1b', { action: 'cs4_req', id: st.id, kind: 'comment', note: 'もう一度' }), 403, 'forbidden', 'retired people do not send');
+  assert.ok(!(await ros(pin('am', { action: 'cs4_roster' }), 'am')).some(x => x.emp === 'E-1B'), 'the AM does not see');
+  fail(await pin('am', { action: 'cs4_save', id: st.id, expect: r.ver, entries: { '01-02': { status: 'SCORED', score: 2 } } }), 403, 'forbidden', 'no scoring');
+  for (const who of [['gm', email], ['ceo', pin]]) {
+    const row1 = (await ros(who[1](who[0], { action: 'cs4_roster' }), who[0])).find(x => x.emp === 'E-1B');
+    assert.ok(row1, who[0] + ' sees the retired person with an open evaluation');
+    assert.deepEqual([row1.out, row1.can.score, row1.can.confirm, row1.can.assign, row1.can.cancel], [true, false, false, false, true]);
+  }
+  assert.equal(okj(await email('gm', { action: 'cs4_get', emp: 'E-1B' }), 'get').person.out, true);
+  fail(await email('gm', { action: 'cs4_act', id: st.id, expect: r.ver, act: 'confirm' }), 403, 'forbidden', 'no confirming');
+  fail(await email('gm', { action: 'cs4_act', id: st.id, expect: r.ver, act: 'cancel' }), 400, 'bad_value', 'a note is needed');
+  okj(await email('gm', { action: 'cs4_act', id: st.id, expect: r.ver, act: 'cancel', note: '退職のため' }), 'cancel');
+  assert.equal((await evalRow(db, st.id)).status, 'cancelled');
+  assert.ok(!(await ros(email('gm', { action: 'cs4_roster' }), 'gm')).some(x => x.emp === 'E-1B'), 'gone after cancelling');
+  assert.deepEqual(okj(await email('gm', { action: 'cs4_get', emp: 'E-OUT' }), 'a retired person: CEO・GM read').evals, []);
+  fail(await pin('am', { action: 'cs4_get', emp: 'E-OUT' }), 403, 'forbidden', 'the AM does not read retired people');
 });
 
 test('before the SQL: reads say nosql and writes say not_installed', async () => {

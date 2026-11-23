@@ -25,6 +25,7 @@ do $$
 begin
   if to_regclass('public.app_state') is null then raise exception 'STOP: public.app_state がありません（何も変えていません）'; end if;
   if to_regclass('public.employees') is null then raise exception 'STOP: public.employees がありません（何も変えていません）'; end if;
+  if to_regclass('public.wr_people') is null then raise exception 'STOP: public.wr_people がありません（先に 20261104090000 を・何も変えていません）'; end if;
   if to_regclass('public.csq4_evals') is not null and not exists (select 1 from information_schema.columns
        where table_schema = 'public' and table_name = 'csq4_evals' and column_name = 'entries' and data_type = 'jsonb') then
     raise exception 'STOP: public.csq4_evals がありますが形が違います（何も変えていません）';
@@ -549,8 +550,14 @@ as $$
       from public.app_state s
       cross join lateral jsonb_each(case when jsonb_typeof(public.csq4_unwrap(s.value)->'evals') = 'object' then public.csq4_unwrap(s.value)->'evals' else '{}'::jsonb end) q
       where left(s.key, 7) = 'ocs_ev_' and char_length(s.key) > 7 and q.key ~ '^[0-9]{4}-Q[1-4]$'
-  ), uniq as (
-    select e.name, min(e.id::text) as id from public.employees e where e.name is not null group by e.name having count(*) = 1
+  ), owners as (   -- 名前を持つ人：社員の表の名前（列と中身）・確かめた写しの名前（退職の人も）。#214 のレビュー
+    select e.id::text as id, e.name as name from public.employees e where coalesce(e.name, '') <> ''
+    union
+    select e.id::text, e.data->>'name' from public.employees e where jsonb_typeof(e.data) = 'object' and coalesce(e.data->>'name', '') <> ''
+    union
+    select w.emp_id, w.name from public.wr_people w where coalesce(w.name, '') <> ''
+  ), uniq as (   -- その名前を持つのが 1 人だけのときだけ、その人の記録とみなす
+    select o.name, min(o.id) as id from owners o group by o.name having count(distinct o.id) = 1
   )
   select r.k, r.part, r.kind,
     coalesce(r.emp, u.id) as emp_id,
