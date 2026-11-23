@@ -565,6 +565,27 @@ test('20) 計算は入力（点数・状態・日時）を書き換えない', (
 });
 
 // ---------- 分数の道具 ----------
+test('ルーティンのレビュー（#212）：入力に誤りのある項目は本人向けの一覧に載せない・Prep の今の段が空なら比べない', () => {
+  const ids = items('G').map((i) => i.id);
+  const e = fill('G', () => S(2));
+  e[ids[0]] = { status: STATUS.UNASSIGNED, score: 0 };                                   // 未担当の理由なし＝誤り
+  e[ids[1]] = UA();
+  e[ids[2]] = { status: STATUS.NOT_APPLICABLE, score: null, naReasonType: NA_REASON.ROLE };  // 非該当の理由なし＝誤り
+  e[ids[3]] = NR();
+  const r = C.csq4Score(M, { system: 'G', grade: 'G3', type: 'Kitchen中心', entries: e });
+  assert.ok(r.entryErrors[ids[0]] && r.entryErrors[ids[2]]);
+  assert.deepEqual(r.unassignedList.map((x) => x.id), [ids[1]], '計算で未評価として扱う項目を未担当の一覧に載せない');
+  assert.deepEqual(r.roleNaList.map((x) => x.id), [ids[3]]);
+  const L = C.csq4Lists(C.csq4System(M, 'G'), e, M, 'G');
+  assert.deepEqual(L.unassigned.map((x) => x.id), [ids[1]]);
+  assert.deepEqual(L.roleNa.map((x) => x.id), [ids[3]]);
+  for (const cs of ['', null, undefined, 'P9', 3, false]) {
+    const k = prep({ currentStep: cs, measure: meas(['0.81', '1', '1']) });
+    assert.equal(k.pay.step, 'P2');
+    assert.equal(k.pay.compare, undefined, '今の段が無い・分からないときは比べない（' + String(cs) + '）');
+  }
+});
+
 test('分数：10 進の文字列だけ・ゼロ割りは断る', () => {
   assert.equal(C.fstr(C.fdec('0.80')), '4/5');
   assert.equal(C.fstr(C.fdec(0.81)), '81/100');

@@ -233,7 +233,7 @@ export function csq4Score(master, input) {
   const base = Number(master.base[sys === 'G' ? 'G' : 'S'][gn]);
   const baseMet = state === 'complete' ? fcmp(total, frac(base)) >= 0 : null;
   const minimum = csq4Minimum(master, sys, gn, input.type, eff, sysDef);
-  const lists = csq4Lists(sysDef, entries);
+  const lists = csq4Lists(sysDef, eff);   // 入力に誤りのある項目は一覧にも載せない（計算と同じく未評価）
   return {
     ok: true, version: master.version, system: sys, grade: input.grade, type: sys === 'G' ? input.type : null,
     state, confirmable: state === 'complete' && !anyInvalid,
@@ -247,10 +247,12 @@ export function csq4Score(master, input) {
 }
 
 // 本人向けの一覧：未担当と会社都合の今回非該当（G）／完全非該当は別枠
-export function csq4Lists(sysDef, entries) {
+// master と sys を渡すと、入力に誤りのある項目は載せない（csq4Score と同じく未評価として扱う）
+export function csq4Lists(sysDef, entries, master, sys) {
   const unassigned = [], roleNa = [];
   for (const it of sysDef.items) {
-    const e = entries[it.id];
+    let e = entries[it.id];
+    if (e && master && sys && csq4CheckEntry(master, sys, it.id, e).length) e = undefined;
     const k = kind(e);
     const row = { id: it.id, cat: it.cat, name: it.name };
     if (k === 'A') unassigned.push({ ...row, status: STATUS.UNASSIGNED, reason: e.unassignedReason || '', feedback: e.feedbackComment || '' });
@@ -368,8 +370,9 @@ export function csq4Prep(master, input) {
     }
     pay = { state: 'judged', step: step ? step.step : null, wageUsd: step ? step.wageUsd : null };
     const order = P.pay.map((p) => p.step);
-    const cur = input.currentStep && order.indexOf(input.currentStep);
-    if (step && cur !== null && cur !== undefined && cur >= 0) {
+    // 今の段が文字で入っているときだけ比べる（空・null・知らない段は比べない）
+    const cur = typeof input.currentStep === 'string' && input.currentStep ? order.indexOf(input.currentStep) : -1;
+    if (step && cur >= 0) {
       const ni = order.indexOf(step.step);
       pay.compare = ni > cur ? 'raise' : ni === cur ? 'same' : 'keep_current';   // 自動で下げない（確認して判断）
     }
