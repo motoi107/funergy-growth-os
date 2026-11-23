@@ -339,7 +339,7 @@ const evalRow = async (db, id) => (await db.query('select * from public.csq4_eva
 test('who sees whom: rosters, suggested evaluation forms, retired and no-employee accounts', async () => {
   const { pin, email, W } = await setup();
   const emps = async r => okj(await r, 'roster').rows.map(x => x.emp).sort();
-  assert.deepEqual(await emps(email('gm', { action: 'cs4_roster' })), ['E-1', 'E-1B', 'E-2', 'E-3', 'E-4', 'E-AM', 'E-AM2', 'E-CH', 'E-OC', 'E-OF', 'E-P']);
+  assert.deepEqual(await emps(email('gm', { action: 'cs4_roster' })), ['E-1', 'E-1B', 'E-2', 'E-3', 'E-4', 'E-AM', 'E-AM2', 'E-CEO', 'E-CH', 'E-OC', 'E-OF', 'E-P'], 'the GM sees the CEO person too (not self)');
   assert.deepEqual(await emps(pin('ceo', { action: 'cs4_roster' })), ['E-1', 'E-1B', 'E-2', 'E-3', 'E-4', 'E-AM', 'E-AM2', 'E-CH', 'E-GM', 'E-OC', 'E-OF', 'E-P']);
   assert.deepEqual(await emps(pin('am', { action: 'cs4_roster' })), ['E-1', 'E-1B', 'E-3', 'E-4', 'E-CH', 'E-P'], 'not the other AM of the same store');
   assert.deepEqual(await emps(pin('ch', { action: 'cs4_roster' })), ['E-3', 'E-P']);
@@ -640,7 +640,7 @@ test('#214 review: unknown grades, retired people\'s open evaluations and change
   fail(await pin('am', { action: 'cs4_get', emp: 'E-OUT' }), 403, 'forbidden', 'the AM does not read retired people');
 });
 
-test('Moto 11/23: a confirmed G3 scores G2 people of the own store (CEO・GM confirm); a GM only reads other GM・CEO people\'s confirmed evaluations', async () => {
+test('Moto 11/23: a confirmed G3 scores G2 people of the own store (CEO・GM confirm); a GM has every right the CEO has (other GM・CEO people too, not self)', async () => {
   const G2 = (id, name, store, support) => ({ id, name, store, role: 'g2', title: 'Crew Leader', status: '', ...(support ? { support } : {}), data: { name, store } });
   const { db, W, pin, email } = await setup({ extra: [
     G2('E-2L', 'Lia Lead', 'S1'), G2('E-2X', 'Xan Lead', 'S2'), G2('E-2S', 'Sam Lead', 'S2', ['S1']),
@@ -653,7 +653,7 @@ test('Moto 11/23: a confirmed G3 scores G2 people of the own store (CEO・GM con
   // 確かめた G3：自分の店（応援を含む）の G2 だけ（ほかの店・本部の人・G1・G4 は出ない）
   const g3 = await ros(pin('g3', { action: 'cs4_roster' }), 'g3 roster');
   assert.deepEqual(g3.rows.map(x => x.emp).sort(), ['E-2L', 'E-2S']);
-  assert.ok(g3.rows.every(x => x.can.score && !x.can.confirm && !x.can.assign && !x.can.cancel && !x.view));
+  assert.ok(g3.rows.every(x => x.can.score && !x.can.confirm && !x.can.assign && !x.can.cancel));
   assert.deepEqual((await ros(pin('g3u', { action: 'cs4_roster' }), 'unconfirmed g3')).rows, [], 'a G3 not confirmed by GM・CEO does not score');
   for (const e of ['E-2X', 'E-OCL', 'E-1', 'E-4']) fail(await pin('g3', { action: 'cs4_start', emp: e }), 403, 'forbidden', 'G3 and ' + e);
   // 採点 → 共有 → 確認依頼（G3）→ 確定・差戻しは CEO・GM だけ
@@ -674,64 +674,72 @@ test('Moto 11/23: a confirmed G3 scores G2 people of the own store (CEO・GM con
   assert.deepEqual([ev.status, ev.submitted_by_name, ev.confirmed_by_role], ['published', 'Kit Three', 'gm']);
   okj(await pin('g3', { action: 'cs4_reeval', emp: 'E-2L', pub: st.id, reason: '見直し' }), 'the G3 starts a re-evaluation (CEO・GM confirm again)');
 
-  // GM が見るだけ：ほかの GM の確定・公開した評価（下書き・確認待ち・申し出・記録は出さない・数にも入れない）
-  okj(await pin('ceo', { action: 'cs4_assign', items: [{ emp: 'E-GM2', system: 'G', grade: 'G6', type: '全社責任', expect: 0 }] }), 'assign GM2');
-  fail(await email('gm', { action: 'cs4_assign', items: [{ emp: 'E-GM2', system: 'G', grade: 'G6', type: '全社責任', expect: 1 }] }), 403, 'forbidden', 'GM does not assign GM2');
-  const g = okj(await pin('ceo', { action: 'cs4_start', emp: 'E-GM2' }), 'start GM2');
-  r = okj(await pin('ceo', { action: 'cs4_save', id: g.id, expect: 1, entries: all('G', 2) }), 'save GM2');
-  r = okj(await pin('ceo', { action: 'cs4_act', id: g.id, expect: r.ver, act: 'submit' }), 'submit GM2');
+  // GM は CEO と同じにすべて（閲覧・採点・変更・確定・取り消し・評価表・申し出への答え）。ほかの GM・CEO の人も。自分だけは除く
+  //（Moto さん 11/23「GMは全ての閲覧、評価、変更、承認の権限を持たせてください」）
+  okj(await email('gm', { action: 'cs4_assign', items: [{ emp: 'E-GM2', system: 'G', grade: 'G6', type: '全社責任', expect: 0 }] }), 'the GM assigns GM2');
   const gmRos = async () => (await ros(email('gm', { action: 'cs4_roster' }), 'gm roster'));
   let R = await gmRos();
-  assert.ok(!R.rows.some(x => x.emp === 'E-GM2'), 'not before it is confirmed');
-  let G = okj(await email('gm', { action: 'cs4_get', emp: 'E-GM2' }), 'gm get before');
-  assert.deepEqual([G.view, G.evals, G.reqs, G.log, G.assign], [true, [], [], [], null]);
-  const before = R.counts;
-  r = okj(await pin('ceo', { action: 'cs4_act', id: g.id, expect: r.ver, act: 'confirm' }), 'CEO confirms GM2');
-  R = await gmRos();
   const row = R.rows.find(x => x.emp === 'E-GM2');
-  assert.ok(row, 'the GM sees the confirmed GM2');
-  assert.deepEqual([row.view, row.open, row.reqs, row.assign, row.suggest, row.published.status, row.published.id],
-    [true, null, 0, null, null, 'published', g.id]);
-  assert.deepEqual([row.can.score, row.can.confirm, row.can.assign, row.can.cancel], [false, false, false, false]);
-  assert.deepEqual(R.counts, before, 'view rows are not counted');
-  assert.ok(!R.rows.some(x => x.emp === 'E-CEO' || x.emp === 'E-GM'), 'no CEO row (nothing published) and not self');
-  // 申し出（本人）とそれへの答え：GM は答えない・見えない
+  assert.deepEqual([row.view, row.can.score, row.can.confirm, row.can.assign, row.can.cancel, row.assign.system, row.suggest.system], [undefined, true, true, true, true, 'G', 'G']);
+  const ceoRow = R.rows.find(x => x.emp === 'E-CEO');
+  assert.deepEqual([ceoRow.can.score, ceoRow.can.confirm, ceoRow.can.assign, ceoRow.can.cancel], [true, true, true, true], 'the CEO person too');
+  assert.ok(!R.rows.some(x => x.emp === 'E-GM'), 'not self');
+  const before = R.counts.not_started;
+  const g = okj(await email('gm', { action: 'cs4_start', emp: 'E-GM2' }), 'the GM starts GM2');
+  r = okj(await email('gm', { action: 'cs4_save', id: g.id, expect: 1, entries: all('G', 2) }), 'the GM saves GM2');
+  r = okj(await email('gm', { action: 'cs4_act', id: g.id, expect: r.ver, act: 'share' }), 'the GM shares');
+  r = okj(await email('gm', { action: 'cs4_act', id: g.id, expect: r.ver, act: 'submit' }), 'the GM submits');
+  R = await gmRos();
+  assert.deepEqual([R.rows.find(x => x.emp === 'E-GM2').open.status, R.counts.not_started, R.counts.submitted], ['submitted', before - 1, 1], 'counted like anyone');
+  let G = okj(await email('gm', { action: 'cs4_get', emp: 'E-GM2' }), 'gm get');
+  assert.deepEqual([G.view, G.evals.map(x => x.status), G.assign.system], [undefined, ['submitted'], 'G']);
+  assert.ok(G.log.length > 0, 'the GM reads the log');
+  r = okj(await email('gm', { action: 'cs4_act', id: g.id, expect: r.ver, act: 'return', note: 'もう一度' }), 'the GM returns');
+  r = okj(await email('gm', { action: 'cs4_act', id: g.id, expect: r.ver, act: 'submit' }), 'the GM submits again');
+  okj(await email('gm', { action: 'cs4_act', id: g.id, expect: r.ver, act: 'confirm' }), 'the GM confirms GM2');
+  assert.deepEqual([(await evalRow(db, g.id)).status, (await evalRow(db, g.id)).confirmed_by_role], ['published', 'gm']);
+  // 申し出（本人）に GM が答える・中身も読める
   okj(await pin('gm2', { action: 'cs4_req', id: g.id, kind: 'comment', note: '確認したい' }), 'GM2 comments');
   const rq = (await db.query(`select id from public.csq4_reqs where emp_id = 'E-GM2'`)).rows[0];
-  fail(await email('gm', { action: 'cs4_answer', id: Number(rq.id), answer: 'x' }), 403, 'forbidden', 'the GM does not answer');
-  okj(await pin('ceo', { action: 'cs4_answer', id: Number(rq.id), answer: '見ました' }), 'the CEO answers');
-  // 再評価の下書きは出さない（前の確定は出す）
-  r = okj(await pin('ceo', { action: 'cs4_reeval', emp: 'E-GM2', pub: g.id, reason: '見直し' }), 'CEO re-evaluates');
+  okj(await email('gm', { action: 'cs4_answer', id: Number(rq.id), answer: '見ました' }), 'the GM answers');
   G = okj(await email('gm', { action: 'cs4_get', emp: 'E-GM2' }), 'gm get after');
-  assert.deepEqual(G.evals.map(x => [x.id, x.status]), [[g.id, 'published']]);
-  assert.deepEqual([G.reqs, G.log, G.view], [[], [], true]);
-  R = await gmRos();
-  const row2 = R.rows.find(x => x.emp === 'E-GM2');
-  assert.deepEqual([row2.open, row2.published.id, row2.reqs], [null, g.id, 0], 'the open re-evaluation is not shown in the list');
-  assert.deepEqual(R.counts, before, 'still not counted');
-  const C = okj(await pin('ceo', { action: 'cs4_get', emp: 'E-GM2' }), 'ceo get');
-  assert.equal(C.evals.length, 2);
-  assert.ok(C.reqs.length === 1 && C.log.length > 0);
-  // 書く頼みはどれも断る
-  fail(await email('gm', { action: 'cs4_save', id: r.id, expect: r.ver, entries: { '01-01': { status: 'SCORED', score: 3 } } }), 403, 'forbidden', 'no save');
-  fail(await email('gm', { action: 'cs4_act', id: r.id, expect: r.ver, act: 'submit' }), 403, 'forbidden', 'no submit');
-  fail(await email('gm', { action: 'cs4_act', id: r.id, expect: r.ver, act: 'cancel', note: 'x' }), 403, 'forbidden', 'no cancel');
-  fail(await email('gm', { action: 'cs4_start', emp: 'E-GM2' }), 403, 'forbidden', 'no start');
-  fail(await email('gm', { action: 'cs4_reeval', emp: 'E-GM2', pub: g.id, reason: 'x' }), 403, 'forbidden', 'no re-evaluation');
-  // 確定したあとに置き換わった前の確定も出す（CEO が再評価を確定）
-  r = okj(await pin('ceo', { action: 'cs4_save', id: r.id, expect: r.ver, entries: { '01-01': { status: 'SCORED', score: 3, changeReason: '見直し' } } }), 'ceo saves');
-  r = okj(await pin('ceo', { action: 'cs4_act', id: r.id, expect: r.ver, act: 'submit' }), 'ceo submits');
-  okj(await pin('ceo', { action: 'cs4_act', id: r.id, expect: r.ver, act: 'confirm' }), 'ceo confirms rev 2');
+  assert.deepEqual(G.reqs.map(x => [x.status, x.answer]), [['answered', '見ました']]);
+  // 変える（再評価）・取りやめ
+  r = okj(await email('gm', { action: 'cs4_reeval', emp: 'E-GM2', pub: g.id, reason: '見直し' }), 'the GM re-evaluates');
+  r = okj(await email('gm', { action: 'cs4_save', id: r.id, expect: r.ver, entries: { '01-01': { status: 'SCORED', score: 3, changeReason: '見直し' } } }), 'the GM changes a score');
+  r = okj(await email('gm', { action: 'cs4_act', id: r.id, expect: r.ver, act: 'submit' }), 'the GM submits rev 2');
+  okj(await email('gm', { action: 'cs4_act', id: r.id, expect: r.ver, act: 'confirm' }), 'the GM confirms rev 2');
   G = okj(await email('gm', { action: 'cs4_get', emp: 'E-GM2' }), 'gm get rev 2');
   assert.deepEqual(G.evals.map(x => x.status), ['published', 'superseded']);
-  // 今までの記録：決まった点・履歴・賞与の固定だけ（申請中の記録は出さない）
+  const pub2 = r.id;
+  r = okj(await email('gm', { action: 'cs4_reeval', emp: 'E-GM2', pub: pub2, reason: 'もう一度' }), 'the GM re-evaluates again');
+  okj(await email('gm', { action: 'cs4_act', id: r.id, expect: r.ver, act: 'cancel', note: '不要になった' }), 'the GM cancels');
+  // CEO の人も GM が採点・確定できる
+  okj(await email('gm', { action: 'cs4_assign', items: [{ emp: 'E-CEO', system: 'G', grade: 'G6', type: '全社責任', expect: 0 }] }), 'the GM assigns the CEO person');
+  const c = okj(await email('gm', { action: 'cs4_start', emp: 'E-CEO' }), 'the GM starts the CEO person');
+  r = okj(await email('gm', { action: 'cs4_save', id: c.id, expect: 1, entries: all('G', 2) }), 'save the CEO person');
+  r = okj(await email('gm', { action: 'cs4_act', id: c.id, expect: r.ver, act: 'submit' }), 'submit the CEO person');
+  okj(await email('gm', { action: 'cs4_act', id: c.id, expect: r.ver, act: 'confirm' }), 'the GM confirms the CEO person');
+  assert.equal((await evalRow(db, c.id)).status, 'published');
+  // 今までの記録：全部の種類（CEO と同じ）
   for (const [n, kind] of [['1', 'lss_emp'], ['2', 'lss_requests'], ['3', 'bonus_csfreeze'], ['4', 'ocs_ev']])
     await db.query(`insert into public.csq4_hist (src_key, src_hash, kind, emp_id, emp_name, period_state, data) values ($1, $2, $3, 'E-GM2', 'Gus Two', 'unknown', '{}'::jsonb)`, ['k-' + kind, n.repeat(64), kind]);
-  assert.deepEqual(okj(await email('gm', { action: 'cs4_hist', emp: 'E-GM2' }), 'gm hist').rows.map(x => x.kind).sort(), ['bonus_csfreeze', 'lss_emp']);
-  assert.deepEqual(okj(await pin('ceo', { action: 'cs4_hist', emp: 'E-GM2' }), 'ceo hist').rows.map(x => x.kind).sort(), ['bonus_csfreeze', 'lss_emp', 'lss_requests', 'ocs_ev']);
-  // ほかの GM（GM2）から見た GM：確定が無ければ出ない・自分は出ない
+  const allKinds = ['bonus_csfreeze', 'lss_emp', 'lss_requests', 'ocs_ev'];
+  assert.deepEqual(okj(await email('gm', { action: 'cs4_hist', emp: 'E-GM2' }), 'gm hist').rows.map(x => x.kind).sort(), allKinds);
+  assert.deepEqual(okj(await pin('ceo', { action: 'cs4_hist', emp: 'E-GM2' }), 'ceo hist').rows.map(x => x.kind).sort(), allKinds);
+  // ほかの GM（GM2）から見た GM：採点・確定できる。自分は出ない・自分は採点しない
   const R2 = await ros(pin('gm2', { action: 'cs4_roster' }), 'gm2 roster');
-  assert.ok(!R2.rows.some(x => x.emp === 'E-GM' || x.emp === 'E-GM2'));
+  assert.ok(R2.rows.some(x => x.emp === 'E-GM' && x.can.score && x.can.confirm && x.can.assign && x.can.cancel));
+  assert.ok(!R2.rows.some(x => x.emp === 'E-GM2'), 'not self');
+  fail(await pin('gm2', { action: 'cs4_start', emp: 'E-GM2' }), 403, 'forbidden', 'GM2 does not start self');
+  fail(await pin('gm2', { action: 'cs4_get', emp: 'E-GM2' }), 403, 'forbidden', 'GM2 reads self through cs4_me only');
+  fail(await pin('gm2', { action: 'cs4_assign', items: [{ emp: 'E-GM2', system: 'G', grade: 'G6', type: '全社責任', expect: 1 }] }), 403, 'forbidden', 'GM2 does not assign self');
+  // GM2 が退職：開いたままの評価を GM が取り消せる（読むのと取り消しだけ）
+  const op = okj(await email('gm', { action: 'cs4_reeval', emp: 'E-GM2', pub: pub2, reason: '退職の前' }), 'an open re-evaluation');
+  W.emps.find(e => e.id === 'E-GM2').status = '退職';
+  const outRow = (await gmRos()).rows.find(x => x.emp === 'E-GM2');
+  assert.deepEqual([outRow.out, outRow.can.score, outRow.can.confirm, outRow.can.cancel], [true, false, false, true], 'a retired GM');
+  okj(await email('gm', { action: 'cs4_act', id: op.id, expect: op.ver, act: 'cancel', note: '退職のため' }), 'the GM cancels the retired GM2');
   // AM・G4・G3 は見ない
   for (const who of ['am', 'g4', 'g3']) fail(await pin(who, { action: 'cs4_get', emp: 'E-GM2' }), 403, 'forbidden', who + ' does not read GM2');
 });
