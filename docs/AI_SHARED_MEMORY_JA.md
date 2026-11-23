@@ -7,6 +7,8 @@
 - 変えないもの：シフト作成の店の一覧（全店の人だけ）・Career Score の範囲・前の本部の値（`---`・`HQ`）・AM に金額は出さない・SQL なし。
 - 入れる一式 `deploy/am-office-v1207/`（関数の 1 ファイル（sha256 先頭 `725f84868e66`）→ マージと端末を 1207 に）。戻すときは v1197 の 1 ファイル。
 - 試験（合成データ）：am-office-v1207 5・secure-pii-server に 1（直す前の handler で落ちる）・aff-app／aff-server・pv-tab-deploy を v1207 に合わせた・関係する 8 ファイル 63/63・static release pass/1207。独立レビューは無し。Codex のレビューはまだ。
+- 済（Claude 11/22）：PR #213。手元の CI（`392701a`・growth-checks.yml の試験の段 94 段）で `tests/pcsp-layout-v1172.test.mjs` だけ落ちた（試験の VM に新しい `empAnyStore`・`empOfficeStore` が無い）→ 試験を直し、本部（OFFICE・空白と小文字も）の人が全部の AM にカードと表の両方で出る・前の本部の値（---）の人は応援の店が担当のときだけ、の試験を足した（28/28・足した 1 件は `e2cd977` で落ちる）。ほかの 93 段は成功。
+- Claude のルーティンのレビュー（#213・7092170134）：新しい P1・P2 なし・P3 2＝① AM は本部の人（CEO・GM・経理を含む）の個人の欄を見るだけでなく直せる（前から ALL の人と同じ）→ Moto さんに確かめる ② 打刻なしの検知・HR 福利厚生の絞り込みは ALL だけを本部として扱う（v1195 から・別の PR）。
 - 次：PR → Codex → #211 → この PR の順にマージ → Moto さんが関数 secure-state を 1 ファイルで差し替え → 端末を 1207 に。
 
 ## 2026-11-22 Team で入った変更（#201〜#210）の点検と v1206 の直し（Claude（Personal・Claude Code）・ブランチ `claude/team-fixes-1206`・main `b33d992`（v1205）の上・戻す SQL とアプリ・本番未反映）
