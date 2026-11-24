@@ -191,3 +191,13 @@
 - 試験：career-guide-v1213 に 1 つ足した（8）。版 1215。
 
 - 11/24 Moto さん：権限の 5 つ（7 の節）は「この内容で問題ありません」。役割の文は CEO にも確認してもらう（アプリの役割と責任マップで GM・CEO が見る）。OJTマップは廃止。
+
+
+## 11. A-2-3（v1216・ブランチ `claude/grade-unify-a23`・**新しい画面を本番で確かめてからマージ**）
+
+- メニューから OJT管理・成長管理を外し、G1 の「スキル」から OJTマップを外した（Moto さん 11/24「OJTマップは廃止」）。古い行き先（通知・お気に入り・ブックマーク）は `navResolvePage` でキャリア・育成へ（OJTマップ → 育成計画・OJT、OJT管理・成長管理 → 過去の記録）。
+- 旧の OJT管理・成長管理は、過去の記録の「旧 OJT管理（読むだけ）」「旧 成長管理（読むだけ）」から押したときだけ開く。上の帯は「旧の画面（読むだけ・保存はできません）」。
+- 旧の記録のキー（`ojt_enroll`・`grade_ojt`・`ojt_phase_map`・`ojt_gate_criteria`・`ojt_def_*`・`crew_education`・`career_track`・`train_master`・`trainees`・`trainee_checklists`・`dev_pipe`・`dev_pipe_start`・`dev_nominations`・`dev_start`・`dev_data`）は、この端末で書かない（`lsSet` の手前の `crFrozen`・お知らせは 1 分に 1 回）。止めないもの：`career_cfg`（専門職の見る・直す範囲）・`career_history`・スキル・成長カルテ・グレード履歴。
+- マイページの旧の OJT のカードは出さない（記録は過去の記録）。
+- 入れる順：A-2-1 の一式（サーバー）と v1214〜1215 を入れる → 新しい画面で計画・OJT・過去の記録（写す）を確かめる → このブランチをマージ。
+- 試験：gp-app-a2 に 1 つ足した（4）・unified-ui-v1191 と career-guide-v1213 を直した。

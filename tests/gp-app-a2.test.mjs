@@ -116,8 +116,26 @@ test('past records: the person reads their own copies; GM copies and reads all; 
   assert.match(h, /わたしの旧の記録/); assert.match(h, /OJT の受講 · Kai One/); assert.doesNotMatch(h, /Dup Name/, 'not other people'); assert.doesNotMatch(h, /旧の記録を写す/);
   const old = screen(S, 'g4', 'sl', { legacy: true });
   old.page(); old.crSet('tab', 'plan'); await old.idle();
-  h = old.root(); assert.match(h, /まだ前の版です/); assert.match(h, /go\('ojt_admin'\)/);
+  h = old.root(); assert.match(h, /まだ前の版です/); assert.match(h, /crGp\('reload'\)/);   // v1216（A-2-3）：旧の画面への入口は出さない（止めた）
   const n = await setup({ sql: false });
   const ns = screen(n, 'g1', 'crew'); ns.page(); ns.crSet('tab', 'plan'); await ns.idle();
   assert.match(ns.root(), /サーバーの準備がまだです（育成計画の表）/);
+});
+
+test('v1216（A-2-3）：旧の OJT・成長管理を止める — メニューから外す・古い行き先はキャリア・育成・旧の記録のキーは書かない・過去の記録から読むだけで開く', async () => {
+  assert.doesNotMatch(html, /children:\['career','skill','ojt_admin'/); assert.doesNotMatch(html, /'growthhub','totoya_docs','crew_handbook'\]\},   \/\* v1213：キャリア・育成 \*\//);
+  assert.match(html, /children:\['career','skill','totoya_docs'\]\},   \/\* v1216（A-2-3・Moto さん 11\/24）：OJTマップは廃止 \*\//);
+  assert.match(html, /if \(page === 'ojtmap' \|\| \(\(page === 'ojt_admin' \|\| page === 'growth_mgr'\) && window\._crOldView !== page\)\)/);
+  assert.match(html, /if\(window\.crFrozen && window\.crFrozen\(key\)\) return false;/);
+  assert.doesNotMatch(html, /myOjtCard\(\) \+ renderMypage\(\)/, 'the old OJT card is not on My page');
+  const S = await setup();
+  const gm = screen(S, 'gm', 'gm');
+  for (const k of ['ojt_enroll', 'grade_ojt', 'ojt_phase_map', 'ojt_gate_criteria', 'ojt_def_g3', 'trainees', 'dev_pipe', 'dev_data']) assert.equal(gm.crFrozen(k), true, k);
+  for (const k of ['career_cfg', 'career_history', 'skills', 'growth_karte', 'grade_hist', 'tip_history', 'ojtx']) assert.equal(gm.crFrozen(k), false, k);
+  assert.equal(gm.toasts.length, 1, 'one notice a minute (not a wall of toasts)');
+  gm.page(); gm.crSet('tab', 'history'); await gm.idle();
+  assert.match(gm.root(), /crOpenOldPage\('ojt_admin'\)/); assert.match(gm.root(), /crOpenOldPage\('growth_mgr'\)/);
+  gm.crOpenOldPage('ojt_admin'); assert.equal(gm._crOldView, 'ojt_admin'); assert.deepEqual(gm.gone.slice(-1), ['ojt_admin']);
+  gm.crOpenOldPage('settings'); assert.deepEqual(gm.gone.slice(-1), ['ojt_admin'], 'only the two old pages');
+  assert.match(gm.crOldBanner(), /保存はできません/);
 });

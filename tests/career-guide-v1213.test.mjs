@@ -68,8 +68,8 @@ test('index.html：マスターの写しが今のファイルと同じ・版 121
   assert.deepEqual(clone(w.FUNERGY_ROLE_GUIDE), guide);
   { const v = (html.match(/const APP_VERSION = '(\d+)';/) || [])[1], w = (sw.match(/const SW_BUILD = '(\d+)';/) || [])[1]; assert.ok(Number(v) >= 1213, v); assert.equal(v, w); }   // 1213 以上（ページと SW が同じ）
   assert.match(html, /\{id:'career',\s+label:'キャリア・育成'[^}]*roles:\['ceo','gm','office','am','sl','crew','office_crew','chef','g2','g4'\]\}/);
-  assert.match(html, /children:\['career','skill','ojt_admin','growth_mgr','leadership','growthhub'\]/);
-  assert.match(html, /children:\['career','skill','ojtmap','totoya_docs'\]/);
+  assert.match(html, /children:\['career','skill',('ojt_admin','growth_mgr',)?'leadership','growthhub'\]/);   // v1216（A-2-3）から OJT管理・成長管理を外す
+  assert.match(html, /children:\['career','skill',('ojtmap',)?'totoya_docs'\]/);   // v1216（A-2-3）：OJTマップは廃止
   assert.match(html, /'biz_guide','career'\]\}/);
   assert.equal((html.match(/case 'career':\s+el\.innerHTML = \(window\.FUNERGY_CAREER \? FUNERGY_CAREER\.pageHtml\(\) : ''\); break;/g) || []).length, 2);
   assert.match(html, /var CREW_EXTRA_PAGES = \[[^\]]*'career'/);
@@ -170,7 +170,7 @@ test('旧の責任マトリクス：GM・CEO でも直せない（書く道が�
 test('v1215（A-3）：マイページ・Handbook（Grade・評価の章）・業務ガイドからキャリア・育成へ（読むだけ・本文は変えない）', () => {
   const v = (html.match(/const APP_VERSION = '(\d+)';/) || [])[1], w = (sw.match(/const SW_BUILD = '(\d+)';/) || [])[1];
   assert.ok(Number(v) >= 1215, v); assert.equal(v, w);
-  assert.equal((html.match(/renderFavCard\(\) \+ \(window\.crMyCard \? crMyCard\(\) : ''\) \+ myOjtCard\(\) \+ renderMypage\(\)/g) || []).length, 2);
+  assert.equal((html.match(/renderFavCard\(\) \+ \(window\.crMyCard \? crMyCard\(\) : ''\) \+ (myOjtCard\(\) \+ )?renderMypage\(\)/g) || []).length, 2);   // v1216：旧の OJT のカードは外す
   assert.match(html, /if\(\['ch3','ch5','ch7'\]\.indexOf\(c\.id\)>=0 && window\.crHbNote\) h\+=crHbNote\(\);/);
   assert.match(html, /return \(window\.crBizNote \? crBizNote\(\) : ''\) \+ renderGradeGuide\(\);/);
   const c = world({ role: 'crew' });

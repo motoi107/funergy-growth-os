@@ -7754,7 +7754,7 @@ const MENU_GROUPS = [
       G2 には出したくない等の調整は設定側でできる。 */
    children:['staff_master','hiring','shift_admin','tip','hr','vacation','mileage','totoya_docs','crew_handbook']},
   {id:'g_growth', label:'育成・評価', icon:'ti-school', roles:['ceo','gm','office','am','sl'],
-    children:['career','skill','ojt_admin','growth_mgr','leadership','growthhub']},   /* v1213：キャリア・育成を先頭に */
+    children:['career','skill','leadership','growthhub']},   /* v1213：キャリア・育成を先頭に / v1216（A-2-3）：OJT管理・成長管理は外す（過去の記録から読むだけで開く） */
   {id:'g_food', label:'食材管理', icon:'ti-receipt', roles:['ceo','gm','office','am','sl'],
     /* v1084: 経理センター・経理レビューは食材管理の右隣のタブへ（下の 2 つ）。日次食材差異・備品発注は廃止 */
     children:['menu','recipe','ingredient_master','ing_transfer','vendor_master','inventory','purchase_detail','invoice']},   /* v1087: 発注は廃止 */
@@ -7829,8 +7829,8 @@ const CHEF_GROUPS = [
   {id:'gc_store', label:'店舗', icon:'ti-building-store',
     children:['store_cmd','shift_admin','vacation','mileage']},
   {id:'gc_hr', label:'人材・育成', icon:'ti-users',
-    children:['staff_master','hiring','tip','career','skill','ojt_admin','growth_mgr','leadership',
-              'growthhub','totoya_docs','crew_handbook']},   /* v1213：キャリア・育成 */
+    children:['staff_master','hiring','tip','career','skill','leadership',
+              'growthhub','totoya_docs','crew_handbook']},   /* v1213：キャリア・育成 / v1216（A-2-3）：OJT管理・成長管理は外す */
   {id:'gc_my', label:'マイページ', icon:'ti-user',
     children:['mypage','discount','required','settings']},   /* v1191：profile は外す（中身が無かった） */
 ];
@@ -7839,7 +7839,7 @@ const CREW_GROUPS = [
   {id:'g_mypage', label:'マイページ', icon:'ti-user', children:['mypage','discount']},   /* v897 / v1084: 対応依頼は廃止 */
   {id:'g_handbook', label:'Handbook', icon:'ti-book', children:['crew_handbook']},
   {id:'g_myshift', label:'シフト', icon:'ti-calendar-event', children:['shift_staff']},
-  {id:'g_skill', label:'スキル', icon:'ti-stairs-up', children:['career','skill','ojtmap','totoya_docs']},   /* v1213：キャリア・育成（自分の系統・等級の説明を読む） */
+  {id:'g_skill', label:'スキル', icon:'ti-stairs-up', children:['career','skill','totoya_docs']},   /* v1216（A-2-3・Moto さん 11/24）：OJTマップは廃止 */   /* v1213：キャリア・育成（自分の系統・等級の説明を読む） */
   {id:'g_tip', label:'チップ', icon:'ti-coin', children:['tiprate']},
   {id:'g_store', label:'店舗オペレーション', icon:'ti-building-store', children:['store_cmd']},
   {id:'g_chat', label:'チャット', icon:'ti-messages', children:['chat']},   /* v1156（3A：G1 も DM・グループ） */
@@ -8129,6 +8129,9 @@ function navAcctLanding(){
      寄せ先を開けない役職なら、その人のホーム。寄せることで見える人は増えない。 */
 var NAV_RETIRED = { foodcost:'purchase', fv_variance:'inventory', supply_order:'inventory', order:'inventory', mgmt_ctrl:'tasks', mc_requests:'mypage', profile:'mypage' };   /* v1191：profile は中身が無かった */
 function navResolvePage(page){
+  /* v1216（A-2-3）：旧の OJT・成長管理は止めた。OJTマップ（廃止）・OJT管理・成長管理への古い行き先（通知・お気に入り・ブックマーク）はキャリア・育成へ。
+     旧の OJT管理・成長管理は「過去の記録」から押したときだけ読むだけで開く（crOpenOldPage）。保存は crFrozen で止める */
+  if (page === 'ojtmap' || ((page === 'ojt_admin' || page === 'growth_mgr') && window._crOldView !== page)) { try{ if (window.crPrep) crPrep(page === 'ojtmap' ? 'plan' : 'history'); }catch(e){} page = 'career'; }
   if (page === 'budget' && typeof budgetTab !== 'undefined') {
     if (budgetTab === 'meeting' || budgetTab === 'purchase') { page = budgetTab; budgetTab = 'daily'; }
     else if (budgetTab === 'analysis') budgetTab = 'daily';
@@ -13656,6 +13659,7 @@ function lsSet(key, val) {
 if(typeof window.FUNERGY_WEB_OFFICE_WRITE==='function')window.FUNERGY_WEB_OFFICE_WRITE(key,val);else if(/^ocs_(?:asg|ev)_/.test(key))throw Error('web_office_not_ready');return (function lsSet(key, val) {
   /* v1193（UI案95）：「画面の表示」で見るだけにした画面では、押して保存する同期のデータを書かない（この端末の印・下書きは書く） */
   if(window.FUNERGY_PV && typeof window.FUNERGY_PV.writeBlocked==='function' && window.FUNERGY_PV.writeBlocked(key)) return false;
+  if(window.crFrozen && window.crFrozen(key)) return false;   /* v1216（A-2-3）：旧の OJT・成長管理の記録は読むだけ（新しい計画はキャリア・育成） */
   var sp = _SPLIT_KEYS && _SPLIT_KEYS[key]; if(sp){ return _splitWrite(key, sp, val); }
   /* v1140：見られない人の Career Score の行は、この端末で作らない・直さない（一部だけの写しにしない）。分割の行（申請・履歴）もここを通る */
   if(typeof csLocalWriteOk==='function' && !csLocalWriteOk(key)){ try{ _lsNoteSaveFailure(key); }catch(e){} return false; }
@@ -25866,7 +25870,7 @@ case 'acct_center':
     case 'growth_mgr':   el.innerHTML = (window.crOldBanner ? crOldBanner() : '') + renderGrowthManager(); break;   /* v1214（A-2）：新しい育成計画への案内 */
     case 'ojt_admin':    el.innerHTML = (window.crOldBanner ? crOldBanner() : '') + renderOjtAdmin(); break;   /* v1214（A-2）：新しい育成計画への案内 */
     case 'approval':     workTab='approval'; el.innerHTML = renderWorkCenter(); break;
-    case 'mypage':       el.innerHTML = _myOjtOpen ? myOjtCard() : (renderFavCard() + (window.crMyCard ? crMyCard() : '') + myOjtCard() + renderMypage()); break;   /* v1215（A-3）：キャリア・育成の入口 */   /* v1025: OJTを開いている間はOJT画面だけ */
+    case 'mypage':       el.innerHTML = renderFavCard() + (window.crMyCard ? crMyCard() : '') + renderMypage(); break;   /* v1215（A-3）：キャリア・育成の入口 / v1216（A-2-3）：旧の OJT のカードは出さない（記録は過去の記録） */   /* v1025: OJTを開いている間はOJT画面だけ */
     case 'store_master': el.innerHTML = renderStoreMaster(); break;
     case 'kpi_master': el.innerHTML = renderKpiMaster(); break;
     case 'acct_export':  el.innerHTML = renderAcctExport(); break;
@@ -26008,7 +26012,7 @@ case 'acct_center':
     case 'growth_mgr':   el.innerHTML = (window.crOldBanner ? crOldBanner() : '') + renderGrowthManager(); break;   /* v1214（A-2）：新しい育成計画への案内 */
     case 'ojt_admin':    el.innerHTML = (window.crOldBanner ? crOldBanner() : '') + renderOjtAdmin(); break;   /* v1214（A-2）：新しい育成計画への案内 */
     case 'approval':     workTab='approval'; el.innerHTML = renderWorkCenter(); break;
-    case 'mypage':       el.innerHTML = _myOjtOpen ? myOjtCard() : (renderFavCard() + (window.crMyCard ? crMyCard() : '') + myOjtCard() + renderMypage()); break;   /* v1215（A-3）：キャリア・育成の入口 */   /* v1025: OJTを開いている間はOJT画面だけ */
+    case 'mypage':       el.innerHTML = renderFavCard() + (window.crMyCard ? crMyCard() : '') + renderMypage(); break;   /* v1215（A-3）：キャリア・育成の入口 / v1216（A-2-3）：旧の OJT のカードは出さない（記録は過去の記録） */   /* v1025: OJTを開いている間はOJT画面だけ */
     case 'store_master': el.innerHTML = renderStoreMaster(); break;
     case 'kpi_master': el.innerHTML = renderKpiMaster(); break;
     case 'acct_export':  el.innerHTML = renderAcctExport(); break;
@@ -50225,7 +50229,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1215';
+const APP_VERSION = '1216';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -129289,7 +129293,7 @@ window.FUNERGY_ROLE_GUIDE = {"version":"ROLE_GUIDE_2026_Q4_V1","basedOn":"CAREER
         : GP.err === 'nosql' ? T('サーバーの準備がまだです（育成計画の表）。','The server is not ready yet (plan tables).')
         : GP.err === 'nosess' ? T('ログインを確かめられません。ログインし直してください。','Could not check your sign-in. Please sign in again.') : gpErr({ error:GP.err });
       return '<div class="card"><div class="cr-p">' + esc(m) + '</div><div class="cr-row" style="margin-top:8px"><button type="button" class="btn btn-secondary cr-btn" onclick="crGp(\'reload\')">' + esc(T('読み直す','Reload')) + '</button>'
-        + goBtn('ojt_admin', 'OJT管理（今の画面）', 'OJT Admin (current)') + goBtn('growth_mgr', '成長管理（今の画面）', 'Growth Mgmt (current)') + '</div></div>';
+        + '</div></div>';
     }
     var h = GP.msg ? '<div class="cr-warn">' + esc(GP.msg) + '</div>' : '';
     var rows = (GP.roster && GP.roster.rows) || [], help = (GP.roster && GP.roster.helping) || [];
@@ -129382,6 +129386,8 @@ window.FUNERGY_ROLE_GUIDE = {"version":"ROLE_GUIDE_2026_Q4_V1","basedOn":"CAREER
       + '<div class="cr-p">' + esc(T('旧制度の OJT・成長管理の記録は、全部「旧として保存」しました（11/24 の会社の決定）。当時のまま読むだけで、新しい計画には自動で入りません。新しい計画は一から作ります。','All old OJT and growth records were saved as old (company decision, 11/24). They are read only as they were, and do not flow into new plans automatically. New plans start fresh.')) + '</div>'
       + '<div class="cr-row" style="margin-top:8px">' + (allows('hiring') ? '<button type="button" class="btn btn-secondary cr-btn" onclick="crOpenOld()">' + esc(T('旧制度の説明（読むだけ）','Old system explanations (read only)')) + '</button> ' : '')
       + goBtn('leadership', '前の Career Score（読むだけ）', 'Earlier Career Score (read only)')
+      + (allows('ojt_admin') ? '<button type="button" class="btn btn-secondary cr-btn" onclick="crOpenOldPage(\'ojt_admin\')">' + esc(T('旧 OJT管理（読むだけ）','Old OJT Admin (read only)')) + '</button> ' : '')
+      + (allows('growth_mgr') ? '<button type="button" class="btn btn-secondary cr-btn" onclick="crOpenOldPage(\'growth_mgr\')">' + esc(T('旧 成長管理（読むだけ）','Old Growth Mgmt (read only)')) + '</button> ' : '')
       + (top ? '<button type="button" class="btn btn-secondary cr-btn" onclick="crGpHist(\'*\')">' + esc(T('全部の写しを見る','See all copies')) + '</button><button type="button" class="btn btn-secondary cr-btn" onclick="crGpCopy()"' + (GP.busy ? ' disabled' : '') + '>' + esc(T('旧の記録を写す（何度でも同じ）','Copy old records (same each time)')) + '</button>' : '') + '</div>';
     if (GP.rep) h += GP.rep.err ? '<div class="cr-warn">' + esc(GP.rep.err) + '</div>' : '<div class="cr-note">' + esc(T('写した：足した ','Copied: added ')) + esc(GP.rep.added) + esc(T(' 件・まだ写していない ',' · not copied ')) + esc(GP.rep.missing) + esc(T(' 件・写しの全部 ',' · all copies ')) + esc(GP.rep.legacy_rows) + '</div>';
     h += '</div>';
@@ -129453,9 +129459,22 @@ window.FUNERGY_ROLE_GUIDE = {"version":"ROLE_GUIDE_2026_Q4_V1","basedOn":"CAREER
     return crBox('ti-info-circle', esc(T('役割と責任（だれが何を担当するか）は「キャリア・育成 › 役割と責任マップ」が正本です。ここは Grade 別のアプリの使い方です。', 'Roles and responsibilities are in Career & Development › Roles map. This page is about using the app by Grade.')),
       crBtn('guide', '役割と責任マップを開く', 'Open the roles map', 'map'));
   };
+  /* v1216（A-2-3・答え 5 B・Moto さん 11/24「OJTマップは廃止」）：旧の OJT・成長管理の記録（app_state のキー）はこの端末で書かない（読むだけ）。
+     写しは関数の gp_legacy（全部「旧として保存」）。career_cfg（専門職の見る・直す範囲）・career_history・スキル・成長カルテは止めない */
+  var FROZEN = ['ojt_enroll', 'grade_ojt', 'ojt_phase_map', 'ojt_gate_criteria', 'crew_education', 'career_track', 'train_master', 'trainees', 'trainee_checklists',
+    'dev_pipe', 'dev_pipe_start', 'dev_nominations', 'dev_start', 'dev_data'];
+  var frozenAt = {};
+  W.crFrozen = function(key){
+    key = String(key || '');
+    if (FROZEN.indexOf(key) < 0 && key.indexOf('ojt_def_') !== 0) return false;
+    var n = Date.now(); if (!frozenAt.t || n - frozenAt.t > 60000) { frozenAt.t = n; try{ showToast(T('旧の OJT・成長管理の記録は読むだけです。新しい計画は「キャリア・育成」で作ります','Old OJT and growth records are read only. Make new plans in Career & Development'), 'warning'); }catch(e){} }
+    return true;
+  };
+  W.crPrep = function(tab){ if (TABS.some(function(x){ return x[0] === tab; })) S.tab = tab; };
+  W.crOpenOldPage = function(page){ if (page !== 'ojt_admin' && page !== 'growth_mgr') return; W._crOldView = page; try{ go(page); }catch(e){} };
   W.crGo = function(tab, view){ if (TABS.some(function(x){ return x[0] === tab; })) S.tab = tab; if (view && VIEWS.some(function(x){ return x[0] === view; })) S.view = view; try{ go('career'); }catch(e){} };
   /* 旧の OJT管理・成長管理の上の帯（新しい計画はキャリア・育成で。旧の記録は消さない。移行を確かめたら旧の保存を止める＝A-2-3） */
-  W.crOldBanner = function(){ return '<div class="alert alert-warning" style="padding:10px 12px;margin-bottom:10px"><i class="ti ti-route"></i><div style="font-size:12.5px;line-height:1.65">' + esc(T('新しい育成計画・OJT は「キャリア・育成」で作ります（Q4 の評価項目に結ぶ・1 人 1 つの計画）。この画面の記録は「旧として保存」し、消しません。','New development plans and OJT are made in Career & Development (linked to the Q4 items, one plan per person). Records on this screen are saved as old and kept.')) + ' <a href="javascript:void(0)" onclick="crGo(\'plan\')">' + esc(T('開く','Open')) + '</a></div></div>'; };
+  W.crOldBanner = function(){ return '<div class="alert alert-warning" style="padding:10px 12px;margin-bottom:10px"><i class="ti ti-archive"></i><div style="font-size:12.5px;line-height:1.65">' + esc(T('旧の画面です（当時の記録を読むだけ・保存はできません）。新しい育成計画・OJT は「キャリア・育成」で作ります。この画面の記録は「旧として保存」し、消しません。','This is the old screen (read only; saving is off). Make new plans and OJT in Career & Development. Records here are saved as old and kept.')) + ' <a href="javascript:void(0)" onclick="crGo(\'plan\')">' + esc(T('開く','Open')) + '</a></div></div>'; };
   W.FUNERGY_CAREER = { pageHtml:pageHtml, embedHtml:embedHtml, set:set, state:function(){ return JSON.parse(JSON.stringify(S)); }, minimumLines:minimumLines, ok:ok };
 })();
 /* ==== FUNERGY_CAREER end ==== */
