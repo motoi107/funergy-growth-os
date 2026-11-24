@@ -2970,9 +2970,293 @@ export function createHandler(deps) {
     return { ok: true, report: r };
   }
 
+
+  // ---- キャリア・育成 A-2（育成計画・OJT・旧の記録の写し）：表と関数は SQL 20261219090000（gp_*）。docs/GRADE_UNIFY_A_JA.md の 7。
+  //   SQL がまだ（404）なら読むものは nosql、書くものは not_installed。権限の表は新しく作らない＝Career Score Q4 の採点の範囲（cs4Ctx）を使う。
+  //   だれができるか（Claude が決めた・Moto さんに確かめる）：
+  //   ・計画を作る・直す・閉じる・OJT を作る・直す・取りやめ・確認済みを戻す・上司の記録：その人を Career Score Q4 で採点・確定できる人
+  //     （CEO・GM・担当の AM・自分の店の上の G4・Head Chef・G3→G2（G の評価表）・経理→事務Crew）。自分の計画は直さない（本人の希望だけ）
+  //   ・指導者（課題に名前のある人）：その課題を「実施中」「確認待ち」「再練習」にする・指導者の記録。その人の計画を読む
+  //   ・習得確認（習得確認済み）：その人を採点・確定できる人で、課題の確認者（確認者が決まっていなければ採点できる人・GM・CEO はいつも）。根拠が要る
+  //   ・本人：自分の計画を読む・希望を書く・実施メモ・「実施中」「確認待ち」にする（習得確認はできない・自己採点ではない）
+  //   ・旧の記録の写し：本人は自分の分・採点できる人はその人の分・GM・CEO は全部（人の決まらない行も）。写すのは GM・CEO
+  //   計画・OJT は点数・Grade・時給・Tip Rate を変えない（gp_* のほかには書かない）。
+  const GP_GUIDE_VER = 'ROLE_GUIDE_2026_Q4_V1';
+  const GP_REASON = '11/24 Moto さんの決定（答え 5 B）：旧の OJT・成長管理は全部「旧として保存」し、新しい計画は一から作る';
+  const GP_PLAN_COLS = 'id,emp_id,emp_name,status,system,grade,type,target_grade,target,strengths,issues,wish,support,next_check,csq4_ver,guide_ver,ver,'
+    + 'created_at,created_by_name,updated_at,updated_by_name,closed_at,closed_by_name,close_reason';
+  const GP_TASK_COLS = 'id,plan_id,emp_id,title,items,standard,method,opportunity,trainer_emp,trainer_name,checker_emp,checker_name,due,state,'
+    + 'mastered_at,mastered_by_name,mastered_basis,ver,created_at,created_by_name,updated_at,updated_by_name';
+  const GP_NOTE_COLS = 'id,plan_id,task_id,kind,step,body,at,by_name,by_role';
+  const GP_STEPS = ['share', 'demo', 'do', 'check', 'redo'];
+  const gpTxt = (v, max, min = 0) => typeof v === 'string' && v.length >= min && v.length <= max;
+  const gpDay = v => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v) && !Number.isNaN(Date.parse(v + 'T00:00:00Z')) && new Date(v + 'T00:00:00Z').toISOString().slice(0, 10) === v;
+  async function gpRpc(a, fn, args) {
+    const r = await cs4Rpc(a, fn, args);
+    if (r.ok !== true) throw cs4Fail(r);
+    return r;
+  }
+  async function gpCtx(a) {
+    const C = await cs4Ctx(a);
+    C.manage = (p, sys) => !!p && (C.canConfirm(p) || C.canScore(p, sys));
+    C.top = a.role === 'ceo' || a.role === 'gm';
+    return C;
+  }
+  async function gpPlans(q) { return cs4Read('gp_plans?' + q + '&select=' + GP_PLAN_COLS + '&order=id.desc&limit=50'); }
+  async function gpPlanById(id) {
+    if (!cs4Int(id, 1)) throw bad();
+    const rows = await cs4Read('gp_plans?id=eq.' + id + '&select=' + GP_PLAN_COLS);
+    if (rows === null) throw err('not_installed', 503);
+    const r = Array.isArray(rows) ? rows[0] : null;
+    if (!r) throw err('not_found', 404);
+    return r;
+  }
+  async function gpTaskById(id) {
+    if (!cs4Int(id, 1)) throw bad();
+    const rows = await cs4Read('gp_tasks?id=eq.' + id + '&select=' + GP_TASK_COLS);
+    if (rows === null) throw err('not_installed', 503);
+    const r = Array.isArray(rows) ? rows[0] : null;
+    if (!r) throw err('not_found', 404);
+    return r;
+  }
+  async function gpTasksOf(planId) { return (await cs4Read('gp_tasks?plan_id=eq.' + planId + '&select=' + GP_TASK_COLS + '&order=id.asc&limit=100')) || []; }
+  // 読める人か：本人・採点できる人・計画の課題の指導者／確認者・退職の人は GM・CEO（読むだけ）
+  async function gpRole(C, p, plan) {
+    if (p.id === C.me.id) return 'self';
+    if (C.manage(p, plan ? plan.system : undefined)) return 'manager';
+    if (p.out && C.top) return 'viewer';
+    if (plan) {
+      const ts = await gpTasksOf(plan.id);
+      if (ts.some(t => t.trainer_emp === C.me.id || t.checker_emp === C.me.id)) return 'helper';
+    }
+    return '';
+  }
+  function gpPerson(C, id) {
+    if (!cs4Id(id)) throw bad();
+    const p = C.byId.get(id) || C.all.get(id);
+    if (!p) throw err('forbidden', 403);
+    return p;
+  }
+  function gpPlanOut(pl) { return pl ? { ...pl, support: Array.isArray(pl.support) ? pl.support : [] } : null; }
+  async function gpBundle(pl) {
+    if (!pl) return { plan: null, tasks: [], notes: [] };
+    const [ts, ns] = await Promise.all([gpTasksOf(pl.id), cs4Read('gp_notes?plan_id=eq.' + pl.id + '&select=' + GP_NOTE_COLS + '&order=id.desc&limit=300')]);
+    return { plan: gpPlanOut(pl), tasks: ts, notes: ns || [] };
+  }
+  async function gpMe(a) {
+    const C = await gpCtx(a);
+    const pls = await gpPlans('emp_id=eq.' + encodeURIComponent(C.me.id));
+    if (pls === null) return { ok: true, nosql: true };
+    const act = pls.find(x => x.status === 'active') || null;
+    return { ok: true, me: { emp: C.me.id, name: C.me.name }, ...(await gpBundle(act)),
+      closed: pls.filter(x => x.status === 'closed').map(x => ({ id: x.id, closed_at: x.closed_at, close_reason: x.close_reason, system: x.system, grade: x.grade })) };
+  }
+  async function gpRoster(a) {
+    const C = await gpCtx(a);
+    const act = await cs4Read('gp_plans?status=eq.active&select=id,emp_id,system,grade,type,target_grade,ver,updated_at&limit=5000');
+    if (act === null) return { ok: true, nosql: true, rows: [], helping: [] };
+    const byEmp = new Map(act.map(x => [String(x.emp_id), x]));
+    const ids = act.map(x => x.id);
+    const ts = ids.length ? (await cs4Read('gp_tasks?plan_id=in.(' + ids.join(',') + ')&select=id,plan_id,emp_id,state,due,trainer_emp,checker_emp&limit=10000')) || [] : [];
+    const count = pid => { const o = { not_started: 0, in_progress: 0, waiting: 0, retry: 0, mastered: 0, dropped: 0 }; for (const t of ts) if (t.plan_id === pid && o[t.state] !== undefined) o[t.state]++; return o; };
+    const rows = [];
+    for (const p of C.P) {
+      if (p.out || p.id === C.me.id) continue;
+      const pl = byEmp.get(p.id);
+      if (!C.manage(p, pl ? pl.system : undefined)) continue;
+      rows.push({ emp: p.id, name: p.name, store: p.store, title: p.title || '', plan: pl ? { id: pl.id, system: pl.system, grade: pl.grade, type: pl.type, target_grade: pl.target_grade, ver: pl.ver, updated_at: pl.updated_at, counts: count(pl.id) } : null });
+    }
+    const helping = [];
+    for (const t of ts) {
+      if (t.trainer_emp !== C.me.id && t.checker_emp !== C.me.id) continue;
+      const p = C.byId.get(String(t.emp_id)); if (!p) continue;
+      helping.push({ task: t.id, plan: t.plan_id, emp: p.id, name: p.name, state: t.state, due: t.due, as: t.checker_emp === C.me.id ? 'checker' : 'trainer' });
+    }
+    return { ok: true, rows, helping };
+  }
+  async function gpGet(a, b) {
+    const C = await gpCtx(a);
+    const p = gpPerson(C, b.emp);
+    const pls = await gpPlans('emp_id=eq.' + encodeURIComponent(p.id));
+    if (pls === null) throw err('not_installed', 503);
+    let pl = pls.find(x => x.status === 'active') || null;
+    if (b.plan !== undefined) { pl = pls.find(x => x.id === b.plan) || null; if (!pl) throw err('not_found', 404); }
+    const role = await gpRole(C, p, pl);
+    if (!role) throw err('forbidden', 403);
+    return { ok: true, role, person: { emp: p.id, name: p.name, store: p.store, title: p.title || '', out: !!p.out }, ...(await gpBundle(pl)),
+      closed: pls.filter(x => x.status === 'closed').map(x => ({ id: x.id, closed_at: x.closed_at, close_reason: x.close_reason, system: x.system, grade: x.grade })),
+      can: { manage: role === 'manager', self: role === 'self' } };
+  }
+  function gpFields(f, self, sys0) {
+    if (!obj(f)) throw bad();
+    const out = {};
+    const keys = Object.keys(f);
+    if (self) { if (keys.length !== 1 || keys[0] !== 'wish' || !gpTxt(f.wish, 2000)) throw bad(); return { wish: f.wish }; }
+    for (const k of keys) {
+      const v = f[k];
+      if (k === 'system') { if (!CS4_SYSTEMS.includes(v)) throw bad(); out.system = v; }
+      else if (k === 'grade' || k === 'target_grade') { if (!(v === null || (typeof v === 'string' && /^(G[1-6]|S[1-6]|P[1-6])$/.test(v)))) throw bad(); out[k] = v; }
+      else if (k === 'type') { if (!(v === null || gpTxt(v, 40, 1))) throw bad(); out.type = v; }
+      else if (k === 'target') { if (!gpTxt(v, 200)) throw bad(); out.target = v; }
+      else if (k === 'strengths' || k === 'issues') { if (!gpTxt(v, 2000)) throw bad(); out[k] = v; }
+      else if (k === 'next_check') { if (!gpTxt(v, 1000)) throw bad(); out.next_check = v; }
+      else if (k === 'support') {
+        if (!Array.isArray(v) || v.length > 20) throw bad();
+        out.support = v.map(x => {
+          if (!obj(x) || Object.keys(x).some(q => !['who', 'when', 'what', 'how'].includes(q))) throw bad();
+          const y = {}; for (const q of ['who', 'when', 'what', 'how']) { const s = x[q] === undefined ? '' : x[q]; if (!gpTxt(s, 200)) throw bad(); y[q] = s; }
+          return y;
+        });
+      } else throw bad();
+    }
+    return out;
+  }
+  // 系統・等級・型の組み合わせ（Q4 のマスターと同じ：G は G1〜G6 と、その等級の型・S は S1〜S6・Prep は P1〜P6 か空）
+  function gpCheckForm(x) {
+    const sys = x.system, g = x.grade == null ? null : x.grade;
+    if (sys === 'G') { const ws = (CSQ4_MASTER.systems.G.weights || {})[g]; if (!ws || !(typeof x.type === 'string' && Object.prototype.hasOwnProperty.call(ws, x.type))) throw bad(); }
+    else if (sys === 'S_CHEF' || sys === 'S_OFFICE') { if (!(typeof g === 'string' && /^S[1-6]$/.test(g)) || x.type != null) throw bad(); }
+    else if (sys === 'PREP') { if (!(g === null || /^P[1-6]$/.test(g)) || x.type != null) throw bad(); }
+    else throw bad();
+  }
+  async function gpPlanSave(a, b) {
+    const C = await gpCtx(a);
+    const p = gpPerson(C, b.emp);
+    if (p.out) throw err('forbidden', 403);
+    if (b.id === undefined || b.id === null) {
+      const f = gpFields(b.f, false);
+      if (!C.manage(p, f.system)) throw err('forbidden', 403);
+      gpCheckForm({ system: f.system, grade: f.grade === undefined ? null : f.grade, type: f.type === undefined ? null : f.type });
+      const r = await gpRpc(a, 'gp_plan_save', { p_id: null, p_expect: null, p_emp: p.id, p_name: p.name, p_f: { ...f, csq4_ver: CS4_VERSION, guide_ver: GP_GUIDE_VER }, ...cs4By(a) });
+      return { ok: true, id: r.id, ver: r.ver };
+    }
+    const pl = await gpPlanById(b.id);
+    if (pl.emp_id !== p.id || pl.status !== 'active') throw err('state', 409);
+    if (!cs4Int(b.expect, 1)) throw bad();
+    const self = p.id === C.me.id;
+    if (!self && !C.manage(p, pl.system)) throw err('forbidden', 403);
+    const f = gpFields(b.f, self);
+    if (!self) {
+      const m = { system: pl.system, grade: pl.grade, type: pl.type, ...f };
+      if ('system' in f || 'grade' in f || 'type' in f) { gpCheckForm(m); if (!C.manage(p, m.system)) throw err('forbidden', 403); }
+      if (Object.keys(f).length === 0) throw bad();
+    }
+    const r = await gpRpc(a, 'gp_plan_save', { p_id: pl.id, p_expect: b.expect, p_emp: null, p_name: null, p_f: f, ...cs4By(a) });
+    return { ok: true, id: r.id, ver: r.ver };
+  }
+  async function gpClose(a, b) {
+    const C = await gpCtx(a);
+    const pl = await gpPlanById(b.id);
+    const p = gpPerson(C, pl.emp_id);
+    if (!(C.manage(p, pl.system) || (p.out && C.top))) throw err('forbidden', 403);
+    if (!cs4Int(b.expect, 1)) throw bad();
+    if (!gpTxt(b.reason, 1000, 1) || !b.reason.trim()) throw err('reason_required', 400);
+    const r = await gpRpc(a, 'gp_plan_close', { p_id: pl.id, p_expect: b.expect, p_reason: b.reason, ...cs4By(a) });
+    return { ok: true, id: r.id, ver: r.ver };
+  }
+  async function gpTaskSave(a, b) {
+    const C = await gpCtx(a);
+    const pl = await gpPlanById(b.plan);
+    const p = gpPerson(C, pl.emp_id);
+    if (p.out || !C.manage(p, pl.system)) throw err('forbidden', 403);
+    const f = b.f;
+    if (!obj(f)) throw bad();
+    const out = {};
+    const okIds = new Set([...(CS4_ITEMS[pl.system] || []), ...(pl.system === 'PREP' ? CS4_Q : [])]);
+    for (const k of Object.keys(f)) {
+      const v = f[k];
+      if (k === 'title') { if (!gpTxt(v, 200, 1) || !v.trim()) throw bad(); out.title = v; }
+      else if (k === 'items') { if (!Array.isArray(v) || v.length > 20 || v.some(x => !okIds.has(x)) || new Set(v).size !== v.length) throw bad(); out.items = v; }
+      else if (k === 'standard') { if (!gpTxt(v, 2000)) throw bad(); out.standard = v; }
+      else if (k === 'method' || k === 'opportunity') { if (!gpTxt(v, 1000)) throw bad(); out[k] = v; }
+      else if (k === 'trainer' || k === 'checker') {
+        if (v === null) { out[k + '_emp'] = null; out[k + '_name'] = null; continue; }
+        if (!cs4Id(v)) throw bad();
+        const h = C.byId.get(v);
+        if (!h || h.out || h.id === p.id) throw bad();
+        out[k + '_emp'] = h.id; out[k + '_name'] = h.name;
+      } else if (k === 'due') { if (!(v === null || gpDay(v))) throw bad(); out.due = v; }
+      else throw bad();
+    }
+    if (b.id === undefined || b.id === null) {
+      if (!out.title) throw bad();
+      const r = await gpRpc(a, 'gp_task_save', { p_plan_id: pl.id, p_id: null, p_expect: null, p_f: out, ...cs4By(a) });
+      return { ok: true, id: r.id, ver: r.ver };
+    }
+    if (!cs4Int(b.expect, 1) || Object.keys(out).length === 0) throw bad();
+    const t0 = await gpTaskById(b.id);
+    if (t0.plan_id !== pl.id) throw err('not_found', 404);
+    const r = await gpRpc(a, 'gp_task_save', { p_plan_id: pl.id, p_id: t0.id, p_expect: b.expect, p_f: out, ...cs4By(a) });
+    return { ok: true, id: r.id, ver: r.ver };
+  }
+  async function gpTaskAct(a, b) {
+    const C = await gpCtx(a);
+    const t0 = await gpTaskById(b.id);
+    const pl = await gpPlanById(t0.plan_id);
+    const p = gpPerson(C, pl.emp_id);
+    if (!['start', 'ask', 'retry', 'master', 'reopen', 'drop'].includes(b.act) || !cs4Int(b.expect, 1)) throw bad();
+    if (b.note !== undefined && b.note !== null && !gpTxt(b.note, 2000)) throw bad();
+    if (p.out) throw err('forbidden', 403);
+    const self = p.id === C.me.id, mgr = C.manage(p, pl.system);
+    const trainer = t0.trainer_emp === C.me.id, checker = t0.checker_emp === C.me.id;
+    let ok = false;
+    if (b.act === 'start' || b.act === 'ask') ok = self || trainer || checker || mgr;
+    else if (b.act === 'retry') ok = trainer || checker || mgr;
+    else if (b.act === 'master') ok = !self && mgr && (C.top || checker || !t0.checker_emp);   // 本人は確かめない。確認者が決まっていればその人か GM・CEO
+    else ok = mgr;   // reopen・drop
+    if (!ok) throw err('forbidden', 403);
+    const note = typeof b.note === 'string' ? b.note : null;
+    if (['retry', 'master', 'reopen', 'drop'].includes(b.act) && !(note && note.trim())) throw err('reason_required', 400);
+    const r = await gpRpc(a, 'gp_task_act', { p_id: t0.id, p_expect: b.expect, p_act: b.act, p_note: note, ...cs4By(a) });
+    return { ok: true, id: r.id, ver: r.ver, state: r.state };
+  }
+  async function gpNote(a, b) {
+    const C = await gpCtx(a);
+    const pl = await gpPlanById(b.plan);
+    const p = gpPerson(C, pl.emp_id);
+    if (p.out) throw err('forbidden', 403);
+    if (!gpTxt(b.body, 2000, 1) || !b.body.trim()) throw bad();
+    if (!(b.step === undefined || b.step === null || GP_STEPS.includes(b.step))) throw bad();
+    let t0 = null;
+    if (b.task !== undefined && b.task !== null) { t0 = await gpTaskById(b.task); if (t0.plan_id !== pl.id) throw err('not_found', 404); }
+    let kind = '';
+    if (p.id === C.me.id) kind = 'self';
+    else if (C.manage(p, pl.system)) kind = 'manager';
+    else if (t0 && t0.checker_emp === C.me.id) kind = 'checker';
+    else if (t0 && t0.trainer_emp === C.me.id) kind = 'trainer';
+    if (!kind) throw err('forbidden', 403);
+    if (kind === 'manager' && t0 && (t0.checker_emp === C.me.id)) kind = 'checker';
+    else if (kind === 'manager' && t0 && (t0.trainer_emp === C.me.id)) kind = 'trainer';
+    const r = await gpRpc(a, 'gp_note_add', { p_plan_id: pl.id, p_task_id: t0 ? t0.id : null, p_kind: kind, p_step: b.step || null, p_body: b.body, ...cs4By(a) });
+    return { ok: true, id: r.id, kind };
+  }
+  async function gpLegacy(a, b) {
+    const C = await gpCtx(a);
+    const cols = 'id,src_key,src_part,emp_id,emp_name,data,src_updated_at,decision,reason,copied_at';
+    if (b.emp !== undefined) {
+      const p = gpPerson(C, b.emp);
+      if (!(p.id === C.me.id || C.manage(p) || (p.out && C.top))) throw err('forbidden', 403);
+      const rows = await cs4Read('gp_legacy?emp_id=eq.' + encodeURIComponent(p.id) + '&select=' + cols + '&order=id.asc&limit=500');
+      if (rows === null) return { ok: true, nosql: true, rows: [] };
+      return { ok: true, rows };
+    }
+    if (!C.top) throw err('forbidden', 403);
+    const rows = await cs4Read('gp_legacy?select=' + cols + '&order=id.asc&limit=5000');
+    if (rows === null) return { ok: true, nosql: true, rows: [] };
+    return { ok: true, rows };
+  }
+  async function gpCopy(a) {
+    await pvMgr(a);
+    const r = await cs4Rpc(a, 'gp_legacy_copy', { p_via: 'fn', p_reason: GP_REASON, p_by_emp: a.emp || null, p_by_name: a.name || null });
+    if (!Number.isSafeInteger(r.run)) throw err('db', 500);
+    return { ok: true, report: r };
+  }
+
   const ACTIONS = { pull, get, put, hist: csHist, pin_check: pinCheck, pin_set: pinSet, hr_get: hrGet, hr_op: hrOp, hr_match: hrMatch, pii_get: piiGet, pii_op: piiOp, card_match: cardMatch, tcf_status: tcfStatus, change_log: clGet, labor: ltGet, pv_get: pvGet, pv_full: pvFull, pv_save: pvSave, pv_log: pvLog, aff_get: affGet, aff_full: affFull, aff_save: affSave,
     cs4_me: cs4Me, cs4_roster: cs4Roster, cs4_get: cs4Get, cs4_assign: cs4Assign, cs4_start: cs4Start, cs4_reeval: cs4Reeval, cs4_save: cs4Save, cs4_act: cs4Act,
-    cs4_req: cs4Req, cs4_answer: cs4Answer, cs4_hist: cs4Hist, cs4_copy: cs4Copy };
+    cs4_req: cs4Req, cs4_answer: cs4Answer, cs4_hist: cs4Hist, cs4_copy: cs4Copy,
+    gp_me: gpMe, gp_roster: gpRoster, gp_get: gpGet, gp_plan_save: gpPlanSave, gp_close: gpClose, gp_task_save: gpTaskSave, gp_task_act: gpTaskAct,
+    gp_note: gpNote, gp_legacy: gpLegacy, gp_copy: gpCopy };   // キャリア・育成 A-2（gpfn:1）
   const CODES = { forbidden: 403, bad_value: 400, conflict: 409, locked: 429, gone: 410, not_found: 404, not_installed: 503,
     no_emp: 403, state: 409, not_complete: 409, open_requests: 409, reason_required: 400, no_assign: 409, published: 409, open: 409, too_many: 409 };   // no_emp 以降は Career Score Q4（段階 3-1）
 
@@ -2996,8 +3280,9 @@ export function createHandler(deps) {
     // ltfn:1＝人件費の合計（v1192・labor）を出す。アプリは ltfn の無い答え（unknown_action）を前の版とみなし、10 分は端末で数える
     // affn:1＝所属の確認（v1195・aff_get・aff_full・aff_save）を扱う。アプリは affn の無い答えを前の版とみなし、「所属の確認」で「関数を v1195 に」と出す
     // pvfn:1＝画面の表示の設定（v1193・pv_get など）を扱う。アプリは pvfn の無い答え（unknown_action）を前の版とみなし、画面を今までの決まりで出す
+    // gpfn:1＝キャリア・育成 A-2（育成計画・OJT・旧の記録の写し・gp_*）を扱う。アプリは gpfn の無い答え（unknown_action）を前の版とみなし、育成計画のタブで「関数がまだ」と出す
     // cs4fn:1＝Career Score 2026 Q4（新制度・cs4_*）を扱う（段階 3-1）。アプリは cs4fn の無い答え（unknown_action）を前の版とみなし、新しい評価の画面を出さない
-    const json = (v, s = 200) => new Response(JSON.stringify({ ...v, fn: 1, csfn: 1, swfn: 1, hrfn: 1, sw2: 1, piifn: 1, ghfn: 1, tpfn: 1, scfn: 1, gbfn: 1, clfn: 1, ntfn: 1, ltfn: 1, pvfn: 1, affn: 1, cs4fn: 1 }), { status: s, headers: { 'content-type': 'application/json', 'cache-control': 'no-store', ...cors } });
+    const json = (v, s = 200) => new Response(JSON.stringify({ ...v, fn: 1, csfn: 1, swfn: 1, hrfn: 1, sw2: 1, piifn: 1, ghfn: 1, tpfn: 1, scfn: 1, gbfn: 1, clfn: 1, ntfn: 1, ltfn: 1, pvfn: 1, affn: 1, cs4fn: 1, gpfn: 1 }), { status: s, headers: { 'content-type': 'application/json', 'cache-control': 'no-store', ...cors } });
     if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });
     if (req.method !== 'POST') return json({ error: 'method' }, 405);
     let body;

@@ -1,5 +1,13 @@
 # Claude / Codex 共通記録
 
+## 2026-11-24 A-2-1：育成計画・OJT のサーバー（Claude（Team・Claude Code）・ブランチ `claude/grade-unify-a`・SQL `20261219090000`・関数 secure-state（gpfn:1）・アプリは 1213 のまま）
+
+- 作ったもの（`docs/GRADE_UNIFY_A_JA.md` の 7）：表 6（gp_plans・gp_tasks・gp_notes・gp_log・gp_runs・gp_legacy）と関数 7。1 人 1 つの計画・版・状態（未開始・実施中・確認待ち・再練習・習得確認済み・取りやめ）・習得確認は確認者・日・根拠。旧の OJT・成長管理の記録は全部「旧として保存」で写す（答え 5 B・元は変えない）。
+- 権限は新しく作らない＝Career Score Q4 の採点の範囲（cs4Ctx）。指導者は自分の課題・本人は希望とメモと「実施中」「確認待ち」・習得確認は採点できる人で確認者（GM・CEO はいつも）。Moto さんに確かめる 5 つ（7 の節）。
+- 入れる一式 `deploy/growth-plan-a2/`（①〜⑤）。build-secure-state-one.mjs はここに書く（Career Score Q4 の 1 ファイルは sha256 で固定）。前の版の 1 ファイルの試験は gpfn を外して比べる。
+- 試験：gp-server-a2 5・gp-deploy-a2 2・secure-state に関係する 64 ファイル（落ちるのは前からの cs-strengths だけ）。
+- 次：A-2-2（画面・v1214：育成計画・OJT のタブ・本人の頁・過去の記録・旧画面を読むだけに）。OJTマップ（Phase・Tip の進み）を止めるかは Moto さんに確かめる。
+
 ## 2026-11-24 v1213：A-1 キャリア・育成（制度・役割ガイド・役割と責任マップ）（統合実装プロンプトの A・Claude（Team・Claude Code）・ブランチ `claude/grade-unify-a`（v1212 の上）・アプリ 1213・SQL・関数は変えていない）
 
 - 作ったもの（`docs/GRADE_UNIFY_A_JA.md` の 6）：役割の文のマスター `careerscore/role-guide-q4-v1.json`（4 系統 × 6 段・業務の分担・日英・数は書かない＝Q4 のマスターを読む）と `scripts/gen-index-roleguide.mjs`（CI で `--check`）。画面「キャリア・育成」（`career`・4 つのタブ・全員が開ける・読むだけ）。採用 › キャリア説明は新しいガイドが既定・前の 4 つは「旧制度の説明（読むだけ）」。旧の責任マトリクスは書けない（`respLocked`）。

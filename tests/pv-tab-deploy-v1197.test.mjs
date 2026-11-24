@@ -65,6 +65,7 @@ test('the one-file secure-state answers the same as the module handler (pv_tab w
       const b = await ask(createHandler({ env, fetch: fetchStub, now }), body, signed);
       assert.equal(a[0], 200, JSON.stringify(a));
       delete b[1].cs4fn;   // Career Score Q4 の段階 3-1 から handler は答えに cs4fn:1 も付ける（この版の 1 ファイルは付けない）
+      delete b[1].gpfn;   // キャリア・育成 A-2 から gpfn:1 も
       assert.deepEqual(a, b, body.action);
     }
     const t = await ask(mod.createHandler({ env, fetch: fetchStub, now }), { action: 'pv_tab' }, false);

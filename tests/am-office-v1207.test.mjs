@@ -80,7 +80,7 @@ test('the one-file secure-state answers the same as the module handler (pii_get 
       { action: 'pii_op', id: 'E-S2', set: { dob: '' }, base: { dob: '1998-01-01' }, pin_session: 'tam' }];
     for (const body of cases) {
       const a = await run(mod.createHandler, body), b = await run(createHandler, body);
-      const strip = x => JSON.parse(JSON.stringify(x, (k, v) => (k === '_at' ? '*' : k === 'cs4fn' ? undefined : v)));   // cs4fn：段階 3-1 から handler が付ける
+      const strip = x => JSON.parse(JSON.stringify(x, (k, v) => (k === '_at' ? '*' : (k === 'cs4fn' || k === 'gpfn') ? undefined : v)));   // cs4fn：段階 3-1 から・gpfn：A-2 から handler が付ける
       assert.deepEqual(strip(a), strip(b), JSON.stringify(body));
     }
     const am = await run(mod.createHandler, cases[0]);

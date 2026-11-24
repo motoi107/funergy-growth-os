@@ -19,6 +19,7 @@
 3d. 作業の順（Claude・会社の Team のアカウントで続ける・11/24）：#216 の Codex（7134070355）の P2（日をまたいだ失敗の答えで再取得のボタンが翌日まで消える）→ #217 の P3 → #218 の記録と試験 → 2b の手順 → B-2（v1212）。
 4. 済（Claude（Team）11/24）：A-0＝依頼の写し（`docs/INTEGRATED_PROMPT_20261123_JA.md`）・洗い出しと G7 の確認（`docs/GRADE_UNIFY_A_JA.md`）・UI案101（https://claude.ai/artifact/WN6njxQvKv8UVeooeVoYjz ・ブランチ `claude/grade-unify-a`）。済（Moto さん 11/24）：答え 1 A・2 A・3 G6 まで（G7 は制度に入れない）・4 A・5 B（旧は全部旧として保存・新しい計画は一から）・6 A（全て一新して再構築）・7 A・8 A（`docs/GRADE_UNIFY_A_JA.md` の 4b）。次（Claude）：A-1 → A-2 → A-3 → C。お願い（Moto さん）：Excel と前回の指示書。
 4b. 済（Claude（Team）11/24）：A-1＝v1213「キャリア・育成」（制度・役割ガイド・役割と責任マップ・候補者向け・採用の旧説明は「旧制度の説明（読むだけ）」・旧の責任マトリクスは読むだけ・`careerscore/role-guide-q4-v1.json` は案）。次（Moto さん）：文の確認（GM・CEO でキャリア・育成を開く）。次（Claude）：A-2（育成計画・OJT）。
+4c. 済（Claude（Team）11/24）：A-2-1＝育成計画・OJT のサーバー（SQL `20261219090000`・関数 secure-state の gp_*・`deploy/growth-plan-a2/`・旧の記録は全部旧として保存で写す）。次（Moto さん）：一式を入れる（手順.md）と 7 の節の 5 つの確認。次（Claude）：A-2-2（画面・v1214）。
 3e. 済（Claude（Team）11/24）：B-2 を実装（v1212・SQL `20261218090000`・新しい関数 payroll-expense・アプリ 1212・`deploy/payroll-expense-v1212/`・仕様の 8〜10）。push はできないので引き継ぎ一式で。次：Personal で push → PR（#218 の上）→ Codex → Moto さんが手順.md。そのあと A（Q4 のグレード制度・キャリア育成の一本化・UI案101 から）→ C（4 つの節の報告）。
 
 ## 2026-11-23 Google の評価・口コミ（Places API（新）・v1209）

@@ -5,6 +5,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -19,10 +20,11 @@ const D = 'deploy/career-score-q4-server/';
 const ONE = D + '4_関数_secure-state_index.ts';
 
 test('the one-file secure-state is what the build script makes now and has no private part', () => {
-  assert.equal(OUT, ONE, 'the build writes into the Career Score Q4 folder');
+  // キャリア・育成 A-2 から build() は deploy/growth-plan-a2/ に書く。段階 3-1 の 1 ファイルは渡したときのまま（sha256 で固定）
+  assert.notEqual(OUT, ONE, 'the build now writes into a later folder');
   assert.deepEqual(PARTS, ['labor-core.gen.mjs', 'labor.mjs', 'csq4.gen.mjs', 'handler.mjs']);
   const one = rd(ONE);
-  assert.equal(one, build(), 'the one file is up to date with the sources (run node scripts/build-secure-state-one.mjs)');
+  assert.equal(crypto.createHash('sha256').update(one).digest('hex'), '0d33d8f90abf24d3130ee491ab7cce589defd995a17ed6f2ec540f5133081107', 'the Career Score Q4 one file is as handed over');
   assert.equal(rd(GEN_OUT), gen(), 'csq4.gen.mjs is up to date (run node scripts/gen-secure-state-csq4.mjs)');
   assert.ok(one.endsWith(TAIL));
   assert.ok(!/^import\s/m.test(one), 'no import left');
@@ -78,6 +80,7 @@ test('the one-file secure-state answers the same as the module handler (Career S
     ];
     for (const [body, hdr] of cases) {
       const a = await ask(mod.createHandler, body, hdr), b = await ask(createHandler, body, hdr);
+      delete b[1].gpfn;   // キャリア・育成 A-2 から handler は答えに gpfn:1 も付ける（この 1 ファイルは付けない）
       assert.deepEqual(a, b, body.action);
       if (['get', 'pull'].includes(body.action)) assert.equal(a[0], 200, body.action);
       assert.equal(a[1].cs4fn, 1, body.action);
