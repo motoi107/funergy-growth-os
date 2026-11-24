@@ -41,9 +41,11 @@ const tick = () => new Promise((r) => setImmediate(r));
 async function settle(n = 6) { for (let i = 0; i < n; i++) await tick(); }
 
 /* ---------------------------------------------------------------- 1. 印 */
-test('version 1208 in the page and the service worker; FUNERGY_CS4 is its own script with no </script', () => {
-  assert.match(src, /\nconst APP_VERSION = '1208';/);
-  assert.match(sw, /\nconst SW_BUILD = '1208';/);
+test('version 1208 or later in the page and the service worker (the same); FUNERGY_CS4 is its own script with no </script', () => {
+  // v1209（Google の評価と口コミ）で版が上がった：1208 以上で、ページと SW が同じ
+  const av = (src.match(/\nconst APP_VERSION = '(\d+)';/) || [])[1], sb = (sw.match(/\nconst SW_BUILD = '(\d+)';/) || [])[1];
+  assert.ok(av && Number(av) >= 1208, 'APP_VERSION ' + av);
+  assert.equal(sb, av);
   assert.ok(!/<\/script/i.test(CS4));
   assert.ok(CS4.includes('W.FUNERGY_CS4 = {'));
   // CSQ4（計算の芯）の script が先、CS4 が後

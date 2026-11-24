@@ -1,5 +1,7 @@
 // v1157 Google の口コミ。本物の SQL（PGlite）と本物の handler、偽の Google（Places・OAuth・Business Profile）、合成データだけ。
 // だれか（work-requests の whoami）は代わり（'pin-E2' は GM・'pin-E8' は Crew・'store-S1' は店のタブレット＝断る）。仕様：docs/GOOGLE_REVIEWS_V1157_JA.md
+// v1209：handler は v1209（見られる店だけ・回数の上限）。ここでは v1157 の SQL のあとに v1209 の SQL も流し、上限は大きくして v1157 の動きを確かめる。
+//   見られる店・上限・押したときだけ取ることは tests/google-places-server-v1209.test.mjs。
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -8,8 +10,15 @@ import { createHandler, hstYm, hstPrevMonthStart } from '../supabase/functions/g
 
 const { PGlite } = await import(process.env.BOT_PGLITE_MODULE || './runtime/node_modules/@electric-sql/pglite/dist/index.js');
 const SQL = fs.readFileSync(new URL('../supabase/migrations/20261122090000_google_reviews.sql', import.meta.url), 'utf8');
+const SQL1209 = fs.readFileSync(new URL('../supabase/migrations/20261215090000_google_places_caps.sql', import.meta.url), 'utf8');
+const SQL1215 = fs.readFileSync(new URL('../supabase/migrations/20261215100000_google_places_scope.sql', import.meta.url), 'utf8');
 const NOW0 = Date.parse('2026-11-13T20:00:00Z');   // ハワイ 11/13 10:00
-const PEOPLE = { E1: ['ceo', 'Cora CEO'], E2: ['gm', 'Gabe GM'], E5: ['am', 'Ami Area'], E8: ['crew', 'Cam Crew'], E6: ['sl', 'Sam Store'] };
+// v1209 の更新（11/23）：G4 以下は配属の店だけになったので、この v1157 の試験の「GM・CEO でない人」は全店を見る事務Crew（E8）と経理（E6）にした
+//   （見られる店の決まりそのものは tests/google-places-server-v1209.test.mjs）
+const PEOPLE = { E1: ['ceo', 'Cora CEO'], E2: ['gm', 'Gabe GM'], E5: ['am', 'Ami Area'], E8: ['office_crew', 'Cam Crew'], E6: ['office', 'Sam Office'] };
+// v1209：見られる店（work-requests の whoami の stores・am_stores と同じ形）。CEO・GM は全店
+const SEES = { E5: { stores: [], am_stores: ['S1', 'S2'] }, E8: { stores: ['S1', 'S2'], am_stores: [] }, E6: { stores: ['S1', 'S2'], am_stores: [] } };
+const meOf = id => ({ emp: id, role: PEOPLE[id][0], name: PEOPLE[id][1], ...(SEES[id] || { stores: [], am_stores: [] }) });
 const PID1 = 'ChIJ_fake_place_one_0001', PID2 = 'ChIJ_fake_place_two_0002';
 const LOC1 = 'locations/111', LOC2 = 'locations/222', ACC = 'accounts/900';
 const b64u = b => Buffer.from(b).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
@@ -37,7 +46,8 @@ function fakeGoogle() {
     }
     if (url.startsWith('https://places.googleapis.com/v1/places/')) {
       if (g.placesStatus !== 200) return J({ error: {} }, g.placesStatus);
-      assert.match(init.headers['X-Goog-FieldMask'], /reviews/);
+      // 結ぶときの確かめ（名前と住所だけ）と、見るとき（口コミも）
+      if (init.headers['X-Goog-FieldMask'] !== 'id,displayName,formattedAddress') assert.match(init.headers['X-Goog-FieldMask'], /reviews/);
       return J(g.place);
     }
     if (url === 'https://oauth2.googleapis.com/token') {
@@ -57,7 +67,7 @@ function fakeGoogle() {
       if (g.wr !== 200) return J({ error: 'x' }, g.wr);
       const tok = JSON.parse(init.body).pin_session; g.wrSeen = { tok, apikey: init.headers.apikey };
       const m2 = /^pin-(E\d+)$/.exec(tok);
-      return m2 && PEOPLE[m2[1]] ? J({ me: { emp: m2[1], role: PEOPLE[m2[1]][0], name: PEOPLE[m2[1]][1] } }) : J({ error: 'unauthorized' }, 401);
+      return m2 && PEOPLE[m2[1]] ? J({ me: meOf(m2[1]) }) : J({ error: 'unauthorized' }, 401);
     }
     if (url.startsWith('https://mybusinessaccountmanagement.googleapis.com/v1/accounts')) {
       if (g.accountsStatus !== 200) return J({ error: {} }, g.accountsStatus);
@@ -84,12 +94,22 @@ function fakeGoogle() {
 const rv = (loc, n, star, created, extra = {}) => ({ name: `${ACC}/${loc}/reviews/r${n}`, starRating: star, comment: 'comment ' + n, createTime: created,
   updateTime: extra.updated || created, reviewer: { displayName: 'Guest ' + n, isAnonymous: !!extra.anon }, ...(extra.reply ? { reviewReply: { comment: 'thanks' } } : {}) });
 
-async function setup({ sql = true, env = {}, whoami, realWho = false } = {}) {
+async function setup({ sql = true, env = {}, whoami, realWho = false, caps = false } = {}) {
   const pg = new PGlite();
   await pg.exec(`create role anon; create role authenticated; create role service_role bypassrls;
     alter default privileges in schema public grant all on tables to anon, authenticated;
     alter default privileges in schema public grant all on functions to anon, authenticated;`);
   if (sql) await pg.exec(SQL);
+  if (sql && sql !== 'v1157') await pg.exec(SQL1209);
+  if (sql === true) {
+    await pg.exec(SQL1215);
+    // 合成の店の住所の目安（偽の Google の店 1 Fake St・Fake Ramen One）
+    // 2 店は同じ住所なので名前を分ける（同じ名前だと「同じ住所のほかの店の名前も入った店」＝手で確かめる）
+    await pg.exec(`insert into public.gr_place_hint (store_id, addr, names) values ('S1', '{1,fake}', '{fake ramen}'), ('S2', '{1,fake}', '{fake two}')`);
+  }
+  // v1157 の試験は回数の上限に当たらないように大きくする（上限そのものは v1209 の試験）
+  if (sql && sql !== 'v1157' && !caps) await pg.exec(`update public.gr_settings set places_day_max = 5000, places_store_day_max = 5000, places_person_day_max = 5000,
+    places_month_max = 100000, search_day_max = 5000, search_month_max = 100000`);
   await pg.exec('set role service_role');
   const db = { async rpc(name, p) { const r = await pg.query(`select public.${name}($1::jsonb) as v`, [JSON.stringify(p ?? {})]); return r.rows[0].v; } };
   const g = fakeGoogle();
@@ -97,7 +117,7 @@ async function setup({ sql = true, env = {}, whoami, realWho = false } = {}) {
   const ENV = { SUPABASE_URL: 'https://db.test', SUPABASE_SERVICE_ROLE_KEY: 'service', SUPABASE_ANON_KEY: 'anon', GOOGLE_PLACES_API_KEY: 'places-key-xyz',
     GBP_OAUTH_CLIENT_ID: 'cid', GBP_OAUTH_CLIENT_SECRET: 'csecret', ...env };
   const handler = createHandler({ env: k => ENV[k], db, fetch: g.fetch, now: () => t,
-    whoami: realWho ? undefined : whoami || (async tok => { const m = /^pin-(E\d+)$/.exec(tok); return m && PEOPLE[m[1]] ? { emp: m[1], role: PEOPLE[m[1]][0], name: PEOPLE[m[1]][1] } : null; }) });
+    whoami: realWho ? undefined : whoami || (async tok => { const m = /^pin-(E\d+)$/.exec(tok); return m && PEOPLE[m[1]] ? meOf(m[1]) : null; }) });
   const call = async (who, body, headers = {}) => {
     const r = await handler(new Request('https://fn.test/google-reviews', { method: 'POST', headers: { 'content-type': 'application/json', origin: 'https://funergy-plus.com', ...headers },
       body: JSON.stringify(who ? { pin_session: who.startsWith('store') ? who : 'pin-' + who, ...body } : body) }));
@@ -122,12 +142,13 @@ async function setup({ sql = true, env = {}, whoami, realWho = false } = {}) {
 
 test('the SQL runs twice; the public keys cannot read any table or run any function; functions run as the caller', async () => {
   const { pg } = await setup();
-  await pg.exec('reset role'); await pg.exec(SQL);
+  // v1157 の SQL をもう一度流したら v1209・11/23 の SQL ももう一度・この順（前の SQL は gr_place_set などを前の版に戻す）
+  await pg.exec('reset role'); await pg.exec(SQL); await pg.exec(SQL1209); await pg.exec(SQL1215);
   const tables = (await pg.query(`select tablename from pg_tables where schemaname='public' and tablename like 'gr\\_%' order by 1`)).rows.map(r => r.tablename);
-  assert.deepEqual(tables, ['gr_bp', 'gr_bp_loc', 'gr_oauth', 'gr_places', 'gr_reviews', 'gr_runs', 'gr_settings']);
+  assert.deepEqual(tables, ['gr_bp', 'gr_bp_loc', 'gr_oauth', 'gr_place_hint', 'gr_places', 'gr_places_use', 'gr_reviews', 'gr_runs', 'gr_settings']);
   for (const t of tables) assert.equal((await pg.query(`select relrowsecurity r from pg_class where relname=$1`, [t])).rows[0].r, true, t);
   const fns = (await pg.query(`select proname, prosecdef from pg_proc p join pg_namespace n on n.oid=p.pronamespace where nspname='public' and proname like 'gr\\_%'`)).rows;
-  assert.equal(fns.length, 21);
+  assert.equal(fns.length, 37, 'v1157 の 21 ＋ v1209 の 5 ＋ 11/23 の 11');
   assert.ok(fns.every(f => !f.prosecdef), 'security invoker');
   for (const role of ['anon', 'authenticated']) {
     await pg.exec(`set role ${role}`);
@@ -135,16 +156,16 @@ test('the SQL runs twice; the public keys cannot read any table or run any funct
     for (const f of ['gr_kpi', 'gr_status', 'gr_worker_key', 'gr_bp_creds', 'gr_reviews_put']) await assert.rejects(pg.query(`select public.${f}('{}'::jsonb)`), /permission denied/, role + ' ' + f);
     await pg.exec('reset role');
   }
-  // 21 の関数のどれも、公開の鍵では呼べない（PUBLIC も）・サーバーの鍵だけ
+  // 37 の関数のどれも、公開の鍵では呼べない（PUBLIC も）・サーバーの鍵だけ
   const sigs = (await pg.query(`select p.oid::regprocedure::text sig from pg_proc p join pg_namespace n on n.oid=p.pronamespace where nspname='public' and proname like 'gr\\_%'`)).rows.map(r => r.sig);
-  assert.equal(sigs.length, 21);
+  assert.equal(sigs.length, 37);
   for (const sig of sigs) {
     for (const role of ['anon', 'authenticated']) assert.equal((await pg.query(`select has_function_privilege($1, $2, 'execute') v`, [role, sig])).rows[0].v, false, role + ' ' + sig);
     assert.equal((await pg.query(`select has_function_privilege('service_role', $1, 'execute') v`, [sig])).rows[0].v, true, sig);
   }
-  // Google の決まり：Places から残すのは店と place ID だけ（評価・件数・口コミの列は無い）
+  // Google の決まり：Places から残すのは店と place ID だけ（評価・件数・口コミ・Google の名前と住所の列は無い。確かめた印はこちらの記録）
   const cols = (await pg.query(`select column_name from information_schema.columns where table_name='gr_places' order by ordinal_position`)).rows.map(r => r.column_name);
-  assert.deepEqual(cols, ['store_id', 'place_id', 'set_emp', 'set_name', 'set_at']);
+  assert.deepEqual(cols, ['store_id', 'place_id', 'set_emp', 'set_name', 'set_at', 'confirmed_place', 'confirm_how', 'confirmed_emp', 'confirmed_name', 'confirmed_at']);
   assert.equal((await pg.query('select count(*)::int n from public.gr_settings')).rows[0].n, 1);
   assert.match((await pg.query('select worker_key from public.gr_settings')).rows[0].worker_key, /^[0-9a-f]{64}$/);
 });
@@ -347,7 +368,7 @@ test('daily sync: reviews by Hawaii month, all of them kept, again is the same; 
 
 test('auto only for stores linked to Business Profile while connected; relink drops the old reviews; disconnect keeps reviews but goes back to manual', async () => {
   const s = await setup();
-  assert.deepEqual(await s.ok('E8', { action: 'kpi' }), { connected: false, status: 'none', last_ok_at: null, auto: [], from: {}, months: {}, overall: {} });
+  assert.deepEqual(await s.ok('E8', { action: 'kpi' }), { connected: false, status: 'none', last_ok_at: null, auto: [], from: {}, months: {}, overall: {}, places: [] }, 'v1209：Google の店を結んだ店の一覧 places');
   await s.connect();
   await s.ok('E2', { action: 'bp_link', store: 'S1', account: ACC, location: LOC1 });
   // 結んだだけ・審査待ちのあいだは手入力のまま（2：API をつなぐまでは手入力）
