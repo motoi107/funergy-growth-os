@@ -36,6 +36,7 @@
 2. 済（Moto さん 11/22 18:42 HST）：v1197・v1202 は本番に入れた・前の戻す SQL は流していない・#206 の P3 は今のまま・AM に本部の人を見せる → v1207（ブランチ `claude/am-office-1207`）。
 3. 次（Claude）：Career Score 2026 Q4（CAREER_2026_Q4_V1・G／Prep／S Chef／S Office・Q3 は読むだけ）。Excel から評価表のデータ（生成と確かめ）→ 計算と試験 → 画面は UI 案を Moto さんに見せてから。先に聞くこと：Prep の時給の段（Excel は P1〜P6・アプリの v1106 は Lv1〜5）・だれがどの制度か。
 4. 前から：v1192〜v1195 の配備の残り（各節）。
+
 ## 2026-11-22 Career Score 2026 Q4（新制度）
 
 1. 済（Claude・ブランチ `claude/career-score-q4-core`）：段階 1＝評価表マスターと計算の芯・試験 24（そのあとの直しで 26。`docs/CAREER_SCORE_Q4_JA.md`）。済：PR #212。次：Codex。
