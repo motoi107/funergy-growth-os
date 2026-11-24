@@ -1,5 +1,6 @@
 import { createHandler } from './handler.mjs';
-// background: a posting answers at once and the QuickBooks send goes on after the answer (Supabase keeps the function running).
+// pdf-lib (MIT): an invoice of several originals is sent to QuickBooks as one PDF of its pages (B-3, 2026-11-23).
+import { PDFDocument } from 'npm:pdf-lib@1.17.1';
 const runtime = (globalThis as any).EdgeRuntime;
-Deno.serve(createHandler({ env: (key: string) => Deno.env.get(key),
+Deno.serve(createHandler({ env: (key: string) => Deno.env.get(key), PDFDocument,
   background: (p: Promise<unknown>) => (runtime && typeof runtime.waitUntil === 'function' ? runtime.waitUntil(p) : p) }));

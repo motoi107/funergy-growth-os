@@ -1150,7 +1150,7 @@ test('deploy checks and the guarded rollback', async () => {
   assert.deepEqual({ ...post, tables: Number(post.tables), functions: Number(post.functions), browser_can_read: Number(post.browser_can_read), browser_can_run: Number(post.browser_can_run) },
     { tables: 25, functions: new Set(created).size, worker_enabled: 'false', intake_on: 'false', auto_post_on: 'false', app_copy_on: 'false', qb_on: 'false', qb_external_on: 'false',
       rename_on: 'false', rls_on: true, browser_can_read: 0, browser_can_run: 0, review_fixes: true, accounting_checks: true, store_folder_intake: true,
-      office_crew_accounting: true, rename_after_post: true, purchase_summary: true, reconciled_folder: true, multi_file: true, vendor_merge: true, vendor_register: true, item_link: true, qb_gmail: true, purchase_posted: true, price_compare: true });
+      office_crew_accounting: true, rename_after_post: true, purchase_summary: true, reconciled_folder: true, multi_file: true, vendor_merge: true, vendor_register: true, item_link: true, qb_gmail: true, purchase_posted: true, price_compare: true, qb_reconcile: true });
   assert.ok(!/key/.test(Object.keys(post).join()) && !JSON.stringify(post).match(/[0-9a-f]{32}/), 'the postcheck shows no key');
   await assert.rejects(pg.exec(SQL), /already exists/, 'running the migration twice stops at the first statement');
   // the rollback names exactly the objects the migration creates
@@ -2493,6 +2493,9 @@ test('段階 3: the pages of one invoice number are merged into one invoice, loo
     assert.equal((await E.q(`select count(*)::int n from invoice_lines where doc_id=$1`, [m.id]))[0].n, 2);
     assert.deepEqual((await E.q(`select line_no, page from invoice_lines where doc_id=$1`, [pB.id])).map(l => [l.line_no, l.page]), [[1, 1]]);
     assert.equal(m.version, da.version + 2); assert.equal(pB.version, db.version + 2);
+    // The old route (the external forwarder) keeps an invoice of several originals out of its ledger (B-3: this system sends it as one PDF;
+    // that is tested in invoice-qb-reconcile.test.mjs).
+    await E.q(`update invoice_settings set value=value||'{"route":"external"}' where key='qb'`);
     // Merged again and posted: one invoice, both originals named _p1 / _p2, both posted.
     assert.equal((await E.api('tok-office', { action: 'merge', docs: [m.id, pB.id], versions: vers(m, pB) })).status, 200);
     [m] = await docsOf(E, a);
@@ -2509,7 +2512,7 @@ test('段階 3: the pages of one invoice number are merged into one invoice, loo
       const all = (await E.q(`select count(*)::int n from public.invoice_rename_waiting_all() w where w.file_id=$1`, [f.id]))[0].n === 1;
       assert.equal(one, all); assert.equal(one, false, 'renamed: not waiting any more');
     }
-    // QuickBooks: kept out of the ledger until the forwarder sends the pages together.
+    // QuickBooks (the old route): kept out of the ledger until the forwarder sends the pages together.
     await E.worker();
     assert.equal((await E.q(`select count(*)::int n from invoice_qb_outbox`))[0].n, 0);
     assert.deepEqual(await E.db.rpc('invoice_qb_enqueue', { file_id: m.file_id }), { queued: false, why: 'multi_file' });
@@ -2723,7 +2726,9 @@ function screenOn(E, tok = 'tok-office', dom = {}) {
 test('段階 3: the same-number screen merges, takes back, posts and records QuickBooks through the real server', async () => {
   const E = await setup();
   try {
-    await E.pg.exec(`reset role; update invoice_settings set value=value||'{"auto_post":false}' where key='mode'; set role service_role`);
+    // The old route (the external forwarder): an invoice of several originals waits for it (this system's route: invoice-qb-reconcile.test.mjs).
+    await E.pg.exec(`reset role; update invoice_settings set value=value||'{"auto_post":false}' where key='mode';
+      update invoice_settings set value=value||'{"route":"external"}' where key='qb'; set role service_role`);
     const { a, b, da, db } = await twoPages(E, 'S3-U1', 'S3-U2', 'U-55');
     // The first page photographed again and read a little differently (the same reading would be set aside by itself).
     E.fixtures.set('S3-U3', { readable: true, documents: [page('U-55', '2026-10-11', [S3L('06263', 'SHIRO MISO 12/500G', '2', '60.00', '120.00'), S3L('X1', 'NEW THING', '1', '19.00', '19.00')],

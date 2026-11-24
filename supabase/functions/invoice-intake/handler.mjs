@@ -10,6 +10,7 @@ import { createDrive, googleAccessToken, viewUrl, folderUrl } from '../../../inv
 import { groupItems, relink } from '../../../invoice/link.mjs';
 import { createGmail, authUrl, pkcePair, randomState, sha256Text, exchangeCode, profileOf, canSearchWith, scopesOk, qbSubject, refreshAccess, tokenScopes } from '../../../invoice/gmail.mjs';
 import { noticeText } from '../../../invoice/notices.mjs';
+import { joinParts, joinedName, PdfJoinError } from '../../../invoice/pdfjoin.mjs';
 
 const SUPPORTED = { 'application/pdf': true, 'image/jpeg': true, 'image/png': true };
 const READ = ['ceo', 'gm', 'office', 'office_crew'];
@@ -79,6 +80,8 @@ export function createHandler(deps) {
   // Work that goes on after the answer (index.ts passes EdgeRuntime.waitUntil): a posting answers at once and the send runs on.
   const background = deps.background || null;
   const sleep = deps.sleep || (ms => new Promise(r => setTimeout(r, ms)));
+  // pdf-lib's PDFDocument (index.ts passes npm:pdf-lib): an invoice of several originals is sent as one PDF (B-3, 2026-11-23).
+  const PDFDocument = deps.PDFDocument || null;
   // Gmail (UI案56): the OAuth client is the function's own (GMAIL_OAUTH_CLIENT_ID/SECRET) or else the one the Drive connection uses.
   async function googleClient() {
     let id = env('GMAIL_OAUTH_CLIENT_ID'), secret = env('GMAIL_OAUTH_CLIENT_SECRET');
@@ -507,10 +510,16 @@ export function createHandler(deps) {
     if (!c.ok) {
       if (c.why === 'not_reserved') return 'skipped';
       if (c.why === 'content_changed') { await db.rpc('invoice_qb_content_changed', { id: o.id, owner }); return 'content_changed'; }
+      // An invoice of several originals that is not the one queued any more, or a page of it that went already: set aside (not a try).
+      if (c.why === 'merge_changed' || c.why === 'part_already_sent') { await db.rpc('invoice_qb_content_changed', { id: o.id, owner, why: c.why }); return c.why; }
       if (QB_RELEASE.includes(c.why)) { await release(c.why); return 'released'; }
       await fail('error', c.why); return 'error';
     }
-    const f = c.file, key = { sha256: o.sha256, driveFileId: f.drive_file_id, attemptKey: o.attempt_key, to: o.to_address, size: f.size };
+    const f = c.file;
+    // An invoice of several originals (o.parts): its pages, in page order, go as ONE PDF (B-3). Its key is the pages' contents.
+    const parts = o.parts ? (Array.isArray(c.parts) ? c.parts : []) : null;
+    if (parts && parts.length < 2) { await fail('error', 'parts_missing'); return 'error'; }
+    const key = { sha256: o.sha256, driveFileId: f.drive_file_id, attemptKey: o.attempt_key, to: o.to_address, size: parts ? null : f.size };
     // 1) Gmail's sent mail, every page: a send found (this ledger's, or the forwarder's before) is recorded, never sent again; a
     //    failed search is never read as "not sent".
     let prev;
@@ -530,10 +539,45 @@ export function createHandler(deps) {
           : '送信済みに同じ原本の印がありますが、添付を確かめられません。人が確かめてください（送っていない）' });
       return 'conflict';
     }
-    // 2) The original's bytes: the content that was posted and queued, or nothing is sent.
-    let bytes;
-    try { bytes = await drive.download(f.drive_file_id); } catch (e) { await fail('error', 'drive_download_failed'); return 'error'; }
-    if ((await sha256Hex(bytes)) !== o.sha256) { await db.rpc('invoice_qb_content_changed', { id: o.id, owner }); return 'content_changed'; }
+    // 1b) Each page of an invoice of several originals: one already in the sent mail (alone, by this ledger or the forwarder
+    //     before) is never sent again inside the PDF. The row is set aside and a person records the invoice by hand.
+    if (parts) {
+      for (const pt of parts) {
+        let h;
+        try { h = await tr.history({ sha256: pt.sha256, driveFileId: pt.drive_file_id, attemptKey: null, to: o.to_address, size: null }); }
+        catch (e) {
+          if (e && e.auth) { await release(e.code || 'gmail_read_refused'); await gmailProblem({ auth: true, error: e.code || 'gmail_read_refused' }); return 'auth'; }
+          await fail('error', 'gmail_history_failed'); return 'error';
+        }
+        if (h.state === 'sent') {
+          await db.rpc('invoice_qb_content_changed', { id: o.id, owner, why: 'part_already_sent' });
+          return 'part_already_sent';
+        }
+        if (h.state === 'conflict') {
+          await fail('unknown', 'part_' + h.reason, { via: 'gmail_history', seen_message: h.messageId || null, page: pt.part_no,
+            note: '複数枚の invoice のページ（' + (Number(pt.part_no) + 1) + ' 枚目）の原本の印が送信済みにあります。人が確かめてください（送っていない）' });
+          return 'conflict';
+        }
+      }
+    }
+    // 2) The original's bytes: the content that was posted and queued, or nothing is sent. Several originals: every page is read
+    //    and checked against the content it was read from, then they are put together into one PDF (the same bytes each try).
+    let bytes, attName = f.current_name, attMime = f.mime_type || 'application/octet-stream', pages = null;
+    if (parts) {
+      const got = [];
+      for (const pt of parts) {
+        let b;
+        try { b = await drive.download(pt.drive_file_id); } catch (e) { await fail('error', 'drive_download_failed'); return 'error'; }
+        if ((await sha256Hex(b)) !== pt.sha256) { await db.rpc('invoice_qb_content_changed', { id: o.id, owner }); return 'content_changed'; }
+        got.push({ bytes: b, mime: pt.mime_type });
+      }
+      try { const j = await joinParts(PDFDocument, got); bytes = j.bytes; pages = j.pages; }
+      catch (e) { await fail('error', e instanceof PdfJoinError ? e.code : 'pdf_join_failed'); return 'error'; }
+      attName = joinedName(f.current_name); attMime = 'application/pdf';
+    } else {
+      try { bytes = await drive.download(f.drive_file_id); } catch (e) { await fail('error', 'drive_download_failed'); return 'error'; }
+      if ((await sha256Hex(bytes)) !== o.sha256) { await db.rpc('invoice_qb_content_changed', { id: o.id, owner }); return 'content_changed'; }
+    }
     // 3) Just before sending: still this sender's reservation, young enough, nothing changed.
     let chk;
     try { chk = await db.rpc('invoice_qb_send_check', { id: o.id, owner, sha256: o.sha256, attempt_key: o.attempt_key, drive_file_id: f.drive_file_id }); }
@@ -541,19 +585,21 @@ export function createHandler(deps) {
     if (!chk.ok) {
       if (chk.why === 'not_reserved') return 'skipped';
       if (chk.why === 'content_changed') { await db.rpc('invoice_qb_content_changed', { id: o.id, owner }); return 'content_changed'; }
+      if (chk.why === 'merge_changed' || chk.why === 'part_already_sent') { await db.rpc('invoice_qb_content_changed', { id: o.id, owner, why: chk.why }); return chk.why; }
       if (QB_RELEASE.includes(chk.why)) { await release(chk.why); return 'released'; }
       await fail('error', chk.why); return 'error';
     }
-    // 4) One mail: the original as its only part, the three marks in the subject, no body.
+    // 4) One mail: the original (or the one PDF of the pages) as its only part, the three marks in the subject, no body.
     const started = new Date(now()).toISOString();
     let res;
     try {
       res = await tr.send({ from: c.from, to: c.to, idempotencyKey: o.attempt_key,
-        subject: qbSubject({ currentName: f.current_name, driveFileId: f.drive_file_id, sha256: o.sha256, attemptKey: o.attempt_key }),
-        attachment: { name: f.current_name, mime: f.mime_type || 'application/octet-stream', bytes } });
+        subject: qbSubject({ currentName: attName, driveFileId: f.drive_file_id, sha256: o.sha256, attemptKey: o.attempt_key }),
+        attachment: { name: attName, mime: attMime, bytes } });
     } catch (e) { res = { ok: false, unknown: true, error: 'gmail_send_failed' }; }
     if (res && res.ok) {
-      await qbRecord(o.id, { state: 'sent', message_id: res.messageId || null, result: { via: 'gmail', started_at: started, sent_at: new Date(now()).toISOString(), trigger: trigger || null } });
+      await qbRecord(o.id, { state: 'sent', message_id: res.messageId || null, result: { via: 'gmail', started_at: started, sent_at: new Date(now()).toISOString(), trigger: trigger || null,
+        ...(parts ? { originals: parts.length, pdf_pages: pages } : {}) } });
       return 'sent';
     }
     if (!res || res.unknown) { await fail('unknown', (res && res.error) || 'send_unknown'); return 'unknown'; }
@@ -653,6 +699,12 @@ export function createHandler(deps) {
       }
     }
     return out;
+  }
+
+  // A send that waits now (a person's 「もう一度送る」): this system's send starts after the answer; the 5-minute run otherwise.
+  function qbKick(ctx, trigger) {
+    if (!ctx.qb.enabled || ctx.qb.route !== 'invoice-intake' || !background) return false;
+    try { background(qbSend(trigger).catch(e => console.error('invoice-intake qb send', safeErr(e)))); return true; } catch { return false; }
   }
 
   async function mirrorStep(ctx, stats) {
@@ -1341,7 +1393,24 @@ export function createHandler(deps) {
     reassign: thenSummary((a, b) => db.rpc('invoice_reassign', { actor: a, file_id: b.file_id, store_id: b.store_id, reason: b.reason || '' }), b => ({ file_id: String(b.file_id || '') })),
     mark: thenSummary((a, b) => db.rpc('invoice_mark', { actor: a, doc_id: b.doc_id, version: b.version, action: b.mark, duplicate_of: b.duplicate_of || null, reason: b.reason || '' }), b => ids(b.doc_id, b.duplicate_of)),
     relate: thenSummary((a, b) => db.rpc('invoice_relate', { actor: a, doc_id: b.doc_id, version: b.version, related_doc_id: b.related_doc_id, relation: b.relation }), b => ids(b.doc_id, b.related_doc_id)),
-    reconcile: thenSummary((a, b) => db.rpc('invoice_reconcile', { actor: a, doc_id: b.doc_id, version: b.version, result: b.result, note: b.note || '', diff: b.diff || null }), b => ids(b.doc_id)),
+    // B-3 (2026-11-23): a saved 照合済み asks for the QuickBooks send at once, under the same conditions as after a posting (the
+    // answer says what happened: qb.queued / qb.sending / qb.waiting). Taking a reconciliation back stops the sends that have not
+    // started (qb_stopped); one under way or unknown is counted (qb_busy) and settled as before. The send itself never waits here.
+    reconcile: thenSummary(async (a, b) => {
+      const r = await db.rpc('invoice_reconcile', { actor: a, doc_id: b.doc_id, version: b.version, result: b.result, note: b.note || '', diff: b.diff || null,
+        stop_qb: b.result !== 'reconciled' });
+      if (r && r.file_id) {
+        const files = Array.isArray(r.file_ids) && r.file_ids.length ? r.file_ids : [r.file_id];
+        let ctx = null; try { ctx = await context(); } catch (e) { ctx = null; }
+        // The saved reconciliation raised the document's version, and the name is made for its id and version: the originals
+        // are named again now (the name stays the same, Drive is not changed then), as after a posting; the worker otherwise.
+        if (ctx && ctx.mode.rename) { r.rename = []; for (const f of files) r.rename.push(await renameNow(a, f, ctx)); }
+        if (b.result === 'reconciled' && ctx) {
+          try { r.qb = await qbAfterPost(files, ctx, 'reconcile'); } catch (e) { r.qb = null; console.error('invoice-intake qb after reconcile', safeErr(e)); }
+        }
+      }
+      return r;
+    }, b => ids(b.doc_id)),
     retry: (a, b) => db.rpc('invoice_file_retry', { actor: a, file_id: b.file_id }),
     qb_resolve: thenSummary((a, b) => db.rpc('invoice_qb_result', { actor: a, id: b.id, state: b.state, message_id: b.message_id || null, result: { note: b.note || null, checked_by: a } }), b => ({ outbox_id: String(b.id || '') })),
     latest_prices: async (a, b) => { const w = await db.rpc('invoice_whoami', { actor: a }); if (!READ.includes(w.role)) throw new Error('forbidden'); return db.rpc('invoice_latest_prices', { stores: b.stores || null, codes: b.codes || null }); },
@@ -1375,6 +1444,19 @@ export function createHandler(deps) {
     gmail_check: gmailCheck,
     gmail_disconnect: gmailDisconnect,
     qb_lookup: thenSummary(qbLookup, b => ({ outbox_id: String(b.id || '') })),
+    // B-3: each invoice's send in six words (未転送・転送待ち・処理中・転送成功・転送失敗・結果確認待ち), 「もう一度送る」 for a send known
+    // not to have gone, and 照合済みだが未転送 (what is known and what is not). The database checks who asks (actor) every time.
+    qb_doc_states: (a, b) => db.rpc('invoice_qb_doc_states', { actor: a, doc_ids: Array.isArray(b.doc_ids) ? b.doc_ids.filter(x => typeof x === 'string').slice(0, 200) : [] }),
+    qb_retry: thenSummary(async (a, b) => {
+      const r = await db.rpc('invoice_qb_retry', { actor: a, id: b.id });
+      if (r && r.ok) {
+        try { const ctx = await context(); r.sending = qbKick(ctx, 'retry'); } catch { r.sending = false; }
+      }
+      return r;
+    }, b => ({ outbox_id: String(b.id || '') })),
+    qb_unsent: (a, b) => db.rpc('invoice_qb_unsent', { actor: a, from: typeof b.from === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(b.from) ? b.from : null,
+      limit: Number.isInteger(b.limit) && b.limit > 0 && b.limit <= 500 ? b.limit : null })
+      .then(r => ({ ...r, rows: (r.rows || []).map(x => ({ ...x, original_url: viewUrl(x.drive_file_id) })) })),
   };
   const ERR = { forbidden: 403, actor_required: 401, conflict: 409, not_found: 404, line_not_found: 404, closed_month: 409, duplicate: 409, invalid_state: 409,
     reason_required: 400, note_required: 400, field_not_editable: 400, bad_value: 400, bad_key: 400, bad_result: 400, bad_relation: 400, bad_action: 400,

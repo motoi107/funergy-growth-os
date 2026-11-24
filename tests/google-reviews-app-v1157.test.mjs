@@ -93,7 +93,7 @@ function fakeDom() {
   return D;
 }
 
-async function app(srv, emp, { role = 'crew', storeLogin = false, href = 'https://funergy-plus.com/' } = {}) {
+async function app(srv, emp, { role = 'crew', storeLogin = false, href = 'https://funergy-plus.com/', clock = null } = {}) {
   const D = fakeDom(), toasts = [], pages = [], calls = [], wrote = [];
   let pending = 0;
   const loc = { href, assign(u) { pages.push('assign:' + u); } };
@@ -132,6 +132,8 @@ async function app(srv, emp, { role = 'crew', storeLogin = false, href = 'https:
       } finally { pending--; }
     },
   };
+  // #216 の Codex の P2 の試験：画面の時計だけを動かす（サーバーの SQL は本当の時刻）
+  if (clock) ctx.Date = class extends Date { static now() { return clock(); } };
   ctx.window = ctx; ctx.document = D;
   vm.createContext(ctx);
   vm.runInContext(MOD, ctx);
@@ -653,4 +655,66 @@ test('v1209 (独立レビューの P3): a Google failure after the call was coun
   assert.match(h, /この失敗も今日の回数に数えました。/);
   assert.match(h, /grLoadPlaces\('S2'\)/);
   assert.equal(s.g.calls.filter(x => x.startsWith('places.googleapis.com')).length, 2);
+});
+
+test('#216 の Codex（7134070355）の P2: a cap answer that arrives after Pacific midnight is kept under the day the server counted (or the day it was asked), so the button is back on the new day', async () => {
+  const pac = ms => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Los_Angeles', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(ms));
+  // 本当の今日（太平洋時間）の次の 0 時。画面の時計をその前後に置く（サーバーの SQL は本当の今日で数える）
+  const today = pac(Date.now()); let mid = null;
+  for (const off of [7, 8]) { const [y, m, d] = today.split('-').map(Number), x = Date.UTC(y, m - 1, d + 1, off); if (pac(x - 1000) === today && pac(x) !== today) mid = x; }
+  assert.ok(mid, 'the next Pacific midnight');
+  const tomorrow = pac(mid);
+  for (const old of [false, true]) {   // old＝関数・2b が前の版（pday が無い）：頼んだ時刻の日を使う
+    const s = await server();
+    await s.pg.exec('reset role');
+    await s.pg.exec('update public.gr_settings set places_store_day_max = 1, places_day_max = 40, places_month_max = 900');
+    // この店の今日の 1 回はもう使った（サーバーの今日）
+    await s.pg.exec(`insert into public.gr_places_use (day, kind, scope, n) values ((now() at time zone 'America/Los_Angeles')::date, 'now', 's:S2', 1)`);
+    await s.pg.exec('set role service_role');
+    const srv = { ...s, handler: async req => {
+      const r = await s.handler(req);
+      if (!old || r.status !== 429) return r;
+      const j = await r.json(); assert.equal(j.pday, today, 'the server says the day it counted'); delete j.pday;
+      return new Response(JSON.stringify(j), { status: 429, headers: { 'content-type': 'application/json' } });
+    } };
+    let clk = mid - 60000;
+    const gm = await app(srv, 'E2', { role: 'gm', clock: () => clk });
+    gm.ctx.grStart(); gm.ctx.grTabHtml(); await gm.idle();
+    // 同じ日のうちに答えが来た：その日は「見る」を出さない
+    gm.ctx.grLoadPlaces('S2'); await gm.idle();
+    assert.equal(gm.S().now.S2.err, 'places_cap');
+    assert.ok(!/grLoadPlaces\('S2'\)/.test(gm.ctx.grPlacesHtml('S2')), 'the same day: no button (' + (old ? 'old server' : 'new') + ')');
+    // 23:59:59 に頼み、答えは 0:00:01 に届く（頼んでいるあいだに日をまたぐ）
+    gm.ctx.renderPage('mypage'); gm.ctx.renderPage('meeting');
+    clk = mid - 1000;
+    gm.ctx.grLoadPlaces('S2');
+    clk = mid + 1000;
+    await gm.idle();
+    const e = gm.S().now.S2;
+    assert.ok(e && e.st === 'err' && e.err === 'places_cap', JSON.stringify(e));
+    assert.equal(e.pd, today, 'the day the server counted, not the day the answer arrived (' + (old ? 'old server: the day it was asked' : 'pday') + ')');
+    assert.equal(e.rd, today);
+    assert.equal(e.extra.pday, old ? undefined : today);
+    assert.match(gm.ctx.grPlacesHtml('S2'), /grLoadPlaces\('S2'\)/, 'already the new day: the button is back (before the fix it stayed hidden until ' + tomorrow + ' was over)');
+    // 1 分ごとの描き直しでも消える
+    gm.S().now.S2 = e; clk = mid + 60000;
+    gm.ctx.grPurgeNow();
+    assert.equal(gm.S().now.S2, undefined);
+  }
+  // 端末の日が変わったら（サーバーの日のほうが先に進んでいても）消す＝早いほう。押してもサーバーが上限なら Google を呼ばずに断る
+  {
+    const s = await server();
+    let clk = mid - 5000;
+    const gm = await app(s, 'E2', { role: 'gm', clock: () => clk });
+    gm.ctx.grStart(); gm.ctx.grTabHtml(); await gm.idle();
+    const put = (pd, rd, c = 'store') => { gm.S().now.S2 = { st: 'err', at: clk, pd, rd, data: null, err: 'places_cap', extra: { cap: c, max: 1 }, visit: gm.S().visit }; };
+    put(tomorrow, today);
+    assert.ok(!/grLoadPlaces\('S2'\)/.test(gm.ctx.grPlacesHtml('S2')), 'the device is still on the day it asked');
+    clk = mid + 1000; put(tomorrow, today);
+    assert.match(gm.ctx.grPlacesHtml('S2'), /grLoadPlaces\('S2'\)/, 'the device day changed');
+    // 月の上限：同じ月のうちは消さない・サーバーの月が前なら消す
+    if (today.slice(0, 7) === tomorrow.slice(0, 7)) { put(today, today, 'month'); assert.ok(!/grLoadPlaces\('S2'\)/.test(gm.ctx.grPlacesHtml('S2')), 'month cap, same month'); }
+    put('2000-01-31', tomorrow, 'month');
+    assert.match(gm.ctx.grPlacesHtml('S2'), /grLoadPlaces\('S2'\)/, 'month cap, the server month is over');
+  }
 });
