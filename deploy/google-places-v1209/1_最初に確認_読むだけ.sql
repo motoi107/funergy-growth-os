@@ -24,8 +24,8 @@ union all select '4. Google の店を結んだ店のうち、店舗マスター�
       || case when exists (select 1 from sc where column_name = 'data') then ' and coalesce(st.data->>''_deleted'', '''') not in (''true'', ''1'')' else '' end
       || ')', false, false, '')))[1]::text, 'OK（無し）') end
 union all select '5. Head Chef の確かめ（wr_person_conf・wr_person_live）',
-  case when to_regprocedure('public.wr_person_conf(text)') is not null and to_regprocedure('public.wr_person_live(text)') is not null then 'OK（確かめた Head Chef は全店）'
-    else 'なし（Head Chef は自分の店だけになります・止めなくてよい）' end
+  case when to_regprocedure('public.wr_person_conf(text)') is not null and to_regprocedure('public.wr_person_live(text)') is not null then 'OK（G5 以上で確かめた Head Chef（Corporate Chef）は全店。G4 の Head Chef は配属の店だけ）'
+    else 'なし（Head Chef・Corporate Chef も配属の店だけになります・止めなくてよい）' end
 union all select '（参考）Google の店を結んだ店（店の ID だけ）',
   case when to_regclass('public.gr_places') is null then '—'
     else coalesce((xpath('/table/row/v/text()', query_to_xml('select coalesce(string_agg(store_id, '', '' order by store_id), ''まだ無し'') v from public.gr_places', false, false, '')))[1]::text, 'まだ無し') end

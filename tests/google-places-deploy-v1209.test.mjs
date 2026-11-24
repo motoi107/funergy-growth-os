@@ -195,8 +195,12 @@ test('the checks notice what they are meant to notice', async () => {
   assert.match((await P())('7.'), /^NG（v1157 か ②/, 'the ② SQL again');
   await pg.exec(SQL2B);
   assert.equal((await P())('7.'), 'OK');
+  await pg.exec('drop function public.gr_fold(text)');
+  assert.match((await P())('7.'), /^NG/, 'the okina folding is missing');
+  await pg.exec(SQL2B);
+  assert.equal((await P())('7.'), 'OK');
   await pg.exec('drop function public.gr_places_linked(jsonb)');
-  assert.match((await P())('4.'), /^NG（35 個）/);
+  assert.match((await P())('4.'), /^NG（36 個）/);
   await pg.exec(SQL); await pg.exec(SQL2B);
   await pg.exec('alter table public.gr_settings drop column search_month_max');
   assert.match((await P())('1.'), /^NG/);

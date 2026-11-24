@@ -38,6 +38,7 @@ function fakeGoogle() {
     const u = new URL(String(url)); g.calls.push(u.hostname + u.pathname);
     g.heads.push(Object.fromEntries(Object.entries((init && init.headers) || {}).map(([k, v]) => [k.toLowerCase(), v])));
     const m = /^\/v1\/places\/(.+)$/.exec(u.pathname);
+    if (g.status && u.hostname === 'places.googleapis.com') return new Response('{}', { status: g.status });
     if (u.hostname === 'places.googleapis.com' && m && g.places[decodeURIComponent(m[1])]) return new Response(JSON.stringify(g.places[decodeURIComponent(m[1])]), { status: 200 });
     return new Response('{}', { status: 404 });
   };
@@ -566,7 +567,7 @@ test('v1209 (11/23): picking a place — the server checks the address; a name t
   assert.ok(gm.toasts.some(([k, m]) => k === 'error' && /999 Far Rd/.test(m)), JSON.stringify(gm.toasts));
   await s.pg.exec('reset role');
   assert.equal((await s.pg.query("select count(*)::int n from public.gr_places where store_id = 'S1'")).rows[0].n, 0);
-  // Google に聞いたのは結ぶ確かめの 3 回だけ（Place Details の確かめ・中身は残さない）
+  // Google に聞いたのは結ぶ確かめの 4 回だけ（取り消し・OK の押し直しの 2 回・住所が違う 1 回。Place Details の確かめ・中身は残さない）
   assert.equal(s.g.calls.filter(x => x.startsWith('places.googleapis.com/v1/places/')).length, 4, 'cancel + OK retry (2) + far = 4 checks');
   assert.deepEqual(gm.wrote, []);
 });
@@ -605,4 +606,28 @@ test('v1209 (11/23): KPI settings for GM — today and month with what is left, 
   crew.ctx.grStart(); crew.ctx.grTabHtml(); await crew.idle();
   h = crew.ctx.grTabHtml();
   assert.ok(!/S9|Google への問い合わせ/.test(h), 'counts and orphans are for GM and CEO');
+});
+
+test('v1209 (独立レビューの P3): a Google failure after the call was counted says so; when the store’s read for today is used up, no retry button', async () => {
+  const s = await server();
+  await s.pg.exec('update public.gr_settings set places_store_day_max = 1, places_day_max = 40, places_month_max = 900');
+  await s.pg.exec('set role service_role');
+  s.g.status = 403;
+  const gm = await app(s, 'E2', { role: 'gm' });
+  gm.ctx.grStart(); gm.ctx.grTabHtml(); await gm.idle();
+  gm.ctx.grLoadPlaces('S2'); await gm.idle();
+  let h = gm.ctx.grPlacesHtml('S2');
+  assert.match(h, /Google が断りました/);
+  assert.match(h, /この失敗も今日のこの店の 1 回に数えました。太平洋時間の 0 時/);
+  assert.ok(!/grLoadPlaces\('S2'\)/.test(h), 'no button that can only hit the cap');
+  // 店の上限が 3 回なら（2 回目のあと残り 1）、数えたと出してもう一度のボタンも出す
+  await s.pg.exec('reset role');
+  await s.pg.exec('update public.gr_settings set places_store_day_max = 3');
+  await s.pg.exec('set role service_role');
+  gm.ctx.renderPage('mypage'); gm.ctx.renderPage('meeting');
+  gm.ctx.grLoadPlaces('S2'); await gm.idle();
+  h = gm.ctx.grPlacesHtml('S2');
+  assert.match(h, /この失敗も今日の回数に数えました。/);
+  assert.match(h, /grLoadPlaces\('S2'\)/);
+  assert.equal(s.g.calls.filter(x => x.startsWith('places.googleapis.com')).length, 2);
 });

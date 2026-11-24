@@ -122761,7 +122761,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   function mk(code, status, extra){
     var e = new Error(errText(code, status, extra)); e.code = code; e.status = status || 0;
     if (extra && typeof extra === 'object') {
-      var x = { cap:extra.cap, max:extra.max };
+      var x = { cap:extra.cap, max:extra.max, counted:extra.counted === true, store_left:Number.isInteger(extra.store_left) ? extra.store_left : null };
       ['reason','name','address'].forEach(function(k){ if (typeof extra[k] === 'string' && extra[k].length <= 300) x[k] = extra[k]; });
       e.extra = x;
     } else e.extra = null;
@@ -122995,8 +122995,15 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     if (e && e.st === 'ok' && d && d.unconfirmed) return '<div class="k2-note">' + errText('place_unconfirmed') + '</div>';
     if (e && e.st === 'ok') return '<div class="k2-note">' + T('Google マップの店がまだ選ばれていません（GM・CEO が KPI設定 › Google の口コミ で選びます）','No Google Maps place is picked yet (GM or CEO picks it in KPI settings › Google reviews)') + '</div>';
     if (e && e.st === 'loading') return '<div class="k2-note">' + T('Google から取っています…','Reading from Google…') + '</div>';
-    if (e && e.st === 'err') return '<div class="k2-note" style="color:var(--red)">' + esc(errText(e.err, 0, e.extra)) + '</div>'
-      + (e.err === 'places_cap' || e.err === 'forbidden_store' ? '' : '<div style="margin-top:4px">' + btn + '</div>');
+    if (e && e.st === 'err') {
+      /* v1209（独立レビューの P3）：Google に問い合わせたあとの失敗も今日の回数に数える（サーバーが counted を返す）。1 店 1 日の分を使い切ったらもう一度のボタンを出さない */
+      var ex = e.extra || {}, used = ex.counted === true, none = used && ex.store_left === 0;
+      return '<div class="k2-note" style="color:var(--red)">' + esc(errText(e.err, 0, e.extra)) + '</div>'
+        + (used ? '<div class="k2-note">' + (none
+            ? T('Google に問い合わせたので、この失敗も今日のこの店の 1 回に数えました。太平洋時間の 0 時（ハワイの 21〜22 時）まで取り直せません。','Google was asked, so this failure used today’s read for this store. It cannot be retried until midnight Pacific time.')
+            : T('Google に問い合わせたので、この失敗も今日の回数に数えました。','Google was asked, so this failure counted toward today’s limit.')) + '</div>' : '')
+        + (e.err === 'places_cap' || e.err === 'forbidden_store' || none ? '' : '<div style="margin-top:4px">' + btn + '</div>');
+    }
     if (placeKnown(sid) === false) return '<div class="k2-note">' + T('Google マップの店がまだ選ばれていません（GM・CEO が KPI設定 › Google の口コミ で選びます）','No Google Maps place is picked yet (GM or CEO picks it in KPI settings › Google reviews)') + '</div>';
     return btn + '<div class="k2-note" style="margin-top:4px">' + T('押したときだけ Google から取ります（1 回ごとに Google の料金の対象・1 店 1 日の上限あり）。この画面を見ているあいだだけ出します（Google の決まりで残せません）','Read from Google only when pressed (each read counts toward Google’s billing; daily limit per store). Shown only while you stay on this page (Google does not allow keeping it)') + '</div>';
   }
@@ -123363,6 +123370,8 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       var x = e.extra || {};
       var why = x.reason === 'unsure'
         ? T('この店は看板が無く、Google マップに無いことがある店です。同じ建物のほかの店を選んでいないか確かめてください。','This store has no sign and may not be on Google Maps. Make sure this is not another store in the same building.')
+        : x.reason === 'shared'
+        ? T('住所と名前は合っていますが、Google の店の名前に同じ建物のほかの店の名前も入っています。この店だけの Google の店か確かめてください。','The address and name match, but the Google place name also contains another store in the same building. Make sure this Google place is only for this store.')
         : T('住所は合っていますが、名前がこの店と合いません（同じ建物のほかの店かもしれません）。','The address matches, but the name does not match this store (it may be another store in the same building).');
       var msg = why + '\n\n' + T('Google の店：','Google place: ') + (x.name || '—') + '\n' + T('住所：','Address: ') + (x.address || '—') + '\n\n'
         + T('この店で合っていますか？「OK」で結びます（手で確かめた記録が残ります）','Is this the right place? OK links it (recorded as checked by hand)');

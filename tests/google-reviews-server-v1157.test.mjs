@@ -104,7 +104,8 @@ async function setup({ sql = true, env = {}, whoami, realWho = false, caps = fal
   if (sql === true) {
     await pg.exec(SQL1215);
     // 合成の店の住所の目安（偽の Google の店 1 Fake St・Fake Ramen One）
-    await pg.exec(`insert into public.gr_place_hint (store_id, addr, names) values ('S1', '{1,fake}', '{fake}'), ('S2', '{1,fake}', '{fake}')`);
+    // 2 店は同じ住所なので名前を分ける（同じ名前だと「同じ住所のほかの店の名前も入った店」＝手で確かめる）
+    await pg.exec(`insert into public.gr_place_hint (store_id, addr, names) values ('S1', '{1,fake}', '{fake ramen}'), ('S2', '{1,fake}', '{fake two}')`);
   }
   // v1157 の試験は回数の上限に当たらないように大きくする（上限そのものは v1209 の試験）
   if (sql && sql !== 'v1157' && !caps) await pg.exec(`update public.gr_settings set places_day_max = 5000, places_store_day_max = 5000, places_person_day_max = 5000,
@@ -147,7 +148,7 @@ test('the SQL runs twice; the public keys cannot read any table or run any funct
   assert.deepEqual(tables, ['gr_bp', 'gr_bp_loc', 'gr_oauth', 'gr_place_hint', 'gr_places', 'gr_places_use', 'gr_reviews', 'gr_runs', 'gr_settings']);
   for (const t of tables) assert.equal((await pg.query(`select relrowsecurity r from pg_class where relname=$1`, [t])).rows[0].r, true, t);
   const fns = (await pg.query(`select proname, prosecdef from pg_proc p join pg_namespace n on n.oid=p.pronamespace where nspname='public' and proname like 'gr\\_%'`)).rows;
-  assert.equal(fns.length, 36, 'v1157 の 21 ＋ v1209 の 5 ＋ 11/23 の 10');
+  assert.equal(fns.length, 37, 'v1157 の 21 ＋ v1209 の 5 ＋ 11/23 の 11');
   assert.ok(fns.every(f => !f.prosecdef), 'security invoker');
   for (const role of ['anon', 'authenticated']) {
     await pg.exec(`set role ${role}`);
@@ -155,9 +156,9 @@ test('the SQL runs twice; the public keys cannot read any table or run any funct
     for (const f of ['gr_kpi', 'gr_status', 'gr_worker_key', 'gr_bp_creds', 'gr_reviews_put']) await assert.rejects(pg.query(`select public.${f}('{}'::jsonb)`), /permission denied/, role + ' ' + f);
     await pg.exec('reset role');
   }
-  // 36 の関数のどれも、公開の鍵では呼べない（PUBLIC も）・サーバーの鍵だけ
+  // 37 の関数のどれも、公開の鍵では呼べない（PUBLIC も）・サーバーの鍵だけ
   const sigs = (await pg.query(`select p.oid::regprocedure::text sig from pg_proc p join pg_namespace n on n.oid=p.pronamespace where nspname='public' and proname like 'gr\\_%'`)).rows.map(r => r.sig);
-  assert.equal(sigs.length, 36);
+  assert.equal(sigs.length, 37);
   for (const sig of sigs) {
     for (const role of ['anon', 'authenticated']) assert.equal((await pg.query(`select has_function_privilege($1, $2, 'execute') v`, [role, sig])).rows[0].v, false, role + ' ' + sig);
     assert.equal((await pg.query(`select has_function_privilege('service_role', $1, 'execute') v`, [sig])).rows[0].v, true, sig);

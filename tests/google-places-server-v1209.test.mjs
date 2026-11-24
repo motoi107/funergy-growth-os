@@ -90,9 +90,10 @@ async function setup({ sql = true, env = {}, caps = {}, stores = null, chef = tr
   await pg.exec(SQL);
   if (sql !== 'v1157') await pg.exec(SQL1209);
   if (sql === true) await pg.exec(SQL1215);
-  // 合成の店の住所の目安（偽の Google の住所 1 Fake St … 96826・名前 Place ____）
+  // 合成の店の住所の目安（偽の Google の住所 1 Fake St … 96826・名前 Place ____）。3 店は同じ住所なので、名前は店ごとに分ける
+  // （どの店も「place」だと、同じ住所のほかの店の名前も入った Google の店＝shared になる）
   if (sql === true && hints) for (const id of ['S1', 'S2', 'S3']) {
-    await pg.query(`insert into public.gr_place_hint (store_id, addr, names) values ($1, '{1,fake,96826}', '{place}')`, [id]);
+    await pg.query(`insert into public.gr_place_hint (store_id, addr, names) values ($1, '{1,fake,96826}', $2)`, [id, ['Place ' + PID[id].slice(-4)]]);
   }
   const set = Object.entries(caps);
   if (set.length && sql !== 'v1157') await pg.exec(`update public.gr_settings set ${set.map(([k, v]) => `${k} = ${Number(v)}`).join(', ')}`);
@@ -276,6 +277,8 @@ test('only on request, only linked stores, only the needed fields; Google’s or
     assert.equal(d.status, 502); assert.equal(d.body.error, 'places_denied');
     assert.ok(!d.text.includes(KEY));
     assert.equal(await s.used(), 2, 'a refused call is still counted');
+    // 画面が「今日の回数に数えました」と出せるように counted と店の残りを返す（独立レビューの P3）
+    assert.equal(d.body.counted, true); assert.ok(Number.isInteger(d.body.store_left), JSON.stringify(d.body));
     s.g.status = 429;
     assert.equal((await s.call('E2', { action: 'places_now', store: 'S1' })).body.error, 'places_busy');
     s.g.status = 500;
@@ -425,7 +428,7 @@ test('linking checks Google’s address against the store’s address hint (no h
   }
   assert.equal((await s.sqlq('select count(*)::int n from public.gr_places where store_id = $1', ['S2']))[0].n, 0);
   // 同じ Google の店を 2 つの店に確かめない（同じ建物の 2 店など）
-  const taken = await s.call('E2', { action: 'places_set', store: 'S3', place_id: PID.S1 });
+  const taken = await s.call('E2', { action: 'places_set', store: 'S3', place_id: PID.S1, confirm: true });
   assert.equal(taken.status, 409); assert.equal(taken.body.error, 'place_taken');
   // 外す
   assert.deepEqual(await s.ok('E2', { action: 'places_set', store: 'S1', place_id: null }), { store: 'S1', place: false });
@@ -444,7 +447,11 @@ test('when the name does not match or the store is marked unsure (same building 
     const ok = await s.ok('E1', { action: 'places_set', store, place_id: PIDX[store], confirm: true });
     assert.equal(ok.how, 'manual');
   }
-  const admin = (await s.ok('E2', { action: 'status' })).places_admin;
+  // 同じ住所のほかの店の名前も入っている Google の店は shared（画面は別の文を出す）
+  await s.sqlq(`update public.gr_place_hint set names = '{toriton,"Place 0001"}' where store_id = 'S3'`);
+  const sh = await s.call('E2', { action: 'places_set', store: 'S1', place_id: PID.S1 });
+  assert.equal(sh.status, 409, sh.text); assert.equal(sh.body.error, 'need_confirm'); assert.equal(sh.body.reason, 'shared');
+  const admin =(await s.ok('E2', { action: 'status' })).places_admin;
   const by = Object.fromEntries(admin.map(x => [x.store, x]));
   assert.equal(by.S2.how, 'manual'); assert.equal(by.S2.unsure, true); assert.equal(by.S2.by, 'Person E1');
   assert.equal(by.S1.linked, false); assert.equal(by.S1.hint, true);
@@ -538,4 +545,54 @@ test('the address hint check: real-store hints match a Google-style address and 
   assert.equal((await conf('F04-A', 'Totoya Aiea', '99-115 Aiea Heights Dr, Aiea, HI 96701, USA')).how, 'address');
   assert.equal((await conf('F04-P', 'Totoya Piikoi', '9436 Piikoi St, Honolulu, HI 96814, USA')).error, 'address_mismatch', 'a number must match as a whole word');
   assert.equal((await conf('F06', 'LaLa', '436 Piikoi St, Honolulu, HI 96814, USA')).reason, 'unsure', 'LaLa is checked by hand');
+  // ハワイ語の ʻokina・カハコーの付いた住所も同じ住所（Google は「Piʻikoi」「ʻAiea」と返すことがある）
+  assert.equal((await conf('F04-P', 'Totoya Piʻikoi', '436 Piʻikoi St, Honolulu, HI 96814, USA')).how, 'address', 'okina in the street name');
+  assert.equal((await conf('F04-P', 'Totoya', '436 Pi‘ikoi St, Honolulu, HI 96814, USA')).how, 'address', 'left quote as okina');
+  assert.equal((await conf('F04-A', 'Totoya ʻAiea', '99-115 ʻAiea Heights Dr, ʻAiea, HI 96701, USA')).how, 'address', 'okina at the start');
+  assert.equal((await s.sqlq(`select public.gr_norm_addr('Kalākaua Ave') v`))[0].v, ' kalakaua ave ', 'kahakō is folded');
+  // 同じ建物のほかの店の名前も入った Google の店（2 つの店を 1 つにした店など）は自動で決めない
+  const both = await conf('F02', 'ToriTon & Tenkichi', '2334 S King St, Honolulu, HI 96826, USA');
+  assert.equal(both.need, 'manual'); assert.equal(both.reason, 'shared');
+  assert.equal((await conf('F02', 'ToriTon & Tenkichi', '2334 S King St, Honolulu, HI 96826, USA', true)).how, 'manual', 'GM・CEO can still confirm by hand');
+});
+
+test('status: only GM・CEO get the per-store result of the last run; others get the time and whether their own stores were all read (独立レビューの P3)', async () => {
+  const s = await setup();
+  await s.sqlq(`insert into public.gr_runs (kind, ok, info) values ('daily', false,
+    '{"stores":[{"store":"S1","ok":true,"put":2},{"store":"S2","ok":false,"error":"bp_failed"},{"store":"S3","ok":true,"put":1}]}'::jsonb)`);
+  const gm = await s.ok('E2', { action: 'status' });
+  assert.equal(gm.run.ok, false);
+  assert.deepEqual(gm.run.info.stores.map(x => x.store), ['S1', 'S2', 'S3'], 'GM sees every store');
+  // E8（G4 以下・配属は S1）：S1 は取れたので ok・ほかの店の結果と理由は出さない
+  const g4 = await s.ok('E8', { action: 'status' });
+  assert.deepEqual(Object.keys(g4.run).sort(), ['at', 'kind', 'ok']);
+  assert.equal(g4.run.ok, true);
+  assert.ok(!JSON.stringify(g4).includes('bp_failed'), 'another store’s error is not shown');
+  // E5（AM・担当は S1 と S2）：S2 が取れていないので false
+  const am = await s.ok('E5', { action: 'status' });
+  assert.deepEqual(Object.keys(am.run).sort(), ['at', 'kind', 'ok']);
+  assert.equal(am.run.ok, false);
+  assert.ok(!JSON.stringify(am).includes('bp_failed'));
+});
+
+test('only a missing function or table means “SQL not installed”; any other database error is a plain server error and nothing is logged about it', async () => {
+  const errs = [];
+  const orig = console.error; console.error = (...a) => errs.push(a.join(' '));
+  try {
+    const run = async (err) => {
+      const handler = createHandler({ env: k => ({ SUPABASE_URL: 'https://db.test', SUPABASE_SERVICE_ROLE_KEY: 'service', SUPABASE_ANON_KEY: 'anon', GOOGLE_PLACES_API_KEY: KEY })[k],
+        db: { async rpc() { throw err; } }, fetch: async () => { throw new Error('no google'); }, now: () => NOW0,
+        whoami: async () => meOf('E2') });
+      const r = await handler(new Request('https://fn.test/google-reviews', { method: 'POST', headers: { 'content-type': 'application/json', origin: 'https://funergy-plus.com' },
+        body: JSON.stringify({ pin_session: 'pin-E2', action: 'kpi' }) }));
+      return [r.status, (await r.json()).error];
+    };
+    assert.deepEqual(await run(new Error('function public.gr_kpi(jsonb) does not exist')), [503, 'gr_missing']);
+    assert.deepEqual(await run(new Error('relation "public.gr_places" does not exist')), [503, 'gr_missing']);
+    assert.deepEqual(await run(Object.assign(new Error('Could not find the function public.gr_kpi(p) in the schema cache'), { status: 404 })), [503, 'gr_missing']);
+    // 前は名前に gr_ があるだけで「SQL がまだ」と出していた（独立レビューの P3）
+    assert.deepEqual(await run(new Error('duplicate key value violates unique constraint "gr_places_pkey"')), [500, 'server_error']);
+    assert.deepEqual(await run(new Error('canceling statement due to statement timeout in gr_kpi')), [500, 'server_error']);
+    assert.ok(!errs.join('\n').includes('gr_places_pkey'), 'only the first word goes to the log');
+  } finally { console.error = orig; }
 });

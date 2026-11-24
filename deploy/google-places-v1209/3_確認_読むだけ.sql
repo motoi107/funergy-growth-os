@@ -15,8 +15,8 @@ union all select '3. 公開の鍵（anon・authenticated）は回数の表を読
   case when to_regclass('public.gr_places_use') is null then 'NG'
     when exists (select 1 from unnest(array['anon','authenticated']) r(role), unnest(array['SELECT','INSERT','UPDATE','DELETE']) pr(priv)
       where has_table_privilege(r.role, 'public.gr_places_use', pr.priv)) then 'NG（Claude に）' else 'OK' end
-union all select '4. 関数 gr_* が 36 個・どれもサーバーの鍵で動く（security definer でない）',
-  case when (select count(*) from f) = 36 and not exists (select 1 from f where prosecdef) then 'OK'
+union all select '4. 関数 gr_* が 37 個・どれもサーバーの鍵で動く（security definer でない）',
+  case when (select count(*) from f) = 37 and not exists (select 1 from f where prosecdef) then 'OK'
     else 'NG（' || (select count(*) from f) || ' 個）' end
 union all select '5. 公開の鍵（anon・authenticated）は関数 gr_* を呼べない',
   case when exists (select 1 from f, unnest(array['anon','authenticated']) r(role) where has_function_privilege(r.role, f.oid, 'EXECUTE'))
@@ -28,7 +28,8 @@ union all select '7. 店を結ぶのは住所で確かめてから・Google を�
     when exists (select 1 from f where proname = 'gr_place_set' and pg_get_functiondef(f.oid) like '%use_confirm%')
      and exists (select 1 from f where proname = 'gr_place_of' and pg_get_functiondef(f.oid) like '%gr_place_ok%')
      and exists (select 1 from f where proname = 'gr_places_take' and pg_get_functiondef(f.oid) like '%not_confirmed%')
-     and exists (select 1 from f where proname = 'gr_place_confirm' and pg_get_functiondef(f.oid) like '%unknown_store%') then 'OK'
+     and exists (select 1 from f where proname = 'gr_place_confirm' and pg_get_functiondef(f.oid) like '%unknown_store%' and pg_get_functiondef(f.oid) like '%shared%')
+     and exists (select 1 from f where proname = 'gr_fold') then 'OK'
     else 'NG（v1157 か ② の SQL をあとで流した：2b をもう一度）' end
 union all select '8. Google の店を結んだ店はどれも店舗マスターにある',
   case when to_regprocedure('public.gr_store_known(jsonb)') is null then 'NG（② をもう一度）'

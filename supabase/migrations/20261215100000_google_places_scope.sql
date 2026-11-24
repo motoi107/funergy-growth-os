@@ -64,13 +64,18 @@ update public.gr_settings set places_store_day_max = 1 where id = 1 and places_s
 
 -- ---------------------------------------------------------------- 関数
 -- 文字を比べる形に（小文字・英数字とかな・漢字だけ）。住所は語の区切りを残す
+--   ハワイ語の ʻokina（ʻ ‘ ’ ' ` ʼ）は消し、カハコー（ā ē ī ō ū）は a e i o u に（Google は「Piʻikoi」と返すことがある）
+create or replace function public.gr_fold(t text) returns text
+language sql immutable security invoker set search_path = public, pg_temp as $$
+  select translate(lower(coalesce(t, '')), 'āēīōūĀĒĪŌŪʻʼ‘’''`', 'aeiouaeiou')
+$$;
 create or replace function public.gr_norm_addr(t text) returns text
 language sql immutable security invoker set search_path = public, pg_temp as $$
-  select ' ' || btrim(regexp_replace(lower(coalesce(t, '')), '[^a-z0-9぀-ヿ一-鿿]+', ' ', 'g')) || ' '
+  select ' ' || btrim(regexp_replace(public.gr_fold(t), '[^a-z0-9぀-ヿ一-鿿]+', ' ', 'g')) || ' '
 $$;
 create or replace function public.gr_norm_name(t text) returns text
 language sql immutable security invoker set search_path = public, pg_temp as $$
-  select regexp_replace(lower(coalesce(t, '')), '[^a-z0-9぀-ヿ一-鿿]+', '', 'g')
+  select regexp_replace(public.gr_fold(t), '[^a-z0-9぀-ヿ一-鿿]+', '', 'g')
 $$;
 
 -- 確かめた店か（place ID と確かめた place ID が同じ）
@@ -140,12 +145,13 @@ end $$;
 
 -- Google の店を確かめて結ぶ。g_name・g_addr は関数 google-reviews が Google から取った名前と住所（ここには残さない）
 --   住所の語がすべて合わない → address_mismatch（結ばない）
---   住所が合い、名前も合い、unsure でない → 住所で確かめた
---   住所が合い、名前が合わない・unsure → manual が true のときだけ手で確かめた。そうでなければ { ok:false, need:'manual' }
+--   住所が合い、名前も合い、unsure でなく、同じ住所のほかの店の名前を含まない → 住所で確かめた
+--   住所が合い、名前が合わない・unsure・同じ住所のほかの店の名前も含む（「ToriTon & Tenkichi」など）
+--     → manual が true のときだけ手で確かめた。そうでなければ { ok:false, need:'manual' }
 create or replace function public.gr_place_confirm(p jsonb) returns jsonb
 language plpgsql volatile security invoker set search_path = public, pg_temp as $$
 declare w jsonb := public.gr_who(p); s text := p->>'store'; pid text := p->>'place_id'; h public.gr_place_hint;
- a text := public.gr_norm_addr(p->>'g_addr'); n text := public.gr_norm_name(p->>'g_name'); addr_ok boolean; name_ok boolean; how text;
+ a text := public.gr_norm_addr(p->>'g_addr'); n text := public.gr_norm_name(p->>'g_name'); addr_ok boolean; name_ok boolean; sib boolean; how text;
 begin
  if s is null or s !~ '^[A-Za-z0-9_-]{1,30}$' then raise exception 'bad_value'; end if;
  if pid is null or length(pid) not between 10 and 300 or pid !~ '^[A-Za-z0-9_-]+$' then raise exception 'bad_value'; end if;
@@ -157,9 +163,13 @@ begin
  select bool_and(position(public.gr_norm_addr(t) in a) > 0) into addr_ok from unnest(h.addr) t;
  if not coalesce(addr_ok, false) then raise exception 'address_mismatch'; end if;
  select bool_or(length(public.gr_norm_name(t)) > 0 and position(public.gr_norm_name(t) in n) > 0) into name_ok from unnest(h.names) t;
- if coalesce(name_ok, false) and not h.unsure then how := 'address';
+ -- 同じ住所のほかの店（ToriTon と Tenkichi・Totoya Piikoi と LaLa）の名前も含む Google の店は、自動で決めない
+ select bool_or(length(public.gr_norm_name(t)) > 0 and position(public.gr_norm_name(t) in n) > 0) into sib
+   from public.gr_place_hint o, unnest(o.names) t where o.store_id <> s and o.addr = h.addr;
+ if coalesce(name_ok, false) and not h.unsure and not coalesce(sib, false) then how := 'address';
  elsif coalesce((p->>'manual')::boolean, false) then how := 'manual';
- else return jsonb_build_object('ok', false, 'need', 'manual', 'reason', case when h.unsure then 'unsure' else 'name' end);
+ else return jsonb_build_object('ok', false, 'need', 'manual', 'reason',
+        case when h.unsure then 'unsure' when coalesce(name_ok, false) and coalesce(sib, false) then 'shared' else 'name' end);
  end if;
  perform pg_advisory_xact_lock(hashtext('gr_place_confirm'));
  if exists (select 1 from public.gr_places x where x.store_id <> s and x.place_id = pid and public.gr_place_ok(x)) then raise exception 'place_taken'; end if;

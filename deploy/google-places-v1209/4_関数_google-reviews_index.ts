@@ -231,7 +231,8 @@ export function createHandler(deps) {
     const lang = b.lang === 'en' ? 'en' : 'ja';
     const r = await timed(PLACES + '/places/' + encodeURIComponent(pid) + '?' + new URLSearchParams({ languageCode: lang, regionCode: 'us' }).toString(),
       { headers: { 'X-Goog-Api-Key': key, 'X-Goog-FieldMask': NOW_MASK } }, 15000);
-    if (!r.ok || !obj(r.j)) throw E(placesErr(r.status), 502);
+    // 1 回分はもう数えた（Google の料金は呼んだ回数）。画面は「今日の分は使った」と出し、上限の中なら押し直せる
+    if (!r.ok || !obj(r.j)) throw E(placesErr(r.status), 502, { counted: true, ...(Number.isInteger(t.store_left) ? { store_left: t.store_left } : {}) });
     const p = r.j;
     // 口コミ：Google が関連性の順で返すもの（最大 5 件・新しい順ではない）。原文を先に（無ければ Google の訳）
     const reviews = (Array.isArray(p.reviews) ? p.reviews : []).slice(0, 5).map(x => {
@@ -307,7 +308,7 @@ export function createHandler(deps) {
       if (missing(e, /gr_place_confirm/)) throw E('gr_old', 503);
       throw e;
     }
-    if (obj(c) && c.ok === false && c.need === 'manual') throw E('need_confirm', 409, { reason: c.reason === 'unsure' ? 'unsure' : 'name', ...seen });
+    if (obj(c) && c.ok === false && c.need === 'manual') throw E('need_confirm', 409, { reason: ['unsure', 'shared'].includes(c.reason) ? c.reason : 'name', ...seen });
     return { store, place: true, confirmed: true, how: obj(c) && c.how === 'manual' ? 'manual' : 'address', ...seen };
   }
 
@@ -505,6 +506,12 @@ export function createHandler(deps) {
       const s = await scopeOf(a);
       if (s) { const r = {}; for (const id of Object.keys(st.stores)) if (s.has(id)) r[id] = st.stores[id]; st.stores = r; }
     }
+    // 最後の取り込みの店ごとの結果は GM・CEO だけ。ほかの人には時刻と、見られる店がどれも取れたかだけ
+    if (!mgr && obj(st) && obj(st.run)) {
+      const s = await scopeOf(a), xs = obj(st.run.info) && Array.isArray(st.run.info.stores) ? st.run.info.stores : [];
+      const mine = xs.filter(x => obj(x) && typeof x.store === 'string' && (!s || s.has(x.store)));
+      st.run = { at: st.run.at, kind: st.run.kind, ok: mine.every(x => x.ok === true) };
+    }
     return st;
   }
   // v1209：Google の店を結んだ店（会議のカードで「見る」を出すため・place ID は出さない）。SQL が v1157 のままなら出さない
@@ -570,7 +577,8 @@ export function createHandler(deps) {
       if (e && e.gr) return json({ error: e.code, ...(e.extra || {}) }, e.status);
       const code0 = String((e && e.message) || 'error').split(/[\s:]/)[0];
       if (ERR[code0]) return json({ error: code0 }, ERR[code0]);
-      if (/gr_[a-z_]+|function public\.gr_|relation .*gr_/.test(String(e && e.message || '')) || (e && e.status === 404)) return json({ error: 'gr_missing' }, 503);
+      // SQL がまだ・前の版のとき（関数・表が無い）だけ。ほかのエラーは server_error（中身はログにも出さない）
+      if ((e && e.status === 404) || /(function|relation) [^ ]*gr_[a-z_]+[^ ]* does not exist|Could not find the function public\.gr_/.test(String(e && e.message || ''))) return json({ error: 'gr_missing' }, 503);
       console.error('google-reviews', code0.slice(0, 80));
       return json({ error: 'server_error' }, 500);
     }
