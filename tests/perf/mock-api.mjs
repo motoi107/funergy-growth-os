@@ -4,6 +4,7 @@
 // rpc/app_state_index：key・updated_at・md5(value::text)・バイト数（v1098 の差分の取り込みが使う。HAS_INDEX=0 なら 404）
 import crypto from 'node:crypto';
 import { createHandler as createSecureState, csIsKey, hrIsKey } from '../../supabase/functions/secure-state/handler.mjs';
+import { createCsq4Db } from './csq4-db.mjs';
 // v1140：SS_REAL=1 のとき、本物の関数 secure-state（handler）をこの模擬サーバーの REST につなぐ（サーバーの鍵は SS_SERVICE）。
 // PIN のログインの印は人ごと（perf-session:<社員 ID>）・work-requests の whoami はその人を返す（live は false＝画面は今までどおり）。
 // RLS_CS=1 のとき、公開の鍵（アプリ）からは Career Score のキーを読めない・書けない（SQL 20261109090000 のまね）。
@@ -80,7 +81,7 @@ function finTs() { const d = new Date(); return d.toISOString().replace(/\.(\d{3
 
 export function createMock(data) {
   const T = {}; for (const [k, v] of Object.entries(data.tables)) T[k] = v.slice();
-  const opts = { hasIndex: process.env.HAS_INDEX !== '0', toastDelay: Number(process.env.TOAST_DELAY_MS || 1500), finGuard: process.env.FIN_GUARD !== '0', ssReal: process.env.SS_REAL === '1', rlsCs: process.env.RLS_CS === '1', rlsHr: process.env.RLS_HR === '1' };
+  const opts = { hasIndex: process.env.HAS_INDEX !== '0', toastDelay: Number(process.env.TOAST_DELAY_MS || 1500), finGuard: process.env.FIN_GUARD !== '0', ssReal: process.env.SS_REAL === '1', csq4: process.env.CSQ4_DB === '1', rlsCs: process.env.RLS_CS === '1', rlsHr: process.env.RLS_HR === '1' };
   const ss = { calls: 0, anonCs: 0, anonHr: 0 };
   // v1142：RLS_HR=1 は SQL 20261111090000 のあと（公開の鍵では採用・お悩み相談室のキーを読めない・書けない）
   const hid = k => (opts.rlsCs && csIsKey(k)) || (opts.rlsHr && hrIsKey(k));
@@ -202,6 +203,7 @@ export function createMock(data) {
     return { emp: String(e.id), name: e.name, role: WR_ROLE[role] || 'staff', grade: Math.min(grade, 6), stores: [store, ...(d.support || [])].filter(Boolean), am_stores: am, confirmed: true };
   }
   let ssHandler = null;
+  let csq4 = null;   // v1208：CSQ4_DB=1 のとき、初めて使うときに作る
   function secureState(body) {
     if (!ssHandler) ssHandler = createSecureState({ env: k => ({ SUPABASE_URL: 'https://mock.local', SUPABASE_SERVICE_ROLE_KEY: SS_SERVICE, SUPABASE_ANON_KEY: 'mock-anon' }[k]),
       fetch: async (url, opt = {}) => {
@@ -209,6 +211,8 @@ export function createMock(data) {
         let r;
         if (u.pathname === '/functions/v1/work-requests') { const me = whoami(JSON.parse(opt.body || '{}').pin_session); r = me ? json(200, { me, live: false, fn: 3 }) : json(401, { error: 'unauthorized' }); }
         else if (u.pathname === '/auth/v1/user') r = json(401, { msg: 'no email login in the mock' });
+        // v1208：CSQ4_DB=1 は Career Score 2026 Q4 の表と関数（csq4_*）を本物の SQL（PGlite）で答える（サーバーの鍵だけ）
+        else if (opts.csq4 && /^\/rest\/v1\/(rpc\/)?csq4_/.test(u.pathname) && h['apikey'] === SS_SERVICE) { if (!csq4) csq4 = createCsq4Db(); r = await (await csq4).handle((opt.method || 'GET').toUpperCase(), u, opt.body || ''); }
         else r = handle((opt.method || 'GET').toUpperCase(), u, h, opt.body || '');
         const st = r.status, nob = st === 204 || st === 205 || st === 304 || r.body === '' || r.body == null;
         return new Response(nob ? null : r.body, { status: st === 204 && !nob ? 200 : st, headers: r.headers || {} });
@@ -234,5 +238,5 @@ export function createMock(data) {
       const f = u.pathname.match(/^\/functions\/v1\/([\w-]+)$/); if (f) return fn(f[1], body);
       return json(404, { error: 'nf' });
   }
-  return { T, fin, ss, handle };
+  return { T, fin, ss, handle, csq4Stats: async () => (csq4 ? (await csq4).stats : null) };
 }

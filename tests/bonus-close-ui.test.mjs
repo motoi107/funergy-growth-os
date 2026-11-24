@@ -722,3 +722,55 @@ test('the heal on load decides after reading the cloud row: a v1108 re-lock or a
     assert.deepEqual([run(c, '_bc.q'), run(c, '_bc.dirty'), run(c, '_bc.load'), run(c, '_bc.seq')], ['2026-Q2', true, 'ok', seq]);
   }
 });
+
+// Codex #215 P2-2：2026 Q4 からの ① は新しい Career Score（FUNERGY_CS4.bonusRow）。締めの前の読み直し（kevLockPull）は、
+// 2 分の期限の内でも新しい Career Score を読み直し、読めなければ締めない。ほかの端末の第 2 版で点が変わったら保存しない。
+// ここでは 2026 Q3 の会社を使い、FUNERGY_CS4 の代わり（bonusQ が Q を返す）で ① を新しい Career Score の式にする。
+function cs4Fake(c) {
+  vm.runInContext(`var CS4F = { rev:{}, n:0, res:true, next:null };
+    window.FUNERGY_CS4 = {
+      bonusQ:function(q){ return q === '${Q}'; },
+      bonusRow:function(e, q){ var r = CS4F.rev[e.id] || 1; var sc = r === 1 ? 75 : 81; return { ok:true, exact:sc + '/1', score:sc, base:75, date:'2026-11-2' + r, rev:r, id:100 + EMPS.indexOf(e), system:'G', grade:'G3', type:'Kitchen中心' }; },
+      bonusRefresh:function(q){ CS4F.n++; if (CS4F.next) { CS4F.next(); CS4F.next = null; } return Promise.resolve(CS4F.res); }
+    };`, c);
+}
+test('Codex #215 P2-2: the close re-reads the new Career Score first (even within the time limit); a newer version or a failed read saves nothing; the saved snapshot has the id / version / total / base it used and is not rewritten later', async () => {
+  const srv = await server();
+  const c = co(srv);
+  cs4Fake(c);
+  vm.runInContext(`function pullOpKey(){ return Promise.resolve(true); }`, c);
+  await load(c);
+  const t0 = totalsBc(c);
+  assert.equal(t0.nBlocked, 0, 'every ① is read from the new Career Score');
+  const mia = row(t0, 'mia');
+  const c0 = mia.b.segs.find(x => x.items && x.items.c).items.c;
+  assert.equal(c0.total.src, 'cs4'); assert.equal(c0.total.cs4.rev, 1); assert.equal(c0.coef, 1);
+  // ほかの端末で Mia の第 2 版が確定・公開された（この端末の写しは期限の内）→ 読み直しで見つけて保存しない
+  vm.runInContext(`CS4F.next = function(){ CS4F.rev.mia = 2; };`, c);
+  assert.equal(await runP(c, `bcSaveVersion('${Q}','provisional')`), false);
+  assert.equal(run(c, 'CS4F.n'), 1, 'the new Career Score was re-read before saving');
+  assert.match(c.TOASTS.map(x => x[0]).join('|'), /ほかの端末で評価・設定・原資などが変わっていたため、保存していません/);
+  assert.equal(state(c).k, 'draft', 'no version on the server');
+  // 読み直しに失敗（通信・時間切れ・権限）→ 保存しない
+  vm.runInContext(`CS4F.res = false;`, c);
+  assert.equal(await runP(c, `bcSaveVersion('${Q}','provisional')`), false);
+  assert.match(lastToast(c), /読み切れなかった/);
+  assert.equal(state(c).k, 'draft');
+  // 読めて変わっていない → 保存（毎回読み直す）
+  vm.runInContext(`CS4F.res = true;`, c);
+  const n0 = run(c, 'CS4F.n');
+  assert.equal(await runP(c, `bcSaveVersion('${Q}','provisional')`), true, lastToast(c));
+  assert.equal(run(c, 'CS4F.n'), n0 + 1, 're-read again on this press');
+  assert.equal(state(c).k, 'prov');
+  // 保存した版の中身：計算に使った評価の id・版・総合点・基準点と同じ
+  const v1 = await srv.direct('gm', { action: 'version', quarter: Q, ver: 1 });
+  const snapMia = JSON.stringify(v1).match(/"cs4":\{"id":\d+,"rev":2[^}]*\}/);
+  assert.ok(snapMia, 'Mia: the version 2 that was read');
+  const txt = JSON.stringify(v1);
+  assert.match(txt, /"exact":"81\/1"/); assert.match(txt, /"bp":75/);
+  // あとでさらに新しい版が出ても、保存した版（とその前の締め）は書き換えない
+  vm.runInContext(`CS4F.rev.mia = 3;`, c);
+  await load(c);
+  const v1b = await srv.direct('gm', { action: 'version', quarter: Q, ver: 1 });
+  assert.equal(JSON.stringify(v1b.snap || v1b), JSON.stringify(v1.snap || v1), 'the saved version is unchanged');
+});
