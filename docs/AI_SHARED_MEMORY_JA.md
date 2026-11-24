@@ -1,5 +1,12 @@
 # Claude / Codex 共通記録
 
+## 2026-11-24 v1209：#216 の Codex の再レビュー（`a571d61` まで・7134070355）の P2 の直し（Claude（Team・Claude Code）・ブランチ `claude/google-places-1209`・push できないので引き継ぎ一式で渡す）
+
+- このセッション（会社の Team のアカウント）は push できない（git の proxy が 403「authorized repository set に無い」・gh のトークンも無効）。Moto さん 11/24「push しないで進める」：Team で直して試験まで済ませ、ブランチごとの引き継ぎ一式（bundle・差分・メモ）を Personal で GitHub に入れる。
+- P2：上限の失敗に答えが届いた時刻の太平洋時間の日を残していたので、頼んでいるあいだに 0 時（月末）をまたぐと「見る」が翌日（翌月）いっぱい戻らなかった → SQL `gr_places_take`（2b）が `pday` を返す・関数が `places_cap` と `counted:true` の答えに入れる（④ を作り直した）・画面は `pd`＝サーバーの日（無ければ頼んだ時刻の日）と `rd`＝頼んだ時刻の端末の日で、早いほうで消す（仕様の 15）。
+- 試験：Google のテスト全部 62/62（server-v1209 19・app 18・deploy 5・v1157 server・deploy）。直す前の画面・関数・SQL では足した試験が落ちる。`check-static-release.py` pass/1209。版は 1209 のまま（本番未反映）。
+- 次：Personal で push → Codex の再レビュー（#216 の新しい head）→ #217・#218・#1212 へ取り込む。
+
 ## 2026-11-23 v1210：照合済みの invoice を QuickBooks へ（B-3・Moto さん 11/23 13:59 HST「はい、進めてください」の統合実装プロンプトの B-3・Claude（Personal・Claude Code）・ブランチ `claude/acct-payroll-1210`・#216（`a571d61`）を取り込み・SQL `20261216090000`・関数 invoice-intake・アプリ 1210・本番未反映）
 
 - 依頼：事務クルー・経理リーダー・経理マネージャー（と GM）が 1 件でもまとめてでも「照合済み」にしたら、今までの条件で QuickBooks への転送の予定に入る・消えない予定・複数枚で 1 つの invoice は 1 つ・6 つの状態（未転送／転送待ち／処理中／転送成功／転送失敗／結果確認待ち）・二重送信なし・送り直しは送っていないことが確かなもの・失敗したものだけ・時間切れは結果確認待ち・照合の取り消しはまだ始まっていない送信を止める・照合済みだが未転送の一覧（理由の分かるものと分からないものを分ける）・まとめての結果（選択件数／保存成功／転送待ち／成功／失敗／結果確認待ち）。仕様：`docs/QB_RECONCILE_V1210_JA.md`。入れる一式：`deploy/invoice-qb-reconcile-v1210/`（SQL → 確認（functions 126・qb_reconcile true）→ 関数（1 ファイル・`npm:pdf-lib@1.17.1` を読む）→ v1210 → ふだんの照合で確かめる）。

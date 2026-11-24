@@ -204,8 +204,10 @@ begin
    'day_ceiling', c.places_day_max, 'month_ceiling', c.places_month_max);
 end $$;
 
--- Google を呼ぶ前に 1 回分を取る。上限なら { ok:false, cap, max } で何も数えない
+-- Google を呼ぶ前に 1 回分を取る。上限なら { ok:false, cap, max, pday } で何も数えない
 --   kind 'now'：店の評価と口コミ（確かめた店だけ）／'search'：店を探す・確かめるときの住所（GM・CEO）
+-- #216 の Codex（7134070355）の P2：断ったとき・数えたときに、数えた太平洋時間の日（'pday'・YYYY-MM-DD）も返す。
+-- 画面は答えが届いた時刻ではなくこの日で「上限の失敗」を消す（頼んでいるあいだに日・月をまたいでも、翌日まで残らない）。
 create or replace function public.gr_places_take(p jsonb) returns jsonb
 language plpgsql volatile security invoker set search_path = public, pg_temp as $$
 declare k text := p->>'kind'; e text := p->>'emp'; s text := p->>'store'; c public.gr_settings; pl public.gr_places; cap jsonb;
@@ -230,14 +232,14 @@ begin
    dmax := c.search_day_max; mmax := c.search_month_max;
  end if;
  select coalesce(sum(u.n), 0) into mn from public.gr_places_use u where u.kind = k and u.scope = 'all' and u.day between m0 and d;
- if mn >= mmax then return jsonb_build_object('ok', false, 'cap', 'month', 'max', mmax); end if;
+ if mn >= mmax then return jsonb_build_object('ok', false, 'cap', 'month', 'max', mmax, 'pday', d::text); end if;
  select coalesce(sum(u.n), 0) into dn from public.gr_places_use u where u.kind = k and u.scope = 'all' and u.day = d;
- if dn >= dmax then return jsonb_build_object('ok', false, 'cap', 'day', 'max', dmax); end if;
+ if dn >= dmax then return jsonb_build_object('ok', false, 'cap', 'day', 'max', dmax, 'pday', d::text); end if;
  if k = 'now' then
    select coalesce(sum(u.n), 0) into sn from public.gr_places_use u where u.kind = k and u.scope = 's:' || s and u.day = d;
-   if sn >= c.places_store_day_max then return jsonb_build_object('ok', false, 'cap', 'store', 'max', c.places_store_day_max); end if;
+   if sn >= c.places_store_day_max then return jsonb_build_object('ok', false, 'cap', 'store', 'max', c.places_store_day_max, 'pday', d::text); end if;
    select coalesce(sum(u.n), 0) into pn from public.gr_places_use u where u.kind = k and u.scope = 'p:' || e and u.day = d;
-   if pn >= c.places_person_day_max then return jsonb_build_object('ok', false, 'cap', 'person', 'max', c.places_person_day_max); end if;
+   if pn >= c.places_person_day_max then return jsonb_build_object('ok', false, 'cap', 'person', 'max', c.places_person_day_max, 'pday', d::text); end if;
    insert into public.gr_places_use (day, kind, scope, n) values (d, k, 's:' || s, 1), (d, k, 'p:' || e, 1)
      on conflict (day, kind, scope) do update set n = public.gr_places_use.n + 1;
  end if;
@@ -245,7 +247,7 @@ begin
    on conflict (day, kind, scope) do update set n = public.gr_places_use.n + 1;
  delete from public.gr_places_use where day < d - 70;
  return jsonb_build_object('ok', true, 'day', dn + 1, 'day_max', dmax, 'month', mn + 1, 'month_max', mmax,
-   'store_left', case when k = 'now' then greatest(c.places_store_day_max - sn - 1, 0) end);
+   'store_left', case when k = 'now' then greatest(c.places_store_day_max - sn - 1, 0) end, 'pday', d::text);
 end $$;
 
 -- 今日と今月の回数と上限（GM・CEO の画面）。上限は店の数から決めた値
