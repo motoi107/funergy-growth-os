@@ -1,5 +1,19 @@
 # Claude / Codex 共通記録
 
+## 2026-11-24 v1210：#217 の Codex の再レビュー（`0db4bff` まで・7134071689）の直し（Claude（Team・Claude Code）・ブランチ `claude/acct-payroll-1210`・push できないので引き継ぎ一式で渡す）
+
+- #216 の P2 の直し（`37f6e32`）を取り込んだ（マージ）。
+- P3：前の経路（external＝ChatGPT 側の転送）が送っている途中の行は、送る前にこちらを確かめないので止めの印で止まらないのに、照合取消の知らせと状態の行が「まだ送っていなければ止めます」と言っていた → SQL `invoice_reconcile` が数を分ける（`qb_stop_requested`＝止まる行・`qb_stop_external`＝前の経路が送っている途中・記録に `external_sending`）。印は今までどおり付ける（失敗が返れば送り直さない）。画面は「前の転送が送っている途中です。ここからは止められません」。前の経路の結果確認待ちは人が「送っていない」と確かめると止まる（今までどおり・試験を足した）。仕様の 10。
+- 試験：invoice-qb-reconcile 14・invoice-qb-reconcile-ui 13・わざと壊す（選んだ 8 つ・足した 3 つを含む）すべて落ちる・`check-static-release.py` pass/1210。関数のコードは変えていない。
+- 次：Personal で push → Codex の再レビュー（#217 の新しい head）→ #218・#1212 へ取り込む。
+
+## 2026-11-24 v1209：#216 の Codex の再レビュー（`a571d61` まで・7134070355）の P2 の直し（Claude（Team・Claude Code）・ブランチ `claude/google-places-1209`・push できないので引き継ぎ一式で渡す）
+
+- このセッション（会社の Team のアカウント）は push できない（git の proxy が 403「authorized repository set に無い」・gh のトークンも無効）。Moto さん 11/24「push しないで進める」：Team で直して試験まで済ませ、ブランチごとの引き継ぎ一式（bundle・差分・メモ）を Personal で GitHub に入れる。
+- P2：上限の失敗に答えが届いた時刻の太平洋時間の日を残していたので、頼んでいるあいだに 0 時（月末）をまたぐと「見る」が翌日（翌月）いっぱい戻らなかった → SQL `gr_places_take`（2b）が `pday` を返す・関数が `places_cap` と `counted:true` の答えに入れる（④ を作り直した）・画面は `pd`＝サーバーの日（無ければ頼んだ時刻の日）と `rd`＝頼んだ時刻の端末の日で、早いほうで消す（仕様の 15）。
+- 試験：Google のテスト全部 62/62（server-v1209 19・app 18・deploy 5・v1157 server・deploy）。直す前の画面・関数・SQL では足した試験が落ちる。`check-static-release.py` pass/1209。版は 1209 のまま（本番未反映）。
+- 次：Personal で push → Codex の再レビュー（#216 の新しい head）→ #217・#218・#1212 へ取り込む。
+
 ## 2026-11-23 v1211：事務Crew が経理リーダー・経理マネージャー・GM と同じ経理レビュー（B-1・統合実装プロンプトの B-1・Claude（Personal・Claude Code）・ブランチ `claude/acct-view-1211`・#217（`0db4bff`）の上・SQL `20261217090000`・アプリ 1211・本番未反映）
 
 - 依頼：事務クルー・経理リーダー・経理マネージャー・GM が同じ条件で同じ経理業務データ（一覧・件数・金額・絞り込み・詳細・添付・承認の履歴・照合と QB の状態・出力）を見る。GM の役割にしない・サーバーで。仕様：`docs/ACCT_VIEW_V1211_JA.md`。入れる一式：`deploy/acct-view-v1211/`（① → ② SQL → ③ → #217 のあとにマージ → 端末を 1211 に → GM・CEO が PIN の事務Crew を「事務Crew と確かめる」）。

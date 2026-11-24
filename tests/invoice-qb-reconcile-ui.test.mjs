@@ -60,6 +60,11 @@ test('six words: chips and lines per state, external queued says hourly, errors 
   // the reconciliation taken back while the send was under way (B-3 review): what went is a fact; what had not gone stops
   assert.match(c.fn("invInQbStateLine({ state:'sending', stop_requested:true })"), /まだ送っていなければ止めます（送り終わっていたら送信済みとして残ります）/);
   assert.equal(c.fn("invInQbStateLine({ state:'sending' })"), '送っているところです');
+  // #217 の Codex（7134071689）の P3: the forwarder before (external) does not ask here before it sends: it cannot be stopped
+  const xs = c.fn("invInQbStateLine({ state:'sending', stop_requested:true, route:'external' })");
+  assert.match(xs, /前の転送（ChatGPT）が送っているところで照合を取り消しました。ここからは止められません（送られたら送信済みとして残ります。送れなかったときは送り直しません）/);
+  assert.ok(!/まだ送っていなければ止めます/.test(xs), 'no promise to stop what the old route sends');
+  assert.match(c.fn("invInQbStateLine({ state:'unknown', last_error:'gmail_send_no_answer', stop_requested:true, route:'external' })"), /送っていないと確かめたら、送らずに止めます/, 'an unknown outcome is settled by a person: it does stop');
   assert.match(c.fn("invInQbStateLine({ state:'sent', sent_at:'2026-11-23T20:00:00Z', stop_requested:true })"), /照合を取り消す前に送り終わっていました（取下げ・訂正は QuickBooks で）/);
   assert.ok(!/取り消す前/.test(c.fn("invInQbStateLine({ state:'sent', sent_at:'2026-11-23T20:00:00Z' })")));
   assert.match(c.fn("invInQbStateLine({ state:'unknown', last_error:'gmail_send_no_answer', stop_requested:true })"), /送っていないと確かめたら、送らずに止めます/);
@@ -190,6 +195,24 @@ test('1 件の照合: the toast says what happened to the forwarding; taking it 
   assert.equal(kind, 'warning');
   const last = c.calls.filter(b => b.action === 'reconcile').at(-1);
   assert.deepEqual([last.result, last.note], ['discrepancy', '数量が違う']);
+  // #217 の Codex（7134071689）の P3: a row the forwarder before (external) is sending is not promised to stop
+  rec = { ok: true, version: 4, qb_stopped: 0, qb_busy: 1, qb_stop_requested: 0, qb_stop_external: 1, qb_kept_out: 0 };
+  c.I.doc = { doc: D }; c.I.docId = D.id; c.I.edits = {};
+  await c.fn("invInReconcile('unreconciled')");
+  [msg, kind] = c.toasts.at(-1);
+  assert.equal(msg, '未照合に戻しました。1 件は前の転送（ChatGPT）が送っている途中です。ここからは止められません。送られたら送信済みとして残ります（取下げ・訂正は QuickBooks で）。送れなかったときは送り直しません');
+  assert.equal(kind, 'warning');
+  rec = { ok: true, version: 4, qb_stopped: 0, qb_busy: 3, qb_stop_requested: 2, qb_stop_external: 1, qb_kept_out: 0 };
+  c.I.doc = { doc: D }; c.I.docId = D.id; c.I.edits = {};
+  await c.fn("invInReconcile('unreconciled')");
+  [msg] = c.toasts.at(-1);
+  assert.match(msg, /。2 件はもう送る途中です。まだ送っていなければ止めます。.*。1 件は前の転送（ChatGPT）が送っている途中です。ここからは止められません。/);
+  // an older SQL (no qb_stop_requested): the busy count, as before
+  rec = { ok: true, version: 4, qb_stopped: 0, qb_busy: 1, qb_kept_out: 0 };
+  c.I.doc = { doc: D }; c.I.docId = D.id; c.I.edits = {};
+  await c.fn("invInReconcile('unreconciled')");
+  [msg] = c.toasts.at(-1);
+  assert.match(msg, /1 件はもう送る途中です。まだ送っていなければ止めます。/);
   // nothing in the ledger yet (the ledger off, a rename waiting): kept out, said plainly; nothing being sent → no warning
   rec = { ok: true, version: 5, qb_stopped: 0, qb_busy: 0, qb_stop_requested: 0, qb_kept_out: 1 };
   c.I.doc = { doc: D }; c.I.docId = D.id; c.I.edits = {};

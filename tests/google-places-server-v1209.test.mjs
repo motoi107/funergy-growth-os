@@ -114,7 +114,9 @@ async function setup({ sql = true, env = {}, caps = {}, stores = null, chef = tr
   const sqlq = async (q, p = []) => { await pg.exec('reset role'); const r = await pg.query(q, p); await pg.exec('set role service_role'); return r.rows; };
   const used = async (kind = 'now', scope = 'all') => Number(((await sqlq('select coalesce(sum(n),0) n from public.gr_places_use where kind = $1 and scope = $2', [kind, scope]))[0] || {}).n || 0);
   const detailCalls = () => g.calls.filter(u => u.startsWith('https://places.googleapis.com/v1/places/')).length;
-  return { pg, g, call, ok, sqlq, used, detailCalls, setNow: v => { t = v; } };
+  // #216 の Codex（7134070355）の P2：SQL が数えた太平洋時間の日（上限・数えた失敗の答えの pday）
+  const pday = async () => (await sqlq(`select ((now() at time zone 'America/Los_Angeles')::date)::text d`))[0].d;
+  return { pg, db, g, call, ok, sqlq, used, detailCalls, pday, setNow: v => { t = v; } };
 }
 // 結ぶ（GM が画面から。Google の住所で確かめる）。そのあと、確かめのための呼び出しと回数は消す（ほかの試験の数を分かりやすく）
 const link = async (s, stores = ['S1', 'S2', 'S3']) => {
@@ -279,6 +281,7 @@ test('only on request, only linked stores, only the needed fields; Google’s or
     assert.equal(await s.used(), 2, 'a refused call is still counted');
     // 画面が「今日の回数に数えました」と出せるように counted と店の残りを返す（独立レビューの P3）
     assert.equal(d.body.counted, true); assert.ok(Number.isInteger(d.body.store_left), JSON.stringify(d.body));
+    assert.equal(d.body.pday, await s.pday(), 'the Pacific day the server counted (#216 の Codex の P2)');
     s.g.status = 429;
     assert.equal((await s.call('E2', { action: 'places_now', store: 'S1' })).body.error, 'places_busy');
     s.g.status = 500;
@@ -309,7 +312,7 @@ test('caps: per store, per person, per day, per month, and search; Google is not
     await link(s);
     await s.ok('E2', { action: 'places_now', store: 'S1' }); await s.ok('E1', { action: 'places_now', store: 'S1' });
     const r = await s.call('E5', { action: 'places_now', store: 'S1' });
-    assert.equal(r.status, 429); assert.deepEqual(r.body, { error: 'places_cap', cap: 'store', max: 2 });
+    assert.equal(r.status, 429); assert.deepEqual(r.body, { error: 'places_cap', cap: 'store', max: 2, pday: await s.pday() });
     assert.equal(s.detailCalls(), 2); assert.equal(await s.used(), 2);
     await s.ok('E5', { action: 'places_now', store: 'S2' });   // ほかの店はまだ取れる
   }
@@ -318,7 +321,7 @@ test('caps: per store, per person, per day, per month, and search; Google is not
     await link(s);
     await s.ok('E5', { action: 'places_now', store: 'S1' }); await s.ok('E5', { action: 'places_now', store: 'S2' });
     const r = await s.call('E5', { action: 'places_now', store: 'S1' });
-    assert.deepEqual(r.body, { error: 'places_cap', cap: 'person', max: 2 });
+    assert.deepEqual(r.body, { error: 'places_cap', cap: 'person', max: 2, pday: await s.pday() });
     await s.ok('E2', { action: 'places_now', store: 'S1' });   // ほかの人はまだ取れる
     assert.equal(s.detailCalls(), 3);
   }
@@ -327,7 +330,7 @@ test('caps: per store, per person, per day, per month, and search; Google is not
     await link(s);
     for (const st of ['S1', 'S2', 'S3']) await s.ok('E2', { action: 'places_now', store: st });
     const r = await s.call('E1', { action: 'places_now', store: 'S1' });
-    assert.deepEqual(r.body, { error: 'places_cap', cap: 'day', max: 3 });
+    assert.deepEqual(r.body, { error: 'places_cap', cap: 'day', max: 3, pday: await s.pday() });
     assert.equal(s.detailCalls(), 3); assert.equal(await s.used(), 3);
     const st = await s.ok('E2', { action: 'status' });
     assert.equal(st.usage.now.day, 3); assert.equal(st.usage.now.day_max, 3); assert.equal(st.usage.tz, 'America/Los_Angeles');
@@ -341,7 +344,7 @@ test('caps: per store, per person, per day, per month, and search; Google is not
       (now() at time zone 'America/Los_Angeles')::date - 1), 'now', 'all', 4)`);
     await s.ok('E2', { action: 'places_now', store: 'S1' });
     const r = await s.call('E2', { action: 'places_now', store: 'S2' });
-    assert.deepEqual(r.body, { error: 'places_cap', cap: 'month', max: 5 });
+    assert.deepEqual(r.body, { error: 'places_cap', cap: 'month', max: 5, pday: await s.pday() });
     assert.equal(s.detailCalls(), 1);
     // 前の月の回数は数えない
     await s.sqlq(`update public.gr_settings set places_month_max = 10`);
@@ -351,19 +354,19 @@ test('caps: per store, per person, per day, per month, and search; Google is not
   {
     const s = await setup({ caps: { places_day_max: 0 } });   // 0 にするとその呼び出しを止める
     await link(s);
-    assert.deepEqual((await s.call('E2', { action: 'places_now', store: 'S1' })).body, { error: 'places_cap', cap: 'day', max: 0 });
+    assert.deepEqual((await s.call('E2', { action: 'places_now', store: 'S1' })).body, { error: 'places_cap', cap: 'day', max: 0, pday: await s.pday() });
     assert.equal(s.g.calls.length, 0);
   }
   {
     const s = await setup({ caps: { search_day_max: 1 } });
     await link(s, ['S1']);   // 結んで、確かめの回数は消す
     await s.ok('E2', { action: 'places_search', q: 'Fake one' });
-    assert.deepEqual((await s.call('E1', { action: 'places_search', q: 'Fake two' })).body, { error: 'places_cap', cap: 'day', max: 1 });
+    assert.deepEqual((await s.call('E1', { action: 'places_search', q: 'Fake two' })).body, { error: 'places_cap', cap: 'day', max: 1, pday: await s.pday() });
     // 店を確かめる（Place Details の名前と住所）も「店を探す」と同じ上限
-    assert.deepEqual((await s.call('E2', { action: 'places_set', store: 'S2', place_id: PID.S2 })).body, { error: 'places_cap', cap: 'day', max: 1 });
+    assert.deepEqual((await s.call('E2', { action: 'places_set', store: 'S2', place_id: PID.S2 })).body, { error: 'places_cap', cap: 'day', max: 1, pday: await s.pday() });
     assert.equal(s.g.calls.length, 1);
     await s.sqlq(`update public.gr_settings set search_day_max = 40, search_month_max = 1`);
-    assert.deepEqual((await s.call('E2', { action: 'places_search', q: 'Fake three' })).body, { error: 'places_cap', cap: 'month', max: 1 });
+    assert.deepEqual((await s.call('E2', { action: 'places_search', q: 'Fake three' })).body, { error: 'places_cap', cap: 'month', max: 1, pday: await s.pday() });
     assert.equal(s.g.calls.length, 1);
     await s.ok('E2', { action: 'places_now', store: 'S1' });   // 店を探す回数と店の評価の回数は別
   }
@@ -489,7 +492,7 @@ test('default caps come from the number of confirmed stores: 1 call per store pe
   const first = await s.ok('E8', { action: 'places_now', store: 'S1' });
   assert.equal(first.store_left, 0);
   const again = await s.call('E2', { action: 'places_now', store: 'S1' });
-  assert.deepEqual(again.body, { error: 'places_cap', cap: 'store', max: 1 }, 'the second view of the same store on the same day is not fetched');
+  assert.deepEqual(again.body, { error: 'places_cap', cap: 'store', max: 1, pday: await s.pday() }, 'the second view of the same store on the same day is not fetched');
   await s.ok('E2', { action: 'places_now', store: 'S2' });
   // 確かめていない店（S3）は数に入らない・呼ばない
   await linkSql(s, ['S3']);
@@ -612,4 +615,36 @@ test('only a missing function or table means “SQL not installed”; any other 
     assert.deepEqual(await run(new Error('canceling statement due to statement timeout in gr_kpi')), [500, 'server_error']);
     assert.ok(!errs.join('\n').includes('gr_places_pkey'), 'only the first word goes to the log');
   } finally { console.error = orig; }
+});
+
+test('#216 の Codex（7134070355）の P2: the SQL returns the Pacific day it counted; the function passes it on caps and counted failures only when it is a date', async () => {
+  const s = await setup({ caps: { places_store_day_max: 1 } });
+  await link(s, ['S1', 'S2']);   // 1 日の上限＝確かめた 2 店 × 1：店の上限が先に効く
+  const today = await s.pday();
+  assert.match(today, /^\d{4}-\d{2}-\d{2}$/);
+  // SQL：数えたとき・断ったとき（日・店・人・月）に pday
+  const t1 = await s.db.rpc('gr_places_take', { kind: 'now', emp: 'E2', store: 'S1' });
+  assert.equal(t1.ok, true); assert.equal(t1.pday, today); assert.equal(t1.store_left, 0);
+  const t2 = await s.db.rpc('gr_places_take', { kind: 'now', emp: 'E2', store: 'S1' });
+  assert.deepEqual(t2, { ok: false, cap: 'store', max: 1, pday: today });
+  const t3 = await s.db.rpc('gr_places_take', { kind: 'search', emp: 'E2' });
+  assert.equal(t3.ok, true); assert.equal(t3.pday, today);
+  await s.sqlq('delete from public.gr_places_use');
+  // 関数：SQL が前の 2b（pday が無い）・おかしな値なら入れない（画面は頼んだ時刻の日を使う）
+  for (const [v, want] of [[undefined, undefined], ['2026-11-2', undefined], ['<b>', undefined], [20261124, undefined], ['2026-11-24', '2026-11-24']]) {
+    const rpc = s.db.rpc;
+    s.db.rpc = async (name, p) => { const r = await rpc(name, p); if (name === 'gr_places_take' && r && typeof r === 'object') { if (v === undefined) delete r.pday; else r.pday = v; } return r; };
+    try {
+      const c = await s.call('E2', { action: 'places_now', store: 'S1' });
+      assert.equal(c.status, 200, c.text);
+      const r = await s.call('E5', { action: 'places_now', store: 'S1' });
+      assert.equal(r.status, 429); assert.equal(r.body.error, 'places_cap');
+      assert.equal(r.body.pday, want, 'cap ' + JSON.stringify(v));
+      s.g.status = 403;
+      await s.sqlq('delete from public.gr_places_use');
+      const f = await s.call('E2', { action: 'places_now', store: 'S1' });
+      assert.equal(f.status, 502); assert.equal(f.body.counted, true);
+      assert.equal(f.body.pday, want, 'counted ' + JSON.stringify(v));
+    } finally { s.db.rpc = rpc; s.g.status = 200; await s.sqlq('delete from public.gr_places_use'); }
+  }
 });
