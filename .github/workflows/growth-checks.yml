@@ -18,7 +18,7 @@ jobs:
   static-release:
     name: Static release validation
     runs-on: ubuntu-latest
-    timeout-minutes: 25   # the test list grew past 10 minutes (v1153–v1155); the runs were cancelled, not failing
+    timeout-minutes: 40   # the test list grew past 10 minutes (v1153–v1155) and past 25 minutes (v1208); the runs were cancelled, not failing
     steps:
       - uses: actions/checkout@v6
         with:
@@ -157,6 +157,8 @@ jobs:
         run: node --test --test-concurrency=1 tests/am-office-v1207.test.mjs
       - name: Check the Career Score 2026 Q4 master and calculation (CAREER_2026_Q4_V1, G 122 / Prep 11 / S Chef 52 / S Office 46, weights add to 100, the Honolulu quarter, unassigned counts 0, reasons exclude, the minimum conditions apart from the total, Prep pay steps never lowered; synthetic data)
         run: node --test --test-concurrency=1 tests/career-score-q4-core.test.mjs
+      - name: Check the Career Score 2026 Q4 server (stage 3-1, UI案99 answers; seven new tables and eleven functions the public keys cannot use and the server key cannot delete, one open and one published evaluation per person, the old records copied once into a read-only history without changing app_state, no period stays unknown and the old Q4 stays old, who scores and who confirms, start never resets, the server recomputes totals, saves with an old version write nothing, change reasons and before/after kept, the person sees only what was shared, review requests, re-evaluation as a new revision, the one-file function equals the sources; the real SQL on PGlite, the real handler; synthetic data)
+        run: node scripts/gen-secure-state-csq4.mjs --check && node scripts/build-secure-state-one.mjs --check && node --test --test-concurrency=1 tests/csq4-server.test.mjs tests/csq4-deploy.test.mjs
       - name: Check the v1174 fix for PR 172 (a final PL month is never overwritten by a provisional one, through the app merge by store, the send that takes the cloud final back, the import that reads the cloud first and the database trigger; two devices with stale copies, simultaneous imports, a re-send, a reload, an old app re-sending; the real app functions in a VM, the real SQL on PGlite; synthetic data)
         run: node --test --test-concurrency=1 tests/pl-keep-final-v1174.test.mjs
       - name: Check the v1174 PL trigger with two real PostgreSQL sessions (an upsert waits on the row lock and the trigger keeps the final and both stores, also when the first two imports overlap; temporary server, synthetic data; no skipped test)

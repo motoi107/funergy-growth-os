@@ -70,6 +70,7 @@ test('the one-file secure-state answers the same as the module handler', async (
     assert.equal(a[0], 200);
     delete b[1].pvfn;   // v1193 の handler は答えに pvfn:1 も付ける（v1192 の 1 ファイルは付けない）
     delete b[1].affn;   // v1195 の handler は答えに affn:1 も付ける
+    delete b[1].cs4fn;   // Career Score Q4 の段階 3-1 から handler は答えに cs4fn:1 も付ける（この版の 1 ファイルは付けない）
     assert.deepEqual(a, b);
     assert.ok(a[1].r['F01|2026-11'].p.hourly > 0 && a[1].r['F01|2026-11'].p.salary > 0);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }

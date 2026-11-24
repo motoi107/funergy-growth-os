@@ -1,0 +1,436 @@
+// 自動で作ったファイル。手で直さない（careerscore/q4-core.mjs か careerscore/cs-q4-v1.json を直して `node scripts/gen-secure-state-csq4.mjs` を流す）。
+// Career Score 2026 Q4（段階 3-1）：関数 secure-state が使う計算の芯（careerscore/q4-core.mjs のまま）と評価表マスター（careerscore/cs-q4-v1.json のまま）。
+/* eslint-disable */
+export const CSQ4 = (() => {
+// Career Score 2026 Q4（新制度・CAREER_2026_Q4_V1）の計算の芯。
+// 画面・サーバー（関数）・試験が同じ計算を使う。依存なし。数は BigInt の分数で正確に持ち、表示だけ小数 1 桁に丸める。
+// 決まりの出どころ：Moto さんの Excel（careerscore/cs-q4-v1.json に写した）の「GM実装仕様」「配点・基準点案」と 2026Q4 の指示書。
+//   - G カテゴリー＝点数合計 ÷ [3 ×（採点数＋未担当数）] × 配点。未担当は 0 点で分母に入る。完全非該当・会社都合の今回非該当は除外
+//   - S カテゴリー＝採点済みの平均 ÷ 3 × 配点（未担当は無い）
+//   - 理念は 5 分類を等しく。分類ごとの平均 ÷ 3 を、対象の分類で平均して × 配点（G は未担当 0 点を含める）
+//   - S Office の技術・専門実務は Office・経理・人事の領域ごとの平均 ÷ 3 を、採点対象のある領域で等しく平均
+//   - 全項目が除外のカテゴリーは対象配点から外す。G で未担当だけのカテゴリーは 0 点で配点を残す
+//   - 総合点＝カテゴリー得点の合計 ÷ 対象配点の合計 × 100。基準点の判定は丸める前の値で。未評価が残る・対象配点 0 なら判定しない
+//   - 配点 0 のカテゴリーも計算して持つ（得点 0・対象配点 0）。未評価なら確定を止める
+
+const CSQ4_VERSION = 'CAREER_2026_Q4_V1';
+const STATUS = Object.freeze({ SCORED: 'SCORED', UNASSIGNED: 'UNASSIGNED', NOT_APPLICABLE: 'NOT_APPLICABLE', UNASSESSED: 'UNASSESSED' });
+const NA_REASON = Object.freeze({ ROLE: 'ROLE_NOT_APPLICABLE', COMPANY: 'COMPANY_UNASSIGNED_THIS_PERIOD' });
+
+// ---------- 分数 ----------
+const ZERO = BigInt(0), ONE = BigInt(1), TEN = BigInt(10), TWO = BigInt(2);
+function gcd(a, b) { if (a < ZERO) a = -a; if (b < ZERO) b = -b; while (b) { const t = a % b; a = b; b = t; } return a; }
+function frac(n, d) {
+  n = BigInt(n); d = d === undefined ? ONE : BigInt(d);
+  if (d === ZERO) throw new Error('frac: zero denominator');
+  if (d < ZERO) { n = -n; d = -d; }
+  const g = gcd(n, d) || ONE;
+  return { n: n / g, d: d / g };
+}
+const F0 = frac(0), F1 = frac(1);
+const fadd = (a, b) => frac(a.n * b.d + b.n * a.d, a.d * b.d);
+const fmul = (a, b) => frac(a.n * b.n, a.d * b.d);
+const fdiv = (a, b) => { if (b.n === ZERO) throw new Error('frac: divide by zero'); return frac(a.n * b.d, a.d * b.n); };
+const fcmp = (a, b) => { const l = a.n * b.d, r = b.n * a.d; return l < r ? -1 : l > r ? 1 : 0; };
+// 10 進の文字列か数から分数（0.8 → 4/5）。指数表記・非有限は断る
+function fdec(x) {
+  if (typeof x === 'bigint') return frac(x);
+  const s = typeof x === 'number' ? (Number.isFinite(x) ? String(x) : '') : String(x == null ? '' : x).trim();
+  const m = /^(-)?(\d+)(?:\.(\d+))?$/.exec(s);
+  if (!m) throw new Error('fdec: not a plain decimal: ' + s);
+  const fr = m[3] || '';
+  return frac((m[1] ? '-' : '') + m[2] + fr, TEN ** BigInt(fr.length));
+}
+const fnum = (a) => Number(a.n) / Number(a.d);
+const fstr = (a) => a.n.toString() + '/' + a.d.toString();
+// 表示用：小数 1 桁・四捨五入（0 以上だけ）。84.96 → "85.0"
+function fixed1(a) {
+  if (a.n < ZERO) throw new Error('fixed1: negative');
+  const k = (a.n * TEN * TWO + a.d) / (TWO * a.d);
+  return (k / TEN).toString() + '.' + (k % TEN).toString();
+}
+const fsum = (arr) => arr.reduce((s, x) => fadd(s, x), F0);
+const fmean = (arr) => fdiv(fsum(arr), frac(arr.length));
+function val(a) { return a ? { exact: fstr(a), value: fnum(a), display: fixed1(a) } : null; }
+
+// ---------- 期間（Pacific/Honolulu）----------
+// 実入力の日時（ISO の文字列・Date・ミリ秒）からハワイの日付（YYYY-MM-DD）を出す。日時そのものは書き換えない
+const HNL_FMT = new Intl.DateTimeFormat('en-CA', { timeZone: 'Pacific/Honolulu', year: 'numeric', month: '2-digit', day: '2-digit' });
+// 暦にある日付だけ（YYYY-MM-DD・11/31・11/32・平年の 2/29 などは日付ではない。Codex #212 P3）
+function csq4IsDate(x) {
+  if (typeof x !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(x)) return false;
+  const y = +x.slice(0, 4), m = +x.slice(5, 7), d = +x.slice(8, 10);
+  const t = new Date(Date.UTC(y, m - 1, d));
+  return t.getUTCFullYear() === y && t.getUTCMonth() === m - 1 && t.getUTCDate() === d;
+}
+function csq4HnlDate(t) {
+  const d = t instanceof Date ? t : new Date(t);
+  if (Number.isNaN(d.getTime())) return null;
+  const p = {};
+  for (const x of HNL_FMT.formatToParts(d)) p[x.type] = x.value;
+  return p.year + '-' + p.month + '-' + p.day;
+}
+// その日時が新制度の期間（start 以上・endExclusive 未満のハワイの日付）に入るか
+function csq4InPeriod(master, t) {
+  const day = csq4HnlDate(t);
+  return !!day && day >= master.period.start && day < master.period.endExclusive;
+}
+
+// ---------- マスター ----------
+function csq4System(master, sys) {
+  const s = master && master.systems && master.systems[sys];
+  if (!s) throw new Error('unknown system: ' + sys);
+  return s;
+}
+function itemMap(s) { const m = new Map(); for (const it of s.items) m.set(it.id, it); return m; }
+
+// ---------- 1 項目の確かめ（サーバーも同じ決まり）----------
+// entry = { status, score, naReasonType, naReason, unassignedReason, periodOnly, periodFrom, periodTo }
+// 戻り値：エラーのコードの配列（空なら OK）
+function csq4CheckEntry(master, sys, id, e) {
+  const s = csq4System(master, sys);
+  const errs = [];
+  if (!itemMap(s).has(id)) return ['unknown_item'];
+  if (!e || typeof e !== 'object') return ['bad_entry'];
+  const st = e.status;
+  const isG = !!s.unassigned;
+  const allowed = isG ? [STATUS.SCORED, STATUS.UNASSIGNED, STATUS.NOT_APPLICABLE, STATUS.UNASSESSED] : [STATUS.SCORED, STATUS.NOT_APPLICABLE, STATUS.UNASSESSED];
+  if (!allowed.includes(st)) return [st === STATUS.UNASSIGNED ? 'unassigned_only_g' : 'bad_status'];
+  const txt = (v) => typeof v === 'string' && v.trim().length > 0;
+  if (st === STATUS.SCORED) {
+    if (!Number.isInteger(e.score) || e.score < 0 || e.score > 3) errs.push('bad_score');
+  } else if (st === STATUS.UNASSIGNED) {
+    if (e.score !== 0 && e.score !== null && e.score !== undefined) errs.push('unassigned_score_is_0');
+    if (!txt(e.unassignedReason)) errs.push('unassigned_reason_required');
+  } else if (st === STATUS.NOT_APPLICABLE) {
+    if (e.score !== null && e.score !== undefined) errs.push('na_score_is_null');
+    if (!txt(e.naReason)) errs.push('na_reason_required');
+    const rt = e.naReasonType;
+    if (isG) {
+      if (rt !== NA_REASON.ROLE && rt !== NA_REASON.COMPANY) errs.push('na_reason_type_required');
+    } else if (rt !== undefined && rt !== null && rt !== NA_REASON.ROLE) {
+      errs.push('na_reason_type_g_only');   // 会社都合の今回非該当は G の未担当から変える特例（S・Prep には広げない）
+    }
+    if (rt === NA_REASON.COMPANY) {
+      if (e.periodOnly !== true) errs.push('company_na_period_only');
+      const p = master.period;
+      if (!csq4IsDate(e.periodFrom) || !csq4IsDate(e.periodTo)) errs.push('company_na_period_required');
+      else if (e.periodFrom > e.periodTo || e.periodFrom < p.start || e.periodTo >= p.endExclusive) errs.push('company_na_period_out_of_quarter');
+    } else if (e.periodOnly === true) {
+      errs.push('period_only_company_only');
+    }
+  } else if (st === STATUS.UNASSESSED) {
+    if (e.score !== null && e.score !== undefined) errs.push('unassessed_score_is_null');
+  }
+  return errs;
+}
+
+// 項目の状態を数えやすい形に
+function kind(e) {
+  if (!e || e.status === STATUS.UNASSESSED || !e.status) return 'U';           // 未評価（入っていない項目も）
+  if (e.status === STATUS.SCORED) return 'S';
+  if (e.status === STATUS.UNASSIGNED) return 'A';                              // 未担当（G だけ・0 点で分母に入る）
+  if (e.status === STATUS.NOT_APPLICABLE) return e.naReasonType === NA_REASON.COMPANY ? 'C' : 'R';
+  return 'U';
+}
+
+// 項目の集まりの平均（0〜3 のどこか）。counted＝分母に入る数
+function groupAvg(items, entries) {
+  let sum = 0, counted = 0, unassessed = 0, scored = 0, unassigned = 0, naRole = 0, naCompany = 0;
+  for (const it of items) {
+    const e = entries[it.id];
+    const k = kind(e);
+    if (k === 'S') { sum += e.score; counted++; scored++; }
+    else if (k === 'A') { counted++; unassigned++; }
+    else if (k === 'R') naRole++;
+    else if (k === 'C') naCompany++;
+    else unassessed++;
+  }
+  return { avg: counted ? frac(sum, counted) : null, sum, counted, unassessed, scored, unassigned, naRole, naCompany, total: items.length };
+}
+
+// カテゴリーの「率」（0〜1）。理念は分類ごと、S Office の技術は領域ごと
+function categoryRate(cat, items, entries, sysDef) {
+  if (cat === 'PHILO') {
+    const parts = [];
+    for (const c of csq4PhiloClasses(sysDef)) {
+      const g = groupAvg(items.filter((i) => i.cls === c.key), entries);
+      parts.push({ key: c.key, name: c.name, ...g, rate: g.avg ? fdiv(g.avg, frac(3)) : null, state: g.counted ? 'counted' : (g.unassessed ? 'pending' : 'excluded') });
+    }
+    const counted = parts.filter((p) => p.rate);
+    return { rate: counted.length ? fmean(counted.map((p) => p.rate)) : null, parts, partKind: 'class' };
+  }
+  if (cat === 'TECH' && sysDef.domains) {
+    const parts = [];
+    for (const d of sysDef.domains) {
+      const g = groupAvg(items.filter((i) => i.domain === d.key), entries);
+      parts.push({ key: d.key, name: d.name, ...g, rate: g.avg ? fdiv(g.avg, frac(3)) : null, state: g.counted ? 'counted' : (g.unassessed ? 'pending' : 'excluded') });
+    }
+    const counted = parts.filter((p) => p.rate);
+    return { rate: counted.length ? fmean(counted.map((p) => p.rate)) : null, parts, partKind: 'domain' };
+  }
+  const g = groupAvg(items, entries);
+  return { rate: g.avg ? fdiv(g.avg, frac(3)) : null, parts: null };
+}
+function csq4PhiloClasses(sysDef) { return sysDef._philoClasses; }
+
+function gradeNum(sys, grade) {
+  const m = /^([GS])([1-6])$/.exec(String(grade || ''));
+  if (!m) return null;
+  if ((sys === 'G') !== (m[1] === 'G')) return null;
+  return m[2];
+}
+
+// ---------- G・S Chef・S Office の計算 ----------
+// input = { system, grade: 'G3'|'S2'..., type: 'Kitchen中心' など（G だけ）, entries: { [id]: entry } }
+function csq4Score(master, input) {
+  const sys = input.system;
+  if (sys === 'PREP') throw new Error('use csq4Prep for PREP');
+  const sysDef = Object.assign({}, csq4System(master, sys), { _philoClasses: master.philoClasses });
+  const gn = gradeNum(sys, input.grade);
+  if (!gn) return { ok: false, error: 'bad_grade' };
+  const wrow = sys === 'G' ? (sysDef.weights['G' + gn] || {})[input.type] : sysDef.weights['S' + gn];
+  if (!wrow) return { ok: false, error: sys === 'G' ? 'bad_type' : 'bad_grade' };
+  const entries = input.entries || {};
+  const ids = itemMap(sysDef);
+  const unknown = Object.keys(entries).filter((id) => !ids.has(id));
+  const entryErrors = {};
+  for (const id of Object.keys(entries)) {
+    if (!ids.has(id)) continue;
+    const e = entries[id];
+    if (!e || e.status === undefined || e.status === STATUS.UNASSESSED) continue;
+    const er = csq4CheckEntry(master, sys, id, e);
+    if (er.length) entryErrors[id] = er;
+  }
+  // 入力に誤りのある項目は、計算では未評価として扱う（確定は止まる）
+  const eff = {};
+  for (const id of ids.keys()) eff[id] = entryErrors[id] ? undefined : entries[id];
+
+  const cats = [];
+  let sumScore = F0, sumTarget = F0;
+  const counts = { items: sysDef.items.length, scored: 0, unassigned: 0, naRole: 0, naCompany: 0, unassessed: 0 };
+  for (const c of sysDef.categories) {
+    const items = sysDef.items.filter((i) => i.cat === c.key);
+    const g = groupAvg(items, eff);
+    for (const k of ['scored', 'unassigned', 'naRole', 'naCompany', 'unassessed']) counts[k] += g[k];
+    const weight = frac(wrow.weights[c.key]);
+    const r = categoryRate(c.key, items, eff, sysDef);
+    // 対象：分母に入る項目が 1 つでもある（G の未担当だけでも対象・0 点）
+    let state, target = F0, score = null;
+    if (r.rate) {
+      state = g.unassessed ? 'partial' : 'counted';
+      target = weight;
+      score = fmul(r.rate, weight);
+    } else if (g.unassessed) {
+      state = 'pending';           // まだ採点がない（仮の計算では外す）
+    } else {
+      state = 'excluded';          // 全項目が完全非該当・会社都合の今回非該当
+    }
+    if (score) { sumScore = fadd(sumScore, score); sumTarget = fadd(sumTarget, target); }
+    cats.push({
+      key: c.key, name: c.name, weight: Number(wrow.weights[c.key]), targetWeight: fnum(target), state,
+      score: val(score), rate: val(r.rate ? fmul(r.rate, frac(100)) : null),
+      avg: g.avg ? val(g.avg) : null,
+      counts: { items: g.total, scored: g.scored, unassigned: g.unassigned, naRole: g.naRole, naCompany: g.naCompany, unassessed: g.unassessed },
+      parts: r.parts ? r.parts.map((p) => ({ key: p.key, name: p.name, state: p.state, avg: p.avg ? val(p.avg) : null, counts: { items: p.total, scored: p.scored, unassigned: p.unassigned, naRole: p.naRole, naCompany: p.naCompany, unassessed: p.unassessed } })) : null,
+    });
+  }
+  const anyInvalid = Object.keys(entryErrors).length > 0 || unknown.length > 0;
+  const total = sumTarget.n > ZERO ? fmul(fdiv(sumScore, sumTarget), frac(100)) : null;
+  let state;
+  if (counts.unassessed > 0 || anyInvalid) state = counts.scored + counts.unassigned ? 'in_progress' : 'not_started';
+  else state = total ? 'complete' : 'not_calculable';
+  const base = Number(master.base[sys === 'G' ? 'G' : 'S'][gn]);
+  const baseMet = state === 'complete' ? fcmp(total, frac(base)) >= 0 : null;
+  const minimum = csq4Minimum(master, sys, gn, input.type, eff, sysDef);
+  const lists = csq4Lists(sysDef, eff);   // 入力に誤りのある項目は一覧にも載せない（計算と同じく未評価）
+  return {
+    ok: true, version: master.version, system: sys, grade: input.grade, type: sys === 'G' ? input.type : null,
+    state, confirmable: state === 'complete' && !anyInvalid,
+    total: val(total), totalProvisional: state !== 'complete',
+    targetWeight: fnum(sumTarget), baseWeight: 100, scoreSum: val(sumScore),
+    base, baseMet,
+    counts, categories: cats, minimum,
+    unassignedList: lists.unassigned, roleNaList: lists.roleNa,
+    entryErrors, unknownItems: unknown,
+  };
+}
+
+// 本人向けの一覧：未担当と会社都合の今回非該当（G）／完全非該当は別枠
+// master と sys を渡すと、入力に誤りのある項目は載せない（csq4Score と同じく未評価として扱う）
+function csq4Lists(sysDef, entries, master, sys) {
+  const unassigned = [], roleNa = [];
+  for (const it of sysDef.items) {
+    let e = entries[it.id];
+    if (e && master && sys && csq4CheckEntry(master, sys, it.id, e).length) e = undefined;
+    const k = kind(e);
+    const row = { id: it.id, cat: it.cat, name: it.name };
+    if (k === 'A') unassigned.push({ ...row, status: STATUS.UNASSIGNED, reason: e.unassignedReason || '', feedback: e.feedbackComment || '' });
+    else if (k === 'C') unassigned.push({ ...row, status: STATUS.NOT_APPLICABLE, naReasonType: NA_REASON.COMPANY, reason: e.naReason || '', periodFrom: e.periodFrom || null, periodTo: e.periodTo || null, feedback: e.feedbackComment || '' });
+    else if (k === 'R') roleNa.push({ ...row, reason: e.naReason || '' });
+  }
+  return { unassigned, roleNa };
+}
+
+// ---------- 最低条件（配点・基準点案 40〜47 行・GM実装仕様 55 行）----------
+// 状態：met｜not_met｜no_opportunity（対象がすべて除外＝実務機会なし・未確認）｜incomplete（未評価があり決まらない）｜pending_rule（資料で決まっていない）
+function avgCondition(key, label, min, items, entries) {
+  const g = groupAvg(items, entries);
+  let state;
+  if (g.unassessed) state = 'incomplete';
+  else if (!g.counted) state = 'no_opportunity';
+  else state = fcmp(g.avg, min) >= 0 ? 'met' : 'not_met';
+  return { key, label, min: fnum(min), avg: g.avg ? val(g.avg) : null, state, counts: { items: g.total, counted: g.counted, unassessed: g.unassessed, excluded: g.naRole + g.naCompany } };
+}
+function csq4Minimum(master, sys, gn, type, entries, sysDef) {
+  const row = master.minimum[gn];
+  const out = [];
+  const items = sysDef.items;
+  // 理念 5 分類の各平均
+  // 分類ごとの決まり（Codex #212 P2）：1 つでも未達なら未達・未評価があれば決まらない・どれかの分類の対象がすべて除外なら実務機会なし
+  const classes = master.philoClasses.map((c) => avgCondition('philo:' + c.key, '理念：' + c.name, fdec(row.philoClass), items.filter((i) => i.cat === 'PHILO' && i.cls === c.key), entries));
+  const cs = classes.map((c) => c.state);
+  out.push({
+    key: 'philoClass', label: '理念 5 分類の各平均', min: Number(row.philoClass), parts: classes,
+    state: cs.includes('not_met') ? 'not_met' : cs.includes('incomplete') ? 'incomplete' : cs.includes('no_opportunity') ? 'no_opportunity' : 'met',
+  });
+  if (sys === 'G') {
+    out.push(avgCondition('basic', '基本業務', fdec(row.basic), items.filter((i) => i.cat === 'BASIC'), entries));
+    const map = (master.systems.G.mainMap || {})[type];
+    if (map && map.each) {
+      // 両部門育成・G4 以上：サービスとキッチンの両方が主担当。それぞれの平均を G主担当の基準で見る（G他部門は使わない）。
+      // 1 つでも未達なら未達・未評価があれば決まらない・どれかの対象がすべて除外なら実務機会なし（部門ごとに分けた型と同じ）
+      const names = Object.fromEntries((master.systems.G.categories || []).map((c) => [c.key, c.short || c.name]));
+      const parts = map.main.map((cat) => avgCondition('gMain:' + cat, 'G主担当：' + (names[cat] || cat), fdec(row.gMain), items.filter((i) => i.cat === cat), entries));
+      const ps = parts.map((p) => p.state);
+      out.push({
+        key: 'gMain', label: 'G主担当（' + map.main.map((c) => names[c] || c).join('・') + 'のそれぞれ）', min: Number(row.gMain), cats: map.main, each: true, parts,
+        state: ps.includes('not_met') ? 'not_met' : ps.includes('incomplete') ? 'incomplete' : ps.includes('no_opportunity') ? 'no_opportunity' : 'met',
+      });
+    } else {
+      for (const [k, col, label] of [['gMain', 'main', 'G主担当'], ['gOther', 'other', 'G他部門']]) {
+        if (!map) { out.push({ key: k, label, min: Number(row[k]), state: 'pending_rule', note: master.systems.G.mainMapNote }); continue; }
+        const its = items.filter((i) => map[col].includes(i.cat));
+        out.push(Object.assign(avgCondition(k, label, fdec(row[k]), its, entries), { cats: map[col] }));
+      }
+    }
+  }
+  if (sys === 'S_CHEF') out.push(avgCondition('chefHygiene', 'Chef 衛生', fdec(row.chefHygiene), items.filter((i) => i.cat === 'HYGIENE'), entries));
+  if (sys === 'S_CHEF' || sys === 'S_OFFICE') out.push(avgCondition('sQuality', 'S 品質管理', fdec(row.sQuality), items.filter((i) => i.cat === 'QUALITY'), entries));
+  // 指定項目（G2 以上・S2 以上）：01-13・01-14・01-09・01-16 は対象の各項目が 2 点以上
+  const mi = master.minimumItems;
+  if (Number(gn) >= mi.fromGrade && mi.systems.includes(sys)) {
+    const parts = [];
+    for (const id of mi.ids) {
+      const it = items.find((i) => i.id === id);
+      if (!it) { parts.push({ id, state: 'no_item' }); continue; }
+      const e = entries[id];
+      const k = kind(e);
+      let state;
+      if (k === 'S') state = e.score >= mi.min ? 'met' : 'not_met';
+      else if (k === 'A') state = 'not_met';            // G の未担当は 0 点
+      else if (k === 'R' || k === 'C') state = 'excluded';
+      else state = 'incomplete';
+      parts.push({ id, state, score: k === 'S' ? e.score : k === 'A' ? 0 : null });
+    }
+    const ps = parts.filter((p) => p.state !== 'no_item').map((p) => p.state);
+    out.push({
+      key: 'items', label: '指定項目（各 2 点以上）', min: mi.min, parts,
+      state: ps.includes('not_met') ? 'not_met' : ps.includes('incomplete') ? 'incomplete' : ps.every((s) => s === 'excluded') ? 'no_opportunity' : 'met',
+    });
+  }
+  const st = out.map((c) => c.state);
+  // 実務機会なし（対象がすべて非該当）の条件があれば、全体も「達成」にしない（実務機会なし・未確認）
+  const overall = st.includes('not_met') ? 'not_met' : st.includes('incomplete') ? 'incomplete' : st.includes('pending_rule') ? 'pending_rule' : st.includes('no_opportunity') ? 'no_opportunity' : 'met';
+  return { overall, conditions: out, noOpportunity: out.filter((c) => c.state === 'no_opportunity').map((c) => c.key) };
+}
+
+// ---------- Prep ----------
+// input = { entries: { PH1: entry, ... }, quality: { Q1: 'clear'|'not_clear'|'unconfirmed', ... },
+//           measure: { trials: [{ date: 'YYYY-MM-DD', goodStd, actual }], independentStd, allStd }, currentStep: 'P1'..'P6'|null }
+// 時間は秒などの同じ単位（10 進の文字列か数）。行動確認スコアは時給に掛けない
+function csq4Prep(master, input) {
+  const P = csq4System(master, 'PREP');
+  const entries = input.entries || {};
+  const ids = itemMap(P);
+  const entryErrors = {};
+  for (const id of Object.keys(entries)) {
+    if (!ids.has(id)) { entryErrors[id] = ['unknown_item']; continue; }
+    const e = entries[id];
+    if (!e || e.status === undefined || e.status === STATUS.UNASSESSED) continue;
+    const er = csq4CheckEntry(master, 'PREP', id, e);
+    if (er.length) entryErrors[id] = er;
+  }
+  let sum = 0, scored = 0, na = 0, unassessed = 0;
+  for (const it of P.items) {
+    const e = entryErrors[it.id] ? undefined : entries[it.id];
+    const k = kind(e);
+    if (k === 'S') { sum += e.score; scored++; }
+    else if (k === 'R' || k === 'C') na++;
+    else unassessed++;
+  }
+  const score = scored ? fmul(frac(sum, 3 * scored), frac(100)) : null;
+  const anyInvalid = Object.keys(entryErrors).length > 0;
+  const state = unassessed || anyInvalid ? (scored ? 'in_progress' : 'not_started') : (scored ? 'complete' : 'not_calculable');
+
+  // 品質確認 Q1〜Q3（未実施・未確認をクリアにしない）
+  const q = input.quality || {};
+  const quality = P.quality.map((x) => ({ id: x.id, name: x.name, state: q[x.id] === 'clear' || q[x.id] === 'not_clear' ? q[x.id] : 'unconfirmed' }));
+  const qualityClear = quality.every((x) => x.state === 'clear');
+  const qualityState = quality.some((x) => x.state === 'not_clear') ? 'not_clear' : qualityClear ? 'clear' : 'unconfirmed';
+
+  const meas = csq4PrepMeasure(input.measure);
+  let pay;
+  if (qualityState !== 'clear') pay = { state: 'quality_' + qualityState, step: null };
+  else if (!meas.ok) pay = { state: 'unmeasured', step: null, reason: meas.reason };
+  else {
+    let step = null;
+    for (const p of P.pay) {
+      const smin = fdec(p.speedMin), rmin = fdec(p.rangeMin);
+      const sOk = p.speedInclusive ? fcmp(meas.speed, smin) >= 0 : fcmp(meas.speed, smin) > 0;
+      const rOk = fcmp(meas.range, rmin) >= 0;
+      if (sOk && rOk) step = p;
+    }
+    pay = { state: 'judged', step: step ? step.step : null, wageUsd: step ? step.wageUsd : null };
+    const order = P.pay.map((p) => p.step);
+    // 今の段が文字で入っているときだけ比べる（空・null・知らない段は比べない）
+    const cur = typeof input.currentStep === 'string' && input.currentStep ? order.indexOf(input.currentStep) : -1;
+    if (step && cur >= 0) {
+      const ni = order.indexOf(step.step);
+      pay.compare = ni > cur ? 'raise' : ni === cur ? 'same' : 'keep_current';   // 自動で下げない（確認して判断）
+    }
+  }
+  return {
+    ok: true, version: master.version, system: 'PREP',
+    state, confirmable: state === 'complete' && !anyInvalid,
+    score: val(score), counts: { items: P.items.length, scored, na, unassessed },
+    quality, qualityState,
+    measure: meas.ok ? { speed: val(meas.speed), range: val(meas.range), trials: meas.trials } : { reason: meas.reason },
+    pay, entryErrors,
+  };
+}
+// スピード＝良品完成分の標準作業時間 ÷ 手直しを含む実作業時間（別日 3 回の最低値）／習得範囲＝自立して完結できる作業の標準時間 ÷ 全作業の標準時間
+function csq4PrepMeasure(m) {
+  if (!m || !Array.isArray(m.trials)) return { ok: false, reason: 'no_measure' };
+  const days = new Set();
+  let speed = null;
+  for (const t of m.trials) {
+    if (!t || !csq4IsDate(t.date)) return { ok: false, reason: 'bad_trial_date' };
+    let g, a;
+    try { g = fdec(t.goodStd); a = fdec(t.actual); } catch (e) { return { ok: false, reason: 'bad_trial_value' }; }
+    if (a.n <= ZERO) return { ok: false, reason: 'zero_actual' };
+    if (g.n < ZERO) return { ok: false, reason: 'bad_trial_value' };
+    days.add(t.date);
+    const s = fdiv(g, a);
+    if (!speed || fcmp(s, speed) < 0) speed = s;
+  }
+  if (m.trials.length < 3 || days.size < 3) return { ok: false, reason: 'need_3_days' };
+  let ind, all;
+  try { ind = fdec(m.independentStd); all = fdec(m.allStd); } catch (e) { return { ok: false, reason: 'no_range' }; }
+  if (all.n <= ZERO) return { ok: false, reason: 'zero_all_std' };
+  if (ind.n < ZERO || fcmp(ind, all) > 0) return { ok: false, reason: 'bad_range' };
+  return { ok: true, speed, range: fdiv(ind, all), trials: m.trials.length };
+}
+return { CSQ4_VERSION, STATUS, NA_REASON, frac, fadd, fmul, fdiv, fcmp, fdec, fnum, fstr, fixed1, csq4IsDate, csq4HnlDate, csq4InPeriod, csq4System, csq4CheckEntry, csq4Score, csq4Lists, csq4Minimum, csq4Prep, csq4PrepMeasure };
+})();
+export const CSQ4_MASTER = {"version":"CAREER_2026_Q4_V1","note":"Career Score 2026 Q4（新制度）の評価表マスター。scripts/gen-cs-q4-master.py が Excel から作る。手で直さない。","source":{"file":"Funergy_評価制度_G_P_S (4).xlsx","sha256":"380884c8095898570ce2423ef5b424266299218797333bc9ff17a8dfd8bf6174","sheets":["G評価項目","Prep評価項目","S Chef項目","S Office・経理・人事項目","配点・基準点案","GM実装仕様"]},"period":{"tz":"Pacific/Honolulu","quarter":"2026-Q4","start":"2026-10-01","endExclusive":"2027-01-01"},"scale":{"0":"できていない","1":"支援が必要・不安定","2":"合意した担当範囲で自立して安定実行","3":"安定実行に加えて改善・指導・周囲への良い影響を継続"},"philoClasses":[{"key":"ENJOY","name":"楽しむ"},{"key":"THANK","name":"感謝"},{"key":"CARE","name":"思いやる"},{"key":"GROW","name":"成長"},{"key":"SINCERE","name":"誠実"}],"systems":{"G":{"name":"G","unassigned":true,"categories":[{"key":"PHILO","name":"Funergy Philosophy","short":"理念"},{"key":"BASIC","name":"基本業務スキル","short":"基本業務"},{"key":"SERVICE","name":"サービススキル","short":"サービス"},{"key":"KITCHEN","name":"キッチン／プレップ","short":"Kitchen"},{"key":"MARKETING","name":"マーケティング","short":"Marketing"},{"key":"MGMT","name":"マネジメント","short":"管理"},{"key":"NUMBERS","name":"数字管理","short":"数字"},{"key":"DEVELOP","name":"人材育成","short":"指導・育成"}],"items":[{"id":"01-01","cat":"PHILO","sub":"楽しむ","name":"自ら仕事を楽しむ工夫をし、前向きに取り組む","desc":"受け身で待つだけでなく、仕事の意味や楽しさを見つけ、工夫や協力を自分から行う。困難な場面でも必要な支援を求めて取り組む。性格の明るさだけでは判断しない。","detail":"","row":7,"cls":"ENJOY"},{"id":"01-02","cat":"PHILO","sub":"楽しむ","name":"仲間の良い行動や成長を認め、称賛する","desc":"仲間の良い行動・工夫・成長を具体的な言葉で認め、小さな成功や達成感を共有する。役職や親しさによって称賛する相手を偏らせない。","detail":"","row":8,"cls":"ENJOY"},{"id":"01-03","cat":"PHILO","sub":"楽しむ","name":"お客様に関心を持ち、喜んでいただける行動をする","desc":"お客様の反応や希望に関心を持ち、楽しんでいただける工夫を自ら行う。会話を望まない方にも配慮する。ここでは相手を大切にする姿勢を見て、接客手順の技術はサービスで扱う。","detail":"","row":9,"cls":"ENJOY"},{"id":"01-04","cat":"PHILO","sub":"感謝","name":"お客様の来店を当たり前にしない","desc":"来店時・退店時に感謝を伝える。忙しいときや常連のお客様にも丁寧な対応を続ける。","detail":"","row":10,"cls":"THANK"},{"id":"01-05","cat":"PHILO","sub":"感謝","name":"仲間の協力に感謝を伝える","desc":"手伝いや引き継ぎに対し、何をしてくれて助かったかを言葉にする。","detail":"","row":11,"cls":"THANK"},{"id":"01-06","cat":"PHILO","sub":"感謝","name":"周囲の支えに気づき、大切に行動する","desc":"仕込み・清掃・納品などを担う人や地域・取引先にも敬意を持って接する。準備してもらったものや共有設備を丁寧に扱い、周囲の協力を当たり前にしない。","detail":"","row":12,"cls":"THANK"},{"id":"01-07","cat":"PHILO","sub":"思いやる","name":"仲間の状況を見て助け合う","desc":"自分の持ち場だけでなく、困っている仲間に声をかけ、必要な支援をする。","detail":"","row":13,"cls":"CARE"},{"id":"01-08","cat":"PHILO","sub":"思いやる","name":"仲間に関心を持ち、相手の立場を確認して行動する","desc":"決めつけず話を聞き、経験・言語・状況の違いを踏まえて伝え方や対応を調整する。仲間の困り事や変化に気づき、必要な声かけをする。","detail":"","row":14,"cls":"CARE"},{"id":"01-09","cat":"PHILO","sub":"思いやる","name":"相手を尊重した言動をする","desc":"役職や相手によって敬意を変えない。威圧的な言い方や、人を傷つける言動を避ける。","detail":"","row":15,"cls":"CARE"},{"id":"01-10","cat":"PHILO","sub":"成長","name":"素直に学び、改善に活かす","desc":"分からないことを質問し、フィードバックを行動に反映する。意見や疑問を述べること自体を低評価にしない。","detail":"","row":16,"cls":"GROW"},{"id":"01-11","cat":"PHILO","sub":"成長","name":"苦手なことや新しいことに挑戦する","desc":"課題を把握し、必要な支援を求めながら未経験の仕事や苦手な業務に取り組む。","detail":"","row":17,"cls":"GROW"},{"id":"01-12","cat":"PHILO","sub":"成長","name":"自分が改善できる行動を考え、実践する","desc":"人のせいにして終わらず、自分の判断・準備・伝え方を振り返って次の行動を変え、その後も確認する。設備・制度・人員など会社側の課題も事実として報告する。すべてを本人の責任にしない。","detail":"","row":18,"cls":"GROW"},{"id":"01-13","cat":"PHILO","sub":"誠実","name":"嘘やごまかしをせず、事実を伝える","desc":"未実施の作業を完了扱いにしない。不明なことを分かったふりで答えず確認する。","detail":"","row":19,"cls":"SINCERE"},{"id":"01-14","cat":"PHILO","sub":"誠実","name":"ミスや問題を隠さず、早めに相談する","desc":"自分に不利な内容でも報告する。対応が難しい場合や遅れそうな場合も放置せず相談する。","detail":"","row":20,"cls":"SINCERE"},{"id":"01-15","cat":"PHILO","sub":"誠実","name":"仕事に誇りと責任を持ち、約束やルールを守る","desc":"どんな仕事にも真摯に向き合い、任された仕事をやり切る。難しい場合は事情を伝え、対応や引き継ぎまで行う。役割や仕事の種類で丁寧さを変えない。","detail":"","row":21,"cls":"SINCERE"},{"id":"01-16","cat":"PHILO","sub":"楽しむ","name":"不機嫌を周囲にぶつけず、落ち着いて接する","desc":"確認の要点：忙しくても無視・威圧・物への八つ当たりをせず、必要な返事と連携を続け、難しいときは相談している。\n例：感情を仲間にぶつけず支援を求めている。異論・相談・体調の申告は不機嫌として扱わない。","detail":"忙しさや私的な感情を理由に、呼びかけを意図的に無視する、きつく当たる、物を乱暴に扱うなどの行動をしない。必要な返事・連携を続け、難しいときは相談する。気分や表情だけで決めつけず、実際の言動を見る。異論・相談・体調の申告は不機嫌として扱わない。","row":22,"cls":"ENJOY"},{"id":"02-01","cat":"BASIC","sub":"店舗運営","name":"店舗オペレーションの基本を理解し実行する","desc":"営業の流れ、自分の担当、連携先を把握し、必要な準備と引き継ぎを行う。","detail":"","row":23},{"id":"02-02","cat":"BASIC","sub":"店舗運営","name":"Opening業務を正確に完了する","desc":"手順に沿って準備し、営業開始に間に合わせる。不備や不足は報告する。","detail":"","row":24},{"id":"02-03","cat":"BASIC","sub":"店舗運営","name":"Closing業務を正確に完了する","desc":"清掃・補充・保管・締め・安全確認を行い、翌日も円滑に営業できる状態にする。","detail":"","row":25},{"id":"02-04","cat":"BASIC","sub":"店舗運営","name":"各種リストを漏れなく使用し、作業・確認・記録を行う","desc":"確認の要点：店舗で使う仕込み表・Closing List・確認リスト・清掃リストを、担当範囲で漏れなく使用している。\n例：実際に作業・確認してから記録し、未完了や異常は対応・報告している。","detail":"仕込み表・Closing List・確認リスト・清掃リストなど、店舗で使用する担当業務の各種リストを、決められたタイミングで漏れなく使用する。実際に作業・確認してから記録し、未完了や異常がある場合は対応・報告する。","row":26},{"id":"02-05","cat":"BASIC","sub":"ルール理解・遵守","name":"勤怠・シフトルールを理解し守る","desc":"打刻、変更申請、欠勤・遅刻時の連絡を定められた方法で行う。","detail":"","row":27},{"id":"02-07","cat":"BASIC","sub":"ルール理解・遵守","name":"清潔さ（QSCのC）・衛生・安全の基本を実践する","desc":"確認の要点：客席・入口・トイレ・厨房・器具の汚れや臭いなどを確認し、営業中も清潔さを保っている。\n例：清掃・補充・整頓に加え、手洗い・身だしなみ・交差汚染防止・安全作業を行い、仕上がりも確認している。","detail":"清潔さ（QSCのC）は、客席・テーブル・椅子・メニュー・入口・トイレ・厨房・器具の汚れ、べたつき、臭い、ゴミ等を担当範囲で確認し、営業中も清掃・補充・整頓して清潔な状態を保つ。手洗い・身だしなみ・交差汚染防止・安全作業も実行する。清掃したかだけでなく、実際の仕上がりを確認する。","row":28},{"id":"02-08","cat":"BASIC","sub":"基本操作・知識","name":"POS／Toastを正確に操作する","desc":"注文・変更・会計を正しく行う。取消・返金は権限と手順を確認する。","detail":"","row":29},{"id":"02-09","cat":"BASIC","sub":"基本操作・知識","name":"担当GradeのKPIを理解し、日々の行動に結びつける","desc":"確認の要点：会社が定めた担当等級のKPIの意味を理解し、自分の日常の行動と結びつけて実践している。\n例：顧客満足度や客数などの指標について、自分の仕事がどう影響するかを説明し、行動へ反映している。","detail":"G2・G3共通の顧客満足度、リピート率、客数、ドリンク比率、Googleレビューなど、会社が設定したKPIの意味と自分の行動との関係を説明し、実践する。G4は全KPI・FL・売上管理、G5は担当エリアへの適用を扱う。ここでは日常の理解・行動を見て、店舗全体の数値分析は数字管理で扱う。達成結果は別評価。指標の定義・集計方法・目標は別途設定。","row":30},{"id":"02-10","cat":"BASIC","sub":"報連相・実行力","name":"相手に伝わる報連相を行い、理解と次の行動を確認する","desc":"確認の要点：事実・影響・対応状況・必要な判断を整理して適時に伝え、相手の理解と次の行動を確認している。\n例：言語や理解度に合わせて聞き直し・図・実演・翻訳ツールを使い、業務の意思疎通を図っている。","detail":"事実・影響・対応状況・判断してほしいことを整理して適時に伝える。相手の言語・理解度に合わせ、聞き直し・実演・図・翻訳ツール等を使い、理解と次の行動を確認する。英語の流暢さではなく業務の意思疎通を評価する。緊急時に必要な伝達は担当役割に応じて実務で確認する。","row":31},{"id":"02-11","cat":"BASIC","sub":"報連相・実行力","name":"指示・期限・完成条件を確認して実行する","desc":"内容を理解し期限内に完了・報告する。難しい場合は期限前に相談する。","detail":"","row":32},{"id":"02-12","cat":"BASIC","sub":"初期対応・判断","name":"トラブル時の初期対応を行う","desc":"安全確保や状況確認など担当範囲の対応を行い、必要な責任者へつなぐ。","detail":"","row":33},{"id":"02-13","cat":"BASIC","sub":"初期対応・判断","name":"状況に応じて自分の作業の優先順位を変える","desc":"安全、お客様対応、提供遅れを確認し作業順を調整する。迷う場合は相談する。","detail":"","row":34},{"id":"02-14","cat":"BASIC","sub":"ルール理解・遵守","name":"商品・業務手順の変更を習得し、実務に反映する","desc":"メニュー・レシピ・機器操作・業務手順の変更点を理解し、実際の業務で正しく実行する。情報管理のルール遵守は別の業務ルールで扱う。","detail":"","row":35},{"id":"03-01","cat":"SERVICE","sub":"基本接客","name":"基本接客を正確に行う","desc":"案内、注文確認、提供、会計、お見送りなど担当業務を店舗基準に沿って行う。","detail":"","row":36},{"id":"03-02","cat":"SERVICE","sub":"基本接客","name":"元気な挨拶・返事・声かけで、お客様を迎え、見送る","desc":"確認の要点：お客様に届く声と表情で歓迎・感謝を伝え、返事や店舗の声かけを忙しいときも続けている。\n例：店舗の雰囲気やお客様の状況に合わせ、来店時の挨拶と元気なお見送りを行っている。","detail":"来店時はお客様に届く声と表情で歓迎を伝える。呼びかけには、聞こえたことが分かる返事をする。退店時は感謝を込めて元気にお見送りする。店舗で定めた「やまびこ」の声かけにも参加する。声量だけでなく、歓迎・感謝が伝わり、忙しいときも続けているかを見る。店舗の雰囲気とお客様の状況に合わせる。","row":37},{"id":"03-03","cat":"SERVICE","sub":"基本接客","name":"お客様の様子に気づき、必要な配慮をする","desc":"呼ばれる前に様子を確認し、子ども連れなどの状況に応じ手助けを申し出る。","detail":"","row":38},{"id":"03-04","cat":"SERVICE","sub":"基本接客","name":"客席・受け取り場所の状況を把握し、案内を調整する","desc":"客席の空き・片付け・待ち客・受け取り場所の混雑を把握し、店舗の営業形態に合う案内や誘導を行う。商品の提供順・時間管理は03-05で評価する。","detail":"","row":39},{"id":"03-05","cat":"SERVICE","sub":"基本接客","name":"注文から提供までを把握し、適切なタイミングで提供する","desc":"料理・飲み物の準備状況を確認し、店舗の提供順・基準時間に沿って提供する。遅れや提供漏れに気づいたら厨房・担当者と連携する。自分で調理順を組む力は04-12で評価する。","detail":"","row":40},{"id":"03-06","cat":"SERVICE","sub":"提案","name":"お客様に合う料理・ドリンクを提案する","desc":"好み、人数、量、予算を踏まえ理由を添えて勧める。不確かな情報は確認する。","detail":"","row":41},{"id":"03-07","cat":"SERVICE","sub":"提案","name":"適切なタイミングで追加提案する","desc":"食事の進み具合に合わせて声をかける。断られた後の繰り返しなど押し売りをしない。","detail":"","row":42},{"id":"03-08","cat":"SERVICE","sub":"ファン作り","name":"再来店につながる関係をつくる","desc":"前回の会話や好みを活かす。名前を覚えるだけでなく、心地よい対応を続ける。","detail":"","row":43},{"id":"03-09","cat":"SERVICE","sub":"ファン作り","name":"クレームにつながる兆候に気づき対応する","desc":"待ち時間や注文の行き違いを確認し、説明や責任者への連絡を早めに行う。","detail":"","row":44},{"id":"03-10","cat":"SERVICE","sub":"ファン作り","name":"クレームに誠実かつ適切に対応する","desc":"話を聞き事実確認と必要な謝罪・説明を行う。権限を超える対応は責任者へつなぐ。","detail":"","row":45},{"id":"03-11","cat":"SERVICE","sub":"体験づくり","name":"店舗コンセプトに合う雰囲気をつくる","desc":"会話、声かけ、気配りを店舗に合わせ、他のお客様への影響も考える。","detail":"","row":46},{"id":"03-12","cat":"SERVICE","sub":"体験づくり","name":"利用目的に合わせた工夫をする","desc":"記念日や家族での食事など、確認できた目的に応じ、認められた工夫を行う。","detail":"","row":47},{"id":"04-01","cat":"KITCHEN","sub":"商品・仕込み","name":"商品・メニューの知識を業務に活かす","desc":"担当商品の材料、調理方法、量、特徴に加え、メニュー全体の構成や各商品の役割を把握する。アレルゲンなど不確かな情報は確認する。","detail":"","row":48},{"id":"04-02","cat":"KITCHEN","sub":"商品・仕込み","name":"正しい工程で仕込みを行う","desc":"レシピ・分量・手順を守り完成まで進める。必要に応じ基準を確認する。","detail":"","row":49},{"id":"04-03","cat":"KITCHEN","sub":"商品・仕込み","name":"必要量と完成時刻から仕込みの段取りを組む","desc":"必要量と完成時刻から作業順を決め、同時進行・道具・動線を工夫して待ち時間や手戻りを減らす。作業速度そのものは04-20、調理中の注文順は04-12で確認する。","detail":"","row":50},{"id":"04-04","cat":"KITCHEN","sub":"商品・仕込み","name":"食材を適切に管理する","desc":"入荷状態、期限、保管場所、使用順を確認し、品質に不安があれば使用前に相談する。","detail":"","row":51},{"id":"04-05","cat":"KITCHEN","sub":"在庫・発注","name":"在庫を正確に把握する","desc":"現物を確認し数量と単位をそろえて記録する。欠品や過剰在庫を共有する。","detail":"","row":52},{"id":"04-06","cat":"KITCHEN","sub":"在庫・発注","name":"棚卸を正確に実施する","desc":"決められた時点・方法で数え、漏れや二重計上を防ぐ。推測で記入しない。","detail":"","row":53},{"id":"04-07","cat":"KITCHEN","sub":"在庫・発注","name":"必要量を考えて発注・納品確認する","desc":"在庫、使用予定、納品日、締切を確認する。納品内容を照合し違いを報告する。","detail":"","row":54},{"id":"04-08","cat":"KITCHEN","sub":"原価・ロス","name":"歩留まりと規定分量を守り、食材を活用する","desc":"指定のカット・計量・分量を守り、可食部と廃棄部分を適切に扱う。切り落とし過多や盛りすぎを確認し、品質・安全を保ちながら歩留まりを改善する。","detail":"","row":55},{"id":"04-09","cat":"KITCHEN","sub":"原価・ロス","name":"ロスを把握し、削減に取り組む","desc":"廃棄量と理由を共有し、仕込み量や保管を見直す。安全性を犠牲にしない。","detail":"","row":56},{"id":"04-10","cat":"KITCHEN","sub":"品質・オペレーション","name":"味・食感・温度など調理品質を維持する","desc":"レシピと調理基準に沿い、味・食感・火入れ・温度等を安定させ、提供前に不適合を修正する。盛り付けの仕上げは04-19で確認する。","detail":"","row":57},{"id":"04-11","cat":"KITCHEN","sub":"品質・オペレーション","name":"衛生・温度管理を実行する","desc":"食品・設備を基準に沿って確認・記録し、異常時は定められた手順で対応する。","detail":"","row":58},{"id":"04-12","cat":"KITCHEN","sub":"品質・オペレーション","name":"注文と調理時間を踏まえ、調理の順番を組み立てる","desc":"注文順、商品ごとの調理時間、同時提供、温かい・冷たい商品の状態を考えて着手・仕上げの順番を調整する。単なる速さではなく、提供時に必要な状態をそろえる判断を評価する。","detail":"","row":59},{"id":"04-13","cat":"KITCHEN","sub":"品質・オペレーション","name":"ピーク時の遅れや不足に対応する","desc":"負荷がかかる箇所を把握し、応援や作業順の調整を相談する。","detail":"","row":60},{"id":"04-14","cat":"KITCHEN","sub":"商品・工程改善","name":"既存商品の品質や作業工程を改善する","desc":"味・見た目・残食・提供時間・作業負担などから既存商品の課題を整理し、レシピや工程の改善を提案する。承認を得て試し、品質と負担の変化を確認する。","detail":"","row":61},{"id":"04-15","cat":"KITCHEN","sub":"品質・オペレーション","name":"明確な返事・声出しで、活気と連携をつくる","desc":"確認の要点：明確な返事と声かけで、料理の完成・提供遅れ・欠品などを自ら伝え、連携を保っている。\n例：忙しいときも相手に届く声で共有し、店舗に応じてお出迎え・お見送り・やまびこにも参加している。","detail":"注文や依頼には、相手へ届く声ではっきり返事をする。料理の完成、提供の遅れ、欠品などを自ら伝える。オープンキッチンなどでは、お出迎え・お見送りや「やまびこ」の声かけにも参加する。声量だけでなく、相手に届く・連携につながる・忙しくても続けているかを見る。店舗の雰囲気やお客様の状況に合わせる。","row":62},{"id":"04-16","cat":"KITCHEN","sub":"原価・ロス","name":"商品ごとの原価を理解し、材料と分量を扱う","desc":"担当商品の主要材料とレシピ原価を確認し、分量・材料・仕入価格の変化が商品原価へ与える影響を説明する。指定外の代替材料や分量変更は承認を得る。店舗全体のFood Cost分析は数字管理で扱う。","detail":"","row":63},{"id":"04-17","cat":"KITCHEN","sub":"商品・工程改善","name":"新商品・メニューを提案する","desc":"店舗コンセプトとお客様の要望を踏まえ、新しい商品を提案する。試作時は味、分量、材料、原価、設備、仕込み・提供負担を確認し、承認を得て進める。新商品提案を任されている人のみ対象。","detail":"","row":64},{"id":"04-18","cat":"KITCHEN","sub":"商品・仕込み","name":"販売構成を把握し、仕込みや商品見直しに活かす","desc":"商品別の販売数や残数を確認し、よく出る商品・出ない商品を把握する。品切れや露出の違いも確認し、仕込み量やメニュー見直しに活かす。単なる売上順位の暗記では評価しない。","detail":"","row":65},{"id":"04-19","cat":"KITCHEN","sub":"品質・仕上げ","name":"分量・配置・見た目の基準を守り、丁寧に盛り付ける","desc":"指定の分量・配置・見本に沿って盛り付け、器の汚れ・こぼれ・崩れ・乱れを確認して提供前に整える。味・火入れ等の調理品質は04-10で評価する。","detail":"","row":66},{"id":"04-20","cat":"KITCHEN","sub":"スピード","name":"品質を保ち、仕込み・調理を会社の基準時間内に完了する","desc":"商品・数量・工程・設備条件をそろえ、指定の仕込み・調理を基準時間内に完成する。やり直し時間を含め、品質不合格品は完成量に数えない。作業順・同時進行の工夫は04-03／04-12で確認する。","detail":"","row":67},{"id":"05-01","cat":"MARKETING","sub":"店舗理解","name":"強み・コンセプト・ターゲットを施策に活かす","desc":"誰にどんな価値を提供する店か説明し、その方向に合う施策を考える。価格訴求・投稿・イベントが店舗の信頼やブランド価値を損なわないか確認する。","detail":"","row":68},{"id":"05-02","cat":"MARKETING","sub":"集客・販売施策","name":"売上課題を整理して施策を提案する","desc":"客数、客単価、時間帯など、どこに課題があるか確認してから考える。","detail":"","row":69},{"id":"05-03","cat":"MARKETING","sub":"集客・販売施策","name":"新規来店につながる施策を考える","desc":"地域、客層、利用場面を踏まえ、誰に何をどう届けるか具体化する。","detail":"","row":70},{"id":"05-04","cat":"MARKETING","sub":"集客・販売施策","name":"商品の組み合わせ・メニュー構成を見直し、客単価向上につなげる","desc":"主力商品・価格帯・セット構成・選びやすさを検討し、購入内容と客単価の変化を確認する。ドリンク・トッピング等の追加注文の仕組みは05-13で評価し、同じ施策を同じ観点で重複加点しない。","detail":"","row":71},{"id":"05-05","cat":"MARKETING","sub":"集客・販売施策","name":"お客様に喜ばれる施策を考え、実行し、顧客満足の向上につなげる","desc":"お客様の声・様子・店舗の状況から需要や困り事を捉え、店舗に合う商品・接客・利便性の施策を実行する。反応・意見・顧客満足度の指標を確認し、改善する。テイクアウト実施の有無を一律に求めない。","detail":"","row":72},{"id":"05-06","cat":"MARKETING","sub":"SNS・口コミ","name":"店舗や商品の魅力を自ら発信し、お客様の関心や来店につなげる","desc":"確認の要点：Google Business・SNS等で写真や文章を工夫し、店舗や商品の魅力を継続的に発信している。\n例：閲覧・反応・問い合わせ・確認できた来店とのつながりを振り返り、次の発信へ活かしている。","detail":"Google Business・SNS等で写真・文章・投稿内容を工夫して継続的に発信する。閲覧・反応・問い合わせ・確認できた来店とのつながりを振り返り、次の発信に活かす。旧05-07の写真・文章を統合。","row":73},{"id":"05-08","cat":"MARKETING","sub":"SNS・口コミ","name":"レビューの声を改善につなげる","desc":"繰り返される指摘や評価される点を整理して共有する。返信は会社の運用に従う。","detail":"","row":74},{"id":"05-09","cat":"MARKETING","sub":"企画・ブランド","name":"再来店につながる施策を考え、実行・検証する","desc":"再来店のきっかけや利用し続けやすさを考え、次回来店の案内・継続利用の仕組み等を実行し、確認できる再来店状況を検証する。今回の満足は05-05、紹介・投稿は05-14で分ける。","detail":"","row":75},{"id":"05-10","cat":"MARKETING","sub":"企画・ブランド","name":"お客様向けイベント・キャンペーンを企画・実行する","desc":"確認の要点：お客様に楽しんでいただく目的・対象・内容・費用・担当・日程を決め、店舗と連携して企画を実行している。\n例：店舗に合う催しを提案し、お客様の反応や現場の負担を振り返って次の企画へ活かしている。","detail":"顧客向けの集客・満足につながる企画を評価する。G5は管轄店舗、G6は全社の方向性や横断企画を支援する。社内の交流・楽しむ文化を目的とする06-21とは分ける。同じイベントの効果を05-05/09/12等と同じ観点で重複加点しない。","row":76},{"id":"05-11","cat":"MARKETING","sub":"企画・ブランド","name":"インフルエンサーや地域メディアとの連携で認知・来店につなげる","desc":"店舗の客層や魅力に合う相手を選び、紹介企画を提案・実行する。発信内容・反応・確認できた来店・費用対効果を確認して改善する。正式に担当した範囲で評価する。","detail":"","row":77},{"id":"05-12","cat":"MARKETING","sub":"企画・ブランド","name":"施策を振り返り、次の判断につなげる","desc":"指標を事前に決め、結果と費用を振り返る。継続・変更・終了の理由を説明する。","detail":"","row":78},{"id":"05-13","cat":"MARKETING","sub":"集客・販売施策","name":"追加注文につながる商品提案や販売の仕組みを考え、実行する","desc":"ドリンク・トッピング・デザート・サイド等、店舗に合う追加商品の組み合わせ・見せ方・提案のタイミングを工夫する。注文率・客単価・反応を確認して改善する。個々の接客提案とは分け、店舗の仕組みを評価する。","detail":"","row":79},{"id":"05-14","cat":"MARKETING","sub":"SNS・口コミ","name":"口コミや紹介が生まれるきっかけをつくり、実行する","desc":"人に伝えたくなる商品・接客・店内の工夫や、感想を共有しやすい仕組みを実行する。反応や紹介・投稿の状況を確認して改善する。顧客満足・再来店と同じ成果を重複加点しない。","detail":"","row":80},{"id":"06-01","cat":"MGMT","sub":"方針・実行","name":"目標や方針を具体的な行動にする","desc":"何を、誰が、いつまでに行うか決め、進捗と完了を確認する。","detail":"","row":81},{"id":"06-02","cat":"MGMT","sub":"方針・実行","name":"目的を伝え、スタッフの協力を得る","desc":"背景と狙いを説明し、現場の意見を聞き、役割を明確にして進める。","detail":"","row":82},{"id":"06-03","cat":"MGMT","sub":"方針・実行","name":"相手に伝わる指示を出し、理解と実行を確認する","desc":"内容・優先順位・期限・求める状態を、相手の言語・理解度に合わせて説明・実演等で伝え、相手の理解と実行を確認する。02-10の報連相とは、部門・チームへの具体的な指示という観点で分ける。","detail":"","row":83},{"id":"06-04","cat":"MGMT","sub":"方針・実行","name":"優先順位を判断し、チームの動きを調整する","desc":"安全、品質、お客様対応、人員状況を踏まえ、人と作業を調整する。","detail":"","row":84},{"id":"06-05","cat":"MGMT","sub":"問題解決","name":"問題を発見し、解決まで進める","desc":"繰り返すミスや滞りを把握し、原因、対応者、期限を決める。指摘だけで終わらせない。","detail":"","row":85},{"id":"06-06","cat":"MGMT","sub":"問題解決","name":"現場の意見を聞き、改善に反映する","desc":"当事者から状況を確認して実行可能な方法を考える。不採用の提案にも理由を伝える。","detail":"","row":86},{"id":"06-07","cat":"MGMT","sub":"人員・配置","name":"週ごとの売上・繁閑を予測し、必要な人員とスキルをそろえたシフトを作成する","desc":"過去売上・曜日傾向・予約・イベント等から翌週の日別・時間帯別の売上と忙しさを予測する。必要労働時間とスキルを見積もり、人件費とのバランスを踏まえて編成する。G3は委任された部門の予測・作成範囲。","detail":"","row":87},{"id":"06-08","cat":"MGMT","sub":"人員・配置","name":"実際の営業状況に応じ、品質と人件費を踏まえて人員を調整する","desc":"実際の繁閑・提供時間・負担・休憩・品質を見て、応援・勤務時間・人員体制を権限内で調整する。06-07の事前編成、06-09の持ち場配置とは分ける。","detail":"","row":88},{"id":"06-09","cat":"MGMT","sub":"人員・配置","name":"ピーク時の担当ポジション・作業分担を調整し、滞りを解消する","desc":"その場にいるスタッフの技能と負荷を見て、誰をどの持ち場・作業へ回すか判断する。人数や勤務時間の調整は06-08で評価する。","detail":"","row":89},{"id":"06-10","cat":"MGMT","sub":"MTG・情報共有","name":"店舗MTGを行動につながる場にする","desc":"課題、意見、決定事項、担当、期限を整理し、欠席者にも共有する。","detail":"","row":90},{"id":"06-11","cat":"MGMT","sub":"MTG・情報共有","name":"相談や意見を出しやすいチームをつくる","desc":"報告を受けたら状況を確認する。発言が少ない人にも意見を伝える機会をつくる。","detail":"","row":91},{"id":"06-12","cat":"MGMT","sub":"MTG・情報共有","name":"上長への報告とスタッフへの伝達を行う","desc":"判断が必要な事項を適時に上げ、会社方針を現場の行動に結びつけて説明する。","detail":"","row":92},{"id":"06-13","cat":"MGMT","sub":"判断・定着","name":"トラブル時に必要な対応を指揮する","desc":"安全と影響を確認し、権限内で判断する。権限外は上長へつなぐ。","detail":"","row":93},{"id":"06-14","cat":"MGMT","sub":"判断・定着","name":"改善を継続・仕組み化する","desc":"手順、担当、確認方法を決め、担当者が変わっても続く状態にする。","detail":"","row":94},{"id":"06-15","cat":"MGMT","sub":"判断・定着","name":"有効な改善を他店舗へ展開する","desc":"実施条件と結果を整理し、他店での適用条件を確認して共有する。","detail":"","row":95},{"id":"07-01","cat":"NUMBERS","sub":"売上・予実","name":"売上予算と前提を理解する","desc":"金額だけでなく営業日数、客数、客単価など予算の成り立ちを説明する。","detail":"","row":96},{"id":"07-02","cat":"NUMBERS","sub":"売上・予実","name":"日次の売上と営業状況を確認する","desc":"売上、客数、客単価を確認し、欠品、予約、営業時間などと照合する。","detail":"","row":97},{"id":"07-03","cat":"NUMBERS","sub":"売上・予実","name":"予算と実績の差を把握する","desc":"差額・達成率を確認し、差につながった要素を整理する。不明な原因は断定しない。","detail":"","row":98},{"id":"07-04","cat":"NUMBERS","sub":"売上・予実","name":"客数・客単価・来店動機を読み取る","desc":"客数と客単価を分け、来店動機は確認できた情報に基づき整理する。","detail":"","row":99},{"id":"07-05","cat":"NUMBERS","sub":"FL・コスト管理","name":"Food Costと変動要因を理解する","desc":"会社の計算方法を使い、仕入価格、棚卸、ロス、販売構成の影響を確認する。","detail":"","row":100},{"id":"07-06","cat":"NUMBERS","sub":"FL・コスト管理","name":"Labor %と変動要因を理解する","desc":"売上と人件費を確認し、売上減と労働時間増による比率上昇を区別する。","detail":"","row":101},{"id":"07-07","cat":"NUMBERS","sub":"販売機会・改善","name":"欠品・提供遅れ等の販売機会損失を把握し、改善する","desc":"確認の要点：欠品・注文取消・提供遅れ・受注停止の件数・時間・原因を記録し、販売機会の損失を減らしている。\n例：発生傾向から仕込み量・発注・提供体制を改善し、対策後の変化を確認している。","detail":"欠品、注文取消、提供遅れ、受注停止等について、確認できた件数・発生時間・原因を記録し、仕込み量・発注・提供体制等の改善につなげる。日次の売上確認とは分けて、発生傾向と対策効果を確認する。売れたはずの金額を推測で確定しない。G4以上の担当範囲で評価し、G2・G3の店舗全体の数字責任には追加しない。","row":102},{"id":"07-08","cat":"NUMBERS","sub":"分析・改善","name":"条件をそろえて数値を比較する","desc":"前年・前月・前週の曜日、営業日数、休業、イベントの違いを確認する。","detail":"","row":103},{"id":"07-09","cat":"NUMBERS","sub":"分析・改善","name":"異常値や集計の誤りに気づく","desc":"大きな増減があれば入力・集計・計上時期を確認してから原因を調べる。","detail":"","row":104},{"id":"07-10","cat":"NUMBERS","sub":"分析・改善","name":"数字から改善案を出す","desc":"どの数値をどの行動で改善するか説明し、費用、品質、スタッフへの影響も確認する。","detail":"","row":105},{"id":"07-11","cat":"NUMBERS","sub":"分析・改善","name":"改善の結果を検証する","desc":"実施前後と他の変化を踏まえて判断し、売上増だけで成功と決めない。","detail":"","row":106},{"id":"07-12","cat":"NUMBERS","sub":"分析・改善","name":"売上・Food Cost・Laborの関係を理解する","desc":"確認の要点：売上・Food Cost・Laborの金額と比率を確認し、変動の理由や相互の関係を説明している。\n例：売上・仕入・ロス・労働時間が食材原価と人件費に与える影響を、FL合計だけでなく分けて捉えている。","detail":"G4では売上、食材原価（Food Cost）、人件費（Labor）の金額と比率を確認し、売上変動や仕入・ロス・労働時間がF・Lそれぞれに与える影響を説明する。FL合計だけで判断しない。利益管理・利益目標の達成はG4の評価対象に含めない。","row":107},{"id":"08-01","cat":"DEVELOP","sub":"教え方","name":"業務とルールを順序立てて教える","desc":"理由と完成基準を説明し、見本、一緒に実施、本人の実施、確認と進める。理念やルールの意味も説明する。","detail":"","row":108},{"id":"08-02","cat":"DEVELOP","sub":"教え方","name":"相手の習熟度に合わせて指導する","desc":"習熟度を確認して説明量、練習方法、任せる範囲を調整する。伝わらなければ教え方を変える。","detail":"","row":109},{"id":"08-03","cat":"DEVELOP","sub":"教え方","name":"良い行動や成長を具体的に認める","desc":"何がどう良かったか伝え、本人が次も再現できるようにする。","detail":"","row":110},{"id":"08-04","cat":"DEVELOP","sub":"教え方","name":"改善点を伝え、習得まで支援する","desc":"事実、基準、次の行動を伝えて再確認する。人格否定や威圧的な指導をしない。","detail":"","row":111},{"id":"08-05","cat":"DEVELOP","sub":"見極め・目標設定","name":"強みと課題を具体的に捉える","desc":"印象ではなく実際の仕事から説明し、本人の認識も確認する。","detail":"","row":112},{"id":"08-06","cat":"DEVELOP","sub":"見極め・目標設定","name":"スキルを基準に沿って判断する","desc":"スキルマトリクスや実演で確認する。好き嫌いや勤続年数だけで判断しない。","detail":"","row":113},{"id":"08-07","cat":"DEVELOP","sub":"見極め・目標設定","name":"習熟度と希望を踏まえ、仕事を任せる機会をつくり、自立を支える","desc":"確認の要点：習熟度と希望を踏まえ、教える・任せる・実行を確認する段階を通じ、担当できる仕事を広げている。\n例：発注の手順を教えて本人に任せ、内容と実行を確認し、自立できるよう支えている。","detail":"G2・G3にも発注等の実務機会を設ける。習得する仕事・到達状態・確認時期を本人と共有し、習熟度・希望・現場の安全や品質を踏まえて任せる。担当を広げた後も実行を確認し、必要な助言と振り返りで自立を支える。任せた件数だけで評価せず、抱え込みを減らし実務機会と自立をつくれているかを見る。G3の日常指導にも適用し、G4以上のリーダー・後継者育成は08-11で評価する。","row":114},{"id":"08-08","cat":"DEVELOP","sub":"見極め・目標設定","name":"Tip Rate申請を根拠に基づいて判断する","desc":"会社基準に沿って習熟状況を確認し、申請理由を説明する。権限のある人のみ対象。","detail":"","row":115},{"id":"08-09","cat":"DEVELOP","sub":"育成・定着","name":"意欲や困り事を確認し、支援する","desc":"負担、目標、困り事を聞き、必要な対応を考える。気持ちを決めつけない。","detail":"","row":116},{"id":"08-10","cat":"DEVELOP","sub":"育成・定着","name":"定着を妨げる問題を把握し、対応につなげる","desc":"発言や勤務状況の変化をきっかけに話を聞き、必要なら上長と連携する。退職の有無だけで採点しない。","detail":"","row":117},{"id":"08-11","cat":"DEVELOP","sub":"育成・定着","name":"次のリーダー候補に成長機会をつくる（G4以上）","desc":"確認の要点：リーダー・後継者候補に段階的に役割を任せ、振り返りと支援を通じて自立を促している。\n例：判断・実行・他者への指導を任せ、習得状況と担当できる範囲の広がりを確認している。","detail":"G4以上を対象とし、リーダー・後継者候補へ段階的に役割を任せ、振り返りと支援を行う。人数だけでなく、判断・実行・他者への指導を自立して行える範囲の広がりを見る。G1〜G3では本項目を必須にせず、担当機会がない場合は上司が「該当しない」を選択する。G3の日常の業務指導・習得確認は08-01〜07等で評価する。 G4は次のリーダー、G5は店長、G6はAM等の管轄責任者・後継者に判断・実行・教育を段階的に任せ、自立と定着を確認する。本人が抱え込み続けるのではなく、必要な権限・支援・振り返りを整える。","row":118},{"id":"06-16","cat":"MGMT","sub":"現場把握・予防","name":"現場を訪れ、小さな違和感や問題の兆候を捉える（G5・G6中心）","desc":"確認の要点：現場で営業・QSC・人の動きを見て、スタッフの話と照合し、小さな変化や違和感を早めに確かめている。\n例：訪問時に提供の遅れや会話の減少に気づき、店長と状況を確認して対応につなげている。","detail":"G5は管轄店舗、G6は会社全体のリスクに応じた現場把握を担う。平常時も現場接点を継続し、繁忙帯を含む観察・対話・記録から兆候を確認する。訪問回数や滞在時間だけで評価せず、何に気づき、何を確かめ、誰へつないだかを見る。聞いた話や印象だけで人を断定しない。数字の兆候は07-15、個別の支援計画は06-17、横断支援の調整は06-19で評価し、同じ事実を同じ観点で重複加点しない。","row":119},{"id":"06-17","cat":"MGMT","sub":"店舗支援・信頼","name":"店舗の責任者・スタッフの声を聞き、課題の解決まで継続して支える（G5・G6中心）","desc":"確認の要点：店舗の責任者・スタッフの負担や困り事を聞き、必要な支援と次の行動を一緒に決め、対応後も確認している。\n例：店長不在の店舗でも、現場の相談相手と連絡体制を明確にし、必要な支援を手配して解消したか確かめている。","detail":"G5は管轄店舗、G6はAM等の管轄責任者を通じた全社の支援体制と、必要に応じた店舗支援を担う。店長の在籍を前提にせず、責任者・リーダー・スタッフとの定期的な対話や相談機会を持つ。店長不在店では連絡窓口・判断する人・支援担当を明確にし、現場の負担や問題を放置しない。相手の話を聞き、事実・困り事・会社側の課題を分けて捉える。支援内容・担当・期限を決め、回答や約束を守り、解決まで確認して信頼を築く。何でも引き受けることや好かれることを評価せず、必要な指摘も敬意を持って伝える。相談件数の少なさだけで良好と判断しない。理念01-07/08/09の姿勢とは、支援の継続・完了という観点で分ける。","row":120},{"id":"06-18","cat":"MGMT","sub":"協力体制・合意","name":"店舗の責任者・スタッフが納得して協力できる方針・役割・連携体制をつくる（G5・G6中心）","desc":"確認の要点：目的・判断理由・役割・必要な支援を伝え、店舗の責任者・スタッフの意見や現場事情を踏まえて協力体制を整えている。\n例：新しい取組を現場と相談し、担当と期限を合意して実行を確認し、難しい点は調整している。","detail":"G5は管轄店舗間、G6はAM・店舗の責任者・スタッフ・Office等を含む全社の協力体制を担う。店長不在店も含め、会社方針の背景・守る基準・担当・判断する人・期限を明確にし、必要な権限・情報・支援をそろえる。異論や懸念を聞き、採用しない意見にも理由を伝える。威圧・一方的な押付けや表面的な賛成を協力の証拠にしない。合意後に各人が必要な行動を実行できているか確認する。単店舗スタッフへの説明06-02と同じ観点で重複加点しない。","row":121},{"id":"06-19","cat":"MGMT","sub":"店舗横断支援","name":"支援が必要な店舗へ、人員・教育・運営の支援を調整する（G5・G6中心）","desc":"確認の要点：課題の深刻さと現場の負担から支援の優先順位を決め、他店への影響も確認して必要な応援・教育・運営支援を届けている。\n例：不足する技能や人員を店長と確認し、応援元の体制も守って支援を組み、終了後の自立状況を確かめている。","detail":"G5は管轄内、G6は全社の資源配分を調整する。数字や現場観察から見つけた課題について、支援目的・担当・期限・見直し時期を決めて実行する。実際の配分と支援効果を確認し、同じ店舗への恒常的なしわ寄せや受け手の依存を防ぐ。赤字や目標未達の店舗だけに限らず、品質・人員・負担の悪化を未然に防ぐ支援も評価する。単店の人員調整06-08、数字による早期発見07-15、個別対話06-17とは観点を分ける。","row":122},{"id":"06-20","cat":"MGMT","sub":"部門連携・解決","name":"Office・Chef等と連携し、店舗だけで解決できない課題を完結させる（G5・G6中心）","desc":"確認の要点：店舗・Office・Chef等の間で事実と課題を共有し、担当・判断者・期限を明確にして解決まで進めている。\n例：設備や仕入れ、手続きの課題を適切な相手へつなぎ、引き渡し後も現場で解消したか確認している。","detail":"G5は管轄店に必要な連携、G6は全社の部門間連携と繰り返す課題の解消を担う。自分の権限外を抱え込まず、権限内の調整と上申を適時に行う。連絡しただけで完了とせず、実行・現場での解決・必要な引き継ぎを確認する。専門領域の作業そのものは各担当の評価とし、管理者は連携・完結を評価する。06-19の人員等の店舗横断配分とは分ける。","row":123},{"id":"06-21","cat":"MGMT","sub":"楽しむ文化・交流","name":"仲間が楽しみ、店舗間のつながりが生まれる企画を提案・実行する（G5・G6中心）","desc":"確認の要点：仲間の声や店舗事情を踏まえ、楽しさ・交流・学びにつながる企画を提案し、無理なく参加できる運営と振り返りを行っている。\n例：店舗を越えた交流や称賛の場をつくり、参加者の声から次の企画や日常の連携へ活かしている。","detail":"G5は管轄の交流・学び、G6は全社の楽しむ文化の継続と店舗を越えるつながりを担う。目的・対象・費用・負担・担当を整理し、関係者と相談して企画・実行・振り返りを行う。イベントの派手さ・開催回数・参加人数だけで評価せず、日常の声かけ・称賛・協力にどうつながったかを見る。参加しない人を意欲不足と決めつけない。顧客向け集客企画05-10や理念上の姿勢01-01/02とは観点を分ける。","row":124},{"id":"07-13","cat":"NUMBERS","sub":"管轄・全社の計画","name":"管轄・全社の売上・FLの計画と見通しを立て、見直す（G5・G6中心）","desc":"確認の要点：会社の目標と店舗条件から売上・食材原価・人件費の計画を立て、実績や環境変化から見通しと対応を見直している。\n例：営業日数・客数・採用や価格の変化を店長と確認し、達成に必要な行動や支援を具体化している。","detail":"G5は管轄店舗の計画、G6は会社全体の計画・店舗間の整合・経営への提案を担う。会社が定めたKGI・予算の前提を使い、店長と営業条件・人員・原価の根拠を確認する。一律の削減や根拠のない目標を押し付けない。必要に応じ会社が定める利益目標も担当権限の範囲で扱う。G4には既存07-12の範囲を維持し、この全社計画を自動で必須にしない。実績の分析は07-14/15、現場支援の実行は06-17/19で分ける。","row":125},{"id":"07-14","cat":"NUMBERS","sub":"管轄・全社のFL分析","name":"管轄・全社のFLを店別に分析し、改善課題と優先順位を示す（G5・G6中心）","desc":"確認の要点：管轄・全社と店別のFood Cost・Laborを金額と比率で確認し、売上・単価・使用量・労働時間等に分けて課題を説明している。\n例：全体のFLが良くても悪化店舗を見落とさず、原因と優先課題を店長・関係者と共有している。","detail":"G5は管轄合計と店別、G6は会社全体・管轄別・店別を分析する。会社の集計定義と対象期間をそろえ、合計比率は原価額または人件費の合計÷同じ範囲の売上合計で求める。各店の比率を単純平均しない。仕入価格・営業条件・売上変動等の本人が動かしにくい要因も分け、品質・サービス・衛生・現場負担を犠牲にした削減を求めない。単店舗の理解07-05/06/12とは分析範囲を分ける。改善策の実行・検証は07-10/11、支援配分は06-19で評価する。","row":126},{"id":"07-15","cat":"NUMBERS","sub":"KGI・KPIの予兆管理","name":"KGI・KPIから問題の兆候を捉え、支援すべき店舗を見つける（G5・G6中心）","desc":"確認の要点：会社が定めた最終目標と途中の指標を継続して確認し、未達の結果だけでなく悪化の兆候から支援が必要な店舗を見つけている。\n例：売上・FL・お客様の声などの変化を現場で確かめ、店長と課題・対応期限を決めて改善状況を追っている。","detail":"KGI＝会社が定める最終目標、KPI＝進み具合を確認する指標。G5は管轄、G6は全社を対象とする。定例確認に加え、異常や急な悪化が見られる場合は早めに確認する。水準・推移・予算との差・営業条件を踏まえ、全体平均に隠れた店舗の課題も捉える。指標の種類・定義・確認頻度は会社の設定に従い、無関係な指標を一律に増やさない。指標悪化を本人の責任と断定せず現場で原因を確認し、支援の優先順位と改善状況を記録する。FLの要因分析は07-14、支援行動そのものは06-17/19として同じ事実を同じ観点で重複加点しない。","row":127},{"id":"08-12","cat":"DEVELOP","sub":"店長評価・育成の公平性","name":"店長・管理者の評価根拠を確認し、評価と育成のばらつきを整える（G5・G6中心）","desc":"確認の要点：店長・管理者の評価を実績と基準に照らして確認し、評価者や店舗による甘辛・実務機会の違いを整理している。\n例：非該当の理由や指導内容を確認し、具体的な根拠と次の成長目標をそろえて本人へ説明できるよう支えている。","detail":"G5は担当店長の評価・育成支援、G6はAM等の評価と全社の評価基準の運用を担う。点数を一律にそろえるのではなく、事実・期待水準・担当機会から判断理由の整合を確認する。上司が仕事を任せていないことを本人の低評価にしない。具体的な実務機会と支援を整え、評価後の進捗も確認する。人材の技能見極め08-06、後継者へ役割を任せる08-11とは、評価制度運用の公平性という観点で分ける。","row":128}],"weights":{"G1":{"Kitchen中心":{"weights":{"PHILO":20,"BASIC":30,"SERVICE":15,"KITCHEN":25,"MARKETING":0,"MGMT":0,"NUMBERS":5,"DEVELOP":5},"row":24},"Server中心":{"weights":{"PHILO":20,"BASIC":30,"SERVICE":25,"KITCHEN":15,"MARKETING":0,"MGMT":0,"NUMBERS":5,"DEVELOP":5},"row":25},"両部門育成":{"weights":{"PHILO":20,"BASIC":30,"SERVICE":20,"KITCHEN":20,"MARKETING":0,"MGMT":0,"NUMBERS":5,"DEVELOP":5},"row":26}},"G2":{"Kitchen中心":{"weights":{"PHILO":20,"BASIC":25,"SERVICE":15,"KITCHEN":25,"MARKETING":0,"MGMT":5,"NUMBERS":5,"DEVELOP":5},"row":27},"Server中心":{"weights":{"PHILO":20,"BASIC":25,"SERVICE":25,"KITCHEN":15,"MARKETING":0,"MGMT":5,"NUMBERS":5,"DEVELOP":5},"row":28},"両部門育成":{"weights":{"PHILO":20,"BASIC":25,"SERVICE":20,"KITCHEN":20,"MARKETING":0,"MGMT":5,"NUMBERS":5,"DEVELOP":5},"row":29}},"G3":{"Kitchen中心":{"weights":{"PHILO":20,"BASIC":10,"SERVICE":10,"KITCHEN":30,"MARKETING":5,"MGMT":10,"NUMBERS":5,"DEVELOP":10},"row":30},"Server中心":{"weights":{"PHILO":20,"BASIC":10,"SERVICE":30,"KITCHEN":10,"MARKETING":5,"MGMT":10,"NUMBERS":5,"DEVELOP":10},"row":31},"両部門育成":{"weights":{"PHILO":20,"BASIC":10,"SERVICE":20,"KITCHEN":20,"MARKETING":5,"MGMT":10,"NUMBERS":5,"DEVELOP":10},"row":32}},"G4":{"店長":{"weights":{"PHILO":20,"BASIC":10,"SERVICE":15,"KITCHEN":15,"MARKETING":5,"MGMT":15,"NUMBERS":10,"DEVELOP":10},"row":33}},"G5":{"管轄責任":{"weights":{"PHILO":20,"BASIC":10,"SERVICE":5,"KITCHEN":5,"MARKETING":10,"MGMT":20,"NUMBERS":15,"DEVELOP":15},"row":34}},"G6":{"全社責任":{"weights":{"PHILO":20,"BASIC":10,"SERVICE":5,"KITCHEN":5,"MARKETING":10,"MGMT":20,"NUMBERS":15,"DEVELOP":15},"row":35}}},"mainMap":{"Kitchen中心":{"main":["KITCHEN"],"other":["SERVICE"]},"Server中心":{"main":["SERVICE"],"other":["KITCHEN"]},"両部門育成":{"main":["SERVICE","KITCHEN"],"each":true},"店長":{"main":["SERVICE","KITCHEN"],"each":true},"管轄責任":{"main":["SERVICE","KITCHEN"],"each":true},"全社責任":{"main":["SERVICE","KITCHEN"],"each":true}},"mainMapNote":"主担当で分けるのは G1〜G3 の Kitchen中心・Server中心だけ。両部門育成と G4 以上（店長・管轄責任・全社責任）はサービスとキッチンの両方が主担当で、それぞれの平均を G主担当の基準で見る（G他部門は使わない）。ほかの型は決まっていないので判定を保留"},"S_CHEF":{"name":"S Chef","unassigned":false,"categories":[{"key":"PHILO","name":"理念","short":"理念"},{"key":"TECH","name":"技術・専門実務","short":"技術実務"},{"key":"HYGIENE","name":"衛生・安全","short":"衛生安全"},{"key":"QUALITY","name":"品質・管理","short":"品質管理"},{"key":"PRODUCT","name":"商品開発","short":"商品開発"},{"key":"COST_DESIGN","name":"原価設計","short":"原価設計"},{"key":"COST_IMPROVE","name":"原価改善","short":"原価改善"},{"key":"EFFICIENCY","name":"効率・改善","short":"効率改善"},{"key":"TEACH","name":"技術共有・育成","short":"指導・育成"}],"items":[{"id":"01-01","field":"理念：楽しむ","name":"自ら仕事を楽しむ工夫をし、前向きに取り組む","desc":"確認の要点：仕事の意味や楽しさを見つけ、自分から工夫・協力し、困難な場面も必要な支援を求めて取り組んでいる。\n例：忙しい日も作業の工夫を提案し、仲間と協力して前向きに進めている。","detail":"受け身で待つだけでなく、仕事の意味や楽しさを見つけ、工夫や協力を自分から行う。困難な場面でも必要な支援を求めて取り組む。性格の明るさだけでは判断しない。","row":7,"cat":"PHILO","cls":"ENJOY"},{"id":"01-02","field":"理念：楽しむ","name":"仲間の良い行動や成長を認め、称賛する","desc":"確認の要点：仲間の良い行動・工夫・成長を具体的に認め、役職や親しさに偏らず称賛している。\n例：仲間の確認や工夫で仕事が進んだとき、何が良かったかを言葉で伝えている。","detail":"仲間の良い行動・工夫・成長を具体的な言葉で認め、小さな成功や達成感を共有する。役職や親しさによって称賛する相手を偏らせない。","row":8,"cat":"PHILO","cls":"ENJOY"},{"id":"01-03","field":"理念：楽しむ","name":"お客様に関心を持ち、喜んでいただける行動をする","desc":"確認の要点：お客様の反応や希望に関心を持ち、相手の状況に配慮して喜ばれる工夫を自ら行っている。\n例：店舗に届いたお客様の要望を確認し、自分の担当業務で役立つ対応を行っている。","detail":"お客様の反応や希望に関心を持ち、楽しんでいただける工夫を自ら行う。会話を望まない方にも配慮する。ここでは相手を大切にする姿勢を見て、接客手順の技術はサービスで扱う。","row":9,"cat":"PHILO","cls":"ENJOY"},{"id":"01-16","field":"理念：楽しむ","name":"不機嫌を周囲にぶつけず、落ち着いて接する","desc":"確認の要点：忙しくても無視・威圧・物への八つ当たりをせず、必要な返事と連携を続け、難しいときは相談している。\n例：感情を仲間にぶつけず支援を求めている。異論・相談・体調の申告は不機嫌として扱わない。","detail":"忙しさや私的な感情を理由に、呼びかけを意図的に無視する、きつく当たる、物を乱暴に扱うなどの行動をしない。必要な返事・連携を続け、難しいときは相談する。気分や表情だけで決めつけず、実際の言動を見る。異論・相談・体調の申告は不機嫌として扱わない。","row":10,"cat":"PHILO","cls":"ENJOY"},{"id":"01-04","field":"理念：感謝","name":"お客様の来店を当たり前にしない","desc":"確認の要点：来店への感謝を忘れず、忙しいときや常連のお客様にも丁寧な対応を続けている。\n例：来店・退店時に感謝を伝え、お客様からの要望や店舗からの問い合わせにも丁寧に応じている。","detail":"来店時・退店時に感謝を伝える。忙しいときや常連のお客様にも丁寧な対応を続ける。","row":11,"cat":"PHILO","cls":"THANK"},{"id":"01-05","field":"理念：感謝","name":"仲間の協力に感謝を伝える","desc":"確認の要点：手伝いや引き継ぎを当たり前にせず、仲間の協力に具体的な言葉で感謝を伝えている。\n例：急な依頼を手伝ってくれた仲間へ、何をしてくれて助かったかを伝えている。","detail":"手伝いや引き継ぎに対し、何をしてくれて助かったかを言葉にする。","row":12,"cat":"PHILO","cls":"THANK"},{"id":"01-06","field":"理念：感謝","name":"周囲の支えに気づき、大切に行動する","desc":"確認の要点：仕込み・清掃・納品を担う人や地域・取引先を尊重し、準備されたものや共有物を丁寧に扱っている。\n例：周囲の協力を当たり前にせず感謝を伝え、食材・資料・設備を大切に扱っている。","detail":"仕込み・清掃・納品などを担う人や地域・取引先にも敬意を持って接する。準備してもらったものや共有設備を丁寧に扱い、周囲の協力を当たり前にしない。","row":13,"cat":"PHILO","cls":"THANK"},{"id":"01-07","field":"理念：思いやる","name":"仲間の状況を見て助け合う","desc":"確認の要点：自分の持ち場だけでなく仲間の状況を見て、困っている人に声をかけ、必要な支援をしている。\n例：締切や作業が重なった仲間へ状況を確認し、自分が対応できる仕事を手伝っている。","detail":"自分の持ち場だけでなく、困っている仲間に声をかけ、必要な支援をする。","row":14,"cat":"PHILO","cls":"CARE"},{"id":"01-08","field":"理念：思いやる","name":"仲間に関心を持ち、相手の立場を確認して行動する","desc":"確認の要点：決めつけずに話を聞き、相手の経験・言語・状況に合わせて伝え方や対応を調整している。\n例：説明が伝わらない場合は図や実演を使い、仲間の困り事や変化にも声をかけている。","detail":"決めつけず話を聞き、経験・言語・状況の違いを踏まえて伝え方や対応を調整する。仲間の困り事や変化に気づき、必要な声かけをする。","row":15,"cat":"PHILO","cls":"CARE"},{"id":"01-09","field":"理念：思いやる","name":"相手を尊重した言動をする","desc":"確認の要点：役職や相手によって敬意を変えず、威圧的な言い方や人を傷つける言動を避けている。\n例：意見が違う場合も話を聞き、人前で責めず、事実と改善点を落ち着いて伝えている。","detail":"役職や相手によって敬意を変えない。威圧的な言い方や、人を傷つける言動を避ける。","row":16,"cat":"PHILO","cls":"CARE"},{"id":"01-10","field":"理念：成長","name":"素直に学び、改善に活かす","desc":"確認の要点：分からないことを質問し、フィードバックを受け止めて改善を続けている。\n例：指摘された作業を見直して実行し、その後も同じ抜けがないか確認している。","detail":"分からないことを質問し、フィードバックを行動に反映する。意見や疑問を述べること自体を低評価にしない。","row":17,"cat":"PHILO","cls":"GROW"},{"id":"01-11","field":"理念：成長","name":"苦手なことや新しいことに挑戦する","desc":"確認の要点：自分の課題を把握し、必要な支援を求めながら未経験の仕事や苦手な業務に挑戦している。\n例：練習や確認の機会を相談し、実際に取り組んで自立してできる範囲を広げている。","detail":"課題を把握し、必要な支援を求めながら未経験の仕事や苦手な業務に取り組む。","row":18,"cat":"PHILO","cls":"GROW"},{"id":"01-12","field":"理念：成長","name":"自分が改善できる行動を考え、実践する","desc":"確認の要点：人のせいにして終わらず、自分の判断・準備・伝え方も振り返り、次の行動を変えて確認している。\n例：連携が遅れた原因を確かめ、自分の準備や伝え方を改善し、会社側の課題も事実として報告している。","detail":"人のせいにして終わらず、自分の判断・準備・伝え方を振り返って次の行動を変え、その後も確認する。設備・制度・人員など会社側の課題も事実として報告する。すべてを本人の責任にしない。","row":19,"cat":"PHILO","cls":"GROW"},{"id":"01-13","field":"理念：誠実","name":"嘘やごまかしをせず、事実を伝える","desc":"確認の要点：嘘やごまかしをせず、実施状況や分からないことを事実どおりに伝えている。\n例：未完了の仕事を完了と報告せず、不明な数字や状況は確認してから伝えている。","detail":"未実施の作業を完了扱いにしない。不明なことを分かったふりで答えず確認する。","row":20,"cat":"PHILO","cls":"SINCERE"},{"id":"01-14","field":"理念：誠実","name":"ミスや問題を隠さず、早めに相談する","desc":"確認の要点：自分に不利なミスや問題も隠さず報告し、難しい対応や遅れを放置せず早めに相談している。\n例：気づいた時点で影響する相手へ事実・対応案・必要な支援を伝えている。","detail":"自分に不利な内容でも報告する。対応が難しい場合や遅れそうな場合も放置せず相談する。","row":21,"cat":"PHILO","cls":"SINCERE"},{"id":"01-15","field":"理念：誠実","name":"仕事に誇りと責任を持ち、約束やルールを守る","desc":"確認の要点：仕事の種類で丁寧さを変えず、任された仕事を責任を持って完了・引き継ぎまで行っている。\n例：約束や期限を守り、難しい場合は期限前に相談して対応と引き継ぎを済ませている。","detail":"どんな仕事にも真摯に向き合い、任された仕事をやり切る。難しい場合は事情を伝え、対応や引き継ぎまで行う。役割や仕事の種類で丁寧さを変えない。","row":22,"cat":"PHILO","cls":"SINCERE"},{"id":"CF-01","field":"技術・専門実務","name":"食材の状態を見極め、適切に加工する","desc":"確認の要点：食材の鮮度・特性・用途を確認し、適切に下処理・カットしている。\n例：加工後の仕上がりと歩留まりを確認し、食材の状態に応じて扱い方を調整している。","detail":"食材の特性・鮮度・用途を確認して必要な下処理・カットを行う。","row":23,"cat":"TECH"},{"id":"CF-02","field":"技術・専門実務","name":"必要な調理技術を正しく実行する","desc":"確認の要点：担当商品に必要な火入れ・揚げ・焼きなどを、店舗の基準に沿って実行している。\n例：同じ商品を繰り返し調理しても、指定の仕上がりを安定して再現している。","detail":"担当商品に必要な火入れ・揚げ・焼き・生食等の技術を店舗基準で実行する。","row":24,"cat":"TECH"},{"id":"CF-03","field":"技術・専門実務","name":"味・食感・温度を安定して仕上げる","desc":"確認の要点：味・食感・温度を確認し、基準どおりの仕上がりを安定して保っている。\n例：提供前に味見や温度確認を行い、ずれがあれば修正・相談して再確認している。","detail":"同条件で必要な仕上がりを繰り返し再現し、不適合を修正・相談する。","row":25,"cat":"TECH"},{"id":"CF-04","field":"技術・専門実務","name":"品質を保ち、基準時間内に仕込み・調理を完成する","desc":"確認の要点：商品・数量・設備条件をそろえ、手直しを含む時間で品質と基準時間を満たしている。\n例：同条件で完成時間と良品の量を確認し、不合格品を完成量に含めず判定している。","detail":"商品・量・設備・応援条件をそろえ、会社の基準時間と良品完成量を確認する。手直し時間を含め、品質不合格品は完成量に数えない。","row":26,"cat":"TECH"},{"id":"CF-05","field":"衛生・安全","name":"日常の衛生状態を保ち、検査の不備を予防・改善する","desc":"確認の要点：厨房・設備・器具の清掃と現物確認を続け、衛生上の不備を予防・改善している。\n例：検査の有無にかかわらず日常点検を行い、不備や指摘があれば直し、その後の維持も確認している。","detail":"厨房・設備・器具・床の清掃と現物確認を続け、衛生上の不備を事前に発見・改善する。検査がない期間も日常点検・維持状況で確認する。衛生局等の指摘を受けた場合は、担当範囲の是正・再点検・再発防止を確認する。検査結果だけで本人の担当外の問題を一律採点しない。","row":27,"cat":"HYGIENE"},{"id":"CF-06","field":"衛生・安全","name":"温度・保管・手洗いを正しく実行する","desc":"確認の要点：手洗い・冷却・温度・保管期限・交差汚染防止の基準を守り、必要な記録を残している。\n例：器具の切替えと保管温度を確認し、基準外なら食材の使用可否を相談して対応・再確認している。","detail":"温度・保管期限・冷却・交差汚染防止・手洗いを日常作業で実行・記録する。清掃・検査の是正体制CF-05、資格と配置CF-11とは区別する。","row":28,"cat":"HYGIENE"},{"id":"CF-07","field":"衛生・安全","name":"アレルギー・異物混入を予防する","desc":"確認の要点：材料・アレルギー情報・器具を確認し、ホールと連携して混入を防いでいる。\n例：不明な材料は提供前に確認し、混入の疑いがあれば提供を止めて報告している。","detail":"確認・器具管理・情報連携を行い、不明な場合は提供前に確認する。","row":29,"cat":"HYGIENE"},{"id":"CF-08","field":"衛生・安全","name":"食中毒などの衛生事故に備え、発生時や疑いがある場合は初動対応・再発防止を行う","desc":"確認の要点：食中毒・異物混入・アレルギー事故に備え、手順確認や訓練を続けている。発生時や疑いがある場合は安全確保・提供停止・報告と再発防止を行う。\n例：連絡先と役割を共有して動ける状態を保ち、発生時は関係者と原因・対策・その後の実施状況を確認している。","detail":"食中毒・その疑い、異物混入、アレルギー事故などに備え、対応手順・連絡先・役割を共有し、訓練や手順確認で安全確保・提供停止・報告を実行できる状態を保つ。発生時や疑いがある場合は速やかに報告・連携し、被害拡大の防止、原因確認、権限内の対策、その後の実施確認を行う。事故がない期間も備えと訓練で確認し、事故の発生自体を評価の前提にしない。日常の衛生実行はCF-06/07、清掃・検査対応はCF-05で扱う。","row":30,"cat":"HYGIENE"},{"id":"CF-09","field":"品質・管理","name":"レシピどおりの味・分量・盛付を自分で再現する","desc":"確認の要点：指定レシピの材料・計量・工程・完成量・一食分・盛付を守り、自分で安定して再現している。\n例：別の日も味・重量・見た目を確認し、基準内の品質と分量にそろえている。","detail":"指定した材料・計量・工程・完成量・一食分の量・盛付基準を守り、自分で繰り返し再現する。調理技法CF-02、味の判断CF-03、レシピ文書CF-10、他者への教育CF-31と区別する。","row":31,"cat":"QUALITY"},{"id":"CF-10","field":"品質・管理","name":"材料・量・手順が分かる正確なレシピを整備する","desc":"確認の要点：材料・重量・工程・加熱冷却条件・完成量・一食分・保存方法を明記し、レシピを最新に保っている。\n例：分かりにくい記載を直し、変更履歴と最新版の保存先を関係者へ共有している。","detail":"材料名・単位・重量・下処理・工程・加熱や冷却条件・完成量・一食分・保存方法を明記し、版と変更履歴を管理する。文書の正確さ・使いやすさを評価し、原価計算CF-17、指導後の再現CF-31と分ける。","row":32,"cat":"QUALITY"},{"id":"CF-11","field":"衛生・安全","name":"Food Handlerを取得し、有資格者の配置を確認する","desc":"確認の要点：自身のFood Handler資格の有効期限を管理し、担当範囲で更新支援と必要な有資格者の配置確認を行っている。\n例：不在時間や更新漏れを事前に見つけ、店長等と代替配置・取得更新を調整して解消を確認している。","detail":"自身の有効なFood Handler資格を確認する。担当等級の範囲で取得・更新を支援し、仕込みを含む営業中の必要な有資格責任者の配置を、店長・シフト作成者と確認する。不足時の代替・連絡・再確認を記録する。取得だけと配置体制の成果を区別する。","row":33,"cat":"HYGIENE"},{"id":"CF-12","field":"品質・管理","name":"品質のばらつきを予防し、ずれがあれば改善する","desc":"確認の要点：完成品を見本や許容範囲と定期的に照合し、品質のばらつきを予防・改善している。\n例：味・重量・盛付のずれがあれば材料や工程を調べて修正し、後日も基準内か確認している。","detail":"完成品を見本・許容範囲と定期的に照合し、品質がそろった状態を維持する。ずれがあれば材料・計量・工程・設備等の原因を確認し、修正・再点検・定着確認を行う。S1〜S3は担当店舗、S4以上は会社全体の店舗間差も確認する。自分の再現CF-09や教育CF-31と同じ事実を同じ観点で重複加点しない。","row":34,"cat":"QUALITY"},{"id":"CF-13","field":"商品開発","name":"季節性とお客様の好みを踏まえ、新商品開発に主体的に取り組む","desc":"確認の要点：季節や店舗のお客様の好みを踏まえ、新商品を自ら提案し、関係者と協力して試作・改良している。\n例：旬の食材とお客様の声から商品を提案し、試食の反応をもとに味や分量を調整している。","detail":"季節・旬の食材・季節行事と、その店舗のお客様の好み・要望を踏まえ、喜ばれる商品を自ら考えて提案し、企画・試作・改良に取り組む。店舗のコンセプトに合わせ、店長・Kitchen Leader・他Chefと協力し、担当・期限・試作結果を共有する。S1〜S3は等級に応じた参加又は担当店の開発、S4以上は会社全体の商品開発を主導する。定期的な商品構成の更新はCF-14、導入・販売後の確認はCF-16で扱う。","row":35,"cat":"PRODUCT"},{"id":"CF-14","field":"商品開発","name":"お客様の好みに合わせ、メニューを定期的・主体的に更新する","desc":"確認の要点：販売状況やお客様の声を定期的に確認し、好みに合うメニューの改良・入れ替えを自ら提案・実行している。\n例：好評な定番を大切にしながら、反応の弱い商品やおすすめ商品の構成を見直している。","detail":"お客様に飽きられず、繰り返し来店を楽しんでいただけるよう、店舗で決めた周期で販売状況・お客様の声・好みの変化を確認し、指示を待たずにメニューの継続・改良・入れ替えを提案する。店長・Kitchen Leader等と連携して更新を実行する。人気の定番商品を大切にし、変更自体を目的にしない。新商品の企画・試作はCF-13、導入調整・販売後の検証はCF-16で扱い、同じ行動を同じ観点で重複評価しない。","row":36,"cat":"PRODUCT"},{"id":"CF-15","field":"商品開発","name":"仕込み負担と提供時間を踏まえて商品を設計する","desc":"確認の要点：味・価値・原価に加え、設備・仕込み負担・提供時間を踏まえ、現場で無理なく再現できる商品を設計している。\n例：試作時にピーク中の工程と提供時間を確かめ、負担の大きい作業を仕込みへ振り分けて再確認している。","detail":"新商品について、味・価値・原価・設備・仕込み工程・提供時間・技能で無理なく再現できるか試験する。既存営業の工程改善CF-28や指導CF-30とは区別する。","row":37,"cat":"PRODUCT"},{"id":"CF-16","field":"商品開発","name":"商品導入を連携して進め、販売後も改善する","desc":"確認の要点：導入前のレシピ・原価・仕込み・提供方法をそろえ、販売後も売れ方・品質・負担・原価を検証している。\n例：関係者と準備を進め、販売後に注文率やロス・提供時間を確認し、課題を改善している。","detail":"レシピ・原価・仕込み・提供方法の準備を関係者と確認し、販売開始後の売れ方・品質・作業負担・原価を検証する。S4以上は会社全体の導入・定着を確認する。レシピ教育の成果自体はCF-31で評価する。","row":38,"cat":"PRODUCT"},{"id":"CF-17","field":"原価設計","name":"レシピの原価を計算する","desc":"確認の要点：材料の単価・単位・使用量を確認し、商品や一食当たりの原価を正しく計算している。\n例：完成量と分量を照合し、仕入条件やレシピが変わった際も原価を更新している。","detail":"材料単価・単位・使用量を確認し、商品原価を正しく算出する。","row":39,"cat":"COST_DESIGN"},{"id":"CF-18","field":"原価設計","name":"歩留まりを設計へ反映する","desc":"確認の要点：加工前後の重量を実測し、実際の歩留まりを材料必要量と原価に反映している。\n例：歩留まりが変わった場合は原因を確認し、使用量や原価の設計を見直している。","detail":"仕入量と可食・使用量を確認し、実測した歩留まりを原価へ反映する。","row":40,"cat":"COST_DESIGN"},{"id":"CF-19","field":"原価設計","name":"仕入条件を比較する","desc":"確認の要点：品質・価格・規格・配送・安定供給を比較し、担当権限の範囲で仕入先の選択肢を示している。\n例：価格だけで決めず、納期や供給が途切れるリスクも含めて比較・提案している。","detail":"品質・価格・規格・配送・安定供給を比較し、権限内で選定案を示す。","row":41,"cat":"COST_DESIGN"},{"id":"CF-20","field":"原価設計","name":"売価・代替食材の選択肢を示す","desc":"確認の要点：品質・分量・商品価値を保ちながら、原価と利益を確認して売価や代替食材を提案している。\n例：候補ごとに品質と費用への影響を比較し、採用する場合の利点や注意点を示している。","detail":"品質と商品価値を保ち、原価と利益を確認して価格・材料の変更案を示す。","row":42,"cat":"COST_DESIGN"},{"id":"CF-21","field":"原価改善","name":"Food Costの実績と変動要因を把握する","desc":"確認の要点：会社の計算方法でFood Costを確認し、仕入価格・販売構成・使用量・棚卸の違いに分けて変化を説明している。\n例：原価上昇の兆候を捉え、優先して確認する原因を関係者へ伝えている。","detail":"会社の計算方法でFood Costの実績を読み、仕入価格・販売構成・使用量・棚卸差異等へ分けて説明する。S1〜S3は担当店舗、S4以上は会社全体の店別課題を把握する。対策の実行・検証はCF-23/24で分ける。","row":43,"cat":"COST_IMPROVE"},{"id":"CF-22","field":"原価改善","name":"棚卸数値の誤りを予防し、差異があれば調査・修正する","desc":"確認の要点：棚卸の数量・単位・単価・計上時期を確認し、誤った数字の確定を防いでいる。\n例：違いや異常があれば実在庫や使用量と照合し、原因を調べて修正・再確認している。","detail":"数量・単位・単価・計上時期を照合し、誤った棚卸数値の確定を防ぐ。差異や異常がある場合は実在庫・使用量等と照合し、原因確認・修正・再確認を行う。日常の発注・棚卸実行CF-27や対策効果CF-24と区別する。","row":44,"cat":"COST_IMPROVE"},{"id":"CF-23","field":"原価改善","name":"加工・作り過ぎ・廃棄のロスを予防・削減する","desc":"確認の要点：販売見込み・在庫・歩留まりから加工方法や仕込み量を調整し、不要なロスを予防・削減している。\n例：廃棄が増えた原因を調べ、品質・衛生や欠品を悪化させず対策と効果確認を続けている。","detail":"販売見込み・在庫・歩留まりに応じて加工方法・仕込み量・保管を調整し、不要なロスを防ぐ。ロスの種類・量を確認し、増加や無駄があれば原因を調べて改善・効果確認を続ける。品質・衛生を落として原価を下げない。個別対策を評価し、全体の改善活動CF-24と分ける。","row":45,"cat":"COST_IMPROVE"},{"id":"CF-24","field":"原価改善","name":"原価改善の対策を実行し、継続して検証する","desc":"確認の要点：課題・目標・担当・期限を決め、品質と提供量を守りながら原価改善を実行・検証している。\n例：仕入価格など外部要因と取組の効果を分けて確認し、結果を次の対策へつなげている。","detail":"課題・目標・担当・期限を定め、品質と提供量を守りながら原価改善を実行する。取組の具体性・継続・結果の検証・次の修正を確認する。仕入価格など本人が動かせない変化を分け、原価率の達否や努力したという申告だけで採点しない。S1〜S3は担当店舗、S4以上は会社全体。","row":46,"cat":"COST_IMPROVE"},{"id":"CF-25","field":"効率・改善","name":"必要量と完成時刻からPrepの工程・分担を組む","desc":"確認の要点：販売予測・在庫・必要量・完成時刻から、仕込みの順序・同時進行・分担を組んでいる。\n例：進捗と不足を確認し、見込みが変わった場合も計画や分担を調整して遅れを防いでいる。","detail":"販売予測・在庫・必要量・完成時刻から仕込み表を作り、調理順・同時進行・作業分担を整える。完了状況と不足を確認する。技術自立はCF-34、実作業の速さはCF-04で分ける。","row":47,"cat":"EFFICIENCY"},{"id":"CF-26","field":"効率・改善","name":"厨房とホールを連携し、提供の流れを改善する","desc":"確認の要点：注文順・調理時間・同卓提供・お客様の要望を踏まえ、厨房とホールの連携を整えている。\n例：提供の見通しを共有し、滞りがあれば優先順位を調整して流れが戻ったか確認している。","detail":"注文順・調理時間・同卓提供・お客様の要望から、その営業中の優先順位と連携を整え、提供遅れを減らす。事前のPrep計画CF-25、恒常的な工程変更CF-28、教え方CF-30と分ける。","row":48,"cat":"EFFICIENCY"},{"id":"CF-27","field":"効率・改善","name":"発注・在庫・棚卸を運用する","desc":"確認の要点：在庫・使用予定・納期・保管を確認し、担当範囲の発注・在庫・棚卸を完結している。\n例：欠品や過剰在庫を防ぎ、納品の数量・品質に違いがあれば取引先等と調整して処理を終えている。","detail":"数量・納期・保管・消費を確認し、担当範囲の発注在庫業務を完了する。","row":49,"cat":"EFFICIENCY"},{"id":"CF-28","field":"効率・改善","name":"調理工程・動線を見直し、効率を改善する","desc":"確認の要点：移動・待機・重複作業・手戻りを見直し、道具配置・作業順・工程を改善している。\n例：変更前後の品質と完成時間を比べ、無駄の削減が効果につながったか確認している。","detail":"移動・待機・重複作業・手戻りを見つけ、道具配置・作業順・同時進行・工程を変更し、品質と完成時間を前後比較する。工程の改善を評価し、実技教育CF-30と区別する。","row":50,"cat":"EFFICIENCY"},{"id":"CF-29","field":"技術共有・育成","name":"スタッフの仕込み習熟度を把握し、次の目標を定める","desc":"確認の要点：スタッフの仕込みを実技で確認し、品質・正確さ・丁寧さ・時間・自立範囲を把握している。\n例：習熟状況に合う次の目標と練習機会を決め、無理な作業割当てを防ぎながら進捗を確認している。","detail":"仕込み別に品質・正確さ・丁寧さ・時間・自立範囲を実技で確認し、次に習得する作業と練習機会を決める。技能の見極めと目標設定を評価し、教える行動CF-30やレシピ再現CF-31と分ける。","row":51,"cat":"TEACH"},{"id":"CF-30","field":"技術共有・育成","name":"効率的な仕込み・調理を教え、習得を確認する","desc":"確認の要点：実演・本人の実施・助言を通じ、品質を保つ段取りや同時進行を教え、自立してできる作業を増やしている。\n例：別の日も同じ品質・基準時間で完結できるか確認し、難しい工程は教え方や練習を見直している。","detail":"実演・本人の実施・助言・別日の再確認を通じ、品質を保つ段取り・同時進行・道具の使い方を教える。本人が自立してできる仕込みを増やす。工程設計CF-28、診断CF-29と同じ観点で重複加点しない。","row":52,"cat":"TEACH"},{"id":"CF-31","field":"技術共有・育成","name":"レシピと分量をスタッフへ教え、再現を確認する","desc":"確認の要点：最新版レシピの材料・計量・工程・分量・盛付・保管を教え、スタッフの再現と定着を確認している。\n例：品質や量にばらつきがあれば理解や工程を確認し、再指導後も基準どおりに作れるか確かめている。","detail":"最新版レシピの材料・単位・計量・工程・完成量・一食分・盛付・保管を教え、別の人が同じ品質・量で再現できるか実技確認する。レシピ文書CF-10と教える技術CF-30ではなく、標準商品の再現・定着を評価する。","row":53,"cat":"TEACH"},{"id":"CF-32","field":"技術共有・育成","name":"Kitchen Leaderの判断力・指導力を育てる（S4以上）","desc":"確認の要点：Kitchen Leaderに仕込み計画・衛生・原価・スタッフ指導を段階的に任せ、自分で判断・実行・教育できる状態へ育てている。\n例：難しい点は助言し、任せた後も自立状況を確認して次の成長機会をつくっている。","detail":"S4以上を対象とし、会社全体のKitchen Leader等へ技術・Prep計画・衛生・原価・スタッフ指導を段階的に任せ、本人が判断・実行・他者を教育できる状態へ育てる。S1〜S3では本項目を必須にせず、担当機会がない場合は上司が「該当しない」を選択する。S3 Head Chefは同格のG3 Kitchen Leaderと協力し、日常の仕込み・調理・効率・レシピの指導と習得確認をCF-29〜31で評価する。人事権を自動で含めない。","row":54,"cat":"TEACH"},{"id":"CF-33","field":"技術・専門実務","name":"担当ポジションの習得範囲を実技で示す","desc":"確認の要点：期首に決めた担当持ち場で、レシピ・火入れ・盛付・速度を実技確認し、自立して任せられる範囲を示している。\n例：代表商品の実技と習得表で、任せられる商品・技能・完成時間を把握している。","detail":"期首に店舗で必要な持ち場と担当範囲を指定する。各持ち場でレシピ・火入れ・盛付・速度を実技確認し、自立して任せられる範囲を記録する。店舗の持ち場数だけで有利不利をつけない。","row":55,"cat":"TECH"},{"id":"CF-34","field":"技術・専門実務","name":"担当の仕込みを準備から保管まで自立して完結する","desc":"確認の要点：必要量を確認し、材料準備・下処理・加工・調理・分量と品質の確認・保管まで自立して完結している。\n例：担当の仕込みを、準備から保管まで安定した品質でやり切っている。","detail":"必要量を確認し、材料準備・下処理・加工・調理・分量確認・品質確認・保管まで、自分の担当範囲を完結する。技術自立の幅を評価し、速さCF-04と工程計画CF-25を重複加点しない。","row":56,"cat":"TECH"},{"id":"CF-35","field":"効率・改善","name":"営業開始までに厨房の準備を完了する","desc":"確認の要点：指定リストと現物を確認し、営業開始までに仕込み・在庫・設備・器具・温度・清掃の準備を整えている。\n例：不足や不具合は営業への影響と対応を共有し、準備が完了したか確認している。","detail":"仕込み・在庫・設備・器具・温度・清掃の指定リストを使い、営業開始時刻までに担当厨房を準備する。不足や不具合は営業への影響と対応を共有する。","row":57,"cat":"EFFICIENCY"},{"id":"CF-36","field":"効率・改善","name":"閉店作業と翌日の準備・引き継ぎを完了する","desc":"確認の要点：Closing Listで食材保管・日付・補充・清掃・設備停止を確認し、翌日の準備と引き継ぎを完了している。\n例：仕込み量・在庫不足・注意点を共有し、漏れがあれば補って次回の確認にも反映している。","detail":"食材の保管・日付・補充・片付け・清掃・設備停止を指定リストで確認し、翌日の仕込み量・在庫不足・注意点を引き継ぐ。終業時刻と完成状態を確認する。衛生そのものはCF-05〜08で分ける。","row":58,"cat":"EFFICIENCY"}],"weights":{"S1":{"weights":{"PHILO":20,"TECH":25,"HYGIENE":10,"QUALITY":15,"PRODUCT":5,"COST_DESIGN":5,"COST_IMPROVE":5,"EFFICIENCY":10,"TEACH":5},"row":61},"S2":{"weights":{"PHILO":20,"TECH":20,"HYGIENE":10,"QUALITY":15,"PRODUCT":5,"COST_DESIGN":5,"COST_IMPROVE":5,"EFFICIENCY":10,"TEACH":10},"row":62},"S3":{"weights":{"PHILO":20,"TECH":10,"HYGIENE":10,"QUALITY":10,"PRODUCT":10,"COST_DESIGN":10,"COST_IMPROVE":10,"EFFICIENCY":10,"TEACH":10},"row":63},"S4":{"weights":{"PHILO":20,"TECH":5,"HYGIENE":10,"QUALITY":10,"PRODUCT":15,"COST_DESIGN":5,"COST_IMPROVE":15,"EFFICIENCY":10,"TEACH":10},"row":64},"S5":{"weights":{"PHILO":20,"TECH":5,"HYGIENE":10,"QUALITY":10,"PRODUCT":15,"COST_DESIGN":5,"COST_IMPROVE":15,"EFFICIENCY":10,"TEACH":10},"row":65},"S6":{"weights":{"PHILO":20,"TECH":5,"HYGIENE":10,"QUALITY":10,"PRODUCT":15,"COST_DESIGN":5,"COST_IMPROVE":15,"EFFICIENCY":10,"TEACH":10},"row":66}},"sourceNotes":{"row67":"S1〜S3の「指導・育成」は学習共有・日常の技術指導・習得確認（CF-29〜31）を等級に応じて評価し、CF-32は除外。S4以上はCF-32を含め、会社全体の商品開発・原価改善・リーダー育成を主導する。","applied":"CF-32 は等級で自動除外しない（指示書 5-1・GM実装仕様が優先）"}},"S_OFFICE":{"name":"S Office・経理・人事","unassigned":false,"categories":[{"key":"PHILO","name":"理念","short":"理念"},{"key":"TECH","name":"技術・専門実務","short":"技術実務"},{"key":"QUALITY","name":"品質・管理","short":"品質管理"},{"key":"EFFICIENCY","name":"効率・改善","short":"効率改善"},{"key":"TEACH","name":"技術共有・育成","short":"指導・育成"}],"domains":[{"key":"OFFICE","name":"Office","prefixes":["OF-T-"]},{"key":"ACCOUNTING","name":"経理","prefixes":["AC-T-"]},{"key":"HR","name":"人事","prefixes":["HR-T-"]}],"items":[{"id":"01-01","field":"理念：楽しむ","name":"自ら仕事を楽しむ工夫をし、前向きに取り組む","desc":"確認の要点：仕事の意味や楽しさを見つけ、自分から工夫・協力し、困難な場面も必要な支援を求めて取り組んでいる。\n例：忙しい日も作業の工夫を提案し、仲間と協力して前向きに進めている。","detail":"受け身で待つだけでなく、仕事の意味や楽しさを見つけ、工夫や協力を自分から行う。困難な場面でも必要な支援を求めて取り組む。性格の明るさだけでは判断しない。","row":7,"cat":"PHILO","cls":"ENJOY"},{"id":"01-02","field":"理念：楽しむ","name":"仲間の良い行動や成長を認め、称賛する","desc":"確認の要点：仲間の良い行動・工夫・成長を具体的に認め、役職や親しさに偏らず称賛している。\n例：仲間の確認や工夫で仕事が進んだとき、何が良かったかを言葉で伝えている。","detail":"仲間の良い行動・工夫・成長を具体的な言葉で認め、小さな成功や達成感を共有する。役職や親しさによって称賛する相手を偏らせない。","row":8,"cat":"PHILO","cls":"ENJOY"},{"id":"01-03","field":"理念：楽しむ","name":"店舗や働く仲間に関心を持ち、役立つ行動をする","desc":"確認の要点：店舗や仲間の困り事・必要な支援に関心を持ち、自分の担当業務で役立つ行動をしている。\n例：店舗の状況を聞き、必要な情報や準備を整えて現場の仕事を支えている。","detail":"現場の状況や困り事に関心を持ち、必要な支援を考えて行動する。Officeの都合だけで判断せず、相手が使いやすく、仕事を進めやすい対応を心がける。ここでは相手への関心と配慮を確認し、対応スピードや問題解決力とは分ける。","row":9,"cat":"PHILO","cls":"ENJOY"},{"id":"01-16","field":"理念：楽しむ","name":"不機嫌を周囲にぶつけず、落ち着いて接する","desc":"確認の要点：忙しくても無視・威圧・物への八つ当たりをせず、必要な返事と連携を続け、難しいときは相談している。\n例：感情を仲間にぶつけず支援を求めている。異論・相談・体調の申告は不機嫌として扱わない。","detail":"忙しさや私的な感情を理由に、呼びかけを意図的に無視する、きつく当たる、物を乱暴に扱うなどの行動をしない。必要な返事・連携を続け、難しいときは相談する。気分や表情だけで決めつけず、実際の言動を見る。異論・相談・体調の申告は不機嫌として扱わない。","row":10,"cat":"PHILO","cls":"ENJOY"},{"id":"01-05","field":"理念：感謝","name":"店舗や仲間の協力を当たり前にせず、感謝を伝える","desc":"確認の要点：店舗からの資料提出や仲間の引き継ぎなどを当たり前にせず、協力へ感謝を伝えている。\n例：情報や資料をそろえてくれた相手へ、何が助かったかを具体的に伝えている。","detail":"忙しい現場が資料提出・確認・情報共有などに協力していることを理解し、手伝いや引き継ぎも含め、何をしてくれて助かったかを具体的に伝える。","row":11,"cat":"PHILO","cls":"THANK"},{"id":"01-06","field":"理念：感謝","name":"地域・取引先を尊重し、信頼関係を大切にする","desc":"確認の要点：地域・取引先へ敬意を持ち、相手の事情にも配慮した丁寧なやり取りを続けている。\n例：納品や依頼への協力に感謝し、連絡や調整を丁寧に行って信頼関係を大切にしている。","detail":"会社を支える地域や取引先に敬意を持ち、相手の事情にも配慮して、丁寧な連絡・対応を続ける。支払期日の管理とは分け、日頃の接し方と相手への配慮を確認する。","row":12,"cat":"PHILO","cls":"THANK"},{"id":"01-07","field":"理念：思いやる","name":"仲間の状況を見て助け合う","desc":"確認の要点：自分の持ち場だけでなく仲間の状況を見て、困っている人に声をかけ、必要な支援をしている。\n例：締切や作業が重なった仲間へ状況を確認し、自分が対応できる仕事を手伝っている。","detail":"自分の持ち場だけでなく、困っている仲間に声をかけ、必要な支援をする。","row":13,"cat":"PHILO","cls":"CARE"},{"id":"01-08","field":"理念：思いやる","name":"仲間に関心を持ち、相手の立場を確認して行動する","desc":"確認の要点：決めつけずに話を聞き、相手の経験・言語・状況に合わせて伝え方や対応を調整している。\n例：説明が伝わらない場合は図や実演を使い、仲間の困り事や変化にも声をかけている。","detail":"決めつけず話を聞き、経験・言語・状況の違いを踏まえて伝え方や対応を調整する。仲間の困り事や変化に気づき、必要な声かけをする。","row":14,"cat":"PHILO","cls":"CARE"},{"id":"01-09","field":"理念：思いやる","name":"相手を尊重した言動をする","desc":"確認の要点：役職や相手によって敬意を変えず、威圧的な言い方や人を傷つける言動を避けている。\n例：意見が違う場合も話を聞き、人前で責めず、事実と改善点を落ち着いて伝えている。","detail":"役職や相手によって敬意を変えない。威圧的な言い方や、人を傷つける言動を避ける。","row":15,"cat":"PHILO","cls":"CARE"},{"id":"01-10","field":"理念：成長","name":"素直に学び、改善に活かす","desc":"確認の要点：分からないことを質問し、フィードバックを受け止めて改善を続けている。\n例：指摘された作業を見直して実行し、その後も同じ抜けがないか確認している。","detail":"分からないことを質問し、フィードバックを行動に反映する。意見や疑問を述べること自体を低評価にしない。","row":16,"cat":"PHILO","cls":"GROW"},{"id":"01-11","field":"理念：成長","name":"苦手なことや新しいことに挑戦する","desc":"確認の要点：自分の課題を把握し、必要な支援を求めながら未経験の仕事や苦手な業務に挑戦している。\n例：練習や確認の機会を相談し、実際に取り組んで自立してできる範囲を広げている。","detail":"課題を把握し、必要な支援を求めながら未経験の仕事や苦手な業務に取り組む。","row":17,"cat":"PHILO","cls":"GROW"},{"id":"01-12","field":"理念：成長","name":"自分が改善できる行動を考え、実践する","desc":"確認の要点：人のせいにして終わらず、自分の判断・準備・伝え方も振り返り、次の行動を変えて確認している。\n例：連携が遅れた原因を確かめ、自分の準備や伝え方を改善し、会社側の課題も事実として報告している。","detail":"人のせいにして終わらず、自分の判断・準備・伝え方を振り返って次の行動を変え、その後も確認する。設備・制度・人員など会社側の課題も事実として報告する。すべてを本人の責任にしない。","row":18,"cat":"PHILO","cls":"GROW"},{"id":"01-13","field":"理念：誠実","name":"嘘やごまかしをせず、事実を伝える","desc":"確認の要点：嘘やごまかしをせず、実施状況や分からないことを事実どおりに伝えている。\n例：未完了の仕事を完了と報告せず、不明な数字や状況は確認してから伝えている。","detail":"未実施の作業を完了扱いにしない。不明なことを分かったふりで答えず確認する。","row":19,"cat":"PHILO","cls":"SINCERE"},{"id":"01-14","field":"理念：誠実","name":"ミスや問題を隠さず、早めに相談する","desc":"確認の要点：自分に不利なミスや問題も隠さず報告し、難しい対応や遅れを放置せず早めに相談している。\n例：気づいた時点で影響する相手へ事実・対応案・必要な支援を伝えている。","detail":"自分に不利な内容でも報告する。対応が難しい場合や遅れそうな場合も放置せず相談する。","row":20,"cat":"PHILO","cls":"SINCERE"},{"id":"01-15","field":"理念：誠実","name":"仕事に誇りと責任を持ち、約束やルールを守る","desc":"確認の要点：仕事の種類で丁寧さを変えず、任された仕事を責任を持って完了・引き継ぎまで行っている。\n例：約束や期限を守り、難しい場合は期限前に相談して対応と引き継ぎを済ませている。","detail":"どんな仕事にも真摯に向き合い、任された仕事をやり切る。難しい場合は事情を伝え、対応や引き継ぎまで行う。役割や仕事の種類で丁寧さを変えない。","row":21,"cat":"PHILO","cls":"SINCERE"},{"id":"OF-T-01","field":"技術・専門実務","name":"書類・台帳・データの整備","desc":"確認の要点：資料と照合して台帳やデータを更新し、保存先・更新日・最新版を明確にしている。\n例：古い情報の使用を防ぎ、不一致があれば訂正して関係者への共有まで確認している。","detail":"根拠資料から情報を登録し、更新日・保存先・最新版を明確にして古い情報の使用を防ぐ。変更や不一致があれば更新し、関係者への共有まで確認する。","row":22,"cat":"TECH","domain":"OFFICE"},{"id":"OF-T-02","field":"技術・専門実務","name":"正確さを保ち、優先順位を判断して迅速に対応する","desc":"確認の要点：現場への影響・緊急度・期限から優先順位を決め、正確さを保って迅速に対応している。\n例：依頼の内容と完了条件を確認して回答予定を伝え、待ち時間や手戻りを減らしている。","detail":"店舗・社内からの依頼は、現場への影響・緊急度・期限から優先順位を決め、効率よく進める。内容と完了条件を確認して早めに返答し、すぐに完了できない場合も対応予定を伝える。処理時間・滞留・手戻りを確認し、正確さを落とさず対応を早める。課題の捉え方と解決の完結はOF-Q-04、ここでは対応速度・優先順位・作業効率を確認する。","row":23,"cat":"TECH","domain":"OFFICE"},{"id":"OF-T-03","field":"技術・専門実務","name":"品質と価格を比較し、仕入れ・購入コストを適正化する","desc":"確認の要点：店舗・Officeの購入品を、品質・価格・送料・納期・使い勝手で比較し、必要な品質を保ってコストを抑えている。\n例：購入先や代替品を提案し、採用後も品質・費用を確認する。手配や契約・更新情報も管理している。","detail":"店舗・Officeの購入品について、品質・価格・送料・納期・使い勝手を定期的に比較し、必要な品質を保てる購入先や代替品を提案する。採用後も品質と削減効果を確認する。取引先・備品の手配と契約・更新情報も管理する。経費全体の変化はOF-M-05で扱い、同じ比較・削減を同じ観点で重複評価しない。","row":24,"cat":"TECH","domain":"OFFICE"},{"id":"OF-T-04","field":"技術・専門実務","name":"申請・更新・外部窓口対応","desc":"確認の要点：申請・更新の必要資料と期限を事前に把握し、提出・受付・完了まで管理している。\n例：許認可や保険の期限切れを防ぎ、追加資料や不備にも対応して完了を確認している。","detail":"申請・更新の必要資料と期限を先に把握し、窓口確認・提出・受付・完了を管理して期限切れや手続き漏れを防ぐ。不備があれば補正し、完了まで追跡する。","row":25,"cat":"TECH","domain":"OFFICE"},{"id":"OF-Q-01／HR-Q-01","field":"品質・管理","name":"成果物の精度を保ち、誤りを予防・改善する","desc":"確認の要点：送付・確定前に宛先・数字・添付・最新版を確認し、根拠資料と照らし合わせて誤りを防いでいる。\n例：従業員情報や書類に誤りがあれば、影響範囲を確認して訂正・連絡し、確認手順を見直している。","detail":"送付・確定前に宛先・数字・添付・版を確認し、従業員情報・人事書類も根拠資料と照らし合わせて確認する。誤りがあれば影響範囲を確認して訂正・連絡し、確認手順へ反映する。","row":26,"cat":"QUALITY"},{"id":"OF-Q-02／HR-Q-02","field":"品質・管理","name":"期限・優先順位・進捗管理","desc":"確認の要点：期限・重要度・作業のつながり・進捗を管理し、手続きや給与連携の遅延を防いでいる。\n例：遅れる兆候があれば早めに相談して日程・分担を調整し、完了まで確認している。","detail":"期限・重要度・依存作業・完了状況を管理し、手続きや給与連携の遅延を防ぐ。遅れの兆候があれば早めに相談して日程・分担を調整し、未完了を放置しない。","row":27,"cat":"QUALITY"},{"id":"OF-Q-03／HR-Q-03","field":"品質・管理","name":"個人情報・機密情報を守り、情報漏洩を防ぐ","desc":"確認の要点：個人情報・会社情報の共有先・保存先・送付先・利用権限を確認し、不要な共有や漏洩を防いでいる。\n例：給与や相談記録の共有先を限定する。不審な動きや漏洩の疑いは会社へ報告・相談し、拡大防止と是正・再確認を行っている。","detail":"従業員・応募者・給与・相談内容などを、業務上必要な権限のある相手に限って共有し、私的な会話や不要な共有をしない。契約等の会社情報も含め、保存先・送付先・アクセス権限・利用するツールを確認する。セキュリティ上の懸念は会社へ相談して対応する。漏洩やその疑いがある場合は速やかに報告し、権限内で拡大防止・是正・その後の確認を行う。必要な報告・相談まで止めない。","row":28,"cat":"QUALITY"},{"id":"OF-Q-04","field":"品質・管理","name":"状況と課題を的確に捉え、解決・完了まで導く","desc":"確認の要点：依頼の目的・事実・原因を整理し、担当・期限・完了条件を決めて解決まで進めている。\n例：自分で解決できない場合は相談・連携し、引き渡し後も現場の問題が解消したか確認している。","detail":"依頼の目的・事実・原因・必要な対応を整理し、担当者・期限・完了条件を明確にして行動する。表面的な処理だけで終わらず、自分だけで解決できない場合は適切な相手へ相談・連携する。引き渡した後も対応状況と現場の解決・完了を確認する。対応速度そのものはOF-T-02と区別する。","row":29,"cat":"QUALITY"},{"id":"AC-T-01","field":"技術・専門実務","name":"取引を正しく記録し、請求書・領収書などを確認・整理する","desc":"確認の要点：請求書・領収書・納品書で取引内容・日付・金額・承認を確認し、二重登録や漏れなく記録・保存している。\n例：誤りがあれば理由と修正履歴を残して直し、関連する数字や資料への影響も確認している。","detail":"請求書・領収書・納品書などで、取引内容・日付・金額・承認内容を確認し、正しい項目で記録する。同じ取引の二重登録や記録漏れを防ぎ、資料を後から確認できるよう整理・保存する。誤りがあれば修正内容と理由を残し、ほかの数字や資料への影響も確認する。","row":30,"cat":"TECH","domain":"ACCOUNTING"},{"id":"AC-T-02","field":"技術・専門実務","name":"数字を照らし合わせ、違いの原因を確認して整える","desc":"確認の要点：売上・入金・支払・管理表・口座の数字を定期的に照合し、違いの原因を確認して整えている。\n例：POSと入金が合わない場合は手数料や入金日を調べ、処理後の残高を再確認して理由を説明している。","detail":"売上・入金・支払・管理表・口座などの残高を定期的に照らし合わせ、数字が正しくつながっているか確認する。違いがあれば手数料・入金時期・記録内容などの原因を調べ、必要な処理後に再確認し、理由を説明する。","row":31,"cat":"TECH","domain":"ACCOUNTING"},{"id":"AC-T-03","field":"技術・専門実務","name":"支払・請求・毎月の集計と確認を期限内に終える","desc":"確認の要点：必要な資料と承認をそろえ、支払・請求・毎月の集計と確認を期限内に完了している。\n例：未処理や未承認を確かめて漏れ・二重支払を防ぎ、不備があれば調整して反映まで確認している。","detail":"必要な資料と承認をそろえ、支払・請求・毎月の数字の集計と確認を期限内に完了する。まだ処理や承認が済んでいないものを確認し、支払漏れや二重支払を防ぐ。問題があれば影響する範囲を確認して対応を終える。","row":32,"cat":"TECH","domain":"ACCOUNTING"},{"id":"AC-T-04","field":"技術・専門実務","name":"会社や店舗のお金の状況を理解し、変化の理由を説明する","desc":"確認の要点：売上・費用・利益、財産・借入、店舗別利益、予算と実績の違いを確認し、変化の理由を説明している。\n例：食材費や人件費などに分けて原因を確かめ、気になる変化を関係者へ共有して追加確認につなげている。","detail":"担当等級の範囲で、損益計算書（売上・費用・利益の状況）や貸借対照表（財産・借入などの状況）、店舗別の利益、予算と実績の違いを定期確認する。数字の根拠と変化の理由を説明し、気になる変化があれば関係者へ共有して追加確認につなげる。","row":33,"cat":"TECH","domain":"ACCOUNTING"},{"id":"AC-Q-01","field":"品質・管理","name":"計算と記録を確認して誤りを防ぎ、見つかった場合は直して繰り返しを防ぐ","desc":"確認の要点：数字を確定する前に再計算・二重登録の確認・元資料との比較を行い、誤りを防いでいる。\n例：ミスが見つかった場合は関連資料と履歴も確認して直し、確認方法を見直して次回も実施している。","detail":"数字を確定する前に、再計算・二重登録の確認・元の資料との比較を行う。誤りがあれば、影響する範囲と修正履歴を確認し、確認方法を見直して次回も実施する。取引の記録作業AC-T-01と同じ行動を同じ観点で重複評価しない。","row":34,"cat":"QUALITY"},{"id":"AC-Q-02","field":"品質・管理","name":"支払などの期日を守り、取引先との信頼関係を維持する","desc":"確認の要点：支払・集計・申告の期限から日程を組み、未処理・未承認を事前に確認して遅延を防いでいる。\n例：遅れるおそれがあれば早めに相談し、取引先と対応予定を共有して完了まで追っている。","detail":"業者への支払、毎月の数字の集計と確認、申告の期限から資料回収・承認・確認の日程を組み、未処理・未承認を期日前に確認して遅延を防ぐ。支払いに影響する問題があれば早めに上長へ相談し、取引先へ必要な連絡・調整を行って完了まで追跡する。実際の処理はAC-T-03、ここでは期限管理と連絡・調整を確認し、同じ行動を同じ観点で重複評価しない。","row":35,"cat":"QUALITY"},{"id":"AC-Q-03","field":"品質・管理","name":"担当・承認の役割と、会社のお金・資料の管理を徹底する","desc":"確認の要点：処理する人と確認・承認する人の役割を分け、現金・会社カード・資料・情報へのアクセスを適切に管理している。\n例：承認記録・請求書・送金内容を照合し、不備や異常は報告・修正してその後も確認している。","detail":"担当者と確認・承認する人の役割を分け、現金・会社カード・資料の保存・情報を見たり操作したりできる範囲を管理する。請求書・領収書などを支払内容と照らし合わせ、間違った処理や不正を防ぐ。不備や異常があれば報告し、自分で対応できる範囲は直して、その後も確認する。","row":36,"cat":"QUALITY"},{"id":"AC-Q-04","field":"品質・管理","name":"税理士などと連携し、申告などに必要な資料をそろえて対応する","desc":"確認の要点：申告等の必要資料・期限・不明点を早めに整理し、税理士などと社内承認者に確認して対応している。\n例：追加資料や修正にも対応し、提出や対応が完了したかまで確認している。","detail":"税金の申告などに必要な資料・期限・不明点を早めに整理し、税理士などへの確認と社内の承認を経て対応する。追加資料や修正が必要な場合は内容を整え、提出・対応が終わったかまで確認する。","row":37,"cat":"QUALITY"},{"id":"HR-T-01","field":"技術・専門実務","name":"採用業務の実行・進捗管理","desc":"確認の要点：募集条件に沿って応募対応・選考調整・記録を進め、連絡や選考の漏れを防いでいる。\n例：応募者・店舗との行き違いや日程変更を調整し、双方へ連絡して変更後の予定も確認している。","detail":"合意した募集条件で応募対応・選考調整・記録を進め、連絡や選考の漏れを防ぐ。応募者・店舗との行き違い等があれば事実を確認して調整し、対応方法へ反映する。","row":38,"cat":"TECH","domain":"HR"},{"id":"HR-T-02","field":"技術・専門実務","name":"入社・異動・退社の手続き","desc":"確認の要点：入社・異動・退社に必要な書類・期限・店舗との連携を整え、手続き漏れを防いでいる。\n例：変更や不足書類があれば関係者と訂正・追加対応し、完了まで確認している。","detail":"入社・異動・退社に必要な書類・期日・情報連携を事前に整え、手続き漏れを防ぐ。変更や不備があれば関係者と訂正・追加対応し、完了まで確認する。","row":39,"cat":"TECH","domain":"HR"},{"id":"HR-T-03","field":"技術・専門実務","name":"勤怠・給与連携・従業員情報の管理","desc":"確認の要点：勤怠・従業員情報を締切前に確認し、承認手順に沿って正しい情報を給与担当等へ渡している。\n例：誤りがあれば根拠を残して訂正・連携し、給与などに反映されたかまで確認している。","detail":"勤怠・従業員情報を締切前に照らし合わせて確認し、正しい情報を承認手順に沿って給与担当等へ渡す。誤りや漏れがあれば根拠を確認して訂正・連携し、給与等への反映を確認する。","row":40,"cat":"TECH","domain":"HR"},{"id":"HR-T-04","field":"技術・専門実務","name":"従業員相談・制度運用の支援","desc":"確認の要点：相談窓口を案内し、相談内容の事実・守秘・担当権限を確認して、必要な相手と連携している。\n例：対応状況を追って放置や問題の拡大を防ぎ、必要な改善を行っている。","detail":"相談できる窓口と連携先を明確にし、受けた相談の事実・守秘・権限を確認して対応を追跡する。問題が生じた場合は適切な担当へつなぎ、放置・拡大を防ぐ確認と必要な改善を行う。相談がないことだけで良好と判断しない。","row":41,"cat":"TECH","domain":"HR"},{"id":"HR-Q-04","field":"品質・管理","name":"ルールを公平に運用し、現場と協力して店舗運営を支える","desc":"確認の要点：ルール・期限・判断理由を明確に伝え、現場の事情も聞きながら公平な運用と必要な支援を行っている。\n例：提出が遅れた原因を確認して準備を支援し、例外は上長へ相談して同じ条件の店舗にも公平に対応している。","detail":"全店舗を支えるOfficeとして、必要なルール・期限・判断理由を明確に伝える。現場の事情や困り事にも耳を傾け、実行できる方法や必要な支援を一緒に考える。判断根拠と適用条件をそろえ、不公平な扱いを防ぐ。不明点や例外対応は上長・専門家等へ相談し、確認した内容を共有する。扱いの不一致があれば是正し、その後の運用を確認する。","row":42,"cat":"QUALITY"},{"id":"OF-M-01／AC-M-01／HR-M-01","field":"効率・改善","name":"マニュアルを最新に保ち、同じ基準で判断・行動できる状態を整える","desc":"確認の要点：上長と決定した内容をマニュアルへ反映し、判断基準・手順・担当・更新履歴・保存先を明確にしている。\n例：最新版と変更点を共有し、担当者が変わっても同じ判断・行動ができるか確認して修正している。","detail":"上長と相談して決定した内容を速やかにOfficeのマニュアルへ反映し、判断基準・手順・担当・確認点を明確にする。更新日・変更履歴・保存先・最新版をそろえ、関係者へ正確に共有する。担当者が変わっても同じ判断・対応ができるか確認する。判断が分かれた場合は上長と確認して記載を見直す。","row":43,"cat":"EFFICIENCY"},{"id":"OF-M-02／AC-M-02／HR-M-02","field":"効率・改善","name":"AI・システムを活用し、Office全体の業務効率化を進める","desc":"確認の要点：手入力や転記などを見直し、自らAI・ツールを使うほか、同僚への相談や会社への提案で効率化を進めている。\n例：導入後も正確さ・処理時間・使いやすさを確認し、必要な人の確認と情報保護を保って改善している。","detail":"繰り返し作業・手入力・転記を見直し、自動化や省力化できる仕事を継続的に探す。自分でAI・ツールを使って改善するほか、同僚への相談や会社への提案を通じて仕組みを作成・導入してもらう。導入後も正確さ・処理時間・使いやすさを確認し、必要な人の確認を保って改善する。個人情報・機密情報はOF-Q-03の共有・利用範囲を守る。","row":44,"cat":"EFFICIENCY"},{"id":"OF-M-03／AC-M-03／HR-M-03","field":"効率・改善","name":"課題・リスクを把握し、改善効果を確認する","desc":"確認の要点：実績・進捗・リスクから問題の兆候を捉え、予防策や改善策の効果と定着を確認している。\n例：手配・入金・書類回収の遅れを早めに防ぎ、問題があれば原因と対策を確認してその後も効果を追っている。","detail":"日常の実績・進捗・リスクを確認し、問題の兆候を早めに把握して予防する。課題があれば原因を整理し、権限内で対策を実行して効果と定着を確認する。問題が起きていない期間も予防策の運用と維持を確認する。","row":45,"cat":"EFFICIENCY"},{"id":"OF-M-04／AC-M-04／HR-M-04","field":"効率・改善","name":"引き継ぎ・業務継続の整備","desc":"確認の要点：業務の進捗・保存先・例外・次の対応を整理し、別の担当者が引き継いでも続けられる状態を保っている。\n例：未完了の依頼・会計処理・入退社手続きなどの状況と次の行動を、必要な資料とともに引き継いでいる。","detail":"担当業務の進捗・保存先・例外・次の行動を整理し、代替できる状態にする。","row":46,"cat":"EFFICIENCY"},{"id":"OF-M-05","field":"効率・改善","name":"店舗経費の変化を捉え、必要な品質を守りながら無駄を減らす","desc":"確認の要点：店舗経費を使用量・単価・売上規模・請求内容から確認し、不明な増加は放置せず報告・相談している。\n例：現場と協力して無駄を減らし、品質・衛生・安全・営業に必要な支出を守りながら削減効果を確認している。","detail":"店舗ごとの変動費・経費を定期確認し、使用量・単価・売上規模・請求内容などから変動の理由を確かめる。不明な増加や疑問は放置せず、速やかに報告・相談する。現場と協力して無駄や不要な費用の削減策を提案・実行し、効果を確認する。品質・衛生・安全・営業に必要な支出は確保する。購入先・購入条件の比較はOF-T-03、財務全体の分析はAC-T-04と区別する。","row":47,"cat":"EFFICIENCY"},{"id":"OF-K-01／AC-K-01／HR-K-01","field":"技術共有・育成","name":"根拠・判断理由の説明","desc":"確認の要点：処理の根拠と判断理由を、相手が資料で確認できるよう説明している。\n例：手配方法・会計処理・制度の適用などについて、参照した資料と判断の理由を具体的に伝えている。","detail":"自分の処理の根拠と判断理由を、相手が確認できるよう説明する。","row":48,"cat":"TEACH"},{"id":"OF-K-02／AC-K-02／HR-K-02","field":"技術共有・育成","name":"専門知識・手順を伝える","desc":"確認の要点：担当作業の要点と注意点を伝え、相手の理解と実行を確認している。\n例：台帳更新・数字の照合・入社書類の確認などを実際の資料で説明し、相手にも実施してもらっている。","detail":"担当する作業の要点・注意点を相手に伝え、理解と実行を確認する。","row":49,"cat":"TEACH"},{"id":"OF-K-03／AC-K-03／HR-K-03","field":"技術共有・育成","name":"専門的な相互確認・助言で品質を保つ","desc":"確認の要点：担当範囲の成果物と根拠を相互確認し、誤りが関係先へ渡るのを防いでいる。\n例：修正点と理由を具体的に伝え、訂正後の内容と次回の確認への反映も確かめている。","detail":"任された範囲の成果物と根拠を相互確認し、誤りの流出を防ぐ。修正が必要な場合は箇所と理由を具体的に伝え、訂正後も確認する。日常的な確認・助言も評価する。","row":50,"cat":"TEACH"},{"id":"OF-K-04／AC-K-04／HR-K-04","field":"技術共有・育成","name":"学習成果・事例の共有","desc":"確認の要点：新しい知識・例外事例・注意点を整理して必要な相手へ共有し、仕事で活用されたか確認している。\n例：更新手続き・会計処理・制度運用で分かったことを共有し、その後の対応に役立っているか確かめている。","detail":"新しい知識・例外事例・注意点を整理し、必要な相手に共有して活用を確認する。","row":51,"cat":"TEACH"},{"id":"OF-K-05","field":"技術共有・育成","name":"仕事を適切に分担・依頼し、相手を信頼して任せる","desc":"確認の要点：担当・得意分野・業務量を踏まえ、目的・期限・完成基準を共有して仕事を分担・依頼している。\n例：任せた後も必要な支援と途中確認を行い、問題があれば自分の伝え方・任せ方も見直している。","detail":"仲間の担当・得意分野・業務量を踏まえ、目的・期限・完成基準を共有して仕事を分担・依頼する。部下には習熟度と役割に応じて判断の範囲も任せ、必要な支援と途中確認を行う。問題があれば相手だけを責めず、自分の伝え方・任せ方・支援も振り返って改善する。仕事を任せることと、実技・手順を教えるOF-K-02は区別する。","row":52,"cat":"TEACH"}],"weights":{"S1":{"weights":{"PHILO":20,"TECH":40,"QUALITY":20,"EFFICIENCY":15,"TEACH":5},"row":71},"S2":{"weights":{"PHILO":20,"TECH":35,"QUALITY":20,"EFFICIENCY":15,"TEACH":10},"row":72},"S3":{"weights":{"PHILO":20,"TECH":30,"QUALITY":20,"EFFICIENCY":20,"TEACH":10},"row":73},"S4":{"weights":{"PHILO":20,"TECH":25,"QUALITY":20,"EFFICIENCY":20,"TEACH":15},"row":74},"S5":{"weights":{"PHILO":20,"TECH":25,"QUALITY":20,"EFFICIENCY":20,"TEACH":15},"row":75},"S6":{"weights":{"PHILO":20,"TECH":25,"QUALITY":20,"EFFICIENCY":20,"TEACH":15},"row":76}}},"PREP":{"name":"Prep","unassigned":false,"items":[{"id":"PH1","cat":"PHILO","catName":"理念","name":"前向き・落ち着いた対応","desc":"確認の要点：仕事に前向きに取り組み、不機嫌を理由に無視・威圧等を向けない。\n例：忙しいときも返事と連携を続け、困ったときは落ち着いて相談する。","row":26},{"id":"PH2","cat":"PHILO","catName":"理念","name":"協力・助け合い","desc":"確認の要点：必要な連携・引き継ぎ・助け合いを勤務中に行う。\n例：仕込みの遅れを共有し、必要な引き継ぎや仲間の作業支援を行う。","row":27},{"id":"PH3","cat":"PHILO","catName":"理念","name":"尊重・感謝","desc":"確認の要点：相手を尊重し、協力に感謝を伝える。\n例：作業を手伝ってくれた仲間へ、何が助かったかを具体的に伝える。","row":28},{"id":"PH4","cat":"PHILO","catName":"理念","name":"学習・自責・改善","desc":"確認の要点：指摘から学び、問題が起きたとき、人や環境のせいにして終わらず、自分の判断・準備・行動も振り返り、技術・速度・効率など、自分が改善できることを実践する。\n例：作業が遅れたとき、自分の準備・手順を振り返り、次回の段取りを変える。","row":29},{"id":"PH5","cat":"PHILO","catName":"理念","name":"誠実・責任","desc":"確認の要点：ミス・遅れを隠さず相談し、任された仕事を完了・引き継ぎまで行う。\n例：仕込みのミスや遅れを隠さず伝え、残った作業を確実に引き継ぐ。","row":30},{"id":"H1","cat":"HYGIENE","catName":"衛生安全","name":"食材・保管","desc":"確認の要点：鮮度・温度・期限・保管場所を確認し、不明な食材は使用前に相談。\n例：使用前に鮮度・温度・期限を確認し、不明な食材は使用せず相談する。","row":31},{"id":"H2","cat":"HYGIENE","catName":"衛生安全","name":"清潔・汚染防止","desc":"確認の要点：作業開始前・トイレ後・生食材の取扱い後など、必要なタイミングで所定の手洗いを行う。清掃・器具管理で交差汚染を防ぎ、汚れ・ゴミを残さない。\n例：生食材を扱った後は必要な手洗い・器具の切り替えを行い、作業場所を清潔に戻す。","row":32},{"id":"H3","cat":"HYGIENE","catName":"衛生安全","name":"道具・設備の安全","desc":"確認の要点：道具を安全に使い、不具合を報告。作業終了時のガス・水・機器等を確認。\n例：機器の異常を報告し、終了時にガス・水・機器の状態を確認する。","row":33},{"id":"B1","cat":"BASIC","catName":"基本","name":"時間を守る","desc":"確認の要点：始業時刻に作業を始められるよう準備し、休憩から時間どおりに戻る。遅刻・欠勤や遅れが見込まれる場合は、分かった時点で連絡する。\n例：始業時刻に作業を始められるよう準備し、遅れる見込みが分かった時点で連絡する。","row":34},{"id":"B2","cat":"BASIC","catName":"基本","name":"約束・期限を守る","desc":"確認の要点：合意した担当作業・期限・引き継ぎを守る。間に合わない場合は期限前に相談し、変更した約束を確認して実行する。\n例：担当する仕込みを期限までに終え、間に合わない場合は期限前に相談・引き継ぎする。","row":35},{"id":"B3","cat":"BASIC","catName":"基本","name":"清潔感・身だしなみ","desc":"確認の要点：清潔な制服・エプロンを着用し、髪が作業や食品に触れないようまとめ、店舗指定の帽子等を使う。爪・装飾品なども作業前に確認する。\n例：作業前に制服・エプロン・爪などを確認し、髪をまとめて店舗指定の帽子等を使う。","row":36}],"quality":[{"id":"Q1","name":"分量・数量","desc":"確認の要点：指定材料・重量・個数・分量が会社の許容範囲内。\n例：指定重量を計量し、材料・個数・分量を確認して仕上げる。","row":7},{"id":"Q2","name":"仕上がり","desc":"確認の要点：大きさ・形・味・見た目が見本・仕上がり基準に適合。\n例：カットの大きさ・形や味・見た目を見本と照合する。","row":8},{"id":"Q3","name":"丁寧な扱い・仕上げ","desc":"確認の要点：不要なつぶれ・崩れ・傷みがなく、容器・保管まで整っている。\n例：食材をつぶさず扱い、崩れや傷みがない状態で容器に入れ、保管まで整える。","row":9}],"pay":[{"step":"P1","wageUsd":17,"speedMin":0,"speedInclusive":true,"rangeMin":0,"note":"見習い・最低段階。P2の条件に未到達","row":43},{"step":"P2","wageUsd":18,"speedMin":0.8,"speedInclusive":false,"rangeMin":0.6,"note":"速度0.80超かつ範囲60%以上","row":44},{"step":"P3","wageUsd":19,"speedMin":1,"speedInclusive":true,"rangeMin":0.7,"note":"速度1.00以上かつ範囲70%以上","row":45},{"step":"P4","wageUsd":20,"speedMin":1.2,"speedInclusive":true,"rangeMin":0.8,"note":"速度1.20以上かつ範囲80%以上","row":46},{"step":"P5","wageUsd":21,"speedMin":1.3,"speedInclusive":true,"rangeMin":0.9,"note":"速度1.30以上かつ範囲90%以上","row":47},{"step":"P6","wageUsd":22,"speedMin":1.5,"speedInclusive":true,"rangeMin":0.9,"note":"速度1.50以上かつ範囲90%以上","row":48}],"payNotes":{"speed":"スピード＝良品完成分の標準作業時間合計 ÷ 手直しを含む実作業時間。別日3回の最低値を使用し、会社の作業基準を1.00とする。","range":"習得範囲＝自立して安定完結できる作業の標準時間合計 ÷ 店舗で必要な全作業の標準時間合計。標準時間・品質基準は会社が実測・確認する。"}}},"base":{"G":{"1":55,"2":65,"3":75,"4":85,"5":90,"6":95},"S":{"1":65,"2":70,"3":75,"4":85,"5":90,"6":95}},"minimum":{"1":{"philoClass":1.5,"basic":1.5,"gMain":1.5,"gOther":1,"chefHygiene":1.5,"sQuality":1.5,"row":41},"2":{"philoClass":2,"basic":2,"gMain":2,"gOther":1.5,"chefHygiene":2,"sQuality":2,"row":42},"3":{"philoClass":2,"basic":2,"gMain":2,"gOther":1.5,"chefHygiene":2,"sQuality":2,"row":43},"4":{"philoClass":2.25,"basic":2,"gMain":2,"gOther":2,"chefHygiene":2.25,"sQuality":2.25,"row":44},"5":{"philoClass":2.5,"basic":2,"gMain":2.25,"gOther":2.25,"chefHygiene":2.5,"sQuality":2.5,"row":45},"6":{"philoClass":2.75,"basic":2,"gMain":2.5,"gOther":2.5,"chefHygiene":2.75,"sQuality":2.75,"row":46}},"minimumItems":{"fromGrade":2,"ids":["01-13","01-14","01-09","01-16"],"min":2,"systems":["G","S_CHEF","S_OFFICE"]}};
