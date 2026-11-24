@@ -1,5 +1,12 @@
 # Claude / Codex 共通記録
 
+## 2026-11-24 v1210：#217 の Codex の再レビュー（`0db4bff` まで・7134071689）の直し（Claude（Team・Claude Code）・ブランチ `claude/acct-payroll-1210`・push できないので引き継ぎ一式で渡す）
+
+- #216 の P2 の直し（`37f6e32`）を取り込んだ（マージ）。
+- P3：前の経路（external＝ChatGPT 側の転送）が送っている途中の行は、送る前にこちらを確かめないので止めの印で止まらないのに、照合取消の知らせと状態の行が「まだ送っていなければ止めます」と言っていた → SQL `invoice_reconcile` が数を分ける（`qb_stop_requested`＝止まる行・`qb_stop_external`＝前の経路が送っている途中・記録に `external_sending`）。印は今までどおり付ける（失敗が返れば送り直さない）。画面は「前の転送が送っている途中です。ここからは止められません」。前の経路の結果確認待ちは人が「送っていない」と確かめると止まる（今までどおり・試験を足した）。仕様の 10。
+- 試験：invoice-qb-reconcile 14・invoice-qb-reconcile-ui 13・わざと壊す（選んだ 8 つ・足した 3 つを含む）すべて落ちる・`check-static-release.py` pass/1210。関数のコードは変えていない。
+- 次：Personal で push → Codex の再レビュー（#217 の新しい head）→ #218・#1212 へ取り込む。
+
 ## 2026-11-24 v1209：#216 の Codex の再レビュー（`a571d61` まで・7134070355）の P2 の直し（Claude（Team・Claude Code）・ブランチ `claude/google-places-1209`・push できないので引き継ぎ一式で渡す）
 
 - このセッション（会社の Team のアカウント）は push できない（git の proxy が 403「authorized repository set に無い」・gh のトークンも無効）。Moto さん 11/24「push しないで進める」：Team で直して試験まで済ませ、ブランチごとの引き継ぎ一式（bundle・差分・メモ）を Personal で GitHub に入れる。

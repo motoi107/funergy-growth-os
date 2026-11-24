@@ -703,7 +703,15 @@ test('B-3 照合取消のときに台帳にまだ無い（台帳 OFF・名前の
     assert.equal((await recon(X, 'tok-crew', e)).status, 200);
     o = await X.row(e); assert.equal(o.route, 'external'); assert.equal(o.state, 'pending');
     assert.equal((await ext('qb_external_reserve', { id: o.id })).status, 200);
-    assert.equal((await recon(X, 'tok-office', e, 'unreconciled', '')).body.qb_stop_requested, 1);
+    // #217 の Codex（7134071689）の P3: the old route does not ask here before it sends, so a row it reserved is not one that
+    // "stops if it has not gone": it is counted apart (qb_stop_external) and the screen says it cannot be stopped from here.
+    const ue = await recon(X, 'tok-office', e, 'unreconciled', '');
+    assert.equal(ue.body.qb_stop_requested, 0); assert.equal(ue.body.qb_stop_external, 1); assert.equal(ue.body.qb_busy, 1);
+    o = await X.row(e); assert.equal(o.state, 'sending'); assert.ok(o.stop_requested_at, 'still marked: a failure it reports is set aside');
+    const [se] = await states(X, 'tok-office', [e]);
+    assert.equal(se.state, 'sending'); assert.equal(se.route, 'external'); assert.equal(se.stop_requested, true);
+    const ev = await X.q(`select data from invoice_events where kind='qb_cancelled' and file_id=$1 order by id desc limit 1`, [o.file_id]);
+    assert.equal(ev[0].data.external_sending, 1); assert.equal(ev[0].data.stop_requested, 0);
     const er = await ext('qb_external_result', { id: o.id, state: 'error', error: 'smtp' });
     assert.equal(er.status, 200);
     o = await X.row(e); assert.equal(o.state, 'cancelled'); assert.equal(o.last_error, 'recon_cancelled');
@@ -711,6 +719,14 @@ test('B-3 照合取消のときに台帳にまだ無い（台帳 OFF・名前の
     assert.ok(!lst.rows.some(x => x.id === o.id), 'the forwarder does not see it');
     assert.equal((await recon(X, 'tok-office', e)).status, 200);
     o = await X.row(e); assert.equal(o.state, 'pending'); assert.equal(o.route, 'external'); assert.equal(o.stop_requested_at, null);
+    // An unknown outcome of the old route is settled by a person: that one does stop if it did not go (qb_stop_requested).
+    assert.equal((await ext('qb_external_reserve', { id: o.id })).status, 200);
+    assert.equal((await ext('qb_external_result', { id: o.id, state: 'unknown', error: 'timeout' })).status, 200);
+    const uu = await recon(X, 'tok-office', e, 'unreconciled', '');
+    assert.equal(uu.body.qb_stop_requested, 1); assert.equal(uu.body.qb_stop_external, 0);
+    const rs = await X.api('tok-office', { action: 'qb_resolve', id: o.id, state: 'pending', note: 'not in the sent mail' });
+    assert.equal(rs.status, 200, JSON.stringify(rs.body));
+    o = await X.row(e); assert.equal(o.state, 'cancelled'); assert.equal(o.last_error, 'recon_cancelled');
     assert.equal(X.sentFor(e), 0, 'this system never sends a row of the old route');
   } finally { await X.pg.close(); }
 });

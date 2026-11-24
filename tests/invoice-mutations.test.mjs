@@ -69,7 +69,11 @@ const CASES = [
   ['app B-3: a failed send that stopped offers no record by hand', RU, [['index.html', " || (S6.state==='failed' && !!S6.stopped)", ""]]],
   ['app B-3: a changed page offers no record by hand', RU, [['index.html', "part_already_sent|part_changed|multi_file", "part_already_sent|multi_file"]]],
   ['app B-3: 照合取消 does not say an invoice not in the ledger is kept out', RU, [['index.html', "if (Number(r.qb_kept_out) > 0)", "if (false)"]]],
-  ['app B-3: 照合取消 does not say a send under way is asked to stop', RU, [['index.html', "Number(r.qb_stop_requested || r.qb_busy) > 0", "false"]]],
+  ['app B-3: 照合取消 does not say a send under way is asked to stop', RU, [['index.html', "    if (nStop > 0) { msg +=", "    if (false) { msg +="]]],
+  // #217 の Codex（7134071689）の P3：前の経路（external）が送っている途中の行は止められない（数を分ける・言葉を分ける）
+  ['B-3: a row the old route is sending is counted as one that stops', RC, [['db/invoice-intake.sql', "select count(*) filter (where not (route='external' and state='sending')), count(*) filter (where route='external' and state='sending') into ns, nx from c;", "select count(*), 0 into ns, nx from c;"]]],
+  ['app B-3: 照合取消 promises to stop what the old route is sending', RU, [['index.html', "nExt = Number(r.qb_stop_external) || 0;", "nExt = 0; nStop += Number(r.qb_stop_external) || 0;"]]],
+  ['app B-3: the state line promises to stop what the old route is sending', RU, [['index.html', "  if (s==='sending') return S.stop_requested ? (S.route==='external'", "  if (s==='sending') return S.stop_requested ? (false"]]],
   ['app B-3: the state line does not say a send under way is asked to stop', RU, [['index.html', "if (s==='sending') return S.stop_requested ?", "if (s==='sending') return false ?"]]],
   ['price jump check removed', UNIT, [['invoice/rules.mjs', "if (changedAtLeast(oldR, newR, st.price_jump_pct ?? 15)) r.push('price_jump');", '']]],
   ['total check removed', UNIT, [['invoice/rules.mjs', 'if (Math.abs(calc - h.total_cents) > tol)', 'if (false)']]],

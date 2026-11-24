@@ -849,7 +849,7 @@ end $$;
 -- Accounting reconciliation. Independent of posting; payment, bank and QuickBooks booking are separate.
 create function public.invoice_reconcile(p jsonb) returns jsonb
 language plpgsql security invoker set search_path=public,pg_temp as $$
-declare d public.invoice_docs; actor uuid := nullif(p->>'actor','')::uuid; r text := p->>'result'; nq int := 0; nb int := 0; ns int := 0; nm int := 0;
+declare d public.invoice_docs; actor uuid := nullif(p->>'actor','')::uuid; r text := p->>'result'; nq int := 0; nb int := 0; ns int := 0; nx int := 0; nm int := 0;
  q jsonb := public.invoice_setting('qb'); rd jsonb; k text; v_parts jsonb;
 begin
  perform public.invoice_require(actor, array['ceo','gm','office','office_crew']);
@@ -879,10 +879,13 @@ begin
              where (file_id=d.file_id or file_id in (select x.file_id from public.invoice_docs x where x.merged_into=d.id)) and state in ('pending','error')
              returning id)
   select count(*) into nq from c;
+  -- #217 の Codex（7134071689）の P3: the old route (external) sends a row it reserved without asking here first, so the mark cannot
+  -- stop it: it is still marked (a failure it reports is set aside, not waited again) but counted apart (qb_stop_external), and
+  -- qb_stop_requested counts only the rows that do stop if they have not gone (this system's sends, and unknown outcomes a person settles).
   with c as (update public.invoice_qb_outbox set stop_requested_at=now(), updated_at=now()
              where (file_id=d.file_id or file_id in (select x.file_id from public.invoice_docs x where x.merged_into=d.id)) and state in ('sending','unknown')
-             returning id)
-  select count(*) into ns from c;
+             returning id, route, state)
+  select count(*) filter (where not (route='external' and state='sending')), count(*) filter (where route='external' and state='sending') into ns, nx from c;
   -- nothing for this invoice in the ledger yet (its name was still being made, or it was queued and is now ready): a row taken back
   -- keeps the key out (invoice_qb_candidates) until it is reconciled again; a row of the key already there (sent, too) is left.
   if coalesce(q->>'to', '') <> '' and d.merged_into is null then
@@ -899,13 +902,13 @@ begin
     get diagnostics nm = row_count;
    end if;
   end if;
-  if nq + ns + nm > 0 then perform public.invoice_event(d.id, d.file_id, actor::text, 'qb_cancelled', jsonb_build_object('rows', nq, 'stop_requested', ns, 'kept_out', nm, 'why', 'recon_cancelled')); end if;
+  if nq + ns + nx + nm > 0 then perform public.invoice_event(d.id, d.file_id, actor::text, 'qb_cancelled', jsonb_build_object('rows', nq, 'stop_requested', ns, 'external_sending', nx, 'kept_out', nm, 'why', 'recon_cancelled')); end if;
  end if;
  select count(*) into nb from public.invoice_qb_outbox
  where (file_id=d.file_id or file_id in (select x.file_id from public.invoice_docs x where x.merged_into=d.id)) and state in ('sending','unknown');
  -- file_ids: every original of the invoice in page order (the answer renames them for the new version, as a posting does:
  -- the name is made for the document's id and version, so a reconciliation asks for it again; the name itself does not change).
- return jsonb_build_object('ok', true, 'version', d.version + 1, 'file_id', d.file_id, 'qb_stopped', nq, 'qb_busy', nb, 'qb_stop_requested', ns, 'qb_kept_out', nm,
+ return jsonb_build_object('ok', true, 'version', d.version + 1, 'file_id', d.file_id, 'qb_stopped', nq, 'qb_busy', nb, 'qb_stop_requested', ns, 'qb_stop_external', nx, 'qb_kept_out', nm,
   'file_ids', (select jsonb_agg(q.fid order by q.o) from (select d.file_id fid, coalesce(d.part_no, 0) o
    union all select x.file_id, x.part_no from public.invoice_docs x where x.merged_into=d.id) q));
 end $$;
