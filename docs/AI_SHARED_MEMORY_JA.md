@@ -1,5 +1,12 @@
 # Claude / Codex 共通記録
 
+## 2026-11-24 v1213：A-1 キャリア・育成（制度・役割ガイド・役割と責任マップ）（統合実装プロンプトの A・Claude（Team・Claude Code）・ブランチ `claude/grade-unify-a`（v1212 の上）・アプリ 1213・SQL・関数は変えていない）
+
+- 作ったもの（`docs/GRADE_UNIFY_A_JA.md` の 6）：役割の文のマスター `careerscore/role-guide-q4-v1.json`（4 系統 × 6 段・業務の分担・日英・数は書かない＝Q4 のマスターを読む）と `scripts/gen-index-roleguide.mjs`（CI で `--check`）。画面「キャリア・育成」（`career`・4 つのタブ・全員が開ける・読むだけ）。採用 › キャリア説明は新しいガイドが既定・前の 4 つは「旧制度の説明（読むだけ）」。旧の責任マトリクスは書けない（`respLocked`）。
+- 文は Claude の案（`status: draft`）：GM・CEO だけに「案」で出る。ほかの人・候補者・店のタブレットは「会社が確認中」（評価の見方だけ）。英語は確かめるまで GM・CEO だけ英語の案。公開は Moto さんが確かめたあと JSON の status と approval を変えて PR。
+- 試験：`tests/career-guide-v1213.test.mjs` 7・`hr-ui88-v1182` を直した・`check-static-release.py` pass/1213。
+- 次：Moto さんが文を確かめる → A-2（育成計画・OJT の表と関数・旧 OJT／成長管理／OJTマップを全部旧として保存・過去の記録）→ A-3 → C。push はできないので引き継ぎ一式で。
+
 ## 2026-11-24 A-0：Q4 グレード制度・キャリア・OJT・成長管理の一本化の始まり（統合実装プロンプトの A・Claude（Team・Claude Code）・ブランチ `claude/grade-unify-a`（v1212 の上）・文書だけ）
 
 - 依頼の全文を `docs/INTEGRATED_PROMPT_20261123_JA.md` に写した（Moto さんが 11/24 に貼った。Excel と前回の指示書はリポジトリに入れない）。作業の記録・段階（A-0〜A-3）・全体の洗い出し 22 行・正本と G7 の確認・決めてほしいこと 8 つは `docs/GRADE_UNIFY_A_JA.md`。

@@ -161,6 +161,8 @@ test('5A 責任マトリクス・G2（スマホ）：箱は GM・CEO だけ・�
   c.u11RespOpen(1); const b = c.boxes.at(-1);
   assert.equal(b.title, '棚卸'); assert.equal((b.body.match(/onchange="respSetCell\(1,\d,this.value\)"/g) || []).length, 7);
   assert.match(b.body, /onchange="respSetName\(1,this.value\)"/); assert.match(b.body, /onchange="respSetNoteEn\(1,this.value\)"/); assert.match(b.foot, /respDelRow\(1\)/);
+  // v1213（A-1・答え 6 A）：旧の責任マトリクスは読むだけ（respLocked）。GM・CEO でも直す箱を開かない
+  const nb = c.boxes.length; c.respLocked = () => true; c.u11RespOpen(1); assert.equal(c.boxes.length, nb, 'v1213 から旧の表は直せない'); delete c.respLocked;
   c.u11Tyg2Open(0); const g = c.boxes.at(-1);
   assert.match(g.body, /<option value="独自" selected>独自<\/option>/, '選べる値に無い今の値も残す'); assert.equal((g.body.match(/tyg2SetCell\(0,\d+,this.value\)/g) || []).length, 8);
   assert.equal(ctx(1440).u11RmSp(), false);
