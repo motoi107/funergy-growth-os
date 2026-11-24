@@ -30,14 +30,14 @@ function fakeDom() {
   function mkEl(id) { let ih = ''; return { id, value: '', checked: false, files: null, get innerHTML() { return ih; }, set innerHTML(v) { ih = v; parse(v); } }; }
   return { els, parse };
 }
-async function app(s, emp, { role = 'crew', page = 'lost_receipt', pin = true } = {}) {
+async function app(s, emp, { role = 'crew', page = 'lost_receipt', pin = true, lang = 'ja' } = {}) {
   const dom = fakeDom(), toasts = [], pages = [], oldOpened = [];
   let modal = '';
   const ctx = {
     console, Promise, Date, Math, JSON, Object, Array, String, Number, Uint8Array, setTimeout: (f) => { f(); return 0; }, encodeURI,
     crypto: webcrypto, SUPABASE_URL: 'https://db.test', SUPABASE_ANON: 'anon-key', _hwSession: pin ? 'pin-' + emp : null, innerWidth: 1024,
     curPage: page, workTab: 'wr', _arTab: 'req', curRole: role, curRealRole: '', curStore: 'S1', STORES: [{ id: 'S1', name: 'Store One' }, { id: 'S2', name: 'Store Two' }],
-    t: (ja) => ja, bizNow: () => new Date(), kpi: (l, v) => `[${l}:${v}]`, mrAuthKey: () => 'p|' + emp,
+    t: (ja, en) => (lang === 'en' && en !== undefined ? en : ja), bizNow: () => new Date(), kpi: (l, v) => `[${l}:${v}]`, mrAuthKey: () => 'p|' + emp,
     renderPage: p => pages.push(p), go: p => pages.push('go:' + p), showToast: (m, k) => toasts.push([k, m]),
     openModal: h => { modal = h; dom.parse(h); }, closeModalDirect: () => { modal = ''; },
     confirm: () => true, prompt: (_m, d) => d, groupsForRole: () => [{ children: ['dashboard', 'tasks'] }],
@@ -102,6 +102,28 @@ test('the detail shows the lost receipt fields; accounting gets it in the one li
   const f = ac.ctx.wrAcctFeed();
   const r = f.rows.find(y => y.id === x.id);
   assert.ok(r, 'in the one list'); assert.equal(r.kindL, '紛失届'); assert.equal(r.st, 'ck'); assert.equal(r.amount, 42.5); assert.match(r.useH, /Costco · Sam Store/);
+});
+
+test('Codex #207/#209/#210 P2 (v1206): a done lost receipt (GM approved, accounting checked) shows no ③ payment step and says it ends at step 2, in Japanese and English', async () => {
+  const s = await world();
+  const x = (await s.call('E8', { action: 'submit', kind: 'lost', store_id: 'S1', client_key: s.key(), payload: { date: s.today, vendor: 'Costco', amount_cents: 4250, cardholder: 'Sam Store', items: 'ice', memo: '' } })).body;
+  assert.equal((await s.approve('E2', x)).status, 200);
+  const f = await s.fresh(x);
+  const c = await s.act('E3', f, 'check');
+  assert.equal(c.status, 200, JSON.stringify(c.body)); assert.equal(c.body.status, 'done');
+  for (const [lang, done, pay, notYet] of [['ja', /紛失届は ② で完了です/, /支払・精算/, /まだ/], ['en', /A lost-receipt report ends at step 2/, /Payment/, /not yet/]]) {
+    const a = await app(s, 'E3', { role: 'office', page: 'tasks', lang });
+    a.ctx.wrOpen(x.id); await a.settle();
+    const d = a.dom.els['wr-detail'].innerHTML;
+    assert.match(d, done, lang + ': it ends at step 2');
+    assert.doesNotMatch(d, /③/, lang + ': no step 3');
+    assert.doesNotMatch(d, pay, lang + ': no payment step');
+    assert.doesNotMatch(d, notYet, lang + ': nothing is “not yet” after done');
+  }
+  // 比べ：建て替え経費は ③ がある
+  const rb = (await s.call('E8', { action: 'submit', kind: 'reimburse', store_id: 'S1', client_key: s.key(), payload: { date: s.today, payer: 'Lee', vendor: 'Costco', amount_cents: 100 } })).body;
+  const g = await app(s, 'E2', { role: 'gm', page: 'tasks' });
+  if (rb && rb.id) { g.ctx.wrOpen(rb.id); await g.settle(); assert.match(g.dom.els['wr-detail'].innerHTML, /③/, 'a reimbursement still has step 3'); }
 });
 
 test('a person who can also send expenses gets only the lost receipt form from “New” (no expense kind buttons)', async () => {

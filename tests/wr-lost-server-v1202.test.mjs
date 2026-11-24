@@ -131,7 +131,7 @@ test('Codex #207/#209 P1: with the approval rules already live (16 kinds active)
   assert.deepEqual((await s.q("select status from ar_rules where kind = 'lost' order by ver")).map(x => x.status), ['active']);
 });
 
-test('Codex #207/#209 P1: approval rules not live → no rule is needed (the earlier GM approval); a DB that had the earlier v1202 SQL (no draft) gets the draft when the SQL runs again; the rollback removes the lost rules', async () => {
+test('Codex #207/#209 P1: approval rules not live → no rule is needed (the earlier GM approval); a DB that had the earlier v1202 SQL (no draft) gets the draft when the SQL runs again; the rollback keeps the lost rules (v1206) but the earlier functions do not use them', async () => {
   const s = await world();
   const w = await s.ok('E6', { action: 'whoami' });
   assert.equal(w.ar.live, false); assert.equal(w.ar.lost_rule, false);
@@ -139,6 +139,41 @@ test('Codex #207/#209 P1: approval rules not live → no rule is needed (the ear
   await s.pg.exec('reset role'); await s.pg.exec("delete from public.wr_requests where kind = 'lost'; delete from public.ar_rules where kind = 'lost'"); await s.pg.exec(LOST); await s.pg.exec('set role service_role');
   assert.deepEqual((await s.q("select status from ar_rules where kind = 'lost'")).map(x => x.status), ['draft']);
   await s.pg.exec('reset role'); await s.pg.exec(DROP); await s.pg.exec('set role service_role');
-  assert.equal((await s.q("select count(*)::int n from ar_rules where kind = 'lost'"))[0].n, 0);
+  assert.deepEqual((await s.q("select status from ar_rules where kind = 'lost'")).map(x => x.status), ['draft'], 'v1206: kept (not deleted)');
   assert.equal((await s.ok('E2', { action: 'whoami' })).ar.lost_rule, undefined, 'the earlier whoami (no lost_rule)');
+  assert.ok(!(await s.state()).kinds.some(x => x.kind === 'lost'), 'the earlier settings screen does not list lost');
+  const st = await s.call('E2', { action: 'ar_rule_activate', kind: 'lost', expect_ver: 1, expect_rev: 1000001, note: 'x' });
+  assert.notEqual(st.status, 200, 'the earlier functions do not take lost');
+});
+
+test('Codex #207〜#210 P2 (v1206): rollback → apply again keeps the rule versions going, so an old screen\'s activate / save (from before the rollback) is refused, not applied to a new first draft', async () => {
+  const s = await world({ lost: false });
+  await s.activate(); await s.live();
+  await s.pg.exec('reset role'); await s.pg.exec(LOST); await s.pg.exec('set role service_role');
+  let k = (await s.state()).kinds.find(x => x.kind === 'lost');
+  assert.equal(k.draft.ver, 1); assert.equal(k.draft.rev, 1000001);
+  const stale = { action: 'ar_rule_activate', kind: 'lost', expect_ver: k.draft.ver, expect_rev: k.draft.rev, note: '古い画面' };   // 戻す前から開いていた画面
+  const staleSave = { action: 'ar_rule_save', kind: 'lost', def: k.draft.def, expect_ver: k.draft.ver, expect_rev: k.draft.rev, base_ver: 0, note: '古い画面' };
+  // CEO だけの 1 段に直して有効にする
+  const ceoOnly = { default: { label: 'CEO', stages: [{ mode: 'any', slots: [{ t: 'role', role: 'ceo', scope: 'all' }] }] }, viewers: k.draft.def.viewers, self: 'gm' };
+  await s.setRule('lost', ceoOnly);
+  k = (await s.state()).kinds.find(x => x.kind === 'lost');
+  assert.equal(k.active.ver, 1); assert.deepEqual(k.active.def.default.stages[0].slots.map(x => x.role), ['ceo']);
+  assert.equal((await s.call('E2', stale)).status, 409, 'before the rollback: conflict');
+  // 申請 0 件で戻す → もう一度入れる
+  await s.pg.exec('reset role'); await s.pg.exec(DROP); await s.pg.exec(LOST); await s.pg.exec('set role service_role');
+  const rows = await s.q("select ver, status, rev from ar_rules where kind = 'lost' order by ver");
+  assert.deepEqual(rows.map(x => [x.ver, x.status]), [[1, 'active']], 'the same rows (no new first draft)');
+  const a = await s.call('E2', stale);
+  assert.equal(a.status, 409, 'after the rollback and the SQL again: the old activate is still a conflict (it passed before v1206)');
+  assert.equal((await s.call('E2', staleSave)).status, 409, 'the old save too');
+  k = (await s.state()).kinds.find(x => x.kind === 'lost');
+  assert.deepEqual(k.active.def.default.stages[0].slots.map(x => x.role), ['ceo'], 'the CEO-only rule stays active (not replaced by the GM-or-CEO first draft)');
+  assert.equal((await s.ok('E6', { action: 'whoami' })).ar.lost_rule, true);
+  // 次の下書きは新しい版・前より大きい回数
+  const nd = await s.saveRule('lost', k.active.def);
+  assert.equal(nd.status, 200, JSON.stringify(nd.body));
+  assert.equal(nd.body.draft.ver, 2); assert.ok(nd.body.draft.rev > Math.max(...rows.map(x => x.rev)), 'the count only goes up');
+  const r = await s.lost('E6', 'S1');
+  assert.equal(r.status, 200, JSON.stringify(r.body));
 });

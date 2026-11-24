@@ -1,5 +1,20 @@
 # 改修・自動化の作業記録
 
+## 2026-11-22 AM に本部の人を見せる（v1207）
+
+1. 済（Moto さん 11/22「はい」）・済（Claude・ブランチ `claude/am-office-1207`）：v1207（関数 secure-state とアプリ・`docs/UNIFIED_UI_V1191_JA.md` の 29）。
+2. 次：PR → Codex → #211 のあとにマージ → Moto さんが `deploy/am-office-v1207/手順.md`（関数の 1 ファイル → 端末を 1207 に）。
+3. 済（Moto さん 11/23「C」）・済（Claude 11/23）：本部の人の個人の欄は AM に出さない（サーバーは v1197 の範囲・`ids` で画面が止める）。次：Codex のレビュー（#213 の最新の head）。
+3b. 済（Claude 11/23）：Codex の再レビュー（#213 7111705389）の P2（個人の欄を空のまま登録した人を開き直すと直せない）を直した（`piiRecheck`）。次：Codex の再レビュー（#213 の最新の head）。
+4. あとで（別の PR）：打刻なしの検知・HR 福利厚生の絞り込みが ALL だけを本部として扱う（ルーティンの P3-2）。
+
+## 2026-11-22 Team の変更の点検（v1206）と Career Score 2026 Q4
+
+1. 済（Claude・ブランチ `claude/team-fixes-1206`）：#201〜#210 の点検・main に残っていた Codex の P2 5 つの直し（`docs/UNIFIED_UI_V1191_JA.md` の 28）。次：PR → Codex → Moto さんがマージ → 端末を 1206 に。
+2. 済（Moto さん 11/22 18:42 HST）：v1197・v1202 は本番に入れた・前の戻す SQL は流していない・#206 の P3 は今のまま・AM に本部の人を見せる → v1207（ブランチ `claude/am-office-1207`）。
+3. 次（Claude）：Career Score 2026 Q4（CAREER_2026_Q4_V1・G／Prep／S Chef／S Office・Q3 は読むだけ）。Excel から評価表のデータ（生成と確かめ）→ 計算と試験 → 画面は UI 案を Moto さんに見せてから。先に聞くこと：Prep の時給の段（Excel は P1〜P6・アプリの v1106 は Lv1〜5）・だれがどの制度か。
+4. 前から：v1192〜v1195 の配備の残り（各節）。
+
 ## 2026-11-22 Career Score 2026 Q4（新制度）
 
 1. 済（Claude・ブランチ `claude/career-score-q4-core`）：段階 1＝評価表マスターと計算の芯・試験 24（`docs/CAREER_SCORE_Q4_JA.md`）。済：PR #212。次：Codex。

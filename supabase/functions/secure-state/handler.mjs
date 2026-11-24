@@ -327,7 +327,8 @@ export function hrApStrip(rec) {
 //   従業員の表（公開の鍵で読める）から外し、app_state の 1 行 emp_pii（社員 ID → 欄）に置く。読み書きはこの関数で（pii_get・pii_op）。
 //   SQL 20261113090000 が、従業員の表に残っている欄を emp_pii に写して消す（それまでは、emp_pii に無い人は従業員の表の値を読む）。
 //   見られる人（Moto さん 11/09：今の従業員マスターと同じ）：CEO・GM＝全員の 5 つ／経理・Head Chef＝全員の 4 つ（保険料を除く）／
-//   AM＝担当の店（応援も）と本部（ALL）の人の 4 つ／事務Crew＝生年月日があるかだけ（エラーセンターの確かめ）／ほか＝なし。
+//   AM＝担当の店（応援も）と全店（ALL）の人の 4 つ（本部（OFFICE）の人は応援が担当の店のときだけ。v1207 で一覧には出すが、個人の欄は出さない＝Moto さん 11/23「C」）／
+//   事務Crew＝生年月日があるかだけ（エラーセンターの確かめ）／ほか＝なし。全員ではない人（AM）には、見られる人の社員 ID（ids）も返す（アプリが個人の欄を止める）。
 //   Head Chef は、今の社員の表と GM・CEO が確かめた写し（wr_people.chef・SQL 20261113080000）の両方で Head Chef の人だけ（Codex #138 P1-1）。
 //   保険料（人ごと）は GM・CEO だけ（今の画面で直せる人）。店ごとの合計（人件費に入れる）はだれにでも返す（ins_totals・ログイン不要。
 //   店舗の PIN のタブレットでも人件費が今と同じになるように。Moto さん 11/09）。
@@ -1943,11 +1944,14 @@ export function createHandler(deps) {
       me = Array.isArray(es) ? es[0] || null : null;
       if (!me || empOut(me)) return none;
     }
-    if (a.role === 'ceo' || a.role === 'gm') return { lv: 'full', ok: () => true, newOk: true, amt: true };
-    if (a.role === 'office') return { lv: 'hr', ok: () => true, newOk: true, amt: false };
-    if (a.role === 'office_crew') return { lv: 'flag', ok: () => true, newOk: false, amt: false };
+    // all：全員が範囲（見られる人の一覧 ids を返さない）
+    if (a.role === 'ceo' || a.role === 'gm') return { lv: 'full', ok: () => true, all: true, newOk: true, amt: true };
+    if (a.role === 'office') return { lv: 'hr', ok: () => true, all: true, newOk: true, amt: false };
+    if (a.role === 'office_crew') return { lv: 'flag', ok: () => true, all: true, newOk: false, amt: false };
     if (!me) return none;
-    if (a.role === 'am') {   // 担当の店（応援も）と本部（ALL）の人：アプリの従業員マスターの絞り込みと同じ
+    if (a.role === 'am') {   // 担当の店（応援も）と全店（ALL）の人（v1197 と同じ）
+      // v1207 の一覧（アプリの従業員マスター）には本部（OFFICE）の人も全部の AM に出すが、個人の欄はこの範囲のまま（Moto さん 11/23「C」：
+      // 本部の人の生年月日・カード・保険は、応援が担当の店でなければ AM に出さない・直させない）。アプリは pii_get の ids でその人の欄を止める
       const S = [...new Set([...a.am, ...a.stores])];
       const ok = e => {
         const d = obj(e && e.data) || {};
@@ -1955,11 +1959,11 @@ export function createHandler(deps) {
         const sup = Array.isArray(d.support) ? d.support : (Array.isArray(e && e.support) ? e.support : []);
         return st === 'ALL' || S.includes(st) || sup.some(x => S.includes(String(x)));
       };
-      return { lv: 'hr', ok, newOk: false, amt: false };
+      return { lv: 'hr', ok, all: false, newOk: false, amt: false };
     }
     // Head Chef（Corporate Chef も）：全員（v950 から従業員マスターで全店の人を見る）。今の社員の表と、GM・CEO が確かめた写し（wr_people.chef）の
     // 両方で Head Chef のときだけ（Codex #138 P1-1：確かめた店長が自分の肩書きを Head Chef に書き換えるだけでは広げない）
-    if (a.role === 'staff' && a.grade >= 4 && liveChef(me) && await confChef(a)) return { lv: 'hr', ok: () => true, newOk: false, amt: false };
+    if (a.role === 'staff' && a.grade >= 4 && liveChef(me) && await confChef(a)) return { lv: 'hr', ok: () => true, all: true, newOk: false, amt: false };
     return none;
   }
   async function piiLoad() {
@@ -1987,17 +1991,21 @@ export function createHandler(deps) {
     const sc = await piiScope(a);
     if (sc.lv === 'none') return { level: 'none', data: {}, updated_at: null };
     const { row, map, emps } = await piiLoad();
-    const data = {}, seen = new Set();
+    const data = {}, seen = new Set(), ids = [];
     for (const e of emps) {
       const id = String(e.id);
       seen.add(id);
       if (!sc.ok(e)) continue;
+      ids.push(id);
       const p = piiProject(piiOf(map, id, e), sc.lv);
       if (p) data[id] = p;
     }
     // 社員の表にまだ無い人（登録した端末がまだ送れていない）：書ける人（CEO・GM・経理）にだけ
     if (sc.newOk) for (const id of Object.keys(map)) if (!seen.has(id) && PII_ID_RE.test(id) && obj(map[id])) { const p = piiProject(piiOf(map, id, null), sc.lv); if (p) data[id] = p; }
-    return { level: sc.lv, data, updated_at: row ? row.updated_at : null };
+    const out = { level: sc.lv, data, updated_at: row ? row.updated_at : null };
+    // v1207：全員ではない人（AM）には、見られる人の社員 ID も返す。アプリはここに無い人（本部の人など）の個人の欄を止める（空の欄を直せると見せない）
+    if (!sc.all) out.ids = ids;
+    return out;
   }
   // 1 人の欄を直す。base＝画面を開いたときの値。サーバーの今の値が base と違い、送った値とも違う欄があれば 409（ほかの端末が同じ欄を直した）。
   // 読んだ行が変わっていないときだけ書く（5 回まで）。書くとき、その人の欄を全部 emp_pii に持たせる（従業員の表の値も写す）

@@ -147,7 +147,7 @@ test('suggestions are conservative: a clear affiliation stays, all/empty becomes
   assert.equal(c.WRITES.length, 0);
 });
 
-test('what changes for each person: affiliation, support, skill matrix, store lists (all stores → support only), login location', async () => {
+test('what changes for each person: affiliation, support, skill matrix, store lists (all stores → support only), the AM staff master (v1207: ALL and OFFICE are every AM), login location', async () => {
   const c = app({ ss: full([]) });
   await T(c).load(); await settle();
   const CH = (id, d) => Array.from(T(c).changes(emp(c, id), d));
@@ -155,24 +155,30 @@ test('what changes for each person: affiliation, support, skill matrix, store li
   assert.ok(am.includes('所属：全店 → 本部'), am.join('|'));
   assert.ok(am.includes('応援：なし → Store One・Store Two'));
   assert.ok(am.includes('スキルマトリクスに出なくなる（本部）'));
-  assert.ok(am.includes('店の一覧（シフト作成・AM の従業員マスター）：全店 → Store One・Store Two'), 'HQ people show only in their support stores');
+  assert.ok(am.includes('店の一覧（シフト作成）：全店 → Store One・Store Two'), 'HQ people show only in their support stores (shift building)');
+  assert.ok(!am.some(x => x.startsWith('AM の従業員マスター')), 'all stores → head office: every AM before and after (v1207)');
   assert.ok(!am.some(x => x.startsWith('ログイン')), 'AM signs in from Office: no login line');
   const crew = CH('E-2', { aff: 'store', store: 'S3', support: [] });
   assert.ok(crew.includes('所属：全店 → Store Three'));
-  assert.ok(crew.includes('店の一覧（シフト作成・AM の従業員マスター）：全店 → Store Three'));
+  assert.ok(crew.includes('店の一覧（シフト作成）：全店 → Store Three'));
+  assert.ok(crew.includes('AM の従業員マスター：全部の AM → 担当の AM（Store Three）'), crew.join('|'));
   assert.ok(crew.includes('ログインで名前が出る場所：どこにも出ない → Store Three'), crew.join('|'));
   const sl = CH('E-3', { aff: 'store', store: 'S1', support: ['S2'] });
   assert.ok(sl.includes('所属：本部 → Store One'));
   assert.ok(sl.includes('スキルマトリクスに出る（Store One）'));
   assert.ok(sl.includes('ログインで名前が出る場所：どこにも出ない → Store One・Store Two'));
+  assert.ok(sl.includes('AM の従業員マスター：全部の AM → 担当の AM（Store One・Store Two）'), 'office (any case) → a store: only the AMs of the stores');
   const k = CH('E-1', { aff: 'store', store: 'S1', support: [] });
   assert.deepEqual(k, ['応援：Store Two → なし', '店の一覧から外れる：Store Two', 'ログインで名前が出る場所：Store One・Store Two → Store One']);
   assert.deepEqual(CH('E-1', { aff: 'store', store: 'S1', support: ['S2'] }), [], 'the same as the master: nothing changes');
   const off = CH('E-1', { aff: 'hq', store: '', support: [] });
   assert.ok(off.includes('ログインで名前が出る場所：Store One・Store Two → Office'), 'a store role in head office signs in from Office');
+  assert.ok(off.includes('AM の従業員マスター：全部の AM に出る'), 'a store → head office: every AM (v1207)');
   // English
   c.curLang = 'en';
   assert.ok(Array.from(T(c).changes(emp(c, 'E-AM'), { aff: 'hq', store: '', support: [] })).includes('Affiliation: All stores → Head office'));
+  assert.ok(Array.from(T(c).changes(emp(c, 'E-2'), { aff: 'store', store: 'S3', support: [] })).includes('AM staff master: every AM → the AMs of Store Three'));
+  assert.ok(Array.from(T(c).changes(emp(c, 'E-1'), { aff: 'hq', store: '', support: [] })).includes('AM staff master: every AM sees this person'));
 });
 
 test('save: the server first (with the version per person), then the staff master (head office is OFFICE); only changed people are written', async () => {
@@ -381,8 +387,13 @@ test('the staff master shows the card for GM/CEO, the default-store places treat
   assert.match(ss, /if\(j\.affn!==1 && typeof payload\.action==='string' && payload\.action\.indexOf\('aff_'\)===0\) return \{ legacy:true \};/);
   assert.match(ss, /if\(Array\.isArray\(j\.ids\)\) _ro\.ids=j\.ids\.slice\(0, 200\)\.map\(String\);/);
   assert.ok(ss.indexOf('j.affn!==1') < ss.indexOf('if(!r.ok){'), 'checked before the error path (an old function says unknown_action)');
-  // membership of the store lists keeps ALL only (no widening for AM): a few fixed spots
-  assert.ok(!/empAnyStore\(e\.store\)\s*\|\|\s*S\.includes/.test(src));
+  // the shift-building list keeps ALL only (head office people only in their support stores)
+  assert.ok(src.includes("(e.store===storeId || (e.support||[]).includes(storeId) || e.store==='ALL')"), 'shift building: ALL only');
+  // v1207（Moto さん 11/22「はい」）：AM の見える範囲は ALL と OFFICE の両方（従業員マスター・退職の対象・スタッフの成長）
+  assert.ok(src.includes("emps = emps.filter(e=>empAnyStore(e.store)||myAmStores().includes(e.store)||(e.support||[]).some(s=>myAmStores().includes(s)));"), 'AM staff master');
+  assert.ok(src.includes("return emps.filter(function(e){ return empAnyStore(e.store)||ms.indexOf(e.store)>=0||"), 'offboarding targets');
+  assert.ok(src.includes("return emps.filter(e=>empAnyStore(e.store) || scope.includes(e.store) ||"), 'staff growth for managers');
+  assert.ok(!/e\.store==='ALL'\|\|myAmStores\(\)/.test(src) && !/e\.store==='ALL'\|\|ms\.indexOf/.test(src) && !src.includes("myAmStores().concat(['ALL'])"), 'no AM list keeps ALL only');
 });
 
 // ---- Codex（#200 7002734955）・Claude のルーティン（7002642425）の直し ----
