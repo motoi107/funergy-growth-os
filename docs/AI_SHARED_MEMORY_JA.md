@@ -1,5 +1,13 @@
 # Claude / Codex 共通記録
 
+## 2026-11-24 v1211：#218 の Codex の再レビュー（`5e71c68` まで・7134072683）の直し（Claude（Team・Claude Code）・ブランチ `claude/acct-view-1211`・push できないので引き継ぎ一式で渡す）
+
+- #217 の直し（`a43957c`・#216 を含む）を取り込んだ（マージ）。
+- P2：確かめた PIN の事務Crew は、関数 secure-state でもメールの事務Crew と同じ office_crew の範囲になる（secure-state も PIN の人の役割を work-requests の whoami＝`wr_actor` で決める）。Moto さん 11/24「メールの事務Crewと全く同じ」で認めたので**コードは変えない**。前の記録・仕様・migration のコメントの「secure-state は manager_auth だけを見る」は誤り → 直した（仕様の 3・4・8・手順.md・② の SQL のコメント）。
+- 広がる範囲：全店の Tip と期間の確定・変更の記録・グレード履歴・全店の通知・生年月日のあるなし・カードの照合・本部の Career Score（GM・CEO だけの給与・賞与・ほかの人の成長カルテは見えないまま）。確かめを外す・退職・PIN の期限が secure-state に効くのは最大 60 秒あと（whoami の答えを 60 秒覚える。カードの照合は社員の表を毎回見るので退職はすぐ）。
+- 試験：`tests/acct-view-ss-v1211.test.mjs` 3（本物の wr_actor と whoami を secure-state の偽のクラウドにつなぐ）・v1211 の 3 ファイル 20/20。CI に足した。
+- 次：Personal で push → Codex の再レビュー（#218 の新しい head）→ #1212 へ取り込む。
+
 ## 2026-11-24 v1210：#217 の Codex の再レビュー（`0db4bff` まで・7134071689）の直し（Claude（Team・Claude Code）・ブランチ `claude/acct-payroll-1210`・push できないので引き継ぎ一式で渡す）
 
 - #216 の P2 の直し（`37f6e32`）を取り込んだ（マージ）。
@@ -13,6 +21,18 @@
 - P2：上限の失敗に答えが届いた時刻の太平洋時間の日を残していたので、頼んでいるあいだに 0 時（月末）をまたぐと「見る」が翌日（翌月）いっぱい戻らなかった → SQL `gr_places_take`（2b）が `pday` を返す・関数が `places_cap` と `counted:true` の答えに入れる（④ を作り直した）・画面は `pd`＝サーバーの日（無ければ頼んだ時刻の日）と `rd`＝頼んだ時刻の端末の日で、早いほうで消す（仕様の 15）。
 - 試験：Google のテスト全部 62/62（server-v1209 19・app 18・deploy 5・v1157 server・deploy）。直す前の画面・関数・SQL では足した試験が落ちる。`check-static-release.py` pass/1209。版は 1209 のまま（本番未反映）。
 - 次：Personal で push → Codex の再レビュー（#216 の新しい head）→ #217・#218・#1212 へ取り込む。
+
+## 2026-11-23 v1211：事務Crew が経理リーダー・経理マネージャー・GM と同じ経理レビュー（B-1・統合実装プロンプトの B-1・Claude（Personal・Claude Code）・ブランチ `claude/acct-view-1211`・#217（`0db4bff`）の上・SQL `20261217090000`・アプリ 1211・本番未反映）
+
+- 依頼：事務クルー・経理リーダー・経理マネージャー・GM が同じ条件で同じ経理業務データ（一覧・件数・金額・絞り込み・詳細・添付・承認の履歴・照合と QB の状態・出力）を見る。GM の役割にしない・サーバーで。仕様：`docs/ACCT_VIEW_V1211_JA.md`。入れる一式：`deploy/acct-view-v1211/`（① → ② SQL → ③ → #217 のあとにマージ → 端末を 1211 に → GM・CEO が PIN の事務Crew を「事務Crew と確かめる」）。
+- 原因（合成データで再現）：申請のサーバーの `wr_actor` は、manager_auth に事務Crew のメールのアカウントがある人だけを office_crew にしていた。PIN の事務Crew は GM・CEO が確かめていても（`wr_exp_grants.crew`・v1184）G1 のスタッフで返り、共通ルールの前は経理レビュー › 申請が 0 件・あとは「確認した／差し戻す／支払」が出なかった（`ar_role_rows`・`wr_exp_base` は前から同じ確かめで事務Crew として数えていた）。
+- 直し：`wr_actor` は「manager_auth のアカウントなし・AM／G3 以上と確かめた写しなし・従業員マスターで事務Crew・確かめあり」の人を office_crew（`src='crew_grant'`）で返す。`wr_exp_base` は crew_grant のとき確かめを読み直す。どちらもサーバーの鍵だけ。アプリ：経理・事務Crew の休暇の画面に「全店の休暇（見るだけ）」（G4 の経理で空の管理カードが出ていた）。
+- 変えないもの：GM の役割・給与・賞与・カルテ・セキュアページ・経理出力の給与・GM・CEO だけの操作・確かめていない人・店のスタッフ・manager_auth と確かめた写しの人の決め方。
+- 広がること（Moto さんに伝える）：確かめた PIN の事務Crew は事務Crew のアカウントと同じに＝本部と全店の経費の申請・経理の確認・Google の口コミ全店（#216）。確かめを外す・役割を変える・退職で戻る。前の申請の SQL（v1131〜v1135・three-fixes ②）を流し直すと戻る（③ の 1・2 が NG）。
+- この版でも直らないこと：経理のメールのアカウントの無い経理（① の 9）・確かめていない事務Crew（① の 7）・確かめた AM／G3 以上の写しの人・役割 g2 の Office Crew Leader でアカウントなし・**経理レビュー › 書類（Invoice取込・照合・QB の状態）は PIN だけの事務Crew では開けない（メールのアカウントが要る）**・**出力は B-2**（経理出力は給与があるので事務Crew に出さない）。→ **B-1 は「申請と休暇」は直ったが、書類と出力が残るので全体の完了ではない。**
+- 試験（合成データ・PGlite・本物の SQL と関数 work-requests）：acct-view-v1211 11/11（直す前の SQL で落ちる・共通ルール まだ／使用中・確認と支払・添付・広げない・戻る・写しの決め方・SQL 2 回・権限・入れる一式の一致・①→②→③・前の SQL を流し直すと ③ NG・戻す）・acct-view-vac-v1211 6/6・わざと壊す（SQL）6/7（残り 1 は同じ意味：`create or replace` は権限を残す）・static release pass/1211・全体の失敗は base `0db4bff` と同じ 7 件だけ。CI に足した。
+- 独立レビューは無し。Codex のレビューはまだ。本番のデータ・実機は見ていない。
+- 次：PR → Codex → #217 のあとにマージ（Moto さん）→ 手順.md。そのあと B-2（Payroll 別のガソリン代・立替経費・UI 案から）→ A（UI 案から）→ C。
 
 ## 2026-11-23 v1210：照合済みの invoice を QuickBooks へ（B-3・Moto さん 11/23 13:59 HST「はい、進めてください」の統合実装プロンプトの B-3・Claude（Personal・Claude Code）・ブランチ `claude/acct-payroll-1210`・#216（`a571d61`）を取り込み・SQL `20261216090000`・関数 invoice-intake・アプリ 1210・本番未反映）
 

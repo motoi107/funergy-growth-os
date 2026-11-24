@@ -7,7 +7,10 @@
 1c. 済（Claude 11/23）：ルーティン（7123823852・7123895798）の P2（状態と未転送の一覧の重さ）を直した（仕様の 9・確認の SQL は functions 126）。次：Codex のレビュー（#217 の最新の head）→ #211〜#216 のあとにマージ（Moto さん）→ 手順.md。
 1d. Moto さんに確かめる：照合の取り消しで、反映のときに積まれた送信も止まる（照合し直すまで送らない）でよいか。
 1e. 済（Claude（Team）11/24）：#217 の Codex の再レビュー（7134071689）＝#216 の P2 の直しを取り込み（`claude/google-places-1209` をマージ）・P3（前の外部の転送が送っている途中の行は止めの印で止まらないのに「まだ送っていなければ止めます」と出る）を直した（仕様の 10・SQL `invoice_reconcile` が `qb_stop_external` を分ける・画面の言葉）。push はできないので引き継ぎ一式で。次：Personal で push → Codex の再レビュー。
-2. 次（Claude）：B-1（事務Crew にも経理リーダー・経理マネージャー・GM と同じ経理レビュー。サーバーでも）→ B-2（Payroll 別のガソリン代・立替経費のページとシート）→ A（Q4 のグレード制度・キャリア育成の一本化）→ 最後に 4 つの節の報告（C）。
+2. 済（Claude・ブランチ `claude/acct-view-1211`・#217 の上）：B-1 の申請と休暇＝v1211（SQL `20261217090000`・`wr_actor` が確かめた PIN の事務Crew を事務Crew として返す・休暇は全店を見るだけ・`docs/ACCT_VIEW_V1211_JA.md`・`deploy/acct-view-v1211/`）。試験 11/11・6/6。次：PR → Codex → #217 のあとにマージ → 手順.md（GM・CEO が PIN の事務Crew を「事務Crew と確かめる」）。
+2b. 残り（B-1）：経理レビュー › 書類（Invoice取込・照合・QB の状態）は PIN だけの事務Crew では開けない（メールのアカウントが要る）→ Moto さんに確かめる（事務Crew のアカウントを作るか、PIN でも開けるようにするか）。出力は B-2 で。
+2d. 済（Claude（Team）11/24）：#218 の Codex の再レビュー（7134072683）の P2＝確かめた PIN の事務Crew に secure-state の office_crew の範囲も広がる（Moto さん 11/24「メールの事務Crewと全く同じ」で認めた）→ 仕様・migration のコメントの誤り（「secure-state は manager_auth だけ」）を直し、広がる範囲と 60 秒を手順.md と仕様の 4・8 に、試験 `tests/acct-view-ss-v1211.test.mjs`（確かめる前と後・外す・PIN の期限・退職・直す前の SQL）を足した。#217 の直しを取り込んだ。次：Personal で push → Codex の再レビュー。
+3. 次（Claude）：B-2（Payroll 別のガソリン代・立替経費のページとシート・経理出力の中で事務Crew も開ける部分・UI 案から）→ A（Q4 のグレード制度・キャリア育成の一本化・UI 案から）→ 最後に 4 つの節の報告（C）。
 
 ## 2026-11-23 Google の評価・口コミ（Places API（新）・v1209）
 
