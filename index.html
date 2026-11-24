@@ -50220,7 +50220,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1210';
+const APP_VERSION = '1211';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -61373,6 +61373,9 @@ function renderVacation() {
   var all = getVacations();
   var me = curUserName || (ROLE_CONFIG[curRole]||{}).name;
   var isManager = canManageVacations();
+  /* v1211：経理・事務Crew（個人のログイン）は休暇を承認できない（canApproveVacation）。G4 の経理（Accounting Manager など）でも
+     管理の一覧は空になるので、管理の一覧の代わりに GM と同じ全店の一覧（見るだけ）を出す */
+  var acctView = (curRole==='office' || curRole==='office_crew') && !curStoreLogin;
   var html = `<div class="section-header">
     <div class="section-title">${t('休暇申請','Time Off Requests')}</div>
     <div style="display:flex;gap:6px">
@@ -61381,7 +61384,7 @@ function renderVacation() {
   </div>`;
 
   // 管理者: 承認待ちキュー（自分が承認できるもの）
-  if (isManager) {
+  if (isManager && !acctView) {
     var pending = all.filter(v=> v.status==='申請中' && canApproveVacation(v));
     html += `<div class="card"><div class="card-title"><i class="ti ti-checklist" style="color:var(--accent)"></i>${t('承認待ち','Pending Approval')} <span class="tag ${pending.length?'tag-yellow':'tag-gray'}">${pending.length}</span>${pending.length?`<button class="btn btn-secondary btn-sm" style="margin-left:auto" onclick="go('approval')"><i class="ti ti-checklist"></i> ${t('承認センターで承認','Approve in Approval Center')}</button>`:''}</div>`;
     if (!pending.length) {
@@ -61414,6 +61417,10 @@ function renderVacation() {
     }
   }
 
+  /* v1211（B-1・Moto さん 11/23）：経理・事務Crew は GM と同じ休暇の一覧を見る（経理センター › 休暇・見るだけ）。
+     承認・却下は承認センター、承認済みの取消は GM・AM・店長だけ（今までどおり・ボタンは出さない） */
+  if (acctView) html += vacAcctViewHtml(all);
+
   // 自分の申請履歴
   var mine = all.filter(v=> v.employee===me);
   html += `<div class="card"><div class="card-title"><i class="ti ti-beach"></i>${t('自分の申請','My Requests')}</div>`;
@@ -61434,6 +61441,29 @@ function renderVacation() {
   }
   html += `</div>`;
   return html;
+}
+/* v1211：経理・事務Crew が見る休暇の一覧（全店・GM と同じ範囲・見るだけ）。消した印（_deleted）の記録は出さない。名前・理由はエスケープ */
+function vacAcctViewHtml(all){
+  var E = escapeHtml, today = todayISO();
+  var sn = function(id){ return (STORES.find(function(s){ return s.id===id; })||{name:id||''}).name; };
+  var pending = all.filter(function(v){ return v && !v._deleted && v.status==='申請中'; })
+    .sort(function(a,b){ return String(a.startDate||'').localeCompare(String(b.startDate||'')); });
+  var upcoming = all.filter(function(v){ return v && !v._deleted && v.status==='承認' && String(v.endDate||'') >= today; })
+    .sort(function(a,b){ return String(a.startDate||'').localeCompare(String(b.startDate||'')); });
+  var row = function(v, tag){
+    return '<div class="vac-acct-row" style="padding:6px 0;border-bottom:1px solid var(--border);font-size:12px">'
+      + '<div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap"><span><b>' + E(v.employee) + '</b> <span style="color:var(--muted)">· ' + E(sn(v.storeId)) + '</span></span>' + tag + '</div>'
+      + '<div style="color:var(--muted)">' + E(v.startDate) + ' 〜 ' + E(v.endDate) + ' · ' + E(v.type) + (v.reason ? ' · ' + E(v.reason) : '') + '</div></div>';
+  };
+  var h = '<div class="card vac-acct-view"><div class="card-title"><i class="ti ti-eye" style="color:var(--accent2)"></i>' + t('全店の休暇（見るだけ）','All stores — time off (view only)') + '</div>'
+    + '<div style="font-size:11px;color:var(--muted);margin:-4px 0 6px">' + t('GM と同じ一覧です。承認・却下は承認センター、承認済みの取消は GM・AM・店長が行います。','Same list as the GM. Approving and rejecting happen in the Approval Center; cancelling an approved request is done by the GM, AM or store manager.') + '</div>'
+    + '<div style="font-size:12px;font-weight:600;margin:4px 0">' + t('承認待ち','Pending') + ' <span class="tag ' + (pending.length ? 'tag-yellow' : 'tag-gray') + '">' + pending.length + '</span></div>';
+  if (!pending.length) h += '<div style="font-size:12px;color:var(--muted);padding:2px 0 6px">' + t('承認待ちの休暇はありません','No pending time-off requests') + '</div>';
+  pending.forEach(function(v){ h += row(v, '<span class="tag tag-yellow" style="font-size:10px">' + t('承認待ち','Pending') + '</span>'); });
+  h += '<div style="font-size:12px;font-weight:600;margin:10px 0 4px">' + t('承認済み（今後の休み）','Approved (Upcoming)') + ' <span class="tag tag-gray">' + upcoming.length + '</span></div>';
+  if (!upcoming.length) h += '<div style="font-size:12px;color:var(--muted);padding:2px 0">' + t('今後の休みはありません','No upcoming time off') + '</div>';
+  upcoming.forEach(function(v){ h += row(v, '<span class="tag tag-green" style="font-size:10px">' + t('承認','Approved') + '</span>'); });
+  return h + '</div>';
 }
 function deleteMyVacation(id){
   var me=curUserName||(ROLE_CONFIG[curRole]||{}).name;
