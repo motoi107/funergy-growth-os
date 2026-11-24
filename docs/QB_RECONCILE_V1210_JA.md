@@ -100,3 +100,14 @@ Moto さん 2026-11-23 の依頼（統合実装プロンプトの B-3）。作�
 - 試験：`tests/invoice-qb-reconcile.test.mjs` の複数枚の試験で、1 件の合わせ方はその invoice だけ・ページは最初の原本ではない・全部は前の `invoice_qb_merges()` と同じ。未転送の一覧のページ分け（古い順・`count`・`more`・おかしな `limit` は 200）。送ったあとに 4 枚目が足された invoice（前の PDF の中のページは送らない・名前の変更待ち・結果確認待ちの PDF のページ・手での記録は 4 枚目だけ・状態は送信済み・未転送の一覧に出ない）。
 - わざと壊す（10 通り・すべて落ちる）：上限なし・`more` を言わない・別の順・PDF の中で送ったページを未転送の一覧が見ない／合わせ方が見ない（送信済み・送っている途中）／名前の変更待ちで止めない／状態が見ない／1 件の合わせ方が全部を見る／画面が「N 件だけ」を言わない。
 - 確認の SQL：functions 126・`qb_reconcile` true（新しい関数と索引も見る）。戻す SQL（`db/invoice-intake-rollback.sql`）に `invoice_qb_merges_of` を足した。
+
+## 10. #217 の Codex の再レビュー（`0db4bff` まで・7134071689）の直し（Claude（Team・Claude Code）・11/24）
+
+- #216 の P2 の直し（`37f6e32`・上限の失敗は サーバーが数えた太平洋時間の日で消す）を取り込んだ（`claude/google-places-1209` をマージ）。
+- P3（Codex）：前の経路（external＝ChatGPT 側の転送）が予約して送っている途中の行は、送る前にこちらの確かめ（`invoice_qb_send_context`）を通らないので、止めの印（`stop_requested_at`）では止まらない。なのに照合取消の知らせ・1 件の状態の行が「まだ送っていなければ止めます」と言っていた。
+- 直し：
+  - SQL `invoice_reconcile`（migration・`db/invoice-intake.sql`・deploy の 1 の 3 つ）：印はこれまでどおり付ける（前の転送が失敗を返したら送り直さずに止める）。数は分ける：`qb_stop_requested`＝止まる行（このシステムの送信・人が確かめる結果確認待ち。前の経路の結果確認待ちも人が「送っていない」と確かめると止まる）、`qb_stop_external`＝前の経路が送っている途中の行。記録（`qb_cancelled`）に `external_sending`。
+  - 画面：知らせは「N 件は前の転送（ChatGPT）が送っている途中です。ここからは止められません。送られたら送信済みとして残ります（取下げ・訂正は QuickBooks で）。送れなかったときは送り直しません」。1 件の状態の行も前の転送のときはそう言う。`qb_stop_requested` が無い前の SQL のときだけ `qb_busy` を使う（前と同じ）。
+  - 手順.md の説明に前の転送のことを足した。関数（handler）は変えていない（3 の 1 ファイルも同じ）。
+- 試験：`invoice-qb-reconcile` 14（前の経路の行：`qb_stop_requested` 0・`qb_stop_external` 1・印は付く・状態は external の sending・記録の数／前の経路の結果確認待ち：`qb_stop_requested` 1・人が「送っていない」と確かめると止まる）・`invoice-qb-reconcile-ui` 13（状態の行・知らせ 3 通り）。わざと壊す 3 つを足した（SQL が前の経路の行を止まる数に入れる・画面が数を分けない・状態の行が分けない）。
+- 実機・本物の Gmail・前の転送（ChatGPT）・本番のデータでは確かめていない。Codex の再レビューはまだ。

@@ -181,6 +181,9 @@ export function createHandler(deps) {
   }
   async function mustSee(a, store) { const s = await scopeOf(a); if (s && !s.has(store)) throw E('forbidden_store', 403); }
   // v1209：Google を呼ぶ前に 1 回分を取る（上限なら呼ばない）。SQL が v1157 のままなら gr_old
+  // #216 の Codex（7134070355）の P2：SQL が数えた太平洋時間の日（pday）を上限の答えと「数えた失敗」の答えに入れる
+  // （画面は答えが届いた時刻ではなくこの日で上限の失敗を消す）。2b が前の版で pday が無ければ入れない（画面は頼んだ時刻の日を使う）
+  const PDAY = v => (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v) ? { pday: v } : {});
   async function take(a, kind, store) {
     let t;
     try { t = await db.rpc('gr_places_take', { kind, emp: a.emp, ...(store ? { store } : {}) }); }
@@ -194,7 +197,7 @@ export function createHandler(deps) {
     if (cap === 'not_linked' || cap === 'not_confirmed') return { skip: cap };
     if (cap === 'unknown_store') throw E('unknown_store', 400);
     const max = obj(t) && Number.isInteger(t.max) ? t.max : null;
-    throw E('places_cap', 429, { cap, ...(max != null ? { max } : {}) });
+    throw E('places_cap', 429, { cap, ...(max != null ? { max } : {}), ...PDAY(obj(t) ? t.pday : null) });
   }
 
   // ---- Places API（新）：見るときに取る（残さない）
@@ -228,7 +231,7 @@ export function createHandler(deps) {
     const r = await timed(PLACES + '/places/' + encodeURIComponent(pid) + '?' + new URLSearchParams({ languageCode: lang, regionCode: 'us' }).toString(),
       { headers: { 'X-Goog-Api-Key': key, 'X-Goog-FieldMask': NOW_MASK } }, 15000);
     // 1 回分はもう数えた（Google の料金は呼んだ回数）。画面は「今日の分は使った」と出し、上限の中なら押し直せる
-    if (!r.ok || !obj(r.j)) throw E(placesErr(r.status), 502, { counted: true, ...(Number.isInteger(t.store_left) ? { store_left: t.store_left } : {}) });
+    if (!r.ok || !obj(r.j)) throw E(placesErr(r.status), 502, { counted: true, ...(Number.isInteger(t.store_left) ? { store_left: t.store_left } : {}), ...PDAY(t.pday) });
     const p = r.j;
     // 口コミ：Google が関連性の順で返すもの（最大 5 件・新しい順ではない）。原文を先に（無ければ Google の訳）
     const reviews = (Array.isArray(p.reviews) ? p.reviews : []).slice(0, 5).map(x => {

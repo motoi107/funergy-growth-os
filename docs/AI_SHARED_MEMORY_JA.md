@@ -1,5 +1,27 @@
 # Claude / Codex 共通記録
 
+## 2026-11-24 v1211：#218 の Codex の再レビュー（`5e71c68` まで・7134072683）の直し（Claude（Team・Claude Code）・ブランチ `claude/acct-view-1211`・push できないので引き継ぎ一式で渡す）
+
+- #217 の直し（`a43957c`・#216 を含む）を取り込んだ（マージ）。
+- P2：確かめた PIN の事務Crew は、関数 secure-state でもメールの事務Crew と同じ office_crew の範囲になる（secure-state も PIN の人の役割を work-requests の whoami＝`wr_actor` で決める）。Moto さん 11/24「メールの事務Crewと全く同じ」で認めたので**コードは変えない**。前の記録・仕様・migration のコメントの「secure-state は manager_auth だけを見る」は誤り → 直した（仕様の 3・4・8・手順.md・② の SQL のコメント）。
+- 広がる範囲：全店の Tip と期間の確定・変更の記録・グレード履歴・全店の通知・生年月日のあるなし・カードの照合・本部の Career Score（GM・CEO だけの給与・賞与・ほかの人の成長カルテは見えないまま）。確かめを外す・退職・PIN の期限が secure-state に効くのは最大 60 秒あと（whoami の答えを 60 秒覚える。カードの照合は社員の表を毎回見るので退職はすぐ）。
+- 試験：`tests/acct-view-ss-v1211.test.mjs` 3（本物の wr_actor と whoami を secure-state の偽のクラウドにつなぐ）・v1211 の 3 ファイル 20/20。CI に足した。
+- 次：Personal で push → Codex の再レビュー（#218 の新しい head）→ #1212 へ取り込む。
+
+## 2026-11-24 v1210：#217 の Codex の再レビュー（`0db4bff` まで・7134071689）の直し（Claude（Team・Claude Code）・ブランチ `claude/acct-payroll-1210`・push できないので引き継ぎ一式で渡す）
+
+- #216 の P2 の直し（`37f6e32`）を取り込んだ（マージ）。
+- P3：前の経路（external＝ChatGPT 側の転送）が送っている途中の行は、送る前にこちらを確かめないので止めの印で止まらないのに、照合取消の知らせと状態の行が「まだ送っていなければ止めます」と言っていた → SQL `invoice_reconcile` が数を分ける（`qb_stop_requested`＝止まる行・`qb_stop_external`＝前の経路が送っている途中・記録に `external_sending`）。印は今までどおり付ける（失敗が返れば送り直さない）。画面は「前の転送が送っている途中です。ここからは止められません」。前の経路の結果確認待ちは人が「送っていない」と確かめると止まる（今までどおり・試験を足した）。仕様の 10。
+- 試験：invoice-qb-reconcile 14・invoice-qb-reconcile-ui 13・わざと壊す（選んだ 8 つ・足した 3 つを含む）すべて落ちる・`check-static-release.py` pass/1210。関数のコードは変えていない。
+- 次：Personal で push → Codex の再レビュー（#217 の新しい head）→ #218・#1212 へ取り込む。
+
+## 2026-11-24 v1209：#216 の Codex の再レビュー（`a571d61` まで・7134070355）の P2 の直し（Claude（Team・Claude Code）・ブランチ `claude/google-places-1209`・push できないので引き継ぎ一式で渡す）
+
+- このセッション（会社の Team のアカウント）は push できない（git の proxy が 403「authorized repository set に無い」・gh のトークンも無効）。Moto さん 11/24「push しないで進める」：Team で直して試験まで済ませ、ブランチごとの引き継ぎ一式（bundle・差分・メモ）を Personal で GitHub に入れる。
+- P2：上限の失敗に答えが届いた時刻の太平洋時間の日を残していたので、頼んでいるあいだに 0 時（月末）をまたぐと「見る」が翌日（翌月）いっぱい戻らなかった → SQL `gr_places_take`（2b）が `pday` を返す・関数が `places_cap` と `counted:true` の答えに入れる（④ を作り直した）・画面は `pd`＝サーバーの日（無ければ頼んだ時刻の日）と `rd`＝頼んだ時刻の端末の日で、早いほうで消す（仕様の 15）。
+- 試験：Google のテスト全部 62/62（server-v1209 19・app 18・deploy 5・v1157 server・deploy）。直す前の画面・関数・SQL では足した試験が落ちる。`check-static-release.py` pass/1209。版は 1209 のまま（本番未反映）。
+- 次：Personal で push → Codex の再レビュー（#216 の新しい head）→ #217・#218・#1212 へ取り込む。
+
 ## 2026-11-24 Moto さんの答え 7 つと、会社の Team のアカウントで続ける（Claude（Team・Claude Code）・ブランチ `claude/payroll-expense-1212`・文書だけ）
 
 - Moto さん 11/24「これを会社のTeamのアカウントで開発を継続したいです」。このセッションは push できる（ブランチ・PR とも同じリポジトリ）。
