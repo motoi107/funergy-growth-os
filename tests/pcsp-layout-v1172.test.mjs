@@ -377,7 +377,7 @@ function staffCtx(opt = {}) {
     escapeHtml, t: (ja) => ja, curRole: opt.role || 'gm', window: null, STORES: [{ id: 'F01' }, { id: 'F02' }, { id: 'F03' }],
     empFilter: opt.filter || 'active', empStoreFilter: opt.store || 'all', empSearchQ: opt.q || '',
     canAccessStaffMaster: () => true, empRosterRefresh() { }, piiEnsure() { },
-    getEmployees: () => JSON.parse(JSON.stringify(EMPS)),
+    getEmployees: () => JSON.parse(JSON.stringify(EMPS.concat(opt.extra || []))),
     myAmStores: () => opt.amStores || [],
     canViewPins: () => !!opt.pins, wageScopeStores: () => (opt.wage === 'all' ? null : []),
     canViewWageOf: e => opt.wage === 'all' || (opt.wage === 'F02' && e.store === 'F02'),
@@ -395,7 +395,7 @@ function staffCtx(opt = {}) {
   if (opt.noMq !== true) ctx.matchMedia = q => { assert.equal(q, '(min-width:1024px)'); return mq; };
   ctx.window = ctx;
   vm.createContext(ctx);
-  for (const f of ['renderStaffMaster', 'empSmResignBtns', 'empSmPanelInner', 'empSmPick', 'empSmIsPc', 'empSmWatch']) vm.runInContext(fnSrc(f), ctx);
+  for (const f of ['renderStaffMaster', 'empSmResignBtns', 'empSmPanelInner', 'empSmPick', 'empSmIsPc', 'empSmWatch', 'empOfficeStore', 'empAnyStore']) vm.runInContext(fnSrc(f), ctx);   /* v1207：AM の絞り込みは empAnyStore（ALL か OFFICE） */
   ctx._els = els; ctx._mq = mq; ctx._listeners = listeners;
   return ctx;
 }
@@ -465,6 +465,19 @@ test('従業員マスター：AM は担当の店の人だけ（カードと表�
   assert.doesNotMatch(h2, /restoreEmployee/);
   assert.match(part(h2, 'id="sm-panel"'), /openOffboardingModal\('o1'\)/);
   assert.doesNotMatch(staffCtx({ pc: false, filter: 'resigned', role: 'sl' }).renderStaffMaster(), /restoreEmployee/);
+});
+test('従業員マスター（v1207）：本部（OFFICE・空白と小文字も）の人は全部の AM に出る（カードと表の両方）。前の本部の値（---）の人は応援が担当の店のときだけ', () => {
+  const extra = [
+    { id: 'e5', name: 'Oli Office', role: 'office', store: ' office ', emp: '正社員', status: '在籍', step: 0 },
+    { id: 'e6', name: 'Hal Old', role: 'office', store: '---', emp: '正社員', status: '在籍', step: 0 },
+  ];
+  const hs = staffCtx({ pc: false, role: 'am', amStores: ['F03'], extra }).renderStaffMaster();
+  const hp = staffCtx({ pc: true, role: 'am', amStores: ['F03'], extra }).renderStaffMaster();
+  assert.deepEqual(cardIds(hs), ['e1', 'e2', 'e5'], '全店・F03 を応援する人・本部の人（--- の人は出ない）');
+  assert.deepEqual(rowIds(hp), cardIds(hs));
+  const other = staffCtx({ pc: false, role: 'am', amStores: ['F02'], extra }).renderStaffMaster();
+  assert.ok(cardIds(other).includes('e5'), 'どの AM にも出る');
+  assert.ok(!cardIds(other).includes('e6'));
 });
 test('従業員マスター：AM の担当の外の人は表にもパネルにも出ない（選んでも出さない）', () => {
   const c = staffCtx({ pc: true, role: 'am', amStores: ['F02'] });

@@ -1,4 +1,4 @@
-// v1197 の入れる一式（deploy/page-view-tab-v1197/）：secure-state の 1 ファイルが今のソースから作ったものと同じで、
+// v1197 の入れる一式（deploy/page-view-tab-v1197/）：secure-state の 1 ファイルは入れたときのまま（v1207 から sha256 で固定）で、
 // 読み込めること・モジュールの handler と同じ答えを返すこと（pv_tab・pv_full・pv_get と、前の版の頼み aff_get）。
 // 戻す前の SQL が db/page-view-tab-drop.sql と 1 文字も違わないこと・手順の順番・戻す先の v1195 の 1 ファイルが変わっていないこと。合成データだけ。
 import test from 'node:test';
@@ -17,10 +17,13 @@ const sha = p => crypto.createHash('sha256').update(fs.readFileSync(path.join(RO
 const D = 'deploy/page-view-tab-v1197/';
 const ONE = D + '1_関数_secure-state_index.ts';
 
-test('the one-file secure-state (v1197) is what the build script makes now and has no private part', () => {
-  assert.equal(OUT, ONE, 'the build writes into the v1197 folder');
+// v1207 から build() は deploy/am-office-v1207/ に書く。v1197 の 1 ファイルは Moto さんが入れたときのまま（sha256 で固定）
+const ONE_SHA = 'dcbce29dbc4eee87169d5251bf9efa1af9de52307d0c4dd6ca1ae59ff4df95c3';
+test('the one-file secure-state (v1197) stays as it was given and has no private part', () => {
+  assert.notEqual(OUT, ONE, 'the build now writes into a later folder');
+  assert.ok(build().length > 0);
   const one = rd(ONE);
-  assert.equal(one, build(), 'the one file is up to date with the sources (run node scripts/build-secure-state-one.mjs)');
+  assert.equal(sha(ONE), ONE_SHA, 'the v1197 one file stays as it was given');
   assert.ok(one.startsWith('// secure-state の 1 ファイル（v1197）'));
   assert.ok(one.endsWith(TAIL));
   assert.ok(!/^import\s/m.test(one), 'no import left');
