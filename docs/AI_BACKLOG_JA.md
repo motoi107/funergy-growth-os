@@ -17,6 +17,7 @@
 3b. 次（Claude・次のチャット）：B-2 を実装（共通 DB の表と関数・アプリ・Excel・合成データの試験・入れる一式）→ PR（#218 の上）→ Codex。そのあと A（Q4 のグレード制度・キャリア育成の一本化・UI案101 から）→ 最後に 4 つの節の報告（C）。
 3c. 済（Moto さん 11/24）：22 日・7 日が土日なら前の金曜・平日の祝日なら前の営業日（祝日は設定で変えられる）／1 B の読み方「はい」／3 B の読み方「はい」。
 3d. 作業の順（Claude・会社の Team のアカウントで続ける・11/24）：#216 の Codex（7134070355）の P2（日をまたいだ失敗の答えで再取得のボタンが翌日まで消える）→ #217 の P3 → #218 の記録と試験 → 2b の手順 → B-2（v1212）。
+4. 済（Claude（Team）11/24）：A-0＝依頼の写し（`docs/INTEGRATED_PROMPT_20261123_JA.md`）・洗い出しと G7 の確認（`docs/GRADE_UNIFY_A_JA.md`）・UI案101（https://claude.ai/artifact/WN6njxQvKv8UVeooeVoYjz ・ブランチ `claude/grade-unify-a`）。済（Moto さん 11/24）：答え 1 A・2 A・3 G6 まで（G7 は制度に入れない）・4 A・5 B（旧は全部旧として保存・新しい計画は一から）・6 A（全て一新して再構築）・7 A・8 A（`docs/GRADE_UNIFY_A_JA.md` の 4b）。次（Claude）：A-1 → A-2 → A-3 → C。お願い（Moto さん）：Excel と前回の指示書。
 3e. 済（Claude（Team）11/24）：B-2 を実装（v1212・SQL `20261218090000`・新しい関数 payroll-expense・アプリ 1212・`deploy/payroll-expense-v1212/`・仕様の 8〜10）。push はできないので引き継ぎ一式で。次：Personal で push → PR（#218 の上）→ Codex → Moto さんが手順.md。そのあと A（Q4 のグレード制度・キャリア育成の一本化・UI案101 から）→ C（4 つの節の報告）。
 
 ## 2026-11-23 Google の評価・口コミ（Places API（新）・v1209）
