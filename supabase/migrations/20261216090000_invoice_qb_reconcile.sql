@@ -192,15 +192,17 @@ end $$;
 -- The Drive bytes are not the content that was posted and queued: the row is set aside (nothing was sent) and the original is
 -- checked again soon (a new content goes to review as before). A person is told (content_changed). An invoice of several originals
 -- that is not the one queued any more (merge_changed: a page added or taken away) is only set aside: the new one is queued again.
+-- A page found in the sent mail already (part_already_sent: alone, or by the forwarder before this ledger) is set aside too: a person
+-- records the rest by hand (invoice_qb_manual), it is never sent again as part of the PDF.
 create or replace function public.invoice_qb_content_changed(p jsonb) returns jsonb
 language plpgsql security invoker set search_path=public,pg_temp as $$
 declare o public.invoice_qb_outbox; f public.invoice_files;
 begin
  select * into o from public.invoice_qb_outbox where id=(p->>'id')::uuid for update;
  if o.id is null or o.state <> 'sending' or o.reserved_by is distinct from p->>'owner' then return jsonb_build_object('ok', false); end if;
- if p->>'why' = 'merge_changed' then
-  update public.invoice_qb_outbox set state='cancelled', last_error='merge_changed', next_at=null, updated_at=now() where id=o.id;
-  perform public.invoice_event(null, o.file_id, 'worker', 'qb_merge_changed', jsonb_build_object('outbox_id', o.id));
+ if p->>'why' in ('merge_changed', 'part_already_sent') then
+  update public.invoice_qb_outbox set state='cancelled', last_error=p->>'why', next_at=null, updated_at=now() where id=o.id;
+  perform public.invoice_event(null, o.file_id, 'worker', 'qb_' || (p->>'why'), jsonb_build_object('outbox_id', o.id));
   return jsonb_build_object('ok', true);
  end if;
  update public.invoice_qb_outbox set state='cancelled', last_error='content_changed', next_at=null, updated_at=now() where id=o.id;
@@ -259,8 +261,9 @@ end $$;
 
 -- Accounting reconciliation. Independent of posting; payment, bank and QuickBooks booking are separate.
 -- 2026-11-23 (B-3): the answer gives the invoice's original (file_id) so the QuickBooks send is asked for at once (the same
--- conditions as after a posting). stop_qb with a result other than reconciled stops the sends of this invoice that have not
--- started (cancelled 'recon_cancelled'); a send under way or with an unknown outcome is counted (qb_busy), never undone.
+-- conditions as after a posting). stop_qb when a reconciliation is taken back (reconciled → unreconciled or discrepancy) stops the
+-- sends of this invoice that have not started (cancelled 'recon_cancelled', queued again when it is reconciled again); a send under
+-- way or with an unknown outcome is counted (qb_busy), never undone.
 create or replace function public.invoice_reconcile(p jsonb) returns jsonb
 language plpgsql security invoker set search_path=public,pg_temp as $$
 declare d public.invoice_docs; actor uuid := nullif(p->>'actor','')::uuid; r text := p->>'result'; nq int := 0; nb int := 0;
@@ -283,7 +286,8 @@ begin
   where (id=d.file_id or id in (select x.file_id from public.invoice_docs x where x.merged_into=d.id)) and organize_target='reconciled';
  end if;
  perform public.invoice_event(d.id, d.file_id, actor::text, 'reconcile_'||r, jsonb_build_object('note', p->>'note', 'diff', p->'diff'));
- if r <> 'reconciled' and coalesce((p->>'stop_qb')::boolean, false) then
+ -- 照合取消 only (a reconciliation taken back): an invoice never reconciled keeps the send its posting asked for (Moto 2026-10-12).
+ if r <> 'reconciled' and d.recon_status = 'reconciled' and coalesce((p->>'stop_qb')::boolean, false) then
   with c as (update public.invoice_qb_outbox set state='cancelled', last_error='recon_cancelled', next_at=null, updated_at=now()
              where (file_id=d.file_id or file_id in (select x.file_id from public.invoice_docs x where x.merged_into=d.id)) and state in ('pending','error')
              returning id)
@@ -353,8 +357,9 @@ begin
   update public.invoice_qb_outbox set attempts=least(attempts, 4), next_at=null, updated_at=now() where id=o.id;
  elsif o.state = 'cancelled' and o.last_error in ('content_changed','merge_changed','recon_cancelled') then
   rd := public.invoice_qb_ready(o.file_id);
-  if rd ? 'why' then raise exception 'not_ready:%', rd->>'why'; end if;
-  if 'qb-' || (rd->>'sha256') || '-' || md5(q->>'to') is distinct from o.attempt_key then raise exception 'changed'; end if;
+  -- not sent again now: the answer says why (the screen shows it); nothing is changed
+  if rd ? 'why' then return jsonb_build_object('ok', false, 'why', rd->>'why'); end if;
+  if 'qb-' || (rd->>'sha256') || '-' || md5(q->>'to') is distinct from o.attempt_key then return jsonb_build_object('ok', false, 'why', 'changed'); end if;
   update public.invoice_qb_outbox set state='pending', route=q->>'route', attempts=least(attempts, 4), reserved_by=null, reserved_at=null,
    next_at=null, last_error=null, updated_at=now() where id=o.id;
  else raise exception 'invalid_state';
@@ -405,7 +410,7 @@ begin
        when cl.live = 'sending' then 'sending'
        when cl.live = 'unknown' then 'unknown'
        when cl.live = 'error' then 'failed'
-       when cl.took is not null and cl.took in ('content_changed','merge_changed','recon_cancelled','manual','multi_file') and cl.rd->>'why' is null then 'cancelled_' || cl.took
+       when cl.took is not null and cl.took in ('content_changed','merge_changed','recon_cancelled','manual','multi_file','part_already_sent') and cl.rd->>'why' is null then 'cancelled_' || cl.took
        when cl.rd->>'why' is not null then cl.rd->>'why'
        when not coalesce((q->>'enabled')::boolean, false) then 'qb_off'
        else 'not_in_ledger' end,
