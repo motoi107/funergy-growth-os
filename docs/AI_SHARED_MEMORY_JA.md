@@ -12,6 +12,8 @@
   6. B-1 の 2b：事務Crew も「GMやCEOの様にメールで登録（ログインはPINでも入れる様に）」＝manager_auth に office_crew のアカウントを作り、書類（Invoice取込・照合・QB）を開く。ふだんは PIN（v1063 の「この端末で覚える」）。
 - Codex の再レビュー（`5e71c68` まで・#216 7134070355・#217 7134071689・#218 7134072683・どれも blocked／manual）：#216 P2（失敗の答えが日をまたぐと、再取得のボタンが翌日まで消える・月も同じ）／#217 は #216 の P2 と P3（外部の転送の行は止めの印で止まらない）／#218 P2（PIN の事務Crew に secure-state の office_crew の範囲が広がる＝上の 5 で認めた。記録の誤りと試験は直す）。
 - 次（Claude）：#216 → #217 → #218 の直し（下から上へ取り込む）→ 2b の手順と SQL のひな形 → B-2（v1212）。
+- **引き継ぎ（Moto さん 11/24 04:39 HST「Usageのリミットがあるので、開発はTeamでやります」）**：次は会社の Team のアカウントの新しいセッションで続ける。**訂正**：上の見出しの「Team」と「このセッションは push できる」は、どのアカウントかを確かめずに書いた（新しいセッションは最初に push できるかを確かめる）。#216〜#218 の直しはまだ何も変えていない（コードの変更なし・どのブランチもこのコミットまで push 済み）。
+- #216 の P2 の直しの設計（Claude が決めた・まだ作っていない）：① SQL `gr_places_take`（`20261215100000` と `deploy/google-places-v1209/2b_SQL_住所で確かめ.sql` を同じに）が、断ったとき・数えたときに太平洋時間の日 `'pday', d::text` を返す ② handler の `take()` は `places_cap` の extra に、`placesNow` の数えたあとの失敗（`counted:true`）の extra にも `pday`（`YYYY-MM-DD` だけ）を入れる → `4_関数_google-reviews_index.ts` を作り直す ③ アプリ（FUNERGY_GR）の `mk()` は `pday` を残し、失敗の記録の `pd` はサーバーの `pday`、無ければ頼んだときの時刻 `me.at` の日（答えが届いた時刻ではない）・`limitOver` はサーバーの日が今日より前になったときか、端末の日が変わったときの早いほうで外す ④ 試験：頼んでいるあいだに太平洋時間の日（月）をまたぐと、直す前はボタンが翌日まで出ない・直したあとは出る（`tests/google-reviews-app-v1157.test.mjs`・`tests/google-places-server-v1209.test.mjs`・deploy の一致）⑤ `docs/GOOGLE_PLACES_V1209_JA.md` に節を足し、#217・#218・B-2 へ取り込む。
 
 ## 2026-11-24 B-2：UI案100 の答え（Moto さん 11/24 04:15 HST）と引き継ぎ（Claude（Personal・Claude Code）・ブランチ `claude/payroll-expense-1212`・#218（`5e71c68`）の上・文書だけ・コードの変更なし）
 

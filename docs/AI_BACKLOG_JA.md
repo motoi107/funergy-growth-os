@@ -2,6 +2,7 @@
 
 ## 2026-11-23 統合実装プロンプト（A・B-1・B-2・B-3）
 
+0. 引き継ぎ（Moto さん 11/24 04:39 HST）：次は会社の Team のアカウントの新しいセッションで。最初に `claude/payroll-expense-1212` を取り、共有記録の先頭（11/24 の節・#216 の直しの設計）を読み、push できるかを確かめる。順番：#216 → #217 → #218 → 2b → B-2。
 1. 済（Claude・ブランチ `claude/acct-payroll-1210`）：B-3＝照合済みの invoice を QuickBooks へ（v1210・SQL `20261216090000`・関数 invoice-intake・`docs/QB_RECONCILE_V1210_JA.md`・`deploy/invoice-qb-reconcile-v1210/`）。済：PR #217。
 1b. 済（Claude 11/23）：PR #217・独立レビューの P2 2（送っている途中の照合取消で送られた・複数枚の invoice の手での記録が出ない）を直した（仕様の 8）。
 1c. 済（Claude 11/23）：ルーティン（7123823852・7123895798）の P2（状態と未転送の一覧の重さ）を直した（仕様の 9・確認の SQL は functions 126）。次：Codex のレビュー（#217 の最新の head）→ #211〜#216 のあとにマージ（Moto さん）→ 手順.md。
