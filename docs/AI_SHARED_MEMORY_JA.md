@@ -1,5 +1,11 @@
 # Claude / Codex 共通記録
 
+## 2026-11-24 v1214：A-2-2 育成計画・OJT と過去の記録の画面（Claude（Team・Claude Code）・ブランチ `claude/grade-unify-a`・アプリ 1214・SQL と関数は A-2-1 のまま）
+
+- 作ったもの（`docs/GRADE_UNIFY_A_JA.md` の 8）：キャリア・育成の「育成計画・OJT」（一覧・1 人の計画・課題・記録・習得確認）と「過去の記録」（旧の記録の写し・GM・CEO は写す）。ssCall は gpfn の無い答えを前の版とみなす。旧の OJT管理・成長管理に案内の帯。
+- 旧の画面と旧の保存はまだ止めていない（A-2-3＝Moto さんが新しい画面を確かめたあと）。OJTマップ（Tip の進みにつながる）をどうするかを確かめる。
+- 試験：gp-app-a2 3（VM・本物の関数と SQL）・career-guide-v1213 を直した・`check-static-release.py` pass/1214。
+
 ## 2026-11-24 A-2-1：育成計画・OJT のサーバー（Claude（Team・Claude Code）・ブランチ `claude/grade-unify-a`・SQL `20261219090000`・関数 secure-state（gpfn:1）・アプリは 1213 のまま）
 
 - 作ったもの（`docs/GRADE_UNIFY_A_JA.md` の 7）：表 6（gp_plans・gp_tasks・gp_notes・gp_log・gp_runs・gp_legacy）と関数 7。1 人 1 つの計画・版・状態（未開始・実施中・確認待ち・再練習・習得確認済み・取りやめ）・習得確認は確認者・日・根拠。旧の OJT・成長管理の記録は全部「旧として保存」で写す（答え 5 B・元は変えない）。

@@ -23,6 +23,7 @@ function world({ role = 'crew', lang = 'ja', status, enStatus, allow = () => tru
     curRole: role, curLang: lang, curPage: 'career', curStoreLogin: null, gone: [],
     navGuardAllows: allow, go: p => c.gone.push(p), renderPage: p => c.gone.push('render:' + p),
     document: { getElementById: id => els[id] || null },
+    setTimeout: () => 0,   // v1214：育成計画・過去の記録は関数から読む（この試験では読まない。tests/gp-app-a2.test.mjs）
   };
   c.window = c;
   c.t = (ja, en) => (c.curLang === 'en' ? (en != null ? en : ja) : ja);
@@ -139,18 +140,18 @@ test('評価の見方は Q4 のマスターから（基準点・配点・最低�
   assert.deepEqual(clone(w.FUNERGY_CAREER.state()), clone(before));
 });
 
-test('ほかのタブ：今の画面への入口だけ（開けない画面のボタンは出さない）・Grade や記録は変えない', () => {
+test('ほかのタブ：評価・振り返りは今の画面への入口（開けない画面のボタンは出さない）・過去の記録から旧の説明へ・端末に残さない', () => {
+  // 育成計画・OJT と過去の記録の中身は v1214（A-2-2）から関数 secure-state の gp_*（tests/gp-app-a2.test.mjs）
   const crew = world({ role: 'crew', allow: p => ['mypage', 'career'].includes(p) });
   crew.mount();
-  crew.crSet('tab', 'plan'); assert.doesNotMatch(crew.root(), /go\('ojt_admin'\)/); assert.match(crew.root(), /go\('mypage'\)/);
   crew.crSet('tab', 'review'); assert.doesNotMatch(crew.root(), /go\('leadership'\)/); assert.match(crew.root(), /go\('mypage'\)/);
   crew.crSet('tab', 'history'); assert.doesNotMatch(crew.root(), /crOpenOld\(\)/);
   const gm = world({ role: 'gm' }); gm.mount();
-  gm.crSet('tab', 'plan'); assert.match(gm.root(), /go\('ojt_admin'\)/); assert.match(gm.root(), /go\('growth_mgr'\)/);
+  gm.crSet('tab', 'review'); assert.match(gm.root(), /go\('leadership'\)/);
   gm.crSet('tab', 'history'); assert.match(gm.root(), /crOpenOld\(\)/);
   gm.hiringTab = 'main'; gm.crOpenOld(); assert.equal(gm._ceMode, 'old'); assert.deepEqual(gm.gone.slice(-1), ['hiring']);
-  // 端末に何も残さない（localStorage を使わない）・書く関数を呼ばない
-  assert.doesNotMatch(MOD, /localStorage|sessionStorage|indexedDB|fetch\(|secureState|ssCall/);
+  // 端末に何も残さない（localStorage を使わない）。サーバーへは関数 secure-state（ssCall）だけ
+  assert.doesNotMatch(MOD, /localStorage|sessionStorage|indexedDB|fetch\(|lsSet\(/);
 });
 
 test('旧の責任マトリクス：GM・CEO でも直せない（書く道が止まる）', () => {
