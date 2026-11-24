@@ -1,5 +1,12 @@
 # Claude / Codex 共通記録
 
+## 2026-11-24 v1209：#216 の Codex の再レビュー（`a571d61` まで・7134070355）の P2 の直し（Claude（Team・Claude Code）・ブランチ `claude/google-places-1209`・push できないので引き継ぎ一式で渡す）
+
+- このセッション（会社の Team のアカウント）は push できない（git の proxy が 403「authorized repository set に無い」・gh のトークンも無効）。Moto さん 11/24「push しないで進める」：Team で直して試験まで済ませ、ブランチごとの引き継ぎ一式（bundle・差分・メモ）を Personal で GitHub に入れる。
+- P2：上限の失敗に答えが届いた時刻の太平洋時間の日を残していたので、頼んでいるあいだに 0 時（月末）をまたぐと「見る」が翌日（翌月）いっぱい戻らなかった → SQL `gr_places_take`（2b）が `pday` を返す・関数が `places_cap` と `counted:true` の答えに入れる（④ を作り直した）・画面は `pd`＝サーバーの日（無ければ頼んだ時刻の日）と `rd`＝頼んだ時刻の端末の日で、早いほうで消す（仕様の 15）。
+- 試験：Google のテスト全部 62/62（server-v1209 19・app 18・deploy 5・v1157 server・deploy）。直す前の画面・関数・SQL では足した試験が落ちる。`check-static-release.py` pass/1209。版は 1209 のまま（本番未反映）。
+- 次：Personal で push → Codex の再レビュー（#216 の新しい head）→ #217・#218・#1212 へ取り込む。
+
 ## 2026-11-23 v1209：Google の評価・口コミ（Places API（新））を押したときだけ・見られる店だけ・回数の上限（Moto さん 11/23 10:49 HST の依頼・Claude（Personal・Claude Code）・ブランチ `claude/google-places-1209`・#215（`d4cd923`）の上・SQL `20261215090000`・関数 google-reviews・アプリ 1209・本番未反映）
 
 - 依頼：各店の Google の評価・件数・口コミ（最大 5 件・関連性の順と明記）・帰属表示・投稿者・元の口コミのリンク。鍵はサーバーだけ・今の認証と店の閲覧権限・登録済みの店だけ・回数を決める・要る項目だけ。Moto さんは Places API (New)・API の制限・Secrets `GOOGLE_PLACES_API_KEY` を済ませていた（Application restrictions は None）。仕様：`docs/GOOGLE_PLACES_V1209_JA.md`。入れる一式：`deploy/google-places-v1209/`（① → ② SQL → ③ → ④ 関数（1 ファイル・鍵なし）→ マージ・戻す.md）。

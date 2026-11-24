@@ -122763,6 +122763,8 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     if (extra && typeof extra === 'object') {
       var x = { cap:extra.cap, max:extra.max, counted:extra.counted === true, store_left:Number.isInteger(extra.store_left) ? extra.store_left : null };
       ['reason','name','address'].forEach(function(k){ if (typeof extra[k] === 'string' && extra[k].length <= 300) x[k] = extra[k]; });
+      /* #216 の Codex（7134070355）の P2：サーバーが数えた太平洋時間の日（上限・数えた失敗）を残す */
+      if (typeof extra.pday === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(extra.pday)) x.pday = extra.pday;
       e.extra = x;
     } else e.extra = null;
     return e;
@@ -122937,11 +122939,15 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     if (ex.counted === true && ex.store_left === 0) return 'day';
     return '';
   }
+  /* #216 の Codex（7134070355）の P2：頼んでいるあいだに日（月）をまたぐと、答えが届いた時刻の日を残していたので翌日まで消えなかった。
+     pd＝サーバーが数えた日（pday）・無ければ頼んだ時刻の日、rd＝頼んだ時刻の端末の日。
+     サーバーの日が今日より前になったときか、端末の日が頼んだときから変わったときの早いほうで消す（月の上限は月で） */
   function limitOver(e){
     var kind = limitKind(e); if (!kind) return false;
-    var now = pacDay(nowMs()), was = e.pd || pacDay(e.at);
-    if (!now || !was) return false;
-    return kind === 'month' ? now.slice(0, 7) !== was.slice(0, 7) : now !== was;
+    var now = pacDay(nowMs()); if (!now) return false;
+    var pd = e.pd || '', rd = e.rd || (e.pd ? '' : pacDay(e.at)), cut = function(x){ return kind === 'month' ? x.slice(0, 7) : x; };
+    if (pd && cut(pd) < cut(now)) return true;
+    return !!(rd && cut(rd) !== cut(now));
   }
   function nowEntry(sid){
     var e = G.now[sid];
@@ -122966,14 +122972,15 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     var e = nowEntry(sid);
     if (e && e.st === 'loading') return;
     var g = G.gen, lang = langOf(), v = G.visit;
-    var me = { st:'loading', at:nowMs(), data:null, err:'', visit:v };
+    var me = { st:'loading', at:nowMs(), data:null, err:'', visit:v }, rd = pacDay(me.at);
     G.now[sid] = me;
     api({ action:'places_now', store:sid, lang:lang }).then(function(j){
       if (g !== G.gen || v !== G.visit || G.now[sid] !== me) return;   /* 別の人・別のページ・押し直し：使わない */
       G.now[sid] = { st:'ok', at:nowMs(), data:(j && typeof j === 'object') ? j : null, err:'', visit:v }; patchCards(sid);
     }, function(err){
       if (g !== G.gen || v !== G.visit || G.now[sid] !== me) return;
-      var t = nowMs(); G.now[sid] = { st:'err', at:t, pd:pacDay(t), data:null, err:err.code || 'error', extra:err.extra || null, visit:v }; patchCards(sid);
+      var ex = err.extra || null;
+      G.now[sid] = { st:'err', at:nowMs(), pd:(ex && ex.pday) || rd, rd:rd, data:null, err:err.code || 'error', extra:ex, visit:v }; patchCards(sid);
     });
   }
   W.grLoadPlaces = function(sid){ loadNow(sid); patchCards(sid); };
