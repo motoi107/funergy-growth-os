@@ -1,5 +1,13 @@
 # Claude / Codex 共通記録
 
+## 2026-11-24 v1211：#218 の Codex の再レビュー（`5e71c68` まで・7134072683）の直し（Claude（Team・Claude Code）・ブランチ `claude/acct-view-1211`・push できないので引き継ぎ一式で渡す）
+
+- #217 の直し（`a43957c`・#216 を含む）を取り込んだ（マージ）。
+- P2：確かめた PIN の事務Crew は、関数 secure-state でもメールの事務Crew と同じ office_crew の範囲になる（secure-state も PIN の人の役割を work-requests の whoami＝`wr_actor` で決める）。Moto さん 11/24「メールの事務Crewと全く同じ」で認めたので**コードは変えない**。前の記録・仕様・migration のコメントの「secure-state は manager_auth だけを見る」は誤り → 直した（仕様の 3・4・8・手順.md・② の SQL のコメント）。
+- 広がる範囲：全店の Tip と期間の確定・変更の記録・グレード履歴・全店の通知・生年月日のあるなし・カードの照合・本部の Career Score（GM・CEO だけの給与・賞与・ほかの人の成長カルテは見えないまま）。確かめを外す・退職・PIN の期限が secure-state に効くのは最大 60 秒あと（whoami の答えを 60 秒覚える。カードの照合は社員の表を毎回見るので退職はすぐ）。
+- 試験：`tests/acct-view-ss-v1211.test.mjs` 3（本物の wr_actor と whoami を secure-state の偽のクラウドにつなぐ）・v1211 の 3 ファイル 20/20。CI に足した。
+- 次：Personal で push → Codex の再レビュー（#218 の新しい head）→ #1212 へ取り込む。
+
 ## 2026-11-24 v1210：#217 の Codex の再レビュー（`0db4bff` まで・7134071689）の直し（Claude（Team・Claude Code）・ブランチ `claude/acct-payroll-1210`・push できないので引き継ぎ一式で渡す）
 
 - #216 の P2 の直し（`37f6e32`）を取り込んだ（マージ）。

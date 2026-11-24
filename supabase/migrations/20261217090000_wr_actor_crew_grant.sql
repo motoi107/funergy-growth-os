@@ -15,8 +15,12 @@
 --   確かめを外す（GM・CEO が「確かめを外す」）・従業員マスターで事務Crew でなくなる・退職、のどれかで次の呼び出しから元に戻る。
 --   wr_exp_base は src = 'crew_grant' のとき確かめを読み直す（確かめを外した直後の変更の記録が正しくなるように）。
 --
--- 変えないもの：manager_auth のアカウントの人・AM・G3 以上の写しのある人の決め方、給与・賞与・成長カルテ・セキュアページ
---   （secure-state は manager_auth だけを見る）、Invoice取込（メールのアカウントで入る）、経理出力の給与の CSV、GM・CEO だけの操作。
+-- 広がること（#218 の Codex（7134072683）の P2・Moto さん 11/24「メールの事務Crewと全く同じ」で認めた）：関数 secure-state も PIN の人の
+--   役割を work-requests の whoami（＝この wr_actor）で決めるので、確かめた PIN の事務Crew は secure-state でもメールの事務Crew と同じ
+--   office_crew の範囲になる（全店の Tip と期間の確定・変更の記録・グレード履歴・全店の通知・生年月日のあるなし・カードの照合・本部の
+--   Career Score）。secure-state は whoami の答えを 60 秒覚えるので、確かめを外す・退職・PIN の期限が secure-state に効くのは最大 60 秒あと。
+-- 変えないもの：manager_auth のアカウントの人・AM・G3 以上の写しのある人の決め方、GM・CEO だけのもの（給与・賞与・ほかの人の成長カルテ・
+--   ボーナスの計算。secure-state の full は CEO・GM だけ）、Invoice取込（メールのアカウントで入る）、経理出力の給与の CSV、GM・CEO だけの操作。
 --   肩書きだけ（従業員マスターは公開の鍵でも書ける）では事務Crew にならない（v1184 と同じ）。
 -- 2 回流しても同じ。前提：20261204090000_wr_exp_grants.sql（wr_exp_grants・wr_exp_crew）と 20261107090000_work_requests_ui68.sql。
 
