@@ -1,5 +1,10 @@
 # 改修・自動化の作業記録
 
+## 2026-11-23 統合実装プロンプト（A・B-1・B-2・B-3）
+
+1. 済（Claude・ブランチ `claude/acct-payroll-1210`）：B-3＝照合済みの invoice を QuickBooks へ（v1210・SQL `20261216090000`・関数 invoice-intake・`docs/QB_RECONCILE_V1210_JA.md`・`deploy/invoice-qb-reconcile-v1210/`）。次：PR → Codex → #211〜#216 のあとにマージ → Moto さんが手順.md。
+2. 次（Claude）：B-1（事務Crew にも経理リーダー・経理マネージャー・GM と同じ経理レビュー。サーバーでも）→ B-2（Payroll 別のガソリン代・立替経費のページとシート）→ A（Q4 のグレード制度・キャリア育成の一本化）→ 最後に 4 つの節の報告（C）。
+
 ## 2026-11-23 Google の評価・口コミ（Places API（新）・v1209）
 
 1. 済（Claude・ブランチ `claude/google-places-1209`）：押したときだけ・見られる店だけ・店舗マスターの店だけ・回数の上限・帰属表示（`docs/GOOGLE_PLACES_V1209_JA.md`・`deploy/google-places-v1209/`）。試験・わざと壊す 15/15。

@@ -1,6 +1,6 @@
 -- 照合済みの invoice が QuickBooks へ（2026-11-23・Moto さんの依頼 B-3・PR は v1210）。
 -- Run after 20261103090000_invoice_price_compare.sql. Running it twice is the same as once. Nothing is sent, deleted or rewritten
--- by this file: it adds one column (outbox.parts), replaces six functions and adds six. The rows already in the ledger stay as they are.
+-- by this file: it adds one column (outbox.parts), replaces six functions and adds five. The rows already in the ledger stay as they are.
 --  * 照合 (one or many): saving a reconciliation asks for the QuickBooks send at once, under the same conditions as before (posted,
 --    renamed, since, the route, the ledger on). 照合済み is not 転送済み; a mail accepted by Gmail is not "registered in QuickBooks".
 --  * An invoice of several originals (merged pages, UI案50 5) is sent as ONE mail with ONE PDF of its pages in page order, when this

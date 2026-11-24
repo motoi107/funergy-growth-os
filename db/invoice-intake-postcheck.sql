@@ -1,6 +1,6 @@
 -- 入ったことの確認（読むだけ。鍵は表示しません）
--- 対象はこの migration の表 25・関数 120 の名前だけ（別の仕組みの invoice_uploads などは数えない）。
--- 期待：tables 25 / functions 120 / 運転の項目は配備直後はすべて false / rls_on true / browser_can_read 0 / browser_can_run 0 / review_fixes true / accounting_checks true / store_folder_intake true / office_crew_accounting true / rename_after_post true / purchase_summary true / reconciled_folder true / multi_file true / vendor_merge true / vendor_register true / item_link true / qb_gmail true / purchase_posted true / price_compare true
+-- 対象はこの migration の表 25・関数 125 の名前だけ（別の仕組みの invoice_uploads などは数えない）。
+-- 期待：tables 25 / functions 125 / 運転の項目は配備直後はすべて false / rls_on true / browser_can_read 0 / browser_can_run 0 / review_fixes true / accounting_checks true / store_folder_intake true / office_crew_accounting true / rename_after_post true / purchase_summary true / reconciled_folder true / multi_file true / vendor_merge true / vendor_register true / item_link true / qb_gmail true / purchase_posted true / price_compare true / qb_reconcile true
 -- （20261012120000 を入れる前の本番では functions 65・rename_after_post false。入れたあとは 70・true。rename_on は「反映したら名前を変える」の設定で、入れた直後は false）
 -- （20261019090000＝確認済みの仕入れ集計 を入れる前は tables 16・functions 70・purchase_summary false。入れたあとは 18・74・true）
 -- （20261020090000＝照合済みフォルダ・Packing list を入れる前は reconciled_folder false。入れたあとは true。表と関数の数は変わらない）
@@ -11,6 +11,7 @@
 -- （20261026090000＝QuickBooks からすぐ（Gmail）を入れる前は tables 21・functions 94・qb_gmail false。入れたあとは 24・117・true）
 -- （20261029100000＝確認済み＝人の反映か照合済み を入れる前は tables 24・purchase_posted false。入れたあとは 25・true。関数の数は変わらない）
 -- （20261103090000＝仕入れの単価を比べる を入れる前は functions 117・price_compare false。入れたあとは 120・true）
+-- （20261216090000＝照合済みを QuickBooks へ（B-3）を入れる前は functions 120・qb_reconcile false。入れたあとは 125・true。表の数は変わらない）
 with mine as (select unnest(array['invoice_settings', 'invoice_stores', 'invoice_folders', 'invoice_files', 'invoice_file_versions', 'invoice_extractions', 'invoice_vendor_rules', 'invoice_docs', 'invoice_lines', 'invoice_item_maps', 'invoice_price_history', 'invoice_events', 'invoice_qb_outbox', 'invoice_leases', 'invoice_runs', 'invoice_app_mirror', 'invoice_purchase_checks', 'invoice_purchase_published', 'invoice_vendor_merges', 'invoice_link_members', 'invoice_link_marks', 'invoice_gmail_auth', 'invoice_gmail_oauth', 'invoice_qb_alerts', 'invoice_purchase_snapshots']) as t), fn as (select unnest(array[
    'invoice_actor_role', 'invoice_app_drive_ids', 'invoice_app_records', 'invoice_backfill_register', 'invoice_config', 'invoice_drive_conn',
    'invoice_drive_credentials', 'invoice_drive_status', 'invoice_dup_scope', 'invoice_edit', 'invoice_event', 'invoice_extraction',

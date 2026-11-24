@@ -477,3 +477,35 @@ test('B-3 複数枚の invoice のページが前に単独で送られていた 
     } finally { await Y.pg.close(); }
   } finally { await X.pg.close(); }
 });
+
+// The folder Moto runs: the SQL is the repository's migration, the check SQL the repository's postcheck, the function the bundle of
+// today's sources (the PDF joiner pdf-lib is the one import Supabase reads); the steps in order (SQL → check → function → app → one ordinary reconciliation).
+test('deploy/invoice-qb-reconcile-v1210: copies of the repository files; the one-file function is the bundle of today\'s sources; the steps in order',
+  { skip: process.env.INVOICE_MUTATION_RUN ? 'a mutation run checks behaviour only' : false }, () => {
+  const rd = f => fs.readFileSync(new URL('../' + f, import.meta.url));
+  const D = 'deploy/invoice-qb-reconcile-v1210/';
+  assert.deepEqual(fs.readdirSync(new URL('../' + D, import.meta.url)).sort(),
+    ['1_追加のSQL_照合済みをQuickBooksへ.sql', '2_確認のSQL_読むだけ.sql', '3_関数_invoice-intake_index.ts', 'source.json', '手順.md'].sort());
+  assert.ok(rd(D + '1_追加のSQL_照合済みをQuickBooksへ.sql').equals(rd('supabase/migrations/20261216090000_invoice_qb_reconcile.sql')));
+  assert.ok(rd(D + '2_確認のSQL_読むだけ.sql').equals(rd('db/invoice-intake-postcheck.sql')));
+  const src = JSON.parse(rd(D + 'source.json'));
+  assert.equal(sha(rd(D + '3_関数_invoice-intake_index.ts')), src.bundle_sha256);
+  const want = ['supabase/functions/invoice-intake/index.ts', 'supabase/functions/invoice-intake/handler.mjs',
+    ...fs.readdirSync(new URL('../invoice/', import.meta.url)).filter(f => f.endsWith('.mjs')).sort().map(f => 'invoice/' + f)];
+  assert.deepEqual(Object.keys(src.sources).sort(), want.sort());
+  for (const [f, h] of Object.entries(src.sources)) assert.equal(sha(rd(f)), h, `${f} changed: build the one-file function again`);
+  const bundle = rd(D + '3_関数_invoice-intake_index.ts').toString();
+  const imports = bundle.match(/^\s*import\s.*$/gm) || [];
+  assert.deepEqual(imports.map(s => s.trim()), ['import { PDFDocument } from "npm:pdf-lib@1.17.1";'], 'pdf-lib is the only import');
+  assert.ok(/Deno\.serve\(createHandler/.test(bundle) && /waitUntil/.test(bundle));
+  for (const k of ['invoice_qb_doc_states', 'invoice_qb_retry', 'invoice_qb_unsent', 'invoice_qb_send_check', 'joinedName', 'FPQB-ATTEMPT-'])
+    assert.ok(bundle.includes(k), k);
+  const steps = rd(D + '手順.md').toString();
+  const at = k => { const i = steps.indexOf(k); assert.ok(i >= 0, k); return i; };
+  assert.ok(at('1. **Supabase → SQL Editor**') < at('2. `2_確認のSQL') && at('2. `2_確認のSQL') < at('3. **Edge Functions')
+    && at('3. **Edge Functions') < at('4. アプリ v1210 をマージ') && at('4. アプリ v1210 をマージ') < at('5. 確かめる'));
+  for (const k of ['functions` が 125', 'qb_reconcile` が true', '20261103090000', 'npm:pdf-lib@1.17.1', 'deploy/invoice-price-compare-v1123/3_関数_invoice-intake_index.ts',
+    '試しの invoice を作って本番の QuickBooks に送ることはしないでください', '一覧を開くだけでは何も送りません', 'ChatGPT 側の定期タスクは変えません'])
+    assert.ok(steps.includes(k), k);
+  assert.ok(!/@funergygroup\.com/i.test(steps + bundle), 'no real address in the repository');
+});
