@@ -166,3 +166,16 @@ test('旧の責任マトリクス：GM・CEO でも直せない（書く道が�
   c.saveRespMatrix({ rows: [] }); c.respReset(); c.u11RespOpen(0);
   assert.equal(c.boxes.length, 0); assert.equal(toasts.length, 2); assert.match(toasts[0], /読むだけ/);
 });
+
+test('v1215（A-3）：マイページ・Handbook（Grade・評価の章）・業務ガイドからキャリア・育成へ（読むだけ・本文は変えない）', () => {
+  const v = (html.match(/const APP_VERSION = '(\d+)';/) || [])[1], w = (sw.match(/const SW_BUILD = '(\d+)';/) || [])[1];
+  assert.ok(Number(v) >= 1215, v); assert.equal(v, w);
+  assert.equal((html.match(/renderFavCard\(\) \+ \(window\.crMyCard \? crMyCard\(\) : ''\) \+ myOjtCard\(\) \+ renderMypage\(\)/g) || []).length, 2);
+  assert.match(html, /if\(\['ch3','ch5','ch7'\]\.indexOf\(c\.id\)>=0 && window\.crHbNote\) h\+=crHbNote\(\);/);
+  assert.match(html, /return \(window\.crBizNote \? crBizNote\(\) : ''\) \+ renderGradeGuide\(\);/);
+  const c = world({ role: 'crew' });
+  assert.match(c.crMyCard(), /crGo\('plan'\)/); assert.match(c.crMyCard(), /crGo\('guide','grade'\)/);
+  assert.match(c.crHbNote(), /旧制度の内容が含まれます/); assert.match(c.crBizNote(), /crGo\('guide','map'\)/);
+  c.mount(); c.crGo('guide', 'map'); assert.deepEqual(c.gone.slice(-1), ['career']); assert.equal(c.FUNERGY_CAREER.state().view, 'map');
+  c.crGo('nope', 'nope'); assert.equal(c.FUNERGY_CAREER.state().view, 'map', '知らないタブ・表示は変えない');
+});
