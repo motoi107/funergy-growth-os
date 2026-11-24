@@ -122919,18 +122919,46 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     wrapG._grWrap = true;
     W.renderPage = wrapG;
   }
+  /* v1209（#216 の Codex の P2）：回数の上限で取れなかった画面は、サーバーの数え方と同じ太平洋時間の日（月の上限は月）が
+     変わったら消して、また「見る」を出す（同じページを開いたまま日をまたいでも取り直せる）。取れた口コミの表示は今までどおり訪問のあいだだけ。 */
+  var PAC_FMT = null;
+  function pacDay(ms){
+    try {
+      if (!PAC_FMT) PAC_FMT = new Intl.DateTimeFormat('en-CA', { timeZone:'America/Los_Angeles', year:'numeric', month:'2-digit', day:'2-digit' });
+      var p = {}; PAC_FMT.formatToParts(new Date(ms)).forEach(function(x){ p[x.type] = x.value; });
+      if (p.year && p.month && p.day) return p.year + '-' + p.month + '-' + p.day;
+    } catch(e) {}
+    return '';   /* 分からなければ消さない（もう一度押しても、サーバーが上限なら Google を呼ばずに断る） */
+  }
+  function limitKind(e){
+    if (!e || e.st !== 'err') return '';
+    var ex = e.extra || {};
+    if (e.err === 'places_cap') return ex.cap === 'month' ? 'month' : 'day';
+    if (ex.counted === true && ex.store_left === 0) return 'day';
+    return '';
+  }
+  function limitOver(e){
+    var kind = limitKind(e); if (!kind) return false;
+    var now = pacDay(nowMs()), was = e.pd || pacDay(e.at);
+    if (!now || !was) return false;
+    return kind === 'month' ? now.slice(0, 7) !== was.slice(0, 7) : now !== was;
+  }
   function nowEntry(sid){
     var e = G.now[sid];
-    if (e && e.visit !== G.visit) { delete G.now[sid]; e = null; }
+    if (e && (e.visit !== G.visit || limitOver(e))) { delete G.now[sid]; e = null; }
     return e || null;
   }
   function onGrPage(){ return !!GR_PAGES[curKey()]; }
-  /* 1 分ごと：ページを移ったのに描き直しを通らなかったとき（念のため）。Google の画面でなければ捨てる */
+  /* 1 分ごと：ページを移ったのに描き直しを通らなかったとき（念のため）。Google の画面でなければ捨てる。
+     回数の上限で取れなかった店は、太平洋時間の日（月）が変わったら消して描き直す */
   function purgeNow(){
     var k = curKey();
     if (k && !G.visitPage) G.visitPage = k;   /* まだ描き直しを通っていない（読み込んだ直後）：いまのページを訪問の始まりにする */
     else if (k && k !== G.visitPage) grNav(k);
     if (!onGrPage() && Object.keys(G.now).length) G.now = {};
+    Object.keys(G.now).forEach(function(sid){
+      if (limitOver(G.now[sid])) { delete G.now[sid]; try { patchCards(sid); } catch(e) {} }
+    });
   }
   function loadNow(sid){
     if (!canUse() || !sidOk(sid) || G.st === 'missing' || G.st === 'sql') return;
@@ -122945,7 +122973,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       G.now[sid] = { st:'ok', at:nowMs(), data:(j && typeof j === 'object') ? j : null, err:'', visit:v }; patchCards(sid);
     }, function(err){
       if (g !== G.gen || v !== G.visit || G.now[sid] !== me) return;
-      G.now[sid] = { st:'err', at:nowMs(), data:null, err:err.code || 'error', extra:err.extra || null, visit:v }; patchCards(sid);
+      var t = nowMs(); G.now[sid] = { st:'err', at:t, pd:pacDay(t), data:null, err:err.code || 'error', extra:err.extra || null, visit:v }; patchCards(sid);
     });
   }
   W.grLoadPlaces = function(sid){ loadNow(sid); patchCards(sid); };

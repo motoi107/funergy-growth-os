@@ -508,9 +508,10 @@ export function createHandler(deps) {
     }
     // 最後の取り込みの店ごとの結果は GM・CEO だけ。ほかの人には時刻と、見られる店がどれも取れたかだけ
     if (!mgr && obj(st) && obj(st.run)) {
-      const s = await scopeOf(a), xs = obj(st.run.info) && Array.isArray(st.run.info.stores) ? st.run.info.stores : [];
+      // 取り込み全体が失敗した記録（店ごとの結果が無い）は、その記録の ok のまま（店が無いのに「取れました」と出さない・PR #216 の P3）
+      const s = await scopeOf(a), has = obj(st.run.info) && Array.isArray(st.run.info.stores), xs = has ? st.run.info.stores : [];
       const mine = xs.filter(x => obj(x) && typeof x.store === 'string' && (!s || s.has(x.store)));
-      st.run = { at: st.run.at, kind: st.run.kind, ok: mine.every(x => x.ok === true) };
+      st.run = { at: st.run.at, kind: st.run.kind, ok: has ? mine.every(x => x.ok === true) : st.run.ok === true };
     }
     return st;
   }
@@ -578,7 +579,7 @@ export function createHandler(deps) {
       const code0 = String((e && e.message) || 'error').split(/[\s:]/)[0];
       if (ERR[code0]) return json({ error: code0 }, ERR[code0]);
       // SQL がまだ・前の版のとき（関数・表が無い）だけ。ほかのエラーは server_error（中身はログにも出さない）
-      if ((e && e.status === 404) || /(function|relation) [^ ]*gr_[a-z_]+[^ ]* does not exist|Could not find the function public\.gr_/.test(String(e && e.message || ''))) return json({ error: 'gr_missing' }, 503);
+      if ((e && e.status === 404) || /(function|relation) \S*gr_[a-z_]+(\([^)]*\))?"? does not exist|Could not find the function public\.gr_/.test(String(e && e.message || ''))) return json({ error: 'gr_missing' }, 503);
       console.error('google-reviews', code0.slice(0, 80));
       return json({ error: 'server_error' }, 500);
     }
