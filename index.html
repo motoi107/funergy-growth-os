@@ -50141,7 +50141,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1205';
+const APP_VERSION = '1206';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -115026,8 +115026,9 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     var closed = r.status === 'rejected' || r.status === 'withdrawn';
     var h = stepRow('①', T('承認','Approval'), r.approved, closed ? '—' : r.route && r.status === 'pending' ? rtWait(r) : r.legacy && r.status !== 'pending' ? T('記録なし','no record') : wait('approve', apWho), r.legacy ? esc(lg.approvedAt || T('日時 記録なし','time: no record')) : '');
     h += stepRow('②', T('経理の確認','Accounting check'), r.checked, closed ? '—' : r.legacy && ['checked','paid','done'].indexOf(r.status) >= 0 ? T('記録なし','no record') : wait('check', T('経理・事務Crew','Accounting')), r.legacy ? esc(lg.acctAt || T('日時 記録なし','time: no record')) : '');
-    if (r.kind !== 'expense_pre') h += stepRow('③', T('支払・精算','Payment'), r.paid, closed ? '—' : wait('pay', T('経理','Accounting')), r.legacy ? esc(lg.paidAt || T('日時 記録なし','time: no record')) : '');
-    h += '<div style="font-size:10.5px;color:var(--muted);margin-top:4px">' + (r.kind === 'expense_pre' ? T('事前経費は ② で完了です。','A pre-approval ends at step 2.') : T('「承認」だけでは終わりません。③ で支払日と方法を記録して完了。','Approval alone does not finish it: step 3 records the payment date and method.')) + '</div>';
+    /* v1206（Codex #207・#209・#210 の P2）：紛失届も ② で完了（精算しない・サーバーは経理の確認で done）。前は ③ 支払・精算を「まだ」と出していた */
+    if (r.kind !== 'expense_pre' && r.kind !== 'lost') h += stepRow('③', T('支払・精算','Payment'), r.paid, closed ? '—' : wait('pay', T('経理','Accounting')), r.legacy ? esc(lg.paidAt || T('日時 記録なし','time: no record')) : '');
+    h += '<div style="font-size:10.5px;color:var(--muted);margin-top:4px">' + (r.kind === 'expense_pre' ? T('事前経費は ② で完了です。','A pre-approval ends at step 2.') : r.kind === 'lost' ? T('紛失届は ② で完了です（精算はしません）。','A lost-receipt report ends at step 2 (no payment).') : T('「承認」だけでは終わりません。③ で支払日と方法を記録して完了。','Approval alone does not finish it: step 3 records the payment date and method.')) + '</div>';
     return h;
   }
   var BTN = { approve:['承認する','Approve','btn-primary'], 'return':['差し戻す（理由が要る）','Return (reason)','btn-secondary'], reject:['却下（理由が要る）','Reject (reason)','btn-danger'],
@@ -115549,14 +115550,16 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   function onAcct(){ return typeof curPage !== 'undefined' && (((typeof arOnPage === 'function' ? arOnPage() : curPage === 'acct_review') && W._arTab === 'req')
     || (typeof acrOnPage === 'function' && acrOnPage())); }   /* v1200：経理レビュー › 確認する（1 つの一覧）にも申請を出す */
   function rerenderAcct(){ if (onAcct()) { try{ renderPage(curPage); }catch(e){} } }
+  /* v1206（Codex #205 の P2）：一覧を開いたとき、30 秒たっても答えが無ければ読み直す。そのとき前の読み込みの答えがあとから届くと、
+     新しい一覧を古い一覧で書き戻していた（S.acct も S.gen も同じなので見分けられなかった）→ 読み込みごとに番号を付け、いちばん新しい読み込みの答えだけを使う */
   function acctLoad(){
-    var a = S.acct, g = S.gen; a.load = 'loading';
+    var a = S.acct, g = S.gen, n = (a.seq = (a.seq || 0) + 1); a.load = 'loading';
     api({ action:'list', scope:'team', state:'open', limit:500 }).then(function(j){
-      if (a !== S.acct || g !== S.gen) return;
+      if (a !== S.acct || g !== S.gen || n !== a.seq) return;
       /* v1155（6A）：段階 2 の経理の確認（予算＝予算反映済み・人事と評価＝確認完了）も */
       a.rows = (j.rows || []).filter(function(r){ return (KINDS.indexOf(r.kind) >= 0 && (r.status === 'approved' || r.status === 'checked')) || (!!S2_K[r.kind] && r.status === 'acct'); });
       a.load = 'done'; a.at = Date.now(); rerenderAcct();
-    }, function(e){ if (a !== S.acct || g !== S.gen) return; a.load = 'err'; a.err = String(e && e.message || e); rerenderAcct(); });
+    }, function(e){ if (a !== S.acct || g !== S.gen || n !== a.seq) return; a.load = 'err'; a.err = String(e && e.message || e); rerenderAcct(); });
   }
   /* v1165（UI案77 の 3A）：「処理済み（今月）」＝今月（ハワイ）に経理が確認・精算したもの。
      v1169（Codex #161 の P2）：処理した日（精算・確認の時刻・ハワイの月）でサーバーから読む（acct_done・500 件ずつ・続きを読む）。
@@ -115915,12 +115918,15 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     if (!S.me) { if (S.load !== 'loading' && S.load !== 'err') { S.load = ''; load(); } return ''; }
     if (!S.live) return '';
     var mine = MY.key === authKey();
-    var cn = (mine && MY.counts) || S.counts; var c = cn ? (Number(cn.todo) || 0) : 0;
+    /* v1206（Codex #208 の P2 の残り）：② の経費のカードを出さない人は MY.counts が読まれず、ログインのときの S.counts のまま古くなった。
+       ① の「戻ってきた申請」の読み込み（10 秒ごと）の答えの件数も使い、いちばん新しく読んだ件数を出す */
+    var rl = retLoadIfStale(), rk = RET.key === authKey() && RET.counts ? RET : null, mk = mine && MY.counts ? MY : null;
+    var cn = (rk && mk) ? ((rk.cAt || 0) >= (mk.cAt || 0) ? rk.counts : mk.counts) : rk ? rk.counts : mk ? mk.counts : S.counts;   /* 比べるのは読めた時刻（cAt）：読めなかったときの at では比べない（Claude のルーティンの P3） */
+    var c = cn ? (Number(cn.todo) || 0) : 0;
     var h = '';
     if (c > 0) h += mpTodayRow(T('申請の対応待ち ' + c + ' 件', c + (c > 1 ? ' requests' : ' request') + ' to handle'), T('あなたの番の申請（承認・確認・精算・直して出し直す）', 'Your turn: approve, check, pay or resubmit'), 'wrGoTodo()', T('開く','Open'));
     /* Codex #208 の P2：② のカード用の一覧（経費の種類だけ・新しい 5 件）から選ぶと、新しい申請が 5 件以上あるときや経費以外の差し戻しが漏れる。
        ① の分は別に読む（自分のまだ終わっていない申請・全部の種類）→ 差し戻し中だけ → 新しい 3 件 */
-    var rl = retLoadIfStale();
     rl.filter(function(r){ return r && r.status === 'returned'; }).slice(0, 3).forEach(function(r){
       h += mpTodayRow(T('戻ってきた申請','Returned request'), kindL(r.kind) + ' · ' + money(r.amount_cents) + (nextPlain(r) ? ' · ' + nextPlain(r) : ''), 'wrOpenMine(this.dataset.a)', T('直す','Fix'), r.code);
     });
@@ -115928,10 +115934,10 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   };
   /* ① 今日やること の「戻ってきた申請」用：自分のまだ終わっていない申請（state open・全部の種類・300 件まで・新しい順）。
      読み込みごとに番号・ログインが変わった答えは使わない・失敗したら前の値のまま 30 秒待つ。読み終わったら ① だけ描き直す */
-  var RET = { key:'', rows:null, at:0, busy:false, req:0, err:false };
+  var RET = { key:'', rows:null, counts:null, at:0, busy:false, req:0, err:false };
   function retLoadIfStale(){
     var k = authKey();
-    if (RET.key !== k) RET = { key:k, rows:null, at:0, busy:false, req:0, err:false };
+    if (RET.key !== k) RET = { key:k, rows:null, counts:null, at:0, busy:false, req:0, err:false };
     var age = Date.now() - RET.at;
     if (!RET.busy && (RET.err ? age > 30000 : (!RET.rows || age > 10000))) retLoad();
     return RET.rows || [];
@@ -115943,6 +115949,8 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       RET.busy = false; RET.at = Date.now();
       if (g !== S.gen) { RET.at = 0; try { if (typeof mpTodayPaint === 'function') mpTodayPaint(); } catch(e) {} return; }   /* 世代が変わった：使わずに読み直す */
       RET.err = false; RET.rows = (j && Array.isArray(j.rows)) ? j.rows : [];
+      RET.counts = (j && j.counts && typeof j.counts === 'object') ? j.counts : null;   /* v1206：① の件数（wr_list の数え方は一覧の範囲に関係ない） */
+      RET.cAt = Date.now();
       try { if (typeof mpTodayPaint === 'function') mpTodayPaint(); } catch(e) {}
     }, function(){
       if (RET.key !== k || RET.req !== n) return;
@@ -116002,6 +116010,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       MY.at = Date.now(); MY.err = '';
       MY.rows = ((j && j.rows) || []).filter(function(r){ return KINDS.indexOf(r.kind) >= 0; }).slice(0, 5);
       MY.counts = (j && j.counts && typeof j.counts === 'object') ? j.counts : null;   /* v1203：① 今日やること の件数（数え方は一覧の範囲に関係ない＝wr_list） */
+      MY.cAt = Date.now();
       paintMyExp();
     }, function(e){
       if (MY.key !== k || MY.req !== n) return;
@@ -118900,12 +118909,16 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     return true;
   }
   function commit(res){ S.row = res.row; S.state = res.state; S.pend = null; MEMO.at = 0; }
-  /* 入力の途中か：箱（modal）が開いている・画面の欄（input・textarea・select）で打っている */
+  /* 入力の途中か：箱（modal）が開いている・画面の欄（input・textarea・select）で打っている。
+     v1206（Codex #201・#204 の P2）：欄から離れても（余白を押した・Tab でボタンへ）まだ保存していない欄があれば入力の途中（uiDirtyFields：初めの値から変わった欄）。
+     前は離れた時点で描き直し、保存していない入力が消えた */
   function busy(){
     try{
       var mo = document.getElementById('modal-overlay'); if (mo && mo.classList && mo.classList.contains('open')) return true;
       var ae = document.activeElement, mc = document.getElementById('main-content');
-      return !!(ae && mc && mc.contains && mc.contains(ae) && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName));
+      if (ae && mc && mc.contains && mc.contains(ae) && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName)) return true;
+      if (mc && typeof uiDirtyFields === 'function') { var df = uiDirtyFields(mc); if (df && (df.bad || (df.list && df.list.length))) return true; }
+      return false;
     }catch(e){ return false; }
   }
   /* 遅れて届いた答えを、入力が終わってから使う（1 秒ごとに見る・ログインが変わったらやめる）。見え方が変わったら左上・ナビ・今の画面を描き直す */

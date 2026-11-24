@@ -325,6 +325,36 @@ test('v1200（UI案97 の 3A）: wrAcctFeed gives the accounting one list the sa
   assert.equal(f.state, 'signin'); assert.equal(f.rows.length, 0); assert.ok(f.msg.length > 0);
 });
 
+test('Codex #205 P2 (v1206): when the list is read again after 30 seconds, the late answer of the first read is dropped (it does not write back the older list)', async () => {
+  const s = await server();
+  const a = await s.approved('E8', 4250);
+  const ac = await app(s, 'E3', { role: 'office', page: 'acct_center' });
+  ac.ctx.acrOnPage = () => true;
+  // 最初の読み込みの答えを止める（中身はこの時点＝新しい承認の前の一覧）
+  let held = null;
+  ac.ctx.fetch = async (url, init) => {
+    const b = String(init && init.body || '');
+    if (!held && /"action":"list"/.test(b) && /"scope":"team"/.test(b)) {
+      const res = await s.handler(new Request(url, init));
+      return new Promise(r => { held = () => r(res); });
+    }
+    return s.handler(new Request(url, init));
+  };
+  ac.ctx.wrAcctFeed(); await ac.settle(); let f = ac.ctx.wrAcctFeed(); await ac.settle();   // 1 回目は whoami（だれか）を読む
+  assert.equal(f.state, 'loading'); assert.ok(held, 'the first read is waiting');
+  const late = await s.approved('E7', 1200);   // その間に GM が承認した
+  const st = ac.ctx._wrState().acct; st.t0 = Date.now() - 31000;   // 30 秒たっても答えが無い → 読み直す
+  ac.ctx.wrAcctFeed(); await ac.settle();
+  f = ac.ctx.wrAcctFeed();
+  assert.equal(f.state, 'ok');
+  assert.ok(f.rows.some(r => r.id === late.id), 'the second read has the new request');
+  held(); await ac.settle();   // 最初の読み込みの答えがあとから届く
+  f = ac.ctx.wrAcctFeed();
+  assert.ok(f.rows.some(r => r.id === late.id), 'the older answer did not write the list back');
+  assert.ok(f.rows.some(r => r.id === a.id));
+  assert.equal(f.state, 'ok');
+});
+
 test('v1169（#161）: 処理済み（今月） is read by the day it was processed: an old request paid this month is shown; with the older SQL it says it uses the earlier way', async () => {
   for (const v1169 of [true, false]) {
     const s = await server({ v1169 });

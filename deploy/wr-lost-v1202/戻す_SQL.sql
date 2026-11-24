@@ -10,8 +10,10 @@ alter table public.wr_requests drop constraint if exists wr_requests_kind_check;
 alter table public.wr_requests add constraint wr_requests_kind_check check (kind in ('mileage','reimburse','expense_pre','skill','cs','tiprate',
   'budget','leave','shift','hire','resign','promo','tip_self','skill_self','prep','plan'));
 
--- 紛失届の承認ルール（下書き・有効・前の版）も外す（申請が 0 件のときだけここまで来る）
-delete from public.ar_rules where kind = 'lost';
+-- 紛失届の承認ルール（下書き・有効・前の版）は消さずに残す（v1206・Codex #207〜#210 の P2）。
+-- 前は消していたので、戻す → もう一度入れると初めの下書きが同じ版（v1）・同じ回数（1000001）で作り直され、
+-- 戻す前から開いていた画面の古い「有効にする」「保存」が別の中身に当たって通った。残しておけば版と回数は前から続き、古い操作は 409 で止まる。
+-- 前の版の関数は ar_kinds に lost が無いので、残った行は使わない・画面にも出さない（もう一度入れると、前の有効なルール・下書きがそのまま戻る）。
 
 create or replace function public.wr_prefix(p_kind text) returns text
 language sql immutable security invoker set search_path = public, pg_temp as $$
