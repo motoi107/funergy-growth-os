@@ -1,6 +1,6 @@
 -- 入ったことの確認（読むだけ。鍵は表示しません）
--- 対象はこの migration の表 25・関数 125 の名前だけ（別の仕組みの invoice_uploads などは数えない）。
--- 期待：tables 25 / functions 125 / 運転の項目は配備直後はすべて false / rls_on true / browser_can_read 0 / browser_can_run 0 / review_fixes true / accounting_checks true / store_folder_intake true / office_crew_accounting true / rename_after_post true / purchase_summary true / reconciled_folder true / multi_file true / vendor_merge true / vendor_register true / item_link true / qb_gmail true / purchase_posted true / price_compare true / qb_reconcile true
+-- 対象はこの migration の表 25・関数 126 の名前だけ（別の仕組みの invoice_uploads などは数えない）。
+-- 期待：tables 25 / functions 126 / 運転の項目は配備直後はすべて false / rls_on true / browser_can_read 0 / browser_can_run 0 / review_fixes true / accounting_checks true / store_folder_intake true / office_crew_accounting true / rename_after_post true / purchase_summary true / reconciled_folder true / multi_file true / vendor_merge true / vendor_register true / item_link true / qb_gmail true / purchase_posted true / price_compare true / qb_reconcile true
 -- （20261012120000 を入れる前の本番では functions 65・rename_after_post false。入れたあとは 70・true。rename_on は「反映したら名前を変える」の設定で、入れた直後は false）
 -- （20261019090000＝確認済みの仕入れ集計 を入れる前は tables 16・functions 70・purchase_summary false。入れたあとは 18・74・true）
 -- （20261020090000＝照合済みフォルダ・Packing list を入れる前は reconciled_folder false。入れたあとは true。表と関数の数は変わらない）
@@ -11,7 +11,7 @@
 -- （20261026090000＝QuickBooks からすぐ（Gmail）を入れる前は tables 21・functions 94・qb_gmail false。入れたあとは 24・117・true）
 -- （20261029100000＝確認済み＝人の反映か照合済み を入れる前は tables 24・purchase_posted false。入れたあとは 25・true。関数の数は変わらない）
 -- （20261103090000＝仕入れの単価を比べる を入れる前は functions 117・price_compare false。入れたあとは 120・true）
--- （20261216090000＝照合済みを QuickBooks へ（B-3）を入れる前は functions 120・qb_reconcile false。入れたあとは 125・true。表の数は変わらない）
+-- （20261216090000＝照合済みを QuickBooks へ（B-3）を入れる前は functions 120・qb_reconcile false。入れたあとは 126・true。表の数は変わらない）
 with mine as (select unnest(array['invoice_settings', 'invoice_stores', 'invoice_folders', 'invoice_files', 'invoice_file_versions', 'invoice_extractions', 'invoice_vendor_rules', 'invoice_docs', 'invoice_lines', 'invoice_item_maps', 'invoice_price_history', 'invoice_events', 'invoice_qb_outbox', 'invoice_leases', 'invoice_runs', 'invoice_app_mirror', 'invoice_purchase_checks', 'invoice_purchase_published', 'invoice_vendor_merges', 'invoice_link_members', 'invoice_link_marks', 'invoice_gmail_auth', 'invoice_gmail_oauth', 'invoice_qb_alerts', 'invoice_purchase_snapshots']) as t), fn as (select unnest(array[
    'invoice_actor_role', 'invoice_app_drive_ids', 'invoice_app_records', 'invoice_backfill_register', 'invoice_config', 'invoice_drive_conn',
    'invoice_drive_credentials', 'invoice_drive_status', 'invoice_dup_scope', 'invoice_edit', 'invoice_event', 'invoice_extraction',
@@ -33,7 +33,7 @@ with mine as (select unnest(array['invoice_settings', 'invoice_stores', 'invoice
    'invoice_qb_row', 'invoice_qb_status', 'invoice_qb_alerts_publish', 'invoice_qb_alert_put', 'invoice_qb_alert_scan', 'invoice_qb_alert_claim',
    'invoice_qb_alert_done', 'invoice_line_route', 'invoice_qb_release', 'invoice_qb_probe_row',
    'invoice_price_cmp', 'invoice_price_compare_data', 'invoice_price_compare_publish',
-   'invoice_qb_merges', 'invoice_qb_ready', 'invoice_qb_doc_states', 'invoice_qb_retry', 'invoice_qb_unsent']) as f)
+   'invoice_qb_merges_of', 'invoice_qb_merges', 'invoice_qb_ready', 'invoice_qb_doc_states', 'invoice_qb_retry', 'invoice_qb_unsent']) as f)
 select
   (select count(*) from mine where to_regclass('public.' || t) is not null) as tables,
   (select count(*) from pg_proc p join pg_namespace n on n.oid = p.pronamespace join fn on fn.f = p.proname where n.nspname = 'public') as functions,
@@ -215,15 +215,22 @@ select
       where n.nspname = 'public' and p.proname in ('invoice_price_cmp', 'invoice_price_compare_data', 'invoice_price_compare_publish')), false) as price_compare,
   -- 照合済み → QuickBooks（20261216090000, 2026-11-23 B-3）：照合したらすぐ送る予定に入れる・複数枚の invoice は 1 つの PDF・
   -- 照合の取り消しで始まっていない送信を止める・画面に 6 つの状態・照合済みだが未転送の一覧。
-  coalesce((select count(*) = 1 from information_schema.columns where table_schema = 'public' and table_name = 'invoice_qb_outbox' and column_name = 'parts')
-    and (select count(*) = 7 and bool_and(case p.proname
-        when 'invoice_reconcile' then p.prosrc like '%recon_cancelled%' and p.prosrc like '%qb_busy%'
+  coalesce((select count(*) = 2 from information_schema.columns where table_schema = 'public' and table_name = 'invoice_qb_outbox' and column_name in ('parts', 'stop_requested_at'))
+    and (select count(*) = 3 from pg_indexes where schemaname = 'public' and tablename = 'invoice_qb_outbox'
+      and indexname in ('invoice_qb_outbox_file', 'invoice_qb_outbox_sha', 'invoice_qb_outbox_parts'))
+    and (select count(*) = 11 and bool_and(case p.proname
+        when 'invoice_reconcile' then p.prosrc like '%recon_cancelled%' and p.prosrc like '%qb_busy%' and p.prosrc like '%stop_requested_at%' and p.prosrc like '%invoice_qb_merges_of%'
+        when 'invoice_qb_send_context' then p.prosrc like '%stop_requested_at%' and p.prosrc like '%invoice_qb_merges_of%'
+        when 'invoice_qb_result' then p.prosrc like '%stop_requested_at%'
+        when 'invoice_qb_release' then p.prosrc like '%stop_requested_at%'
         when 'invoice_qb_enqueue' then p.prosrc like '%invoice_qb_ready%'
-        when 'invoice_qb_ready' then p.prosrc like '%invoice_qb_merges%'
-        when 'invoice_qb_merges' then p.prosrc like '%part_already_sent%'
-        when 'invoice_qb_doc_states' then p.prosrc like '%not_sent%' and p.prosrc like '%failed%'
+        when 'invoice_qb_ready' then p.prosrc like '%invoice_qb_merges_of%'
+        when 'invoice_qb_merges_of' then p.prosrc like '%part_already_sent%' and p.prosrc like '%rename_waiting%'
+        when 'invoice_qb_merges' then p.prosrc like '%invoice_qb_merges_of%'
+        when 'invoice_qb_doc_states' then p.prosrc like '%not_sent%' and p.prosrc like '%failed%' and p.prosrc like '%invoice_qb_merges_of%'
         when 'invoice_qb_retry' then p.prosrc like '%recon_cancelled%'
-        else p.prosrc like '%confirmed%' end)
+        when 'invoice_qb_unsent' then p.prosrc like '%confirmed%' and p.prosrc like '%''more''%'
+        else false end)
       from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-      where n.nspname = 'public' and p.proname in ('invoice_reconcile', 'invoice_qb_enqueue', 'invoice_qb_ready', 'invoice_qb_merges', 'invoice_qb_doc_states',
-        'invoice_qb_retry', 'invoice_qb_unsent')), false) as qb_reconcile;
+      where n.nspname = 'public' and p.proname in ('invoice_reconcile', 'invoice_qb_enqueue', 'invoice_qb_ready', 'invoice_qb_merges_of', 'invoice_qb_merges', 'invoice_qb_doc_states',
+        'invoice_qb_retry', 'invoice_qb_unsent', 'invoice_qb_send_context', 'invoice_qb_result', 'invoice_qb_release')), false) as qb_reconcile;

@@ -1,6 +1,7 @@
 -- 照合済みの invoice が QuickBooks へ（2026-11-23・Moto さんの依頼 B-3・PR は v1210）。
 -- Run after 20261103090000_invoice_price_compare.sql. Running it twice is the same as once. Nothing is sent, deleted or rewritten
--- by this file: it adds one column (outbox.parts), replaces six functions and adds five. The rows already in the ledger stay as they are.
+-- by this file: it adds two columns (outbox.parts, outbox.stop_requested_at) and three indexes to the ledger, replaces eight functions
+-- and adds six. The rows already in the ledger stay as they are.
 --  * 照合 (one or many): saving a reconciliation asks for the QuickBooks send at once, under the same conditions as before (posted,
 --    renamed, since, the route, the ledger on). 照合済み is not 転送済み; a mail accepted by Gmail is not "registered in QuickBooks".
 --  * An invoice of several originals (merged pages, UI案50 5) is sent as ONE mail with ONE PDF of its pages in page order, when this
@@ -9,7 +10,8 @@
 --    a page already sent (alone, or in an older combination) or under way keeps the invoice out and asks for a person (manual).
 --  * A row set aside before sending (the content or the invoice changed, its reconciliation was taken back) blocks its key until a
 --    person sends it again (invoice_qb_retry); the worker no longer picks the same file again and again (it kept 20 places busy).
---  * Taking a reconciliation back (stop_qb) stops the sends of that invoice that have not started (cancelled 'recon_cancelled').
+--  * Taking a reconciliation back (stop_qb) stops the sends of that invoice that have not started (cancelled 'recon_cancelled'); one
+--    already reserved stops at its next check if it has not gone (stop_requested_at); one that went stays recorded as sent.
 --  * invoice_qb_doc_states: for the screen, per invoice: not_sent / queued / sending / sent / failed / unknown and why.
 --  * invoice_qb_unsent: reconciled invoices without a send recorded, with what is known (confirmed) and what is not (unconfirmed).
 do $$ begin
@@ -20,6 +22,14 @@ do $$ begin
 end $$;
 
 alter table public.invoice_qb_outbox add column if not exists parts jsonb;
+-- When a reconciliation is taken back while its send is reserved (sending) or its outcome is unknown: the send stops at its next
+-- check if it has not gone (invoice_qb_send_context: recon_cancelled), and a failure or a person's "send again" sets it aside
+-- instead of waiting it again (invoice_qb_result, invoice_qb_release). Cleared when the invoice is reconciled again.
+alter table public.invoice_qb_outbox add column if not exists stop_requested_at timestamptz;
+-- Looking an original or a content up in the ledger is one index lookup (the states on the screen ask it for every invoice shown).
+create index if not exists invoice_qb_outbox_file on public.invoice_qb_outbox(file_id);
+create index if not exists invoice_qb_outbox_sha on public.invoice_qb_outbox(sha256);
+create index if not exists invoice_qb_outbox_parts on public.invoice_qb_outbox using gin (parts jsonb_path_ops) where parts is not null;
 
 -- Every posted invoice that has pages merged into it (UI案50 5), with what one send of it is: its pages in order (file, content),
 -- the key of their contents, and why it cannot be sent now (null: it can).
@@ -27,32 +37,50 @@ alter table public.invoice_qb_outbox add column if not exists parts jsonb;
 --   rename_waiting    : a page still waits for its name (日付_業者名_番号_pN)
 --   part_already_sent : a page went to this address already (alone, or in another combination): a person records the rest (manual)
 --   part_in_progress  : a page is waiting, being sent, failed or unknown in another row: settled first
-create or replace function public.invoice_qb_merges() returns table(head_file uuid, head_doc uuid, composite text, parts jsonb, why text)
+-- invoice_qb_merges_of(heads): the same for the given head originals only (null: all). One invoice is read by its own original
+-- (ready, send_context, reconcile, doc_states), so the screen and the worker do not read every invoice for each one (#217 routine
+-- review: 3,000 invoices took about 25 s for 200 states). Each look into the ledger is one index lookup (sha256, or the pages).
+create or replace function public.invoice_qb_merges_of(p_heads uuid[]) returns table(head_file uuid, head_doc uuid, composite text, parts jsonb, why text)
 language sql stable security invoker set search_path=public,pg_temp as $$
- with h as (
+ with q as (select public.invoice_setting('qb')->>'to' qto),
+ h as (
+  -- two branches so that the plan of one head reads that head only (a generic plan of "heads is null or id = any(heads)" reads all)
   select f.id head_file, d0.id head_doc from public.invoice_files f
   join public.invoice_docs d0 on d0.file_id=f.id and d0.sha256=f.current_sha256 and d0.status='posted'
-  where exists(select 1 from public.invoice_docs x where x.merged_into=d0.id)),
+  where p_heads is not null and f.id = any(p_heads) and exists(select 1 from public.invoice_docs x where x.merged_into=d0.id)
+  union all
+  select f.id, d0.id from public.invoice_files f
+  join public.invoice_docs d0 on d0.file_id=f.id and d0.sha256=f.current_sha256 and d0.status='posted'
+  where p_heads is null and exists(select 1 from public.invoice_docs x where x.merged_into=d0.id)),
  pt as (
-  select h.head_file, h.head_doc, x.file_id, x.sha256 psha, coalesce(x.part_no, 0) part_no, pf.current_sha256 fsha
+  select h.head_file, h.head_doc, x.file_id, x.sha256 psha, coalesce(x.part_no, 0) part_no, pf.current_sha256 fsha,
+   public.invoice_rename_waiting(x.file_id) rw
   from h join public.invoice_docs x on x.id=h.head_doc or x.merged_into=h.head_doc
   join public.invoice_files pf on pf.id=x.file_id),
  g as (
   select pt.head_file, pt.head_doc,
    'multi-' || encode(sha256(convert_to(string_agg(pt.psha, ',' order by pt.part_no, pt.file_id), 'UTF8')), 'hex') composite,
    jsonb_agg(jsonb_build_object('file_id', pt.file_id, 'sha256', pt.psha, 'part_no', pt.part_no) order by pt.part_no, pt.file_id) parts,
-   bool_or(pt.fsha is distinct from pt.psha) changed, array_agg(pt.psha) shas, array_agg(pt.file_id) files
+   bool_or(pt.fsha is distinct from pt.psha) changed, bool_or(pt.rw) waiting, array_agg(pt.psha) shas
   from pt group by pt.head_file, pt.head_doc)
  select g.head_file, g.head_doc, g.composite, g.parts,
   case when g.changed then 'part_changed'
-   when exists(select 1 from public.invoice_rename_waiting_all() w where w.file_id = any(g.files)) then 'rename_waiting'
-   when exists(select 1 from public.invoice_qb_outbox o where o.state='sent' and o.to_address=public.invoice_setting('qb')->>'to' and o.sha256 <> g.composite
-     and (o.sha256 = any(g.shas) or exists(select 1 from jsonb_array_elements(coalesce(o.parts, '[]'::jsonb)) e where e->>'sha256' = any(g.shas)))) then 'part_already_sent'
-   when exists(select 1 from public.invoice_qb_outbox o where o.state in ('pending','sending','error','unknown') and o.to_address=public.invoice_setting('qb')->>'to'
-     and o.sha256 <> g.composite
-     and (o.sha256 = any(g.shas) or exists(select 1 from jsonb_array_elements(coalesce(o.parts, '[]'::jsonb)) e where e->>'sha256' = any(g.shas)))) then 'part_in_progress'
+   when g.waiting then 'rename_waiting'
+   when exists(select 1 from unnest(g.shas) z join public.invoice_qb_outbox o on o.sha256=z cross join q
+       where o.state='sent' and o.to_address=q.qto and o.sha256 <> g.composite)
+     or exists(select 1 from unnest(g.shas) z join public.invoice_qb_outbox o on o.parts @> jsonb_build_array(jsonb_build_object('sha256', z)) cross join q
+       where o.parts is not null and o.state='sent' and o.to_address=q.qto and o.sha256 <> g.composite) then 'part_already_sent'
+   when exists(select 1 from unnest(g.shas) z join public.invoice_qb_outbox o on o.sha256=z cross join q
+       where o.state in ('pending','sending','error','unknown') and o.to_address=q.qto and o.sha256 <> g.composite)
+     or exists(select 1 from unnest(g.shas) z join public.invoice_qb_outbox o on o.parts @> jsonb_build_array(jsonb_build_object('sha256', z)) cross join q
+       where o.parts is not null and o.state in ('pending','sending','error','unknown') and o.to_address=q.qto and o.sha256 <> g.composite) then 'part_in_progress'
   end
  from g;
+$$;
+
+create or replace function public.invoice_qb_merges() returns table(head_file uuid, head_doc uuid, composite text, parts jsonb, why text)
+language sql stable security invoker set search_path=public,pg_temp as $$
+ select * from public.invoice_qb_merges_of(null);
 $$;
 
 -- Whether an original can be queued now, and what as: {sha256, parts, doc_id} or {why}. The same conditions for the worker's
@@ -74,7 +102,7 @@ begin
   return jsonb_build_object('why', 'not_ready');
  end if;
  if public.invoice_rename_waiting(f.id) then return jsonb_build_object('why', 'rename_waiting', 'doc_id', v_doc); end if;
- select * into m from public.invoice_qb_merges() x where x.head_file=f.id;
+ select * into m from public.invoice_qb_merges_of(array[f.id]) x where x.head_file=f.id;
  if m.head_file is not null then
   -- The old forwarder (route external) cannot send an invoice of several originals as one: it waits out of its ledger as before.
   if coalesce(q->>'route','') <> 'invoice-intake' then return jsonb_build_object('why', 'multi_file', 'doc_id', m.head_doc); end if;
@@ -107,7 +135,7 @@ begin
   if o.state = 'cancelled' and ((o.last_error = 'multi_file' and o.parts is null and r->'parts' is null)
        or (o.last_error = 'recon_cancelled' and exists(select 1 from public.invoice_docs d where d.id=(r->>'doc_id')::uuid and d.recon_status='reconciled'))) then
    update public.invoice_qb_outbox set state='pending', file_id=v_file, route=q->>'route', attempts=least(attempts, 4), reserved_by=null, reserved_at=null,
-    next_at=null, last_error=null, updated_at=now() where id=o.id;
+    next_at=null, last_error=null, stop_requested_at=null, updated_at=now() where id=o.id;
    perform public.invoice_event(null, v_file, 'worker', 'qb_resumed', jsonb_build_object('to', q->>'to', 'why', o.last_error));
    return jsonb_build_object('queued', true, 'id', o.id, 'resumed', true);
   end if;
@@ -152,7 +180,8 @@ end $$;
 -- What a reserved row is sent as, with the settings read again (enabled, the address, the start, the rename, the sender).
 -- why: not_reserved (another sender has it, or the reservation is gone) · qb_off · route_changed · to_changed · before_since ·
 -- not_posted · rename_waiting · content_changed (the database already knows a new content) · merge_changed (the invoice of several
--- originals is not the one queued any more) · part_already_sent · part_in_progress · gmail_not_ok · sender_mismatch.
+-- originals is not the one queued any more) · part_already_sent · part_in_progress · gmail_not_ok · sender_mismatch ·
+-- recon_cancelled (its reconciliation was taken back while it was reserved: it is not sent, invoice_qb_result sets it aside).
 -- route_changed and gmail_not_ok let the row go (invoice_qb_release: it waits, the try is not counted).
 create or replace function public.invoice_qb_send_context(p jsonb) returns jsonb
 language plpgsql stable security invoker set search_path=public,pg_temp as $$
@@ -163,8 +192,9 @@ begin
  select * into f from public.invoice_files where id=o.file_id;
  select * into g from public.invoice_gmail_auth where id=1;
  -- always assigned (a record read in the CASE below must be), with nulls when this is not an invoice of several originals
- select * into m from public.invoice_qb_merges() x where o.parts is not null and x.head_file=o.file_id;
+ select * into m from public.invoice_qb_merges_of(array[o.file_id]) x where o.parts is not null and x.head_file=o.file_id;
  v_why := case
+  when o.stop_requested_at is not null then 'recon_cancelled'
   when not coalesce((q->>'enabled')::boolean, false) then 'qb_off'
   when coalesce(q->>'route', '') <> 'invoice-intake' then 'route_changed'
   when o.to_address is distinct from q->>'to' then 'to_changed'
@@ -262,11 +292,14 @@ end $$;
 -- Accounting reconciliation. Independent of posting; payment, bank and QuickBooks booking are separate.
 -- 2026-11-23 (B-3): the answer gives the invoice's original (file_id) so the QuickBooks send is asked for at once (the same
 -- conditions as after a posting). stop_qb when a reconciliation is taken back (reconciled → unreconciled or discrepancy) stops the
--- sends of this invoice that have not started (cancelled 'recon_cancelled', queued again when it is reconciled again); a send under
--- way or with an unknown outcome is counted (qb_busy), never undone.
+-- sends of this invoice that have not started (cancelled 'recon_cancelled', queued again when it is reconciled again). A send already
+-- reserved (sending) or with an unknown outcome is marked (stop_requested_at): it stops at its next check if it has not gone, and
+-- it is not waited again; one that went is recorded as sent (a fact: taking it back or correcting it is done in QuickBooks). When
+-- nothing is in the ledger yet (the name was still being made), a row taken back keeps the key out until it is reconciled again.
 create or replace function public.invoice_reconcile(p jsonb) returns jsonb
 language plpgsql security invoker set search_path=public,pg_temp as $$
-declare d public.invoice_docs; actor uuid := nullif(p->>'actor','')::uuid; r text := p->>'result'; nq int := 0; nb int := 0;
+declare d public.invoice_docs; actor uuid := nullif(p->>'actor','')::uuid; r text := p->>'result'; nq int := 0; nb int := 0; ns int := 0; nm int := 0;
+ q jsonb := public.invoice_setting('qb'); rd jsonb; k text; v_parts jsonb;
 begin
  perform public.invoice_require(actor, array['ceo','gm','office','office_crew']);
  if r not in ('reconciled','discrepancy','unreconciled') then raise exception 'bad_result'; end if;
@@ -281,6 +314,9 @@ begin
   -- Every original of the invoice (the pages merged into it too, UI案50 5) goes with it.
   update public.invoice_files set organize_target='reconciled', organize_status='pending', organize_attempts=0, organize_error=null, organize_next_at=null
   where id=d.file_id or id in (select x.file_id from public.invoice_docs x where x.merged_into=d.id);
+  -- reconciled again: a send asked to stop when it was taken back goes on (a row set aside is queued again by invoice_qb_enqueue)
+  update public.invoice_qb_outbox set stop_requested_at=null, updated_at=now()
+  where (file_id=d.file_id or file_id in (select x.file_id from public.invoice_docs x where x.merged_into=d.id)) and stop_requested_at is not null;
  else
   update public.invoice_files set organize_target='unreconciled', organize_status='pending', organize_attempts=0, organize_error=null, organize_next_at=null
   where (id=d.file_id or id in (select x.file_id from public.invoice_docs x where x.merged_into=d.id)) and organize_target='reconciled';
@@ -292,13 +328,33 @@ begin
              where (file_id=d.file_id or file_id in (select x.file_id from public.invoice_docs x where x.merged_into=d.id)) and state in ('pending','error')
              returning id)
   select count(*) into nq from c;
-  if nq > 0 then perform public.invoice_event(d.id, d.file_id, actor::text, 'qb_cancelled', jsonb_build_object('rows', nq, 'why', 'recon_cancelled')); end if;
+  with c as (update public.invoice_qb_outbox set stop_requested_at=now(), updated_at=now()
+             where (file_id=d.file_id or file_id in (select x.file_id from public.invoice_docs x where x.merged_into=d.id)) and state in ('sending','unknown')
+             returning id)
+  select count(*) into ns from c;
+  -- nothing for this invoice in the ledger yet (its name was still being made, or it was queued and is now ready): a row taken back
+  -- keeps the key out (invoice_qb_candidates) until it is reconciled again; a row of the key already there (sent, too) is left.
+  if coalesce(q->>'to', '') <> '' and d.merged_into is null then
+   rd := public.invoice_qb_ready(d.file_id);
+   if rd ? 'sha256' then k := rd->>'sha256'; v_parts := rd->'parts';
+   elsif rd->>'why' = 'rename_waiting' then
+    select x.composite, x.parts into k, v_parts from public.invoice_qb_merges_of(array[d.file_id]) x where x.head_file=d.file_id;
+    if k is null then select f.current_sha256 into k from public.invoice_files f where f.id=d.file_id; end if;
+   end if;
+   if k is not null and rd->>'doc_id' = d.id::text then
+    insert into public.invoice_qb_outbox(file_id, sha256, to_address, route, state, attempt_key, parts, last_error)
+    values(d.file_id, k, q->>'to', q->>'route', 'cancelled', 'qb-' || k || '-' || md5(q->>'to'), v_parts, 'recon_cancelled')
+    on conflict do nothing;
+    get diagnostics nm = row_count;
+   end if;
+  end if;
+  if nq + ns + nm > 0 then perform public.invoice_event(d.id, d.file_id, actor::text, 'qb_cancelled', jsonb_build_object('rows', nq, 'stop_requested', ns, 'kept_out', nm, 'why', 'recon_cancelled')); end if;
  end if;
  select count(*) into nb from public.invoice_qb_outbox
  where (file_id=d.file_id or file_id in (select x.file_id from public.invoice_docs x where x.merged_into=d.id)) and state in ('sending','unknown');
  -- file_ids: every original of the invoice in page order (the answer renames them for the new version, as a posting does:
  -- the name is made for the document's id and version, so a reconciliation asks for it again; the name itself does not change).
- return jsonb_build_object('ok', true, 'version', d.version + 1, 'file_id', d.file_id, 'qb_stopped', nq, 'qb_busy', nb,
+ return jsonb_build_object('ok', true, 'version', d.version + 1, 'file_id', d.file_id, 'qb_stopped', nq, 'qb_busy', nb, 'qb_stop_requested', ns, 'qb_kept_out', nm,
   'file_ids', (select jsonb_agg(q.fid order by q.o) from (select d.file_id fid, coalesce(d.part_no, 0) o
    union all select x.file_id, x.part_no from public.invoice_docs x where x.merged_into=d.id) q));
 end $$;
@@ -319,15 +375,18 @@ begin
   select * into h from public.invoice_docs where id=coalesce(d.merged_into, d.id);
   shas := array(select x.sha256 from public.invoice_docs x where x.id=h.id or x.merged_into=h.id);
   m := null;
-  select * into m from public.invoice_qb_merges() x where x.head_doc=h.id;
+  select * into m from public.invoice_qb_merges_of(array[h.file_id]) x where x.head_doc=h.id;
   o := null;
   select * into o from public.invoice_qb_outbox ob where ob.to_address=q->>'to' and ob.state<>'cancelled'
    and ob.sha256 = coalesce(m.composite, h.sha256) order by ob.created_at desc limit 1;
   -- an invoice of several originals every page of which is in QuickBooks already (by hand, or in an earlier send)
-  if o.id is null and array_length(shas, 1) > 1 and not exists(select 1 from unnest(shas) z where not exists(select 1 from public.invoice_qb_outbox ob
-       where ob.state='sent' and ob.to_address=q->>'to' and (ob.sha256=z or ob.parts @> jsonb_build_array(jsonb_build_object('sha256', z))))) then
+  if o.id is null and array_length(shas, 1) > 1 and not exists(select 1 from unnest(shas) z
+       where not exists(select 1 from public.invoice_qb_outbox ob where ob.state='sent' and ob.to_address=q->>'to' and ob.sha256=z)
+        and not exists(select 1 from public.invoice_qb_outbox ob where ob.parts is not null and ob.state='sent' and ob.to_address=q->>'to'
+         and ob.parts @> jsonb_build_array(jsonb_build_object('sha256', z)))) then
    select * into o from public.invoice_qb_outbox ob where ob.state='sent' and ob.to_address=q->>'to'
-    and (ob.sha256 = any(shas) or exists(select 1 from jsonb_array_elements(coalesce(ob.parts, '[]'::jsonb)) e where e->>'sha256' = any(shas)))
+    and ob.id in (select x.id from public.invoice_qb_outbox x where x.sha256 = any(shas)
+     union select x.id from unnest(shas) z join public.invoice_qb_outbox x on x.parts @> jsonb_build_array(jsonb_build_object('sha256', z)) where x.parts is not null)
    order by ob.sent_at desc nulls last limit 1;
   end if;
   if o.id is null then
@@ -344,7 +403,7 @@ begin
      'state', case o.state when 'pending' then 'queued' when 'sending' then 'sending' when 'sent' then 'sent' when 'error' then 'failed' else o.state end,
      'manual', o.route = 'manual', 'combined', o.parts is not null, 'attempts', o.attempts, 'stopped', o.state = 'error' and o.attempts >= 5,
      'last_error', o.last_error, 'sent_at', o.sent_at, 'next_at', o.next_at, 'pages', coalesce(array_length(shas, 1), 1),
-     'route', o.route, 'can_retry', o.state = 'error' and o.route = 'invoice-intake'));
+     'route', o.route, 'can_retry', o.state = 'error' and o.route = 'invoice-intake', 'stop_requested', o.stop_requested_at is not null));
   end if;
  end loop;
  return jsonb_build_object('enabled', coalesce((q->>'enabled')::boolean, false), 'route', q->>'route', 'states', res);
@@ -373,7 +432,7 @@ begin
    return jsonb_build_object('ok', false, 'why', 'not_reconciled');
   end if;
   update public.invoice_qb_outbox set state='pending', route=q->>'route', attempts=least(attempts, 4), reserved_by=null, reserved_at=null,
-   next_at=null, last_error=null, updated_at=now() where id=o.id;
+   next_at=null, last_error=null, stop_requested_at=null, updated_at=now() where id=o.id;
  else raise exception 'invalid_state';
  end if;
  perform public.invoice_event(null, o.file_id, actor::text, 'qb_retry', jsonb_build_object('outbox_id', o.id, 'from', o.state, 'why', o.last_error));
@@ -384,12 +443,15 @@ end $$;
 -- confirmed: the reason is in the data (the start, the route, waiting, stopped, taken back, merged, a person's check pending).
 -- confirmed=false: nothing in the ledger explains it (it may have gone by the forwarder before, outside this ledger): the sent mail is
 -- looked up before anything is sent (the regular path does it), never sent again only because no row is here.
+-- At most `limit` rows (200 by default, 500 at most), the oldest reconciliation first; count is all of them, more says some were left
+-- out (#217 routine review: every row asks its own readiness, so the list is paged instead of reading all at once).
 create or replace function public.invoice_qb_unsent(p jsonb) returns jsonb
 language plpgsql stable security invoker set search_path=public,pg_temp as $$
-declare actor uuid := nullif(p->>'actor','')::uuid; q jsonb := public.invoice_setting('qb'); v_from date;
+declare actor uuid := nullif(p->>'actor','')::uuid; q jsonb := public.invoice_setting('qb'); v_from date; v_limit int;
 begin
  perform public.invoice_require(actor, array['ceo','gm','office','office_crew']);
  v_from := coalesce(nullif(p->>'from','')::date, (public.invoice_qb_since_at() at time zone 'Pacific/Honolulu')::date, (now() at time zone 'Pacific/Honolulu')::date - 90);
+ v_limit := least(greatest(coalesce(nullif(p->>'limit','')::int, 200), 1), 500);
  return (with docs as (
    select d.id, d.file_id, d.store_id, d.vendor_name, d.vendor_raw, d.invoice_no, d.invoice_date, d.total_cents, d.recon_by, d.recon_at, d.version, d.sha256,
     f.drive_file_id, f.current_name, f.source, f.drive_created_at,
@@ -397,17 +459,25 @@ begin
     (select count(*) from public.invoice_docs x where x.merged_into=d.id) npages
    from public.invoice_docs d join public.invoice_files f on f.id=d.file_id
    where d.status='posted' and d.recon_status='reconciled' and d.recon_at >= (v_from::timestamp at time zone 'Pacific/Honolulu')),
-  un as (
-   select dc.*, public.invoice_qb_ready(dc.file_id) rd,
-    (select coalesce(jsonb_agg(jsonb_build_object('id', o.id, 'state', o.state, 'route', o.route, 'attempts', o.attempts, 'last_error', o.last_error,
-       'created_at', o.created_at, 'sent_at', o.sent_at, 'combined', o.parts is not null) order by o.created_at), '[]'::jsonb)
-     from public.invoice_qb_outbox o where o.to_address=q->>'to' and (o.file_id=dc.file_id or o.sha256 = any(dc.shas)
-       or exists(select 1 from jsonb_array_elements(coalesce(o.parts, '[]'::jsonb)) e where e->>'sha256' = any(dc.shas)))) hist
-   from docs dc
-   where exists(select 1 from unnest(dc.shas) z where not exists(select 1 from public.invoice_qb_outbox ob where ob.state='sent' and ob.to_address=q->>'to'
-     and (ob.sha256=z or ob.parts @> jsonb_build_array(jsonb_build_object('sha256', z)))))
+  -- a page is in QuickBooks when a sent row holds its content (alone, or as a page of one PDF); each look is one index lookup
+  un0 as (
+   select dc.* from docs dc
+   where exists(select 1 from unnest(dc.shas) z
+     where not exists(select 1 from public.invoice_qb_outbox ob where ob.state='sent' and ob.to_address=q->>'to' and ob.sha256=z)
+      and not exists(select 1 from public.invoice_qb_outbox ob where ob.parts is not null and ob.state='sent' and ob.to_address=q->>'to'
+       and ob.parts @> jsonb_build_array(jsonb_build_object('sha256', z))))
     and not exists(select 1 from public.invoice_qb_outbox ob where ob.state='sent' and ob.to_address=q->>'to' and ob.parts is not null and ob.file_id=dc.file_id
      and ob.parts @> (select jsonb_agg(jsonb_build_object('sha256', z)) from unnest(dc.shas) z))),
+  pg as (select * from un0 order by un0.recon_at, un0.id limit v_limit),
+  un as (
+   select pg.*, public.invoice_qb_ready(pg.file_id) rd,
+    (select coalesce(jsonb_agg(jsonb_build_object('id', o.id, 'state', o.state, 'route', o.route, 'attempts', o.attempts, 'last_error', o.last_error,
+       'created_at', o.created_at, 'sent_at', o.sent_at, 'combined', o.parts is not null) order by o.created_at), '[]'::jsonb)
+     from public.invoice_qb_outbox o where o.to_address=q->>'to' and o.id in (
+      select x.id from public.invoice_qb_outbox x where x.file_id=pg.file_id
+      union select x.id from public.invoice_qb_outbox x where x.sha256 = any(pg.shas)
+      union select x.id from unnest(pg.shas) z join public.invoice_qb_outbox x on x.parts @> jsonb_build_array(jsonb_build_object('sha256', z)) where x.parts is not null)) hist
+   from pg),
   cl as (
    select un.*,
     (select h->>'state' from jsonb_array_elements(un.hist) h where h->>'state' <> 'cancelled' order by h->>'created_at' desc limit 1) live,
@@ -432,14 +502,78 @@ begin
        when cl.rd->>'why' in ('before_since','not_new_intake') then false
        when cl.rd->>'why' is not null then true
        when not coalesce((q->>'enabled')::boolean, false) then true
-       else false end) order by cl.recon_at), '[]'::jsonb),
-   'count', count(*)) from cl);
+       else false end) order by cl.recon_at, cl.id), '[]'::jsonb),
+   'count', (select count(*) from un0), 'limit', v_limit, 'more', (select count(*) from un0) > v_limit) from cl);
+end $$;
+
+-- (replaced, B-3) a result: as before; a send asked to stop because its reconciliation was taken back (stop_requested_at) is not
+-- waited again: a failure, or a person who checked the sent mail and finds it did not go, sets it aside (cancelled 'recon_cancelled',
+-- queued again when the invoice is reconciled again). A mail that went is recorded as sent (a fact); an unknown outcome stays unknown.
+create or replace function public.invoice_qb_result(p jsonb) returns jsonb
+language plpgsql security invoker set search_path=public,pg_temp as $$
+declare o public.invoice_qb_outbox; s text := p->>'state';
+begin
+ if s not in ('sent','error','unknown','pending') then raise exception 'bad_state'; end if;
+ select * into o from public.invoice_qb_outbox where id=(p->>'id')::uuid for update;
+ if o.id is null then raise exception 'not_found'; end if;
+ -- A person (accounting, 事務Crew, GM, CEO) may only settle an unknown result after checking the sender's records.
+ if nullif(p->>'actor','') is not null and p->>'actor' <> 'external' then
+  perform public.invoice_require((p->>'actor')::uuid, array['ceo','gm','office','office_crew']);
+  if o.state <> 'unknown' or s not in ('sent','pending') then raise exception 'invalid_state'; end if;
+ end if;
+ -- The external sender may only report on its own rows, and only after reserving them.
+ if p->>'actor' = 'external' and (o.route <> 'external' or o.state not in ('sending','unknown') or s = 'pending') then raise exception 'invalid_state'; end if;
+ if s='pending' then
+  -- Only a person who checked the sender's records may re-queue an unknown send.
+  if o.state<>'unknown' then raise exception 'invalid_state'; end if;
+  perform public.invoice_require(nullif(p->>'actor','')::uuid, array['ceo','gm','office','office_crew']);
+ end if;
+ if o.state='sent' then return jsonb_build_object('ok', true, 'state', 'sent'); end if;
+ if o.stop_requested_at is not null and s in ('error','pending') then
+  update public.invoice_qb_outbox set state='cancelled', last_error='recon_cancelled', next_at=null, reserved_by=null, reserved_at=null,
+   result=coalesce(p->'result', result),
+   -- stopped before sending (send_context said recon_cancelled): not a try
+   attempts=case when s='pending' then least(attempts, 4) when p->>'error' = 'recon_cancelled' then greatest(attempts-1, 0) else attempts end,
+   updated_at=now()
+  where id=o.id;
+  perform public.invoice_event(null, o.file_id, coalesce(p->>'actor','worker'), 'qb_cancelled',
+   jsonb_build_object('why', 'recon_cancelled', 'outbox_id', o.id, 'state', s, 'error', left(p->>'error',300)));
+  return jsonb_build_object('ok', true, 'state', 'cancelled', 'why', 'recon_cancelled');
+ end if;
+ update public.invoice_qb_outbox set state=s, sent_at=case when s='sent' then now() else sent_at end,
+  message_id=coalesce(p->>'message_id', message_id), result=coalesce(p->'result', result), last_error=left(p->>'error',300),
+  next_at=case when s='error' then now() + make_interval(mins => least(720, 15 * power(2, least(attempts,5))::int)) end,
+  -- a person who checked the sent mail and sends again gives one more try (no more): a row that had used its five would wait forever
+  attempts=case when s='pending' then least(attempts, 4) else attempts end, updated_at=now()
+ where id=o.id;
+ perform public.invoice_event(null, o.file_id, coalesce(p->>'actor','worker'), 'qb_'||s, jsonb_build_object('message_id', p->>'message_id', 'error', left(p->>'error',300)));
+ return jsonb_build_object('ok', true, 'state', s);
+end $$;
+
+-- (replaced, B-3) a reserved row let go without a try (as before); one asked to stop because its reconciliation was taken back is set
+-- aside (cancelled 'recon_cancelled') instead of waiting again.
+create or replace function public.invoice_qb_release(p jsonb) returns jsonb
+language plpgsql security invoker set search_path=public,pg_temp as $$
+declare o public.invoice_qb_outbox;
+begin
+ update public.invoice_qb_outbox set state=case when stop_requested_at is not null then 'cancelled' else 'pending' end,
+  attempts=greatest(attempts-1, 0), reserved_by=null, reserved_at=null,
+  last_error=case when stop_requested_at is not null then 'recon_cancelled' else left(p->>'error', 300) end, next_at=null, updated_at=now()
+ where id=(p->>'id')::uuid and state='sending' and reserved_by is not distinct from p->>'owner'
+ returning * into o;
+ if o.id is null then return jsonb_build_object('ok', false); end if;
+ if o.state = 'cancelled' then
+  perform public.invoice_event(null, o.file_id, 'worker', 'qb_cancelled', jsonb_build_object('why', 'recon_cancelled', 'outbox_id', o.id, 'error', left(p->>'error', 300)));
+ else
+  perform public.invoice_event(null, o.file_id, 'worker', 'qb_released', jsonb_build_object('error', left(p->>'error', 300)));
+ end if;
+ return jsonb_build_object('ok', true);
 end $$;
 
 do $$ declare f text; begin
- foreach f in array array['invoice_qb_merges()','invoice_qb_ready(uuid)','invoice_qb_doc_states(jsonb)','invoice_qb_retry(jsonb)','invoice_qb_unsent(jsonb)',
+ foreach f in array array['invoice_qb_merges_of(uuid[])','invoice_qb_merges()','invoice_qb_ready(uuid)','invoice_qb_doc_states(jsonb)','invoice_qb_retry(jsonb)','invoice_qb_unsent(jsonb)',
    'invoice_qb_enqueue(jsonb)','invoice_qb_candidates(jsonb)','invoice_qb_send_context(jsonb)','invoice_qb_content_changed(jsonb)','invoice_qb_manual(jsonb)',
-   'invoice_reconcile(jsonb)'] loop
+   'invoice_reconcile(jsonb)','invoice_qb_result(jsonb)','invoice_qb_release(jsonb)'] loop
   execute format('revoke all on function public.%s from public, anon, authenticated', f);
   execute format('grant execute on function public.%s to service_role', f);
  end loop;

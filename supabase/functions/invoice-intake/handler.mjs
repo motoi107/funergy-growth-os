@@ -1454,7 +1454,8 @@ export function createHandler(deps) {
       }
       return r;
     }, b => ({ outbox_id: String(b.id || '') })),
-    qb_unsent: (a, b) => db.rpc('invoice_qb_unsent', { actor: a, from: typeof b.from === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(b.from) ? b.from : null })
+    qb_unsent: (a, b) => db.rpc('invoice_qb_unsent', { actor: a, from: typeof b.from === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(b.from) ? b.from : null,
+      limit: Number.isInteger(b.limit) && b.limit > 0 && b.limit <= 500 ? b.limit : null })
       .then(r => ({ ...r, rows: (r.rows || []).map(x => ({ ...x, original_url: viewUrl(x.drive_file_id) })) })),
   };
   const ERR = { forbidden: 403, actor_required: 401, conflict: 409, not_found: 404, line_not_found: 404, closed_month: 409, duplicate: 409, invalid_state: 409,

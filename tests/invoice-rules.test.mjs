@@ -549,10 +549,13 @@ test('each migration changes only what it says', async () => {
   assert.match(pcRest, /^do \$\$ begin\n if to_regprocedure\('public\.invoice_purchase_month\(text,jsonb\)'\) is null/);
   // 照合済み → QuickBooks (20261216090000, Moto 2026-11-23 の B-3): the same send conditions as before; reconciling starts the send,
   // the states of a send can be read, 「もう一度送る」, the unsent list, and a multi-page invoice is one send. Besides the functions:
-  // the stop when 20261103090000 is not there, one new column (the pages of a send) and the service role only.
+  // the stop when 20261103090000 is not there, two new columns (the pages of a send, the stop asked by taking a reconciliation back),
+  // three indexes to look the ledger up by original, content and page (#217 routine review: the states read it for every invoice)
+  // and the service role only.
   const rc = read('supabase/migrations/20261216090000_invoice_qb_reconcile.sql');
-  assert.deepEqual([...rc.matchAll(fn)].map(m => m[1]), ['invoice_qb_merges', 'invoice_qb_ready', 'invoice_qb_enqueue', 'invoice_qb_candidates',
-    'invoice_qb_send_context', 'invoice_qb_content_changed', 'invoice_qb_manual', 'invoice_reconcile', 'invoice_qb_doc_states', 'invoice_qb_retry', 'invoice_qb_unsent']);
+  assert.deepEqual([...rc.matchAll(fn)].map(m => m[1]), ['invoice_qb_merges_of', 'invoice_qb_merges', 'invoice_qb_ready', 'invoice_qb_enqueue', 'invoice_qb_candidates',
+    'invoice_qb_send_context', 'invoice_qb_content_changed', 'invoice_qb_manual', 'invoice_reconcile', 'invoice_qb_doc_states', 'invoice_qb_retry', 'invoice_qb_unsent',
+    'invoice_qb_result', 'invoice_qb_release']);
   assert.ok([...rc.matchAll(fn)].every(m => m[0].startsWith('create or replace function')), 'running it twice changes nothing');
   assert.equal(rc.replace(fn, '').replace(/^--.*\n/gm, '').replace(/\n+/g, '\n').trim(), [
     'do $$ begin',
@@ -562,14 +565,18 @@ test('each migration changes only what it says', async () => {
     ' end if;',
     'end $$;',
     'alter table public.invoice_qb_outbox add column if not exists parts jsonb;',
+    'alter table public.invoice_qb_outbox add column if not exists stop_requested_at timestamptz;',
+    'create index if not exists invoice_qb_outbox_file on public.invoice_qb_outbox(file_id);',
+    'create index if not exists invoice_qb_outbox_sha on public.invoice_qb_outbox(sha256);',
+    'create index if not exists invoice_qb_outbox_parts on public.invoice_qb_outbox using gin (parts jsonb_path_ops) where parts is not null;',
     'do $$ declare f text; begin',
-    " foreach f in array array['invoice_qb_merges()','invoice_qb_ready(uuid)','invoice_qb_doc_states(jsonb)','invoice_qb_retry(jsonb)','invoice_qb_unsent(jsonb)',",
+    " foreach f in array array['invoice_qb_merges_of(uuid[])','invoice_qb_merges()','invoice_qb_ready(uuid)','invoice_qb_doc_states(jsonb)','invoice_qb_retry(jsonb)','invoice_qb_unsent(jsonb)',",
     "   'invoice_qb_enqueue(jsonb)','invoice_qb_candidates(jsonb)','invoice_qb_send_context(jsonb)','invoice_qb_content_changed(jsonb)','invoice_qb_manual(jsonb)',",
-    "   'invoice_reconcile(jsonb)'] loop",
+    "   'invoice_reconcile(jsonb)','invoice_qb_result(jsonb)','invoice_qb_release(jsonb)'] loop",
     "  execute format('revoke all on function public.%s from public, anon, authenticated', f);",
     "  execute format('grant execute on function public.%s to service_role', f);",
     ' end loop;',
-    'end $$;'].join('\n'), 'only the stop, the column and the grants besides the functions');
+    'end $$;'].join('\n'), 'only the stop, the columns, the indexes and the grants besides the functions');
   // the revert puts back the 段階 3 version of the function, and nothing else
   const rv = read('db/invoice-purchase-posted-revert.sql'), mf3 = read('supabase/migrations/20261021090000_invoice_multi_file.sql');
   const pm3 = [...mf3.matchAll(fn)].find(m => m[1] === 'invoice_purchase_month')[0];

@@ -57,6 +57,12 @@ test('six words: chips and lines per state, external queued says hourly, errors 
   assert.match(c.fn("invInQbStateLine({ state:'not_sent', why:'cancelled_recon_cancelled' })"), /照合を取り消したので送っていません/);
   assert.match(c.fn("invInQbStateLine({ state:'not_sent', why:'not_in_ledger' })"), /ほかの方法で入れたかは分かりません/);
   assert.match(c.fn("invInQbStateLine({ state:'unknown', last_error:'gmail_send_no_answer' })"), /自動では送り直しません/);
+  // the reconciliation taken back while the send was under way (B-3 review): what went is a fact; what had not gone stops
+  assert.match(c.fn("invInQbStateLine({ state:'sending', stop_requested:true })"), /まだ送っていなければ止めます（送り終わっていたら送信済みとして残ります）/);
+  assert.equal(c.fn("invInQbStateLine({ state:'sending' })"), '送っているところです');
+  assert.match(c.fn("invInQbStateLine({ state:'sent', sent_at:'2026-11-23T20:00:00Z', stop_requested:true })"), /照合を取り消す前に送り終わっていました（取下げ・訂正は QuickBooks で）/);
+  assert.ok(!/取り消す前/.test(c.fn("invInQbStateLine({ state:'sent', sent_at:'2026-11-23T20:00:00Z' })")));
+  assert.match(c.fn("invInQbStateLine({ state:'unknown', last_error:'gmail_send_no_answer', stop_requested:true })"), /送っていないと確かめたら、送らずに止めます/);
   const f = c.fn("invInQbStateLine({ state:'failed', attempts:2, last_error:'<img src=x onerror=1>' })");
   assert.ok(!f.includes('<img'), 'an unknown error code is escaped'); assert.match(f, /やり直し 2 \/ 5/);
   // the ledger off with no reason from the server
@@ -175,14 +181,21 @@ test('1 件の照合: the toast says what happened to the forwarding; taking it 
   [msg, kind] = c.toasts.at(-1);
   assert.equal(msg, '照合済みにしました。QuickBooks：処理中'); assert.equal(kind, 'success');
   // 差異あり: what had not started is stopped; what was being sent could not be
-  rec = { ok: true, version: 4, qb_stopped: 2, qb_busy: 1 };
+  rec = { ok: true, version: 4, qb_stopped: 2, qb_busy: 1, qb_stop_requested: 1, qb_kept_out: 0 };
   c.I.doc = { doc: D }; c.I.docId = D.id; c.I.edits = { note: '数量が違う' };
   await c.fn("invInReconcile('discrepancy')");
   [msg, kind] = c.toasts.at(-1);
-  assert.match(msg, /差異ありにしました。まだ送っていなかった 2 件を止めました（照合済みに戻すとまた送ります）。1 件はもう送っている途中なので止められません/);
+  assert.match(msg, /差異ありにしました。まだ送っていなかった 2 件を止めました（照合済みに戻すとまた送ります）。1 件はもう送る途中です。まだ送っていなければ止めます。送り終わっていたら送信済みとして残ります（取下げ・訂正は QuickBooks で/);
+  assert.ok(!/止められません/.test(msg), 'the stop is asked, not given up');
   assert.equal(kind, 'warning');
   const last = c.calls.filter(b => b.action === 'reconcile').at(-1);
   assert.deepEqual([last.result, last.note], ['discrepancy', '数量が違う']);
+  // nothing in the ledger yet (the ledger off, a rename waiting): kept out, said plainly; nothing being sent → no warning
+  rec = { ok: true, version: 5, qb_stopped: 0, qb_busy: 0, qb_stop_requested: 0, qb_kept_out: 1 };
+  c.I.doc = { doc: D }; c.I.docId = D.id; c.I.edits = {};
+  await c.fn("invInReconcile('unreconciled')");
+  [msg, kind] = c.toasts.at(-1);
+  assert.equal(msg, '未照合に戻しました。まだ台帳に積んでいなかったので、台帳に積まないようにしました（照合済みに戻すと送ります）'); assert.equal(kind, 'success');
   // a conflict: no toast of success, the invoice stays open
   rec = { status: 409, error: 'conflict' };
   c.I.doc = { doc: D }; c.I.docId = D.id; c.I.edits = {};
@@ -248,6 +261,10 @@ test('照合済みだが未転送 (B-3-4): causes known and not known apart; but
   assert.match(text(h), /まとめて送り直すボタンはありません/);
   assert.match(text(h), /ページ 3/);
   assert.equal((h.match(/invInQbRetry\(/g) || []).length, 2);
+  assert.doesNotMatch(text(h), /照合の古い順に先頭の/, 'all of them are shown');
+  // Paged by the server (#217 routine review): the screen says only the oldest are shown.
+  c.I.qbun = { ...c.I.qbun, count: 240, limit: 200, more: true };
+  assert.match(text(c.fn('invInQbUnsentCard()')), /照合の古い順に先頭の 5 件を出しています（ほか 235 件。先頭の分を片づけると出ます）/);
   c.I.qbun = { error: '<x>' };
   assert.match(c.fn('invInQbUnsentCard()'), /読めませんでした（&lt;x&gt;）/);
   c.I.qbun = { from: '2026-10-01', rows: [], count: 0 };
@@ -290,6 +307,16 @@ test('複数枚の invoice: with this system as the sender, one PDF in one mail;
   c.I.qbst = { [id(7)]: { state: 'not_sent', why: 'rename_waiting', pages: 3 } };
   h = c.fn(`invInPartsHtml(${JSON.stringify(G())})`);
   assert.match(h, /名前を変える待ちです[\s\S]*1 つの PDF にして 1 通で送ります/); assert.ok(!/invInQbManualAsk/.test(h));
+  // never settles by itself (B-3 review P2-2): a page's original changed / 5 tries used (e.g. the PDF could not be joined) → recorded by hand
+  c.I.qbst = { [id(7)]: { state: 'not_sent', why: 'part_changed', pages: 3 } };
+  h = c.fn(`invInPartsHtml(${JSON.stringify(G())})`);
+  assert.match(h, /ページの原本の中身が、読んだときから変わっています/); assert.match(h, /invInQbManualAsk\(\)/); assert.ok(!/1 つの PDF にして 1 通で送ります/.test(h));
+  c.I.qbst = { [id(7)]: { state: 'failed', stopped: true, attempts: 5, last_error: 'pdf_join_failed', pages: 3, can_retry: true, id: 'q7' } };
+  h = c.fn(`invInPartsHtml(${JSON.stringify(G())})`);
+  assert.match(h, /やり直し 5 回を使い切りました/); assert.match(h, /自動ではもう送りません/); assert.match(h, /invInQbManualAsk\(\)/);
+  c.I.qbst = { [id(7)]: { state: 'failed', stopped: false, attempts: 2, last_error: 'pdf_join_failed', pages: 3, can_retry: true, id: 'q7' } };
+  h = c.fn(`invInPartsHtml(${JSON.stringify(G())})`);
+  assert.ok(!/invInQbManualAsk/.test(h), 'still tried again by itself'); assert.ok(!/自動ではもう送りません/.test(h));
   // the merge screens' texts follow the sender too (the source carries both)
   assert.ok(html.includes("invInQbRoute()==='invoice-intake' ? t('足したページと合わせ、ページの順に 1 つの PDF にして 1 通で送ります"));
   assert.ok(html.includes("QuickBooks：複数枚の invoice は、ページの順に 1 つの PDF にして 1 通で送ります"));

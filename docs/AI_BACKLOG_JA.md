@@ -2,7 +2,10 @@
 
 ## 2026-11-23 統合実装プロンプト（A・B-1・B-2・B-3）
 
-1. 済（Claude・ブランチ `claude/acct-payroll-1210`）：B-3＝照合済みの invoice を QuickBooks へ（v1210・SQL `20261216090000`・関数 invoice-intake・`docs/QB_RECONCILE_V1210_JA.md`・`deploy/invoice-qb-reconcile-v1210/`）。次：PR → Codex → #211〜#216 のあとにマージ → Moto さんが手順.md。
+1. 済（Claude・ブランチ `claude/acct-payroll-1210`）：B-3＝照合済みの invoice を QuickBooks へ（v1210・SQL `20261216090000`・関数 invoice-intake・`docs/QB_RECONCILE_V1210_JA.md`・`deploy/invoice-qb-reconcile-v1210/`）。済：PR #217。
+1b. 済（Claude 11/23）：PR #217・独立レビューの P2 2（送っている途中の照合取消で送られた・複数枚の invoice の手での記録が出ない）を直した（仕様の 8）。
+1c. 済（Claude 11/23）：ルーティン（7123823852・7123895798）の P2（状態と未転送の一覧の重さ）を直した（仕様の 9・確認の SQL は functions 126）。次：Codex のレビュー（#217 の最新の head）→ #211〜#216 のあとにマージ（Moto さん）→ 手順.md。
+1d. Moto さんに確かめる：照合の取り消しで、反映のときに積まれた送信も止まる（照合し直すまで送らない）でよいか。
 2. 次（Claude）：B-1（事務Crew にも経理リーダー・経理マネージャー・GM と同じ経理レビュー。サーバーでも）→ B-2（Payroll 別のガソリン代・立替経費のページとシート）→ A（Q4 のグレード制度・キャリア育成の一本化）→ 最後に 4 つの節の報告（C）。
 
 ## 2026-11-23 Google の評価・口コミ（Places API（新）・v1209）

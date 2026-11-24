@@ -1,13 +1,16 @@
 # Claude / Codex 共通記録
 
-## 2026-11-23 v1210：照合済みの invoice を QuickBooks へ（B-3・Moto さん 11/23 13:59 HST「はい、進めてください」の統合実装プロンプトの B-3・Claude（Personal・Claude Code）・ブランチ `claude/acct-payroll-1210`・#216（`149158b`）の上・SQL `20261216090000`・関数 invoice-intake・アプリ 1210・本番未反映）
+## 2026-11-23 v1210：照合済みの invoice を QuickBooks へ（B-3・Moto さん 11/23 13:59 HST「はい、進めてください」の統合実装プロンプトの B-3・Claude（Personal・Claude Code）・ブランチ `claude/acct-payroll-1210`・#216（`a571d61`）を取り込み・SQL `20261216090000`・関数 invoice-intake・アプリ 1210・本番未反映）
 
-- 依頼：事務クルー・経理リーダー・経理マネージャー（と GM）が 1 件でもまとめてでも「照合済み」にしたら、今までの条件で QuickBooks への転送の予定に入る・消えない予定・複数枚で 1 つの invoice は 1 つ・6 つの状態（未転送／転送待ち／処理中／転送成功／転送失敗／結果確認待ち）・二重送信なし・送り直しは送っていないことが確かなもの・失敗したものだけ・時間切れは結果確認待ち・照合の取り消しはまだ始まっていない送信を止める・照合済みだが未転送の一覧（理由の分かるものと分からないものを分ける）・まとめての結果（選択件数／保存成功／転送待ち／成功／失敗／結果確認待ち）。仕様：`docs/QB_RECONCILE_V1210_JA.md`。入れる一式：`deploy/invoice-qb-reconcile-v1210/`（SQL → 確認（functions 125・qb_reconcile true）→ 関数（1 ファイル・`npm:pdf-lib@1.17.1` を読む）→ v1210 → ふだんの照合で確かめる）。
+- 依頼：事務クルー・経理リーダー・経理マネージャー（と GM）が 1 件でもまとめてでも「照合済み」にしたら、今までの条件で QuickBooks への転送の予定に入る・消えない予定・複数枚で 1 つの invoice は 1 つ・6 つの状態（未転送／転送待ち／処理中／転送成功／転送失敗／結果確認待ち）・二重送信なし・送り直しは送っていないことが確かなもの・失敗したものだけ・時間切れは結果確認待ち・照合の取り消しはまだ始まっていない送信を止める・照合済みだが未転送の一覧（理由の分かるものと分からないものを分ける）・まとめての結果（選択件数／保存成功／転送待ち／成功／失敗／結果確認待ち）。仕様：`docs/QB_RECONCILE_V1210_JA.md`。入れる一式：`deploy/invoice-qb-reconcile-v1210/`（SQL → 確認（functions 126・qb_reconcile true）→ 関数（1 ファイル・`npm:pdf-lib@1.17.1` を読む）→ v1210 → ふだんの照合で確かめる）。
 - 権限：照合できる人はサーバーが manager_auth の役割で決める（ceo・gm・office・office_crew。画面が送る役割の名前では決めない）。GM の役割を事務Crew に付ける方法は使っていない。
 - 変えないもの：送る条件（反映済み・名前を変え終わった・送り始めより後・送る担当・台帳 ON）・旧経路（外部の転送）・ChatGPT 側の定期タスク・invoice と台帳の前の行（消さない・書き換えない）。
-- 試験（合成データ・偽の Drive・Gmail・LINE・本物の SQL を PGlite）：invoice-qb-reconcile 10＋deploy 1・invoice-qb-reconcile-ui（VM）・わざと壊す 14/14・1 ファイルの関数で 136/136・invoice の試験 355/355・関連（google・career-score-q4-ui・acct-*・workflow-yaml）140/140・static release pass/1210。CI に足した。
-- 独立レビューは無し。Codex のレビューはまだ。本物の Gmail・QuickBooks・Supabase・iPhone は見ていない。「転送成功」は Gmail が受け取った意味（QuickBooks の登録は見ていない）。
+- 試験（最初の版のとき・合成データ・偽の Drive・Gmail・LINE・本物の SQL を PGlite）：invoice-qb-reconcile 10＋deploy 1（今は 14・下の行）・invoice-qb-reconcile-ui（VM）・わざと壊す 14/14・1 ファイルの関数で 136/136・invoice の試験 355/355・関連（google・career-score-q4-ui・acct-*・workflow-yaml）140/140・static release pass/1210。CI に足した。
+- 独立レビュー（このときは無し）：下の行。Codex のレビューはまだ。本物の Gmail・QuickBooks・Supabase・iPhone は見ていない。「転送成功」は Gmail が受け取った意味（QuickBooks の登録は見ていない）。
 - 次：PR → Codex → #211〜#216 のあとにマージ → Moto さんが手順.md → ふだんの照合 1 件で確かめる（試しの invoice を本番の QuickBooks に送らない）。そのあと B-1（事務Crew の経理レビュー）・B-2（Payroll 別のガソリン代・立替経費）・A（グレード制度の一本化）。
+- 済：PR #217。**独立レビュー（Claude の別エージェント・作業を見ていない・`ffa9193` の前の head）：P2 2・P3 いくつか** → 直した（Claude 11/23・仕様の 8）。P2-1＝送っている途中・結果確認待ちで照合を取り消しても送られた → 「止めて」の印 `stop_requested_at`（送る直前の確かめで止める・結果と手放しで cancelled・回数を使わない・送り終わっていたら送信済みのまま）・台帳にまだ無い invoice は止めた行を入れて照合し直すまで積まない（SQL だけ・関数のコードは変えない＝1 ファイルの関数はそのまま）。P2-2＝複数枚の invoice の中身が変わったページ・5 回で止まった行に「QuickBooks に入れた」が出なかった → 出す（画面）。試験 invoice-qb-reconcile 13・ui 13・わざと壊す（足した 11 通り）。P3 は記録だけ（仕様の 8）。直したあとの独立レビューは無し。次：Codex のレビュー（#217 の最新の head）。
+- **Claude のルーティン（#217 7123823852・`d4d43c7`／7123895798・`ffa9193`）：P2 1＝`invoice_qb_doc_states`・`invoice_qb_unsent` が件数 × 全件の重さ（合成 3,000 件で約 25 秒／49 秒・本番の 8 秒の上限で読めなくなるおそれ）**・業務の確かめ 1（下）・記録のずれ。済（Claude 11/23）：見る invoice だけ合わせ方を求める `invoice_qb_merges_of`・台帳の索引 3 つ・未転送の一覧は照合の古い順に 200 件ずつ（`count`・`more`）・画面の「N 件だけ」（仕様の 9）。速さ（合成データ・PGlite・この作業の環境）：`doc_states`（200 件）62,190 → 1,110 ms・`unsent` 86,656 → 1,177 ms（本番は測っていない）。送ったあとに 4 枚目が足された invoice の試験を足した。試験 invoice-qb-reconcile 14・ui 13・わざと壊す（8 と 9 で足した 21 通り）すべて落ちる。確認の SQL は functions 126。直したあとの独立レビューは無し。次：Codex のレビュー（#217 の最新の head）。
+- Moto さんに確かめる（ルーティンの指摘）：照合を取り消すと、**反映のときに積まれた送信も**（その invoice が前に照合済みなら）止まり、照合し直すまで送られない（依頼の「照合を取り消した場合、未実行の転送は停止できるようにする」どおりだが、10/12 の「反映して名前を変えたら送る」からの変更）。
 
 ## 2026-11-23 v1209：Google の評価・口コミ（Places API（新））を押したときだけ・見られる店だけ・回数の上限（Moto さん 11/23 10:49 HST の依頼・Claude（Personal・Claude Code）・ブランチ `claude/google-places-1209`・#215（`d4cd923`）の上・SQL `20261215090000`・関数 google-reviews・アプリ 1209・本番未反映）
 

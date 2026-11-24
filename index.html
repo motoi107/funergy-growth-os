@@ -57949,9 +57949,10 @@ function invInPartsHtml(G){
   if (d.status==='review' && d.merge_base && canEdit) h += '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px"><button class="btn btn-secondary btn-sm"'+(B ? ' disabled' : '')+' onclick="invInUnmergeAsk()"><i class="ti ti-arrows-split"></i> '+t('まとめを外す','Take the merge back')+'</button>'
     + '<span class="ivx-note" style="margin:0">'+t('それぞれの原本を、まとめる前の要確認に戻します（反映する前だけ）','Each original goes back to review as it was before (only before posting)')+'</span></div>';
   if (d.status==='posted' && S6 && me) {
-    var why6 = String(S6.why || '').replace(/^cancelled_/, ''), hand6 = S6.state==='not_sent' && /^(part_already_sent|multi_file|before_since|not_new_intake)$/.test(why6);
+    var why6 = String(S6.why || '').replace(/^cancelled_/, ''), hand6 = (S6.state==='not_sent' && /^(part_already_sent|part_changed|multi_file|before_since|not_new_intake)$/.test(why6)) || (S6.state==='failed' && !!S6.stopped);   /* v1210（B-3・レビューの直し）：止まったまま・原本が変わったものも手で記録できる */
     h += '<div class="ivx-note">'+(S6.state==='sent' ? (S6.manual ? t('QuickBooks：すべてのページを記録済み','QuickBooks: every page is recorded') : t('QuickBooks：全ページを、ページの順に 1 つの PDF にして送りました','QuickBooks: all pages were sent as one PDF in page order'))
-        : 'QuickBooks：'+invInQb6Chip(S6)+' '+invInQbStateLine(S6)+(S6.state==='not_sent' && !hand6 ? t('。全ページを、ページの順に 1 つの PDF にして 1 通で送ります','. All pages are sent as one PDF in page order, in one mail') : ''))+'</div>'
+        : 'QuickBooks：'+invInQb6Chip(S6)+' '+invInQbStateLine(S6)+(S6.state==='not_sent' && !hand6 ? t('。全ページを、ページの順に 1 つの PDF にして 1 通で送ります','. All pages are sent as one PDF in page order, in one mail') : '')
+          +(S6.state==='failed' && S6.stopped ? t('。自動ではもう送りません。原本を確かめて QuickBooks に手で入れたら「QuickBooks に入れた」で記録してください','. It is not sent automatically any more. Check the originals, enter it in QuickBooks by hand and record it with “Entered in QuickBooks”') : ''))+'</div>'
       + (hand6 && canEdit ? '<button class="btn btn-secondary btn-sm" style="margin-top:4px"'+(B ? ' disabled' : '')+' onclick="invInQbManualAsk()"><i class="ti ti-check"></i> '+t('QuickBooks に入れた（記録する）','Entered in QuickBooks (record it)')+'</button>' : '');
   } else if (d.status==='posted' && me) {
     h += '<div class="ivx-note">'+t('QuickBooks：全ページを、ページの順に 1 つの PDF にして 1 通で送ります','QuickBooks: all pages are sent as one PDF in page order, in one mail')+'</div>';
@@ -59070,7 +59071,8 @@ async function invInReconcile(result){
     if ((r.rename || []).some(function(x){ return x && x.ok===false; })) { msg += t('。原本の名前を変えられませんでした（取込状況で確かめてください）','. Could not rename the original (check Intake status)'); kind = 'warning'; }
   } else {
     if (Number(r.qb_stopped) > 0) msg += t('。まだ送っていなかった ','. ')+Number(r.qb_stopped)+t(' 件を止めました（照合済みに戻すとまた送ります）',' unsent item(s) were stopped (reconcile again to send)');
-    if (Number(r.qb_busy) > 0) { msg += t('。','. ')+Number(r.qb_busy)+t(' 件はもう送っている途中なので止められません（取込状況の QuickBooks の欄で確かめてください）',' item(s) were already being sent and could not be stopped (check QuickBooks in Intake status)'); kind = 'warning'; }
+    if (Number(r.qb_kept_out) > 0) msg += t('。まだ台帳に積んでいなかったので、台帳に積まないようにしました（照合済みに戻すと送ります）','. It was not queued yet; it is now kept out of the ledger (reconcile again to send)');   /* v1210（B-3・レビューの直し） */
+    if (Number(r.qb_stop_requested || r.qb_busy) > 0) { msg += t('。','. ')+Number(r.qb_stop_requested || r.qb_busy)+t(' 件はもう送る途中です。まだ送っていなければ止めます。送り終わっていたら送信済みとして残ります（取下げ・訂正は QuickBooks で。取込状況の QuickBooks の欄で確かめてください）',' item(s) were already being sent: stopped if not sent yet; if already sent, kept as sent (withdraw or correct it in QuickBooks; check QuickBooks in Intake status)'); kind = 'warning'; }
   }
   showToast(msg, kind);
   _invIn.loaded = {}; if (result==='reconciled') { _invIn.docId = null; _invIn.doc = null; _invIn.edits = null; } invInRerender();
@@ -59315,7 +59317,7 @@ var INVIN_QB_WHY = {
   not_ready:['まだ反映済みではありません','Not posted yet'],
   rename_waiting:['名前を変える待ちです（変わったら台帳に積みます）','Waiting for the rename (queued after it)'],
   multi_file:['複数枚の invoice は、前の転送（ChatGPT）では送りません。QuickBooks に手で入れて記録してください','The forwarder before (ChatGPT) does not send invoices of several originals. Enter it in QuickBooks by hand and record it'],
-  part_changed:['ページが変わった途中です（そろったら台帳に積みます）','The pages are changing (queued once settled)'],
+  part_changed:['ページの原本の中身が、読んだときから変わっています。このままでは送りません（要確認で新しい中身を確かめるか、QuickBooks に手で入れたら記録してください）','The content of a page’s original changed after it was read; it is not sent as it is (check the new content in review, or enter it in QuickBooks by hand and record it)'],
   part_in_progress:['ほかのページの転送が終わるのを待っています','Waiting for another page to finish'],
   part_already_sent:['ページの一部をもう送っています。二重にしないため送りません（QuickBooks に手で入れて記録）','Part of the pages was already sent; not sent again to avoid a double (enter it by hand and record it)'],
   content_changed:['台帳に積んだあと原本の中身が変わったので送っていません','The original changed after queuing, so it was not sent'],
@@ -59342,11 +59344,13 @@ function invInQb6Chip(S){
 function invInQbStateLine(S){
   var e = escapeHtml, s = S && S.state, ext = (S && S.route || invInQbRoute())==='external';
   if (s==='queued') return ext ? t('前の転送（ChatGPT）が 1 時間ごとに送ります','The forwarder before (ChatGPT) sends it hourly') : t('台帳に積みました。すぐに送ります（Gmail がつながっていれば）','Queued; sent right away (when Gmail is connected)');
-  if (s==='sending') return t('送っているところです','Being sent');
+  if (s==='sending') return S.stop_requested ? t('送っているところで照合を取り消しました。まだ送っていなければ止めます（送り終わっていたら送信済みとして残ります）','The reconciliation was taken back while sending: stopped if not sent yet (if sent, kept as sent)') : t('送っているところです','Being sent');
   if (s==='sent') return (S.manual ? t('QuickBooks に手で入れたと記録 ','Recorded as entered by hand ') : ext ? t('前の転送（ChatGPT）が送信 ','Sent by the forwarder before (ChatGPT) ') : t('Gmail で送信 ','Sent by Gmail '))
-    + invInQbTime(S.sent_at) + (S.combined ? t('（ページの順に 1 つの PDF）',' (pages in order, one PDF)') : '');
+    + invInQbTime(S.sent_at) + (S.combined ? t('（ページの順に 1 つの PDF）',' (pages in order, one PDF)') : '')
+    + (S.stop_requested ? t('。照合を取り消す前に送り終わっていました（取下げ・訂正は QuickBooks で）','. It was sent before the reconciliation was taken back (withdraw or correct it in QuickBooks)') : '');
   if (s==='failed') return (S.stopped ? t('やり直し 5 回を使い切りました：','Used all 5 tries: ') : t('やり直し ','Try ')+Number(S.attempts||0)+' / 5'+(S.next_at ? t(' · 次 ',' · next ')+invInQbTime(S.next_at, false) : '')+'：')+e(invInQbErr(S.last_error));
-  if (s==='unknown') return e(invInQbErr(S.last_error))+t('。自動では送り直しません（Gmail の送信済みを調べてください）','. Not resent automatically (search the sent mail)');
+  if (s==='unknown') return e(invInQbErr(S.last_error))+t('。自動では送り直しません（Gmail の送信済みを調べてください）','. Not resent automatically (search the sent mail)')
+    + (S.stop_requested ? t('。照合を取り消しました：送っていないと確かめたら、送らずに止めます','. The reconciliation was taken back: once checked as not sent, it is stopped without sending') : '');
   if (_invIn.qbEnabled===false && !(S && S.why)) return e(invInQbWhy('qb_off'));
   return e(invInQbWhy(S && S.why));
 }
@@ -59413,6 +59417,8 @@ function invInQbUnsentCard(){
   if (U.error) return head + '</div><div class="ivx-note" style="margin-top:0;color:'+INVIN_COL.red+'">'+t('読めませんでした（','Could not read (')+e(U.error)+t('）。「更新」でもう一度読みます','). “Refresh” reads it again')+'</div></div>';
   var rows = U.rows || [];
   var h = head + '<span style="margin-left:auto;font-size:11px;font-weight:400;color:var(--muted)">'+t('照合した日 ','Reconciled on ')+invInDate(U.from)+t(' 〜',' or later')+' · '+Number(U.count || rows.length)+t(' 件','')+'</span></div>';
+  /* #217 のレビュー：サーバーは照合の古い順に limit（初めは 200）件だけ返し、count は全部の数 */
+  if (U.more || Number(U.count) > rows.length) h += '<div class="ivx-note" style="margin-top:0">'+t('照合の古い順に先頭の ','The oldest ')+rows.length+t(' 件を出しています（ほか ',' by reconciliation are shown (')+Math.max(0, Number(U.count) - rows.length)+t(' 件。先頭の分を片づけると出ます）',' more appear as the first ones are settled)')+'</div>';
   if (U.to_set===false) h += '<div class="ivx-note" style="margin-top:0;color:'+INVIN_COL.yel+'">'+t('QuickBooks の宛先がまだ決まっていません（設定の QuickBooks）','The QuickBooks address is not set (Settings › QuickBooks)')+'</div>';
   var item = function(r){
     var id = invInId(r.doc_id), hs = (r.history || []).slice().reverse();

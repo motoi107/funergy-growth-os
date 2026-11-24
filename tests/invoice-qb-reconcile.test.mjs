@@ -58,7 +58,7 @@ async function postedWhileOff(X, list) {
     out.push(r.id);
   }
   await X.settle();
-  assert.equal((await X.q('select count(*)::int n from invoice_qb_outbox'))[0].n, 0);
+  for (const id of out) assert.equal(await X.row(id), undefined, 'no ledger row for an invoice posted while the ledger is off');
   await qbSet(X, { enabled: true });
   return out;
 }
@@ -227,6 +227,20 @@ test('B-3 複数枚の invoice: 3 枚の原本はページの順に 1 つの PDF
     assert.deepEqual(waiting.map(w => w.drive_file_id).filter(x => ids.includes(x)), []);
     await X.worker(); await X.settle();
     assert.equal(X.qbSent().length, 1);
+    // A second invoice of three originals, posted too. Asked for one invoice, the page order is worked out for that invoice only
+    // (a page is not a head); asked for none, for all of them, the same as invoice_qb_merges().
+    const two = await threePages(X, 'MQ', 'M-66032');
+    const po2 = await X.api('tok-office', { action: 'post', doc_id: two.m.id, version: two.m.version, reason: '経理の確認（業者・invoice番号・金額・店舗）' });
+    assert.equal(po2.status, 200, JSON.stringify(po2.body));
+    await X.settle();
+    const fid = async d => (await X.q('select id from invoice_files where drive_file_id=$1', [d]))[0].id;
+    const [h1, h2, p12] = [await fid(ids[0]), await fid(two.ids[0]), await fid(ids[1])];
+    const of = async heads => (await X.q('select head_file, why from public.invoice_qb_merges_of($1::uuid[]) order by head_file', [heads])).map(r => r.head_file);
+    assert.deepEqual(await of([h1]), [h1]);
+    assert.deepEqual(await of([h2]), [h2]);
+    assert.deepEqual(await of([p12]), [], 'a page is not the head of an invoice');
+    assert.deepEqual(await of(null), [h1, h2].sort());
+    assert.deepEqual((await X.q('select head_file from public.invoice_qb_merges() order by head_file')).map(r => r.head_file), [h1, h2].sort());
   } finally { await X.pg.close(); }
 });
 
@@ -406,6 +420,14 @@ test('B-3-4 照合済みだが未転送: 理由が分かるもの（confirmed）
     assert.equal(X.qbSent().length, sentBefore, 'looking sends nothing');
     const by = Object.fromEntries(u.body.rows.map(r => [r.drive_file_id, r]));
     assert.deepEqual(Object.keys(by).sort(), [off, early, none, waits, gone].sort());
+    // Paged (#217 routine review): the oldest reconciliation first, at most `limit` rows; count is all of them, more says some were left out.
+    assert.equal(Number(u.body.count), 5); assert.equal(u.body.more, false); assert.equal(u.body.limit, 200);
+    const p2 = (await X.api('tok-office', { action: 'qb_unsent', from: '2026-01-01', limit: 2 })).body;
+    assert.equal(p2.rows.length, 2); assert.equal(Number(p2.count), 5); assert.equal(p2.more, true); assert.equal(p2.limit, 2);
+    assert.deepEqual(p2.rows.map(r => r.drive_file_id), u.body.rows.slice(0, 2).map(r => r.drive_file_id));
+    const sorted = u.body.rows.map(r => [r.recon_at, r.doc_id]);
+    assert.deepEqual(sorted, sorted.slice().sort((a, b) => (Date.parse(a[0]) - Date.parse(b[0])) || (a[1] < b[1] ? -1 : 1)), 'oldest reconciliation first');
+    for (const bad of [0, 9999, 'x']) assert.equal((await X.api('tok-office', { action: 'qb_unsent', from: '2026-01-01', limit: bad })).body.limit, 200, String(bad));
     // off is ready now (the ledger is on again): nothing in the ledger explains it → unconfirmed; the worker queues it as before.
     assert.equal(by[off].reason, 'not_in_ledger'); assert.equal(by[off].confirmed, false);
     assert.equal(by[early].reason, 'before_since'); assert.equal(by[early].confirmed, false);
@@ -478,8 +500,221 @@ test('B-3 複数枚の invoice のページが前に単独で送られていた 
   } finally { await X.pg.close(); }
 });
 
+// A posted invoice of three pages sent as one PDF, then a fourth page added (#217 routine review: the pages inside a PDF that
+// was sent are looked up one page at a time, by an index). The three are in QuickBooks already, inside that PDF: nothing is sent
+// again, a person records the fourth by hand, the screen and the list of 照合済みだが未転送 read the pages inside the sent PDF.
+test('B-3 送ったあとに 4 枚目が足された複数枚の invoice: 前の PDF のページは送らない（part_already_sent）・名前の変更待ち・送信中の PDF のページ・手での記録は 4 枚目だけ・未転送の一覧に出ない', async () => {
+  const X = await envR();
+  try {
+    const no = 'M-99041';
+    const { ids, m } = await threePages(X, 'M4', no);
+    const po = await X.api('tok-office', { action: 'post', doc_id: m.id, version: m.version, reason: '経理の確認（業者・invoice番号・金額・店舗）' });
+    assert.equal(po.status, 200, JSON.stringify(po.body));
+    await X.settle();
+    assert.equal(X.qbSent().length, 1);
+    const old = (await X.q(`select * from invoice_qb_outbox where parts is not null`))[0];
+    assert.equal(old.state, 'sent'); assert.equal(old.parts.length, 3);
+    // The fourth page arrives and is added to the posted invoice; one of the originals cannot be renamed at once.
+    X.fixtures.set('M4-P4', { readable: true, documents: [page(no, '2026-10-11', [S3L('06263', 'SHIRO MISO 12/500G', '1', '60.00', '60.00')], { pageNo: 4, of: 4 })] });
+    const p4id = X.drive.file('M4-P4.pdf', await realPdf('M4-P4', 400), 'U6', { created: '2026-10-06T19:09:00Z' });
+    await X.worker();
+    const [p4] = await docsOf(X, p4id);
+    let [mh] = await docsOf(X, ids[0]);
+    assert.equal(mh.status, 'posted'); assert.equal(p4.status, 'review');
+    X.drive.failUpdate = 1;
+    const mg = await X.api('tok-office', { action: 'merge', docs: [mh.id, p4.id], versions: vers(mh, p4), ack: ['total_mismatch'], reason: '4 枚目' });
+    assert.equal(mg.status, 200, JSON.stringify(mg.body));
+    assert.equal(mg.body.posted, true);
+    X.drive.failUpdate = 0;
+    const headFile = (await X.q('select id from invoice_files where drive_file_id=$1', [ids[0]]))[0].id;
+    const why = async () => (await X.q('select why from public.invoice_qb_merges_of($1::uuid[])', [[headFile]]))[0].why;
+    // A page still waits for its name: the invoice of four pages waits too (nothing is sent with an old name).
+    assert.equal(await why(), 'rename_waiting');
+    await X.settle(); assert.equal(X.qbSent().length, 1);
+    await X.q(`update invoice_files set rename_next_at=now() where rename_state='error'`);
+    await X.worker(); await X.settle();
+    // Named: three of the four pages went inside the PDF sent before. Not sent again as four (the page after a person records it).
+    assert.equal(await why(), 'part_already_sent');
+    assert.equal(X.qbSent().length, 1, 'the three pages inside the PDF sent before are not sent again');
+    // While that PDF's result were not known (made up here), the invoice of four would wait for it, not go.
+    await X.q(`update invoice_qb_outbox set state='unknown' where id=$1`, [old.id]);
+    assert.equal(await why(), 'part_in_progress');
+    await X.q(`update invoice_qb_outbox set state='sent' where id=$1`, [old.id]);
+    assert.equal(await why(), 'part_already_sent');
+    // 照合済み: the list of 照合済みだが未転送 has the invoice (its fourth page is not in QuickBooks); looking sends nothing.
+    [mh] = await docsOf(X, ids[0]);
+    const rc = await recon(X, 'tok-office', ids[0]);
+    assert.equal(rc.status, 200, JSON.stringify(rc.body));
+    await X.worker(); await X.settle();
+    assert.equal(X.qbSent().length, 1);
+    let u = (await X.api('tok-office', { action: 'qb_unsent', from: '2026-01-01' })).body;
+    assert.deepEqual(u.rows.map(r => r.drive_file_id), [ids[0]]);
+    let [s] = await states(X, 'tok-crew', [ids[0]]);
+    assert.equal(s.state, 'not_sent'); assert.equal(s.why, 'part_already_sent'); assert.equal(s.pages, 4);
+    // Entered by hand: only the fourth page is recorded (the three are inside the PDF sent before).
+    [mh] = await docsOf(X, ids[0]);
+    const man = await X.api('tok-crew', { action: 'qb_manual', doc_id: mh.id, version: mh.version, note: '4 枚目を手で入れた' });
+    assert.equal(man.status, 200, JSON.stringify(man.body)); assert.equal(man.body.added, 1);
+    const manual = await X.q(`select o.state, o.route, f.drive_file_id from invoice_qb_outbox o join invoice_files f on f.id=o.file_id where o.route='manual'`);
+    assert.deepEqual(manual.map(o => [o.drive_file_id, o.state]), [[p4id, 'sent']]);
+    // Every page is in QuickBooks now: the invoice says sent, it leaves the list, and nothing more is sent.
+    [s] = await states(X, 'tok-crew', [ids[0]]);
+    assert.equal(s.state, 'sent', JSON.stringify(s));
+    u = (await X.api('tok-office', { action: 'qb_unsent', from: '2026-01-01' })).body;
+    assert.deepEqual(u.rows.map(r => r.drive_file_id), []);
+    assert.equal(Number(u.count), 0);
+    await X.worker(); await X.settle(); assert.equal(X.qbSent().length, 1);
+  } finally { await X.pg.close(); }
+});
+
 // The folder Moto runs: the SQL is the repository's migration, the check SQL the repository's postcheck, the function the bundle of
 // today's sources (the PDF joiner pdf-lib is the one import Supabase reads); the steps in order (SQL → check → function → app → one ordinary reconciliation).
+// 照合取消 while a send is under way (the independent review of B-3, P2-1): the send is asked to stop (stop_requested_at). One that
+// has not gone stops at its next check and is set aside (cancelled 'recon_cancelled', not a try); one that went stays 送信済み.
+test('B-3 照合取消のときに送っている途中: まだ送っていなければ次の確かめで止まる（送らない・回数に数えない）・照合し直すと 1 回送られる', async () => {
+  const X = await envR();
+  try {
+    await X.q('update invoice_stores set auto_post=false');
+    const [a] = await postedWhileOff(X, [['RS-1', '8701']]);
+    // The accountant takes it back while the sender is between the Drive download and its last check (as in the review).
+    let un = null;
+    X.hook('invoice_qb_send_check', async () => { un = await recon(X, 'tok-office', a, 'unreconciled', ''); });
+    const r = await recon(X, 'tok-crew', a);
+    assert.equal(r.status, 200); assert.deepEqual(r.body.qb, { queued: 1, sending: true });
+    await X.settle();
+    assert.equal(un.status, 200, JSON.stringify(un.body));
+    assert.equal(un.body.qb_stopped, 0); assert.equal(un.body.qb_busy, 1); assert.equal(un.body.qb_stop_requested, 1); assert.equal(un.body.qb_kept_out, 0);
+    assert.equal(X.sentFor(a), 0, 'an invoice whose reconciliation was taken back is not sent');
+    let o = await X.row(a);
+    assert.equal(o.state, 'cancelled'); assert.equal(o.last_error, 'recon_cancelled'); assert.equal(o.attempts, 0, 'the stop is not a try');
+    assert.ok(o.stop_requested_at);
+    const ev = await X.q(`select data from invoice_events where kind='qb_cancelled' and file_id=$1 order by id`, [o.file_id]);
+    assert.deepEqual(ev.map(e => e.data.why), ['recon_cancelled', 'recon_cancelled']);
+    assert.equal(ev[0].data.stop_requested, 1);
+    const [s] = await states(X, 'tok-crew', [a]);
+    assert.equal(s.state, 'not_sent'); assert.equal(s.why, 'recon_cancelled'); assert.equal(s.can_retry, false);
+    // Later workers do not send it (as in the review: 15 minutes later, Gmail good).
+    await X.worker(); await X.worker(); await X.settle();
+    assert.equal(X.sentFor(a), 0);
+    // Reconciled again: the same row goes on and is sent once; the stop is cleared.
+    const re = await recon(X, 'tok-gm', a);
+    assert.equal(re.status, 200); assert.deepEqual(re.body.qb, { queued: 1, sending: true });
+    await X.settle();
+    o = await X.row(a);
+    assert.equal(o.state, 'sent'); assert.equal(o.stop_requested_at, null); assert.equal(X.sentFor(a), 1);
+    assert.equal((await X.q(`select count(*)::int n from invoice_qb_outbox where file_id=$1`, [o.file_id]))[0].n, 1, 'the same row');
+    // Reconciled again while the send is under way: the send goes on (the stop asked before is cleared).
+    const [b] = await postedWhileOff(X, [['RS-2', '8702']]);
+    X.hook('invoice_qb_send_check', async () => {
+      await recon(X, 'tok-office', b, 'unreconciled', '');
+      assert.ok((await X.row(b)).stop_requested_at);
+      await recon(X, 'tok-office', b);
+    });
+    assert.equal((await recon(X, 'tok-crew', b)).status, 200);
+    await X.settle();
+    o = await X.row(b);
+    assert.equal(o.state, 'sent'); assert.equal(o.stop_requested_at, null); assert.equal(X.sentFor(b), 1);
+  } finally { await X.pg.close(); }
+});
+
+test('B-3 照合取消のときにもう送っていた・結果確認待ち: 送信済みは事実として残る・人が「送っていない」と確かめると止まる・放した予約も止まる', async () => {
+  const X = await envR();
+  try {
+    await X.q('update invoice_stores set auto_post=false');
+    const [a, b] = await postedWhileOff(X, [['RT-1', '8801'], ['RT-2', '8802']]);
+    // a: Gmail took the mail already (its answer is being recorded) when the reconciliation is taken back → 送信済み, the stop is shown.
+    let un = null;
+    X.hook('invoice_qb_result', async () => { assert.equal((await X.row(a)).state, 'sending'); un = await recon(X, 'tok-office', a, 'unreconciled', ''); });
+    assert.equal((await recon(X, 'tok-crew', a)).status, 200);
+    await X.settle();
+    assert.equal(un.body.qb_stop_requested, 1); assert.equal(un.body.qb_stopped, 0);
+    let o = await X.row(a);
+    assert.equal(o.state, 'sent'); assert.equal(X.sentFor(a), 1, 'what went is recorded as sent, never undone');
+    const [sa] = await states(X, 'tok-crew', [a]);
+    assert.equal(sa.state, 'sent'); assert.equal(sa.stop_requested, true);
+    // A second take-back changes nothing of a sent row.
+    assert.equal((await recon(X, 'tok-office', a)).status, 200);
+    const un2 = await recon(X, 'tok-office', a, 'unreconciled', '');
+    assert.equal(un2.body.qb_stopped, 0); assert.equal(un2.body.qb_stop_requested, 0); assert.equal(un2.body.qb_kept_out, 0);
+    assert.equal((await X.row(a)).state, 'sent');
+    // b: the send's answer never came (unknown), then taken back. A person looks in the sent mail: not sent → set aside, not waited again.
+    X.G.sendMode = 'timeout';
+    assert.equal((await recon(X, 'tok-crew', b)).status, 200);
+    await X.settle();
+    X.G.sendMode = 'ok';
+    o = await X.row(b); assert.equal(o.state, 'unknown');
+    assert.equal((await recon(X, 'tok-office', b, 'unreconciled', '')).body.qb_stop_requested, 1);
+    assert.equal((await X.row(b)).state, 'unknown', 'an unknown outcome is not decided by taking it back');
+    const rs = await X.api('tok-office', { action: 'qb_resolve', id: o.id, state: 'pending', note: '送信済みに無い' });
+    assert.equal(rs.status, 200, JSON.stringify(rs.body));
+    o = await X.row(b);
+    assert.equal(o.state, 'cancelled'); assert.equal(o.last_error, 'recon_cancelled');
+    await X.worker(); await X.settle();
+    assert.equal(X.sentFor(b), 0);
+    // c: a reserved try let go without a try (the connection, the route) after the take-back: set aside, not waited again.
+    // (posted now: a posted invoice goes to the ledger by itself, so the worker above would have sent it)
+    const [c] = await postedWhileOff(X, [['RT-3', '8803']]);
+    await gmail(X, 'expired');
+    assert.deepEqual((await recon(X, 'tok-crew', c)).body.qb, { queued: 1, sending: false, waiting: 'gmail' });
+    o = await X.row(c); assert.equal(o.state, 'pending');
+    const res = await X.db.rpc('invoice_qb_reserve', { owner: 's-test' });
+    assert.equal(res.id, o.id);
+    assert.equal((await recon(X, 'tok-office', c, 'unreconciled', '')).body.qb_stop_requested, 1);
+    assert.deepEqual(await X.db.rpc('invoice_qb_release', { id: o.id, owner: 's-test', error: 'gmail_not_ok' }), { ok: true });
+    o = await X.row(c);
+    assert.equal(o.state, 'cancelled'); assert.equal(o.last_error, 'recon_cancelled'); assert.equal(o.attempts, 0);
+    await gmail(X, 'ok'); await X.worker(); await X.settle();
+    assert.equal(X.sentFor(c), 0);
+  } finally { await X.pg.close(); }
+});
+
+test('B-3 照合取消のときに台帳にまだ無い（台帳 OFF・名前の変更待ち）: その invoice を台帳の外に置く・照合し直すと 1 回送られる・旧経路も同じ', async () => {
+  const X = await envR();
+  try {
+    await X.q('update invoice_stores set auto_post=false');
+    const [a] = await postedWhileOff(X, [['RK-1', '8901']]);
+    // Reconciled and taken back while the ledger is off: nothing in the ledger, the take-back keeps the invoice out.
+    await qbSet(X, { enabled: false });
+    assert.equal((await recon(X, 'tok-office', a)).body.qb, null);
+    const un = await recon(X, 'tok-office', a, 'unreconciled', '');
+    assert.equal(un.body.qb_kept_out, 1); assert.equal(un.body.qb_stopped, 0);
+    let o = await X.row(a);
+    assert.equal(o.state, 'cancelled'); assert.equal(o.last_error, 'recon_cancelled'); assert.equal(o.attempts, 0);
+    // The ledger on: the posted invoice is not queued (as it would be when it was never reconciled), and enqueueing asks nothing new.
+    await qbSet(X, { enabled: true });
+    await X.worker(); await X.settle();
+    assert.equal(X.sentFor(a), 0); assert.equal((await X.row(a)).state, 'cancelled');
+    assert.equal((await X.db.rpc('invoice_qb_enqueue', { file_id: o.file_id })).queued, false);
+    // A second take-back adds nothing.
+    assert.equal((await recon(X, 'tok-office', a, 'discrepancy', '金額が違う')).body.qb_kept_out, 0);
+    // Reconciled again: the same row is sent once.
+    assert.equal((await recon(X, 'tok-office', a)).status, 200);
+    await X.settle(); await X.worker(); await X.settle();
+    o = await X.row(a);
+    assert.equal(o.state, 'sent'); assert.equal(X.sentFor(a), 1);
+    assert.equal((await X.q(`select count(*)::int n from invoice_qb_outbox where file_id=$1`, [o.file_id]))[0].n, 1);
+    // The old route (external): a row it reserved and is sending is asked to stop; its report of a failure sets it aside, and a
+    // reconciliation again gives the row back to the route of now.
+    await qbSet(X, { route: 'external' });
+    await X.q(`update invoice_settings set value=jsonb_build_object('key', repeat('k', 40), 'enabled', true) where key='qb_external'`);
+    const ext = (action, body) => X.h(new Request('https://fn.test', { method: 'POST', headers: { 'x-invoice-qb-key': 'k'.repeat(40) }, body: JSON.stringify({ action, ...body }) }));
+    const [e] = await postedWhileOff(X, [['RK-2', '8902']]);
+    await qbSet(X, { route: 'external' });
+    assert.equal((await recon(X, 'tok-crew', e)).status, 200);
+    o = await X.row(e); assert.equal(o.route, 'external'); assert.equal(o.state, 'pending');
+    assert.equal((await ext('qb_external_reserve', { id: o.id })).status, 200);
+    assert.equal((await recon(X, 'tok-office', e, 'unreconciled', '')).body.qb_stop_requested, 1);
+    const er = await ext('qb_external_result', { id: o.id, state: 'error', error: 'smtp' });
+    assert.equal(er.status, 200);
+    o = await X.row(e); assert.equal(o.state, 'cancelled'); assert.equal(o.last_error, 'recon_cancelled');
+    const lst = await (await ext('qb_external_list', {})).json();
+    assert.ok(!lst.rows.some(x => x.id === o.id), 'the forwarder does not see it');
+    assert.equal((await recon(X, 'tok-office', e)).status, 200);
+    o = await X.row(e); assert.equal(o.state, 'pending'); assert.equal(o.route, 'external'); assert.equal(o.stop_requested_at, null);
+    assert.equal(X.sentFor(e), 0, 'this system never sends a row of the old route');
+  } finally { await X.pg.close(); }
+});
+
 test('deploy/invoice-qb-reconcile-v1210: copies of the repository files; the one-file function is the bundle of today\'s sources; the steps in order',
   { skip: process.env.INVOICE_MUTATION_RUN ? 'a mutation run checks behaviour only' : false }, () => {
   const rd = f => fs.readFileSync(new URL('../' + f, import.meta.url));
@@ -504,7 +739,7 @@ test('deploy/invoice-qb-reconcile-v1210: copies of the repository files; the one
   const at = k => { const i = steps.indexOf(k); assert.ok(i >= 0, k); return i; };
   assert.ok(at('1. **Supabase → SQL Editor**') < at('2. `2_確認のSQL') && at('2. `2_確認のSQL') < at('3. **Edge Functions')
     && at('3. **Edge Functions') < at('4. アプリ v1210 をマージ') && at('4. アプリ v1210 をマージ') < at('5. 確かめる'));
-  for (const k of ['functions` が 125', 'qb_reconcile` が true', '20261103090000', 'npm:pdf-lib@1.17.1', 'deploy/invoice-price-compare-v1123/3_関数_invoice-intake_index.ts',
+  for (const k of ['functions` が 126', 'qb_reconcile` が true', '20261103090000', 'npm:pdf-lib@1.17.1', 'deploy/invoice-price-compare-v1123/3_関数_invoice-intake_index.ts',
     '試しの invoice を作って本番の QuickBooks に送ることはしないでください', '一覧を開くだけでは何も送りません', 'ChatGPT 側の定期タスクは変えません'])
     assert.ok(steps.includes(k), k);
   assert.ok(!/@funergygroup\.com/i.test(steps + bundle), 'no real address in the repository');
