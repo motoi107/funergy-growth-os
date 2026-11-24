@@ -2,15 +2,22 @@
 
 ## 2026-11-23 統合実装プロンプト（A・B-1・B-2・B-3）
 
+0. 済（Claude（Team）11/24）：push できない（git の proxy が 403）ので、Moto さん 11/24「push しないで進める」＝ブランチごとの引き継ぎ一式を Personal で GitHub に。前の引き継ぎ（Moto さん 11/24 04:39 HST）：次は会社の Team のアカウントの新しいセッションで。最初に `claude/payroll-expense-1212` を取り、共有記録の先頭（11/24 の節・#216 の直しの設計）を読み、push できるかを確かめる。順番：#216 → #217 → #218 → 2b → B-2。
 1. 済（Claude・ブランチ `claude/acct-payroll-1210`）：B-3＝照合済みの invoice を QuickBooks へ（v1210・SQL `20261216090000`・関数 invoice-intake・`docs/QB_RECONCILE_V1210_JA.md`・`deploy/invoice-qb-reconcile-v1210/`）。済：PR #217。
 1b. 済（Claude 11/23）：PR #217・独立レビューの P2 2（送っている途中の照合取消で送られた・複数枚の invoice の手での記録が出ない）を直した（仕様の 8）。
 1c. 済（Claude 11/23）：ルーティン（7123823852・7123895798）の P2（状態と未転送の一覧の重さ）を直した（仕様の 9・確認の SQL は functions 126）。次：Codex のレビュー（#217 の最新の head）→ #211〜#216 のあとにマージ（Moto さん）→ 手順.md。
-1d. Moto さんに確かめる：照合の取り消しで、反映のときに積まれた送信も止まる（照合し直すまで送らない）でよいか。
+1d. 済（Moto さん 11/24「止める（今の #217 のまま）」）：照合の取り消しで、反映のときに積まれた送信も止まる（照合し直すまで送らない）。
 1e. 済（Claude（Team）11/24）：#217 の Codex の再レビュー（7134071689）＝#216 の P2 の直しを取り込み（`claude/google-places-1209` をマージ）・P3（前の外部の転送が送っている途中の行は止めの印で止まらないのに「まだ送っていなければ止めます」と出る）を直した（仕様の 10・SQL `invoice_reconcile` が `qb_stop_external` を分ける・画面の言葉）。push はできないので引き継ぎ一式で。次：Personal で push → Codex の再レビュー。
 2. 済（Claude・ブランチ `claude/acct-view-1211`・#217 の上）：B-1 の申請と休暇＝v1211（SQL `20261217090000`・`wr_actor` が確かめた PIN の事務Crew を事務Crew として返す・休暇は全店を見るだけ・`docs/ACCT_VIEW_V1211_JA.md`・`deploy/acct-view-v1211/`）。試験 11/11・6/6。次：PR → Codex → #217 のあとにマージ → 手順.md（GM・CEO が PIN の事務Crew を「事務Crew と確かめる」）。
-2b. 残り（B-1）：経理レビュー › 書類（Invoice取込・照合・QB の状態）は PIN だけの事務Crew では開けない（メールのアカウントが要る）→ Moto さんに確かめる（事務Crew のアカウントを作るか、PIN でも開けるようにするか）。出力は B-2 で。
+2b. 済（Moto さん 11/24「GMやCEOの様にメールで登録（ログインはPINでも入れる様に）」）：B-1 の書類（Invoice取込・照合・QB の状態）は、事務Crew にもメールのアカウント（manager_auth・役割 office_crew・社員 ID）を作って開く。ふだんのログインは PIN のまま（v1063 の「この端末で覚える」で端末ごとに最初の 1 回だけメール）。次（Claude）：作る手順と SQL のひな形（名前・メールはリポジトリに書かない）。出力は B-2 で。
+2c. 済（Moto さん 11/24「メールの事務Crewと全く同じ」）：確かめた PIN の事務Crew はメールの事務Crew と全く同じ（全店の Tip と期間の確定・変更の記録・グレード履歴・全店の通知・生年月日のあるなし・カードの照合・本部の Career Score も）。次（Claude）：Codex の再レビュー（#218 7134072683）の指摘＝仕様と migration のコメントの誤り（「secure-state は manager_auth だけ」）を直す・広がる範囲を手順.md と記録に・取り消しは最大 60 秒遅れる・確かめる前と後・取り消し・期限・退職の試験。
 2d. 済（Claude（Team）11/24）：#218 の Codex の再レビュー（7134072683）の P2＝確かめた PIN の事務Crew に secure-state の office_crew の範囲も広がる（Moto さん 11/24「メールの事務Crewと全く同じ」で認めた）→ 仕様・migration のコメントの誤り（「secure-state は manager_auth だけ」）を直し、広がる範囲と 60 秒を手順.md と仕様の 4・8 に、試験 `tests/acct-view-ss-v1211.test.mjs`（確かめる前と後・外す・PIN の期限・退職・直す前の SQL）を足した。#217 の直しを取り込んだ。次：Personal で push → Codex の再レビュー。
-3. 次（Claude）：B-2（Payroll 別のガソリン代・立替経費のページとシート・経理出力の中で事務Crew も開ける部分・UI 案から）→ A（Q4 のグレード制度・キャリア育成の一本化・UI 案から）→ 最後に 4 つの節の報告（C）。
+2e. 済（Claude（Team）11/24）：2b の手順と SQL のひな形（`deploy/office-crew-account-2b/`・仕様の 9・試験 `tests/office-crew-account-2b.test.mjs`）。次（Moto さん）：手順.md のとおり 1 人ずつ（Authentication → Add user → ② → 本人の端末で 1 回メール認証 → ③）。名前・メールはリポジトリに書かない。
+3. 済（Claude 11/23）：B-2 の UI案100（https://claude.ai/artifact/FUDQkc4KVNHwwQidoRVNi2 ・6 枚）。済（Moto さん 11/24 04:15 HST）：答え 1 B（期間は自動）・2 A（1〜15 日は 22 日・16 日〜末日は翌月 7 日）・3 B（前の支払済は支払日から）・4 A（支給済みは期間ごとに 1 回）・5 A（経理出力の区画・CEO／GM のまとめてのシート・経理と事務Crew の単独の Excel）・6 はい・7 A（CEO・GM・経理・事務Crew）。済（Claude 11/24）：仕様と引き継ぎ `docs/PAYROLL_EXPENSE_V1212_JA.md`（ブランチ `claude/payroll-expense-1212`・#218 の上・文書だけ）。
+3b. 次（Claude・次のチャット）：B-2 を実装（共通 DB の表と関数・アプリ・Excel・合成データの試験・入れる一式）→ PR（#218 の上）→ Codex。そのあと A（Q4 のグレード制度・キャリア育成の一本化・UI案101 から）→ 最後に 4 つの節の報告（C）。
+3c. 済（Moto さん 11/24）：22 日・7 日が土日なら前の金曜・平日の祝日なら前の営業日（祝日は設定で変えられる）／1 B の読み方「はい」／3 B の読み方「はい」。
+3d. 作業の順（Claude・会社の Team のアカウントで続ける・11/24）：#216 の Codex（7134070355）の P2（日をまたいだ失敗の答えで再取得のボタンが翌日まで消える）→ #217 の P3 → #218 の記録と試験 → 2b の手順 → B-2（v1212）。
+3e. 済（Claude（Team）11/24）：B-2 を実装（v1212・SQL `20261218090000`・新しい関数 payroll-expense・アプリ 1212・`deploy/payroll-expense-v1212/`・仕様の 8〜10）。push はできないので引き継ぎ一式で。次：Personal で push → PR（#218 の上）→ Codex → Moto さんが手順.md。そのあと A（Q4 のグレード制度・キャリア育成の一本化・UI案101 から）→ C（4 つの節の報告）。
 
 ## 2026-11-23 Google の評価・口コミ（Places API（新）・v1209）
 
