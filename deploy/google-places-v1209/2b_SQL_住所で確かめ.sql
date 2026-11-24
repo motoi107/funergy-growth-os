@@ -65,9 +65,10 @@ update public.gr_settings set places_store_day_max = 1 where id = 1 and places_s
 -- ---------------------------------------------------------------- 関数
 -- 文字を比べる形に（小文字・英数字とかな・漢字だけ）。住所は語の区切りを残す
 --   ハワイ語の ʻokina（ʻ ‘ ’ ' ` ʼ）は消し、カハコー（ā ē ī ō ū）は a e i o u に（Google は「Piʻikoi」と返すことがある）
+--   文字と長音記号が別々の形（a ＋ 重ねる長音記号 U+0304）も、その記号を消して同じにする
 create or replace function public.gr_fold(t text) returns text
 language sql immutable security invoker set search_path = public, pg_temp as $$
-  select translate(lower(coalesce(t, '')), 'āēīōūĀĒĪŌŪʻʼ‘’''`', 'aeiouaeiou')
+  select translate(lower(coalesce(t, '')), 'āēīōūĀĒĪŌŪʻʼ‘’''`̄', 'aeiouaeiou')
 $$;
 create or replace function public.gr_norm_addr(t text) returns text
 language sql immutable security invoker set search_path = public, pg_temp as $$

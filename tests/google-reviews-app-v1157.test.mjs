@@ -620,6 +620,29 @@ test('v1209 (独立レビューの P3): a Google failure after the call was coun
   assert.match(h, /Google が断りました/);
   assert.match(h, /この失敗も今日のこの店の 1 回に数えました。太平洋時間の 0 時/);
   assert.ok(!/grLoadPlaces\('S2'\)/.test(h), 'no button that can only hit the cap');
+  // #216 の Codex の P2：開いたまま太平洋時間の日が変わったら、上限の失敗を消して「見る」をまた出す（取れた口コミとは別）
+  const pac = ms => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Los_Angeles', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(ms));
+  const today = pac(Date.now()), yesterday = pac(Date.now() - 86400000);
+  assert.equal(gm.S().now.S2.pd, today, 'the Pacific day of the failure is kept');
+  gm.ctx.grPurgeNow();
+  assert.ok(gm.S().now.S2 && gm.S().now.S2.st === 'err', 'the same day: still used up');
+  gm.S().now.S2.pd = yesterday;
+  gm.ctx.grPurgeNow();
+  assert.equal(gm.S().now.S2, undefined, 'a new Pacific day: the used-up failure is gone');
+  assert.match(gm.ctx.grPlacesHtml('S2'), /grLoadPlaces\('S2'\)/, 'the button is back without leaving the page');
+  // 回数の上限（places_cap）：日の上限は日が変わったら・月の上限は月が変わったら消す
+  const lastMonth = pac(Date.now() - 32 * 86400000);
+  const cap = (c, pd) => { gm.S().now.S2 = { st: 'err', at: Date.now(), pd, data: null, err: 'places_cap', extra: { cap: c, max: 1 }, visit: gm.S().visit }; };
+  cap('store', yesterday); assert.match(gm.ctx.grPlacesHtml('S2'), /grLoadPlaces\('S2'\)/, 'store cap, a new day');
+  cap('store', today); assert.ok(!/grLoadPlaces\('S2'\)/.test(gm.ctx.grPlacesHtml('S2')), 'store cap, the same day');
+  if (today.slice(0, 7) === yesterday.slice(0, 7)) {
+    cap('month', yesterday); assert.ok(!/grLoadPlaces\('S2'\)/.test(gm.ctx.grPlacesHtml('S2')), 'month cap, a new day in the same month');
+  }
+  cap('month', lastMonth); assert.match(gm.ctx.grPlacesHtml('S2'), /grLoadPlaces\('S2'\)/, 'month cap, a new month');
+  // 上限ではない失敗（もう一度押せるもの）は消さない
+  gm.S().now.S2 = { st: 'err', at: Date.now(), pd: yesterday, data: null, err: 'places_failed', extra: null, visit: gm.S().visit };
+  gm.ctx.grPurgeNow();
+  assert.ok(gm.S().now.S2 && gm.S().now.S2.st === 'err', 'other failures are not cleared by the day');
   // 店の上限が 3 回なら（2 回目のあと残り 1）、数えたと出してもう一度のボタンも出す
   await s.pg.exec('reset role');
   await s.pg.exec('update public.gr_settings set places_store_day_max = 3');

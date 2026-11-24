@@ -550,6 +550,7 @@ test('the address hint check: real-store hints match a Google-style address and 
   assert.equal((await conf('F04-P', 'Totoya', '436 Pi‘ikoi St, Honolulu, HI 96814, USA')).how, 'address', 'left quote as okina');
   assert.equal((await conf('F04-A', 'Totoya ʻAiea', '99-115 ʻAiea Heights Dr, ʻAiea, HI 96701, USA')).how, 'address', 'okina at the start');
   assert.equal((await s.sqlq(`select public.gr_norm_addr('Kalākaua Ave') v`))[0].v, ' kalakaua ave ', 'kahakō is folded');
+  assert.equal((await s.sqlq(`select public.gr_norm_addr('Kala\u0304kaua Ave') v`))[0].v, ' kalakaua ave ', 'a + combining macron folds the same (#216 のルーティンの P3)');
   // 同じ建物のほかの店の名前も入った Google の店（2 つの店を 1 つにした店など）は自動で決めない
   const both = await conf('F02', 'ToriTon & Tenkichi', '2334 S King St, Honolulu, HI 96826, USA');
   assert.equal(both.need, 'manual'); assert.equal(both.reason, 'shared');
@@ -573,6 +574,17 @@ test('status: only GM・CEO get the per-store result of the last run; others get
   assert.deepEqual(Object.keys(am.run).sort(), ['at', 'kind', 'ok']);
   assert.equal(am.run.ok, false);
   assert.ok(!JSON.stringify(am).includes('bp_failed'));
+  // 取り込み全体が失敗した記録（店ごとの結果が無い）：GM・CEO 以外にも「取れました」と出さない（#216 のルーティンの P3）
+  await s.sqlq(`insert into public.gr_runs (kind, ok, info) values ('daily', false, '{"error":"bp_token"}'::jsonb)`);
+  for (const who of ['E8', 'E5']) {
+    const r = await s.ok(who, { action: 'status' });
+    assert.deepEqual(Object.keys(r.run).sort(), ['at', 'kind', 'ok'], who);
+    assert.equal(r.run.ok, false, who + ': a run that failed as a whole is not “read”');
+    assert.ok(!JSON.stringify(r).includes('bp_token'), who + ': the reason is not shown');
+  }
+  // 全体が取れた記録（店ごとの結果が無い形でも ok:true）は今までどおり
+  await s.sqlq(`insert into public.gr_runs (kind, ok, info) values ('daily', true, '{}'::jsonb)`);
+  assert.equal((await s.ok('E8', { action: 'status' })).run.ok, true);
 });
 
 test('only a missing function or table means “SQL not installed”; any other database error is a plain server error and nothing is logged about it', async () => {
@@ -589,6 +601,11 @@ test('only a missing function or table means “SQL not installed”; any other 
     };
     assert.deepEqual(await run(new Error('function public.gr_kpi(jsonb) does not exist')), [503, 'gr_missing']);
     assert.deepEqual(await run(new Error('relation "public.gr_places" does not exist')), [503, 'gr_missing']);
+    // 名前つきの引数（p => jsonb）のときも「SQL がまだ」（#216 のルーティンの P3：前は空白で止まって 500 だった）
+    assert.deepEqual(await run(new Error('function public.gr_places_take(p => jsonb) does not exist')), [503, 'gr_missing']);
+    assert.deepEqual(await run(new Error('function gr_kpi() does not exist')), [503, 'gr_missing']);
+    // gr_ を含む別のテーブルの「無い」も同じ（どれも Google の口コミの SQL のもの）。中身の文の途中に gr_ があるだけなら違う
+    assert.deepEqual(await run(new Error('column "gr_x" of relation "employees" does not exist')), [500, 'server_error']);
     assert.deepEqual(await run(Object.assign(new Error('Could not find the function public.gr_kpi(p) in the schema cache'), { status: 404 })), [503, 'gr_missing']);
     // 前は名前に gr_ があるだけで「SQL がまだ」と出していた（独立レビューの P3）
     assert.deepEqual(await run(new Error('duplicate key value violates unique constraint "gr_places_pkey"')), [500, 'server_error']);
