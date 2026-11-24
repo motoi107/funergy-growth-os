@@ -20,7 +20,7 @@ const FILES = ['invoice', 'db/invoice-intake.sql', 'db/invoice-intake-precheck.s
   'supabase/migrations/20261029100000_invoice_purchase_posted.sql', 'db/invoice-purchase-posted-revert.sql', 'db/invoice-purchase-posted-compare.sql',
   'supabase/migrations/20261101100000_invoice_vendor_seed_skip_deleted.sql',
   'supabase/migrations/20261103090000_invoice_price_compare.sql', 'tests/invoice-price-compare.test.mjs', 'tests/purchase-price-ui.test.mjs',
-  'supabase/migrations/20261216090000_invoice_qb_reconcile.sql', 'tests/invoice-qb-reconcile.test.mjs'];
+  'supabase/migrations/20261216090000_invoice_qb_reconcile.sql', 'tests/invoice-qb-reconcile.test.mjs', 'tests/invoice-qb-reconcile-ui.test.mjs'];
 
 function run(mutations, testFile) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'inv-mut-'));
@@ -50,7 +50,21 @@ const LK = 'tests/invoice-item-link.test.mjs', LU = 'tests/invoice-item-link-ui.
 const QG = 'tests/invoice-qb-gmail.test.mjs', QU = 'tests/invoice-qb-gmail-ui.test.mjs';   // QuickBooks からすぐ（Moto 2026-10-18・UI案56）
 const PC = 'tests/invoice-price-compare.test.mjs', PP = 'tests/purchase-price-ui.test.mjs';   // 仕入れの単価を比べる（10/30 の依頼 ②）
 const RC = 'tests/invoice-qb-reconcile.test.mjs';   // 照合済み → QuickBooks（Moto 2026-11-23・B-3）
+const RU = 'tests/invoice-qb-reconcile-ui.test.mjs';   // その画面（照合待ちの表・6 つの言葉・未転送の一覧）
 const CASES = [
+  // B-3 の画面（照合待ちの表・6 つの言葉・もう一度送る・照合済みだが未転送）
+  ['app B-3: rows not posted or already reconciled can be chosen', RU, [['index.html', "function invInReconSel(r){ return !!(r && r.status==='posted' && (!r.recon_status || r.recon_status==='unreconciled') && invInId(r.id)); }", "function invInReconSel(r){ return !!(r && invInId(r.id)); }"]]],
+  ['app B-3: the bulk save sends the version of now, not the one seen', RU, [['index.html', "var r = await invInAPI({ action:'reconcile', doc_id:p.id, version:p.version, result:'reconciled', note:'' });", "var cur = ((_invIn.recon && _invIn.recon.rows) || []).filter(function(x){ return x.id===p.id; })[0]; var r = await invInAPI({ action:'reconcile', doc_id:p.id, version:cur ? cur.version : p.version, result:'reconciled', note:'' });"]]],
+  ['app B-3: a second press while saving starts another batch', RU, [['index.html', "  if (!plan || !plan.length || !invInCanEdit() || _invIn.busy || _invIn.rbatch) return;\n", "  if (!plan || !plan.length || !invInCanEdit()) return;\n"]]],
+  ['app B-3: an answer after a reload is written', RU, [['index.html', "    if ((_invIn.qbGen || 0) !== gen) return;\n", ""]]],
+  ['app B-3: all ids in one request', RU, [['index.html', "  for (var i = 0; i < list.length; i += 200) {\n    var chunk = list.slice(i, i + 200);", "  for (var i = 0; i < list.length; i += list.length) {\n    var chunk = list.slice(i);"]]],
+  ['app B-3: a reload keeps the old states', RU, [['index.html', "  _invIn.qbst = {}; _invIn.qbGen = (_invIn.qbGen || 0) + 1; invInRerender();\n}", "  invInRerender();\n}"]]],
+  ['app B-3: a role that cannot act asks to resend', RU, [['index.html', "  if (!invInCanEdit() || !invInId(id)) return;\n  var r;\n  try { r = await invInDo(function(){ return invInAPI({ action:'qb_retry', id:id }); }); }", "  if (!invInId(id)) return;\n  var r;\n  try { r = await invInDo(function(){ return invInAPI({ action:'qb_retry', id:id }); }); }"]]],
+  ['app B-3: Intake status offers resend on rows of the forwarder before', RU, [['index.html', "(invInCanEdit() && o.route==='invoice-intake' && o.state==='error' ?", "(invInCanEdit() && o.state==='error' ?"]]],
+  ['app B-3: the one-invoice block offers resend without can_retry', RU, [['index.html', "  if (edit && S.can_retry && rid) btns +=", "  if (edit && rid) btns +="]]],
+  ['app B-3: the unsent list offers resend on rows of the forwarder before', RU, [['index.html', "    var tryRow = r.reason==='failed' ? hs.filter(function(o){ return o.state==='error' && o.route==='invoice-intake'; })[0]", "    var tryRow = r.reason==='failed' ? hs.filter(function(o){ return o.state==='error'; })[0]"]]],
+  ['app B-3: the unsent list puts not-confirmed rows with the known causes', RU, [['index.html', "  h += sec(t('原因が分かっているもの','Cause known'), rows.filter(function(r){ return r.confirmed; }), 'var(--text)', '');", "  h += sec(t('原因が分かっているもの','Cause known'), rows, 'var(--text)', '');"]]],
+  ['app B-3: the unsent list shows the vendor as HTML', RU, [['index.html', "+ '<span style=\"flex:1;min-width:240px\"><b>'+e(r.vendor||'—')+'</b> '", "+ '<span style=\"flex:1;min-width:240px\"><b>'+(r.vendor||'—')+'</b> '"]]],
   ['price jump check removed', UNIT, [['invoice/rules.mjs', "if (changedAtLeast(oldR, newR, st.price_jump_pct ?? 15)) r.push('price_jump');", '']]],
   ['total check removed', UNIT, [['invoice/rules.mjs', 'if (Math.abs(calc - h.total_cents) > tol)', 'if (false)']]],
   ['re-photo no longer a certain duplicate', E2E, [['invoice/dedupe.mjs', "out.certain = out.certain || { id: e.id, by: 'content' };", 'out.sameNumberDifferent.push(e.id);']]],
@@ -465,7 +479,7 @@ const CASES = [
   ["段階3: the list does not say which page an original is", E2E, [["db/invoice-intake.sql", "parts, d.part_no\n", "parts\n"]]],
   ["段階3 screen: a replaced original is added without a tick", MU, [["db/invoice-intake.sql", " may_ack text[] := array['total_mismatch','original_replaced','line_amount_missing','line_value_missing'];\n ack text[] := coalesce(array(select jsonb_array_elements_text(p->'ack')), '{}');\nbegin\n perform public.invoice_require(actor, array['ceo','gm','office','office_crew']);\n if jsonb_typeof(p->'parts')", " may_ack text[] := array['total_mismatch','line_amount_missing','line_value_missing'];\n ack text[] := coalesce(array(select jsonb_array_elements_text(p->'ack')), '{}');\nbegin\n perform public.invoice_require(actor, array['ceo','gm','office','office_crew']);\n if jsonb_typeof(p->'parts')"]]],
   ["段階3 screen: a page is added while QuickBooks is sending", MU, [["index.html", "  if (invInSameQb(S, S.pv.main).busy) return invInL(INVIN_ERR.qb_in_progress);", "  if (false) return invInL(INVIN_ERR.qb_in_progress);"]]],
-  ["段階3 screen: the waiting QuickBooks row is not mentioned", MU, [["index.html", "        : qb.wait ? t('QuickBooks へ送る予定だったこの invoice は", "        : false ? t('QuickBooks へ送る予定だったこの invoice は"]]],
+  ["段階3 screen: the waiting QuickBooks row is not mentioned", MU, [["index.html", "        : qb.wait ? (invInQbRoute()==='invoice-intake' ? t('足したページと合わせ", "        : false ? (invInQbRoute()==='invoice-intake' ? t('足したページと合わせ"]]],
   ["段階3 screen: a failed preview is not asked again", MU, [["index.html", "function invInSameRetryPv(){ var S = _invIn.same; if (!S || !S.pvErr) return; invInSameChanged(S); }", "function invInSameRetryPv(){ }"]]],
   ["段階3: a duplicate is set aside without its version (database)", E2E, [["db/invoice-intake.sql", "  if x.version is distinct from (e->>'version')::int then raise exception 'conflict'; end if;\n  if x.status <> 'review' or x.id = any(ids) or x.id = any(dups)", "  if x.version <> (e->>'version')::int then raise exception 'conflict'; end if;\n  if x.status <> 'review' or x.id = any(ids) or x.id = any(dups)"]]],
   ["段階3: a page is merged with an older version (database)", E2E, [["db/invoice-intake.sql", "  if x.version is distinct from (e->>'version')::int then raise exception 'conflict'; end if;\n  if x.status <> 'review' or exists(select 1 from public.invoice_docs c where c.merged_into=x.id) then raise exception 'invalid_state'; end if;\n", "  if x.status <> 'review' or exists(select 1 from public.invoice_docs c where c.merged_into=x.id) then raise exception 'invalid_state'; end if;\n"]]],

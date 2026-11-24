@@ -56799,6 +56799,7 @@ function invInReset(){
   _invIn.unsel = {}; _invIn.rpage = 0; _invIn.batchPlan = null; _invIn.plDoc = null; _invIn.same = null; _invIn.origFile = null;
   _invIn.reviewSeq = (_invIn.reviewSeq || 0) + 1;   /* ログアウトのあとに終わった読み込みは、前の人の一覧を書かない */
   _invIn.loaded = {}; _invIn.cand = {}; _invIn.error = '';
+  _invIn.qbst = {}; _invIn.qbRoute = null; _invIn.qbEnabled = null; _invIn.qbstErr = ''; _invIn.qbun = null; _invIn.rsel = {}; _invIn.reconRes = null; _invIn.reconPlan = null; _invIn.rbatch = null; _invIn.qbGen = (_invIn.qbGen || 0) + 1;   /* v1210（B-3） */
   if (typeof ilkReset === 'function') ilkReset();   /* v1093：紐づけの画面の内容も消す */
 }
 async function invInAPI(payload, retried){
@@ -56860,7 +56861,7 @@ async function invInLogin(){
 /* ---- 読み込み：画面を開いたときに1回だけ。押したボタンのあとに読み直す ---- */
 function invInOnPage(){ return typeof curPage!=='undefined' && curPage==='acct_center' && (_acCat==='drive' || (_acCat==='master' && _acSub==='dsettings')); }   /* v1199：設定は ⑦ マスター・設定 */
 function invInRerender(){ if (invInOnPage()) renderPage('acct_center'); else if (typeof ilkOnPage==='function' && ilkOnPage()) renderPage('ingredient_master'); }   /* v1093：紐づけの画面も（認証し直したあと） */
-function invInRefresh(){ _invIn.loaded = {}; _invIn.error = ''; _invIn.cand = {}; if (typeof ilkReset === 'function' && typeof _ilk !== 'undefined' && _ilk.loaded === 'err') ilkReset(); invInRerender(); }
+function invInRefresh(){ _invIn.loaded = {}; _invIn.error = ''; _invIn.cand = {}; _invIn.qbst = {}; _invIn.qbun = null; _invIn.qbGen = (_invIn.qbGen || 0) + 1; if (typeof ilkReset === 'function' && typeof _ilk !== 'undefined' && _ilk.loaded === 'err') ilkReset(); invInRerender(); }
 function invInLoad(key, fn){
   if (!invInSigned() || _invIn.loaded[key]) return;
   _invIn.loaded[key] = 'loading';
@@ -56959,6 +56960,7 @@ function invInOrgText(r){
 }
 /* v1082（段階 3）：反映した複数枚の invoice は、転送側（ChatGPT）が対応するまで台帳に出さない（Moto 10/14「台帳に出さずに作る」） */
 function invInQbChip(s, parts, status){
+  if (!s && Number(parts) > 0 && status==='posted' && typeof invInQbRoute==='function' && invInQbRoute()==='invoice-intake') return invInChip(t('複数枚：まだ台帳にありません（1 通で送ります）','Several originals: not queued yet (one mail)'), INVIN_COL.gray);   /* v1210（B-3） */
   if (!s && Number(parts) > 0 && status==='posted') return invInChip(t('複数枚：転送側の対応待ち','Several originals: waiting for the forwarder'), INVIN_COL.org);
   if (!s) return invInChip(t('対象外・未登録','Not queued'), INVIN_COL.gray);
   var M = { pending:[t('未送信','Not sent'),INVIN_COL.gray], sending:[t('送信中','Sending'),INVIN_COL.gray], sent:[t('送信済み','Sent'),INVIN_COL.blue],
@@ -57037,15 +57039,17 @@ function invInListParams(q, offset){
   if (S) Object.keys(S).forEach(function(k){ p[k] = S[k]; });
   return p;
 }
+/* v1210（B-3）：状態を読めた invoice は 6 つの言葉、読めないときは前のチップ */
+function invInQbCell(r){ var S = r && (_invIn.qbst || {})[r.id]; return S ? invInQb6Chip(S) : invInQbChip(r.qb_state, r.parts, r.status); }
 function invInSearch(){
   var v = function(id){ var el = document.getElementById(id); return el ? String(el.value||'').trim() : ''; };
   _invIn.q = { store:v('ivq-store'), vendor:v('ivq-vendor'), from:v('ivq-from'), to:v('ivq-to'), invoice_no:v('ivq-no'), min:v('ivq-min'), max:v('ivq-max'), item:v('ivq-item'), state:v('ivq-state') };
-  delete _invIn.loaded.list; invInRerender();
+  delete _invIn.loaded.list; delete _invIn.loaded.listqb; invInRerender();
 }
 async function invInMore(){
   var L = _invIn.list; if (!L) return;
   await invInDo(async function(){ var r = await invInAPI(invInListParams(_invIn.q, L.rows.length)); L.rows = L.rows.concat(r.rows||[]); L.total = r.total; });
-  invInRerender();
+  delete _invIn.loaded.listqb; invInRerender();
 }
 function invInStoreOptions(sel, allLabel){
   var ids = (typeof STORES!=='undefined' ? STORES : []).map(function(s){ return s.id; });
@@ -57058,7 +57062,7 @@ function invInList(){
   invInLoadBase();
   if (!_invIn.q) _invIn.q = invInDefaultQ();
   var q = _invIn.q;
-  invInLoad('list', async function(){ _invIn.list = await invInAPI(invInListParams(q, 0)); });
+  invInLoad('list', async function(){ _invIn.list = await invInAPI(invInListParams(q, 0)); delete _invIn.loaded.listqb; });
   var h = invInHead(), e = escapeHtml;
   var st = function(v, l){ return '<option value="'+v+'"'+(q.state===v?' selected':'')+'>'+l+'</option>'; };
   h += '<div class="card" style="padding:10px"><div class="ivx-f">'
@@ -57073,6 +57077,7 @@ function invInList(){
     + '<button class="btn btn-primary btn-sm" onclick="invInSearch()"><i class="ti ti-search"></i> '+t('検索','Search')+'</button></div></div>';
   var L = _invIn.list;
   if (!L) return h + invInLoadingCard();
+  if (invInCanEdit()) invInLoad('listqb', function(){ return invInQbStatesSafe((L.rows||[]).filter(function(r){ return r.status==='posted'; }).map(function(r){ return r.id; })); });   /* v1210（B-3） */
   h += '<div style="display:flex;align-items:baseline;gap:10px;margin:2px 2px 6px;flex-wrap:wrap"><span style="font-size:12px;color:var(--muted)">'
     + e((q.from?invInDate(q.from):'')+'〜'+(q.to?invInDate(q.to):''))+'　'+L.total+t('件',' docs')+'</span><b style="font-size:15px">'+invInMoney(L.sum_cents)+'</b>'
     + '<span style="margin-left:auto;font-size:11px;color:var(--muted)">'+t('請求日の新しい順','Newest invoice date first')+'</span></div>';
@@ -57085,7 +57090,7 @@ function invInList(){
           + (Number(r.parts) ? ' '+invInPartsChip(Number(r.parts)+1) : '')
           + (r.doc_type && r.doc_type!=='invoice' ? '<div class="ivx-sub">'+e(r.doc_type)+'</div>' : '')+'</td><td style="white-space:nowrap">'+invInDate(r.invoice_date)+' ／ '+invInDate(r.delivery_date)+'</td>'
           + '<td style="font-family:ui-monospace,monospace;font-size:11.5px">'+e(r.invoice_no||'—')+'</td><td style="text-align:right;font-weight:700">'+invInMoney(r.total_cents)+'</td>'
-          + '<td>'+invInProcChip(r)+'</td><td>'+invInReconChip(r)+'</td><td>'+invInOrgText(r)+'</td><td>'+invInQbChip(r.qb_state, r.parts, r.status)+'</td>'
+          + '<td>'+invInProcChip(r)+'</td><td>'+invInReconChip(r)+'</td><td>'+invInOrgText(r)+'</td><td>'+invInQbCell(r)+'</td>'
           + '<td onclick="event.stopPropagation()">'+invInOrig(r.drive_file_id)+'</td></tr>';
       }).join('') + '</tbody></table></div>'
     + (L.rows.length < L.total ? '<div style="text-align:center;margin:8px 0"><button class="btn btn-secondary btn-sm" onclick="invInMore()">'+t('続きを読む','Load more')+'（'+(L.total-L.rows.length)+'）</button></div>' : '')
@@ -57105,6 +57110,11 @@ async function invInLoadDoc(){
   var id = _invIn.docId; if (!id) return;
   var g = await invInAPI({ action:'get', doc_id:id });
   if (_invIn.docId !== id) return;
+  if (g && g.doc && g.doc.status==='posted' && invInCanEdit()) {   /* v1210（B-3）：QuickBooks への転送の状態（サーバーが台帳から決める） */
+    if (_invIn.qbst) delete _invIn.qbst[g.doc.id];
+    await invInQbStatesSafe([g.doc.id]);
+    if (_invIn.docId !== id) return;
+  }
   _invIn.doc = g;
   if (!_invIn.edits || _invIn.edits.version !== g.doc.version) {
     _invIn.edits = { version:g.doc.version, h:{}, l:{}, reason:'', ack:{}, adj:false, sup:'', dupOf:'', note:'' };
@@ -57161,12 +57171,149 @@ async function invInLoadQueue(kind){
   if (kind==='recon') { var d2 = await invInAPI({ action:'list', recon:'discrepancy', limit:100 }); r.rows = (d2.rows||[]).concat(r.rows||[]); r.total += d2.total; }
   _invIn[kind] = r;
 }
+/* v1210（B-3・Moto さん 11/23）：照合待ちを表に。照合済みにしてよい行（反映済み・未照合）を選び、まとめて照合済みにする。
+   1 件ずつ、開いたときの版でサーバーの reconcile に送る（版が変わっていれば、その行は保存しない）。照合済みにすると、
+   サーバーが今の条件（反映済み・名前を変えた・送り始めのあと・送る担当・台帳 ON）で台帳を確かめて QuickBooks へ送る。画面からは送らない。
+   差異ありの行は選べない（開いて 1 件ずつ） */
+function invInReconSel(r){ return !!(r && r.status==='posted' && (!r.recon_status || r.recon_status==='unreconciled') && invInId(r.id)); }
+function invInReconTable(Q){
+  var e = escapeHtml, edit = invInCanEdit(), sel = _invIn.rsel || (_invIn.rsel = {}), rows = Q.rows || [], B = !!(_invIn.busy || _invIn.rbatch);
+  var can = rows.filter(invInReconSel), picked = can.filter(function(r){ return sel[invInId(r.id)]; });
+  var sum = picked.reduce(function(a, r){ return a + (Number(r.total_cents) || 0); }, 0);
+  var dis = B ? ' disabled' : '';
+  var h = '<div class="card" style="padding:8px 10px">';
+  if (edit) {
+    h += '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:4px">'
+      + '<span style="font-size:12px">'+t('選んだ ','Selected: ')+'<b>'+picked.length+'</b>'+t(' 件 · ',' · ')+'<b>'+invInMoney(sum)+'</b></span>'
+      + '<button class="btn btn-primary btn-sm" style="min-height:36px"'+(picked.length && !B ? '' : ' disabled')+' onclick="invInReconAsk()"><i class="ti ti-checks"></i> '+t('選んだ ','Reconcile the ')+picked.length+t(' 件を照合済みにする',' selected')+'</button>'
+      + (_invIn.rbatch ? '<span style="font-size:12px;color:var(--muted)">'+t('照合中… ','Reconciling… ')+Number(_invIn.rbatch.done)+' / '+Number(_invIn.rbatch.total)+'</span>' : '')
+      + (_invIn.reconRes && !_invIn.rbatch ? '<button class="btn btn-secondary btn-sm" style="min-height:36px" onclick="invInReconResShow()">'+t('前の結果','Last result')+'</button>' : '')
+      + '</div><div class="ivx-note" style="margin-top:0">'
+      + (invInQbRoute()==='invoice-intake'
+        ? t('照合済みにすると、サーバーが今の条件（反映済み・名前を変えた・送り始めのあと・送る担当・台帳 ON）で台帳を確かめ、まだ送っていないものを送り元の Gmail からすぐ送ります（もう送ってあるものは送りません）。差異ありの行は選べません（開いて 1 件ずつ）',
+            'Once reconciled, the server checks the ledger with today’s conditions (posted, renamed, after the start, sender, ledger on) and sends what was not sent yet from the sender’s Gmail right away (nothing already sent is sent again). Rows with a difference cannot be selected (open them one by one)')
+        : t('QuickBooks へ送るかは、設定の QuickBooks（送る担当・台帳）で決まります。照合済みにしても、この画面からは送りません。差異ありの行は選べません（開いて 1 件ずつ）',
+            'Whether it goes to QuickBooks depends on Settings › QuickBooks (sender, ledger). This screen never sends. Rows with a difference cannot be selected (open them one by one)'))
+      + '</div>'
+      + (_invIn.qbstErr ? '<div class="ivx-note" style="color:'+INVIN_COL.yel+'">'+t('QuickBooks の状態を読めませんでした（','Could not read the QuickBooks states (')+e(_invIn.qbstErr)+t('）。「更新」でもう一度読みます','). “Refresh” reads them again')+'</div>' : '');
+  }
+  h += '<div class="ivx-scroll"><table class="ivx-t" style="min-width:820px"><thead><tr><th style="width:26px">'
+    + (edit && can.length ? '<input type="checkbox" aria-label="'+t('まとめて選ぶ','Select all')+'"'+(picked.length===can.length ? ' checked' : '')+dis+' onchange="invInReconAll(this.checked)">' : '')+'</th>'
+    + '<th>'+t('業者','Vendor')+'</th><th>'+t('invoice番号','Invoice no.')+'</th><th style="text-align:right">'+t('金額','Amount')+'</th><th>'+t('店舗','Store')+'</th><th>'+t('請求日','Date')+'</th>'
+    + '<th>'+t('状態','State')+'</th><th>QuickBooks</th><th></th></tr></thead><tbody>';
+  rows.forEach(function(r){
+    var id = invInId(r.id); if (!id) return;
+    var ok = invInReconSel(r), open = 'onclick="invInOpen(\''+id+'\',\'drecon\')"';
+    h += '<tr class="ivx-row"'+(r.recon_status==='discrepancy' ? ' style="background:rgba(240,102,31,.05)"' : '')+'>'
+      + '<td onclick="event.stopPropagation()">'+(edit && ok ? '<input type="checkbox" aria-label="'+t('照合済みにする','Reconcile')+'"'+(sel[id] ? ' checked' : '')+dis+' onchange="invInReconToggle(\''+id+'\',this.checked)">' : '')+'</td>'
+      + '<td '+open+'><b>'+e(r.vendor_name || r.vendor_raw || t('（業者不明）','(vendor unknown)'))+'</b>'+(Number(r.parts) ? ' '+invInPartsChip(Number(r.parts)+1) : '')+'</td>'
+      + '<td '+open+' style="font-family:ui-monospace,monospace;font-size:11.5px;white-space:nowrap">'+e(r.invoice_no || '—')+'</td>'
+      + '<td '+open+' style="text-align:right;font-weight:700;white-space:nowrap">'+invInMoney(r.total_cents)+'</td>'
+      + '<td '+open+' style="white-space:nowrap">'+invInStoreHtml(r.store_id)+'</td>'
+      + '<td '+open+' style="white-space:nowrap;color:var(--muted)">'+invInDate(r.invoice_date)+'</td>'
+      + '<td '+open+' style="white-space:nowrap">'+invInProcChip(r)+' '+invInReconChip(r)+'</td>'
+      + '<td '+open+' style="white-space:nowrap">'+(r.status==='posted' ? invInQbCell(r) : '')+'</td>'
+      + '<td onclick="event.stopPropagation()" style="white-space:nowrap">'+invInOrig(r.drive_file_id)+' <button class="btn btn-secondary btn-sm" onclick="invInOpen(\''+id+'\',\'drecon\')">'+t('開く','Open')+'</button></td></tr>';
+  });
+  h += '</tbody></table></div>';
+  if (rows.length < Q.total) h += '<div class="ivx-note">'+t('ほかに ','')+(Q.total-rows.length)+t(' 件あります（一覧で絞り込めます）',' more (use the list filters)')+'</div>';
+  return h + '</div>';
+}
+function invInReconAll(on){
+  if (_invIn.busy || _invIn.rbatch) return;
+  var sel = _invIn.rsel || (_invIn.rsel = {});
+  ((_invIn.recon && _invIn.recon.rows) || []).filter(invInReconSel).forEach(function(r){ var id = invInId(r.id); if (on) sel[id] = 1; else delete sel[id]; });
+  invInRerender();
+}
+function invInReconToggle(id, on){
+  if (_invIn.busy || _invIn.rbatch) return;
+  var sel = _invIn.rsel || (_invIn.rsel = {}); id = invInId(id); if (!id) return;
+  if (on) sel[id] = 1; else delete sel[id];
+  invInRerender();
+}
+/* 押した直前に見えていた行だけ（id・版）を覚えて聞く。確かめの画面のあとに一覧が変わっても、覚えた行だけを送る */
+function invInReconAsk(){
+  if (!invInCanEdit() || _invIn.busy || _invIn.rbatch) return;
+  var sel = _invIn.rsel || {};
+  var plan = ((_invIn.recon && _invIn.recon.rows) || []).filter(function(r){ return invInReconSel(r) && sel[invInId(r.id)]; })
+    .map(function(r){ return { id:invInId(r.id), version:r.version, total_cents:Number(r.total_cents) || 0, label:(r.vendor_name || r.vendor_raw || '—')+' · '+(r.invoice_no || '—') }; });
+  if (!plan.length) return;
+  _invIn.reconPlan = plan;
+  var sum = plan.reduce(function(a, x){ return a + x.total_cents; }, 0);
+  openModal('<div class="modal-title">'+t('まとめて照合済みにする','Reconcile together')+' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    + '<div style="font-size:12.5px;line-height:1.8">'+plan.length+t(' 件（',' invoices (')+invInMoney(sum)+t('）を照合済みにします。1 件ずつ保存し、保存できなかった行はそのまま残ります。',') are marked reconciled, one by one; rows that cannot be saved stay as they are.')
+    + (invInQbRoute()==='invoice-intake' ? '<br>'+t('照合済みにした invoice は、サーバーが条件を確かめて QuickBooks へ送ります（もう送ってあるものは送りません）。','The server checks the conditions and sends the reconciled invoices to QuickBooks (nothing already sent is sent again).') : '')+'</div>'
+    + '<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">'+t('キャンセル','Cancel')+'</button><button class="btn btn-primary" onclick="closeModalDirect();invInReconBulk()">'+t('照合済みにする','Reconcile')+'</button></div>');
+}
+async function invInReconBulk(){
+  var plan = _invIn.reconPlan; _invIn.reconPlan = null;
+  if (!plan || !plan.length || !invInCanEdit() || _invIn.busy || _invIn.rbatch) return;
+  var res = { total:plan.length, saved:[], failed:[], gmail:false, rename:false, states:null, statesErr:'' };
+  _invIn.rbatch = { total:plan.length, done:0 }; _invIn.busy = true; invInRerender();
+  try {
+    for (var i = 0; i < plan.length; i++) {
+      var p = plan[i];
+      try {
+        var r = await invInAPI({ action:'reconcile', doc_id:p.id, version:p.version, result:'reconciled', note:'' });
+        if (r && r.ok===false) res.failed.push({ label:p.label, why:String(r.error || r.why || '') });
+        else {
+          res.saved.push(p.id);
+          if (r && r.qb && r.qb.waiting==='gmail') res.gmail = true;
+          if (r && (r.rename || []).some(function(x){ return x && x.ok===false; })) res.rename = true;
+        }
+      } catch(err) { res.failed.push({ label:p.label, why:String(err && err.message || err) }); }
+      _invIn.rbatch.done = i + 1; invInRerender();
+    }
+  } finally { _invIn.rbatch = null; _invIn.busy = false; }
+  _invIn.rsel = {};
+  ['recon','reconqb','list','listqb','health','review','qbs','qbun','problems','doc'].forEach(function(k){ delete _invIn.loaded[k]; });
+  _invIn.qbGen = (_invIn.qbGen || 0) + 1; _invIn.qbst = {};
+  if (res.saved.length) {
+    try { await invInQbStates(res.saved); res.states = {}; res.saved.forEach(function(id){ var S = (_invIn.qbst || {})[id]; if (S) res.states[id] = S; }); }
+    catch(err) { res.statesErr = String(err && (err.code || err.message) || err); }
+  }
+  _invIn.reconRes = res;
+  invInRerender(); invInReconResShow();
+}
+/* 結果：選んだ件数・保存できた・できなかった・QuickBooks の 6 つの状態の数（状態はサーバーが台帳から決めたもの） */
+function invInReconResShow(){
+  var R = _invIn.reconRes; if (!R) return;
+  var e = escapeHtml, n = { not_sent:0, queued:0, sending:0, sent:0, failed:0, unknown:0 }, why = {}, miss = 0;
+  R.saved.forEach(function(id){ var S = R.states && R.states[id]; if (!S) { miss++; return; } n[S.state] = (n[S.state] || 0) + 1; if (S.state==='not_sent') { var w = invInQbWhy(S.why); why[w] = (why[w] || 0) + 1; } });
+  var row = function(label, v, col){ return '<div style="display:flex;justify-content:space-between;gap:12px;border-top:1px solid var(--border);padding:4px 0"><span>'+label+'</span><b style="color:'+(col || 'var(--text)')+'">'+v+'</b></div>'; };
+  var h = '<div class="modal-title">'+t('まとめて照合済みにした結果','Result of reconciling together')+' <button class="modal-close" onclick="closeModalDirect()">×</button></div><div style="font-size:12.5px;line-height:1.7">'
+    + row(t('選んだ件数','Selected'), R.total) + row(t('照合済みにできた（保存成功）','Reconciled (saved)'), R.saved.length, INVIN_COL.green)
+    + row(t('保存できなかった','Not saved'), R.failed.length, R.failed.length ? INVIN_COL.red : '')
+    + '<div style="margin-top:8px;font-weight:700">'+t('QuickBooks への転送（照合済みにできた分）','Forwarding to QuickBooks (the saved ones)')+'</div>'
+    + ['queued','sending','sent','failed','unknown','not_sent'].map(function(k){ return row(invInL(INVIN_QB6[k]), n[k], n[k] ? INVIN_COL[INVIN_QB6[k][2]] : ''); }).join('')
+    + (miss ? row(t('状態を確かめられなかった','State not read'), miss, INVIN_COL.yel) : '')
+    + Object.keys(why).map(function(w){ return '<div class="ivx-note" style="margin-top:2px">'+t('未転送：','Not forwarded: ')+e(w)+' — '+why[w]+t(' 件','')+'</div>'; }).join('')
+    + (R.failed.length ? '<div style="margin-top:8px;font-weight:700;color:'+INVIN_COL.red+'">'+t('保存できなかった行','Rows not saved')+'</div>'
+      + R.failed.slice(0, 5).map(function(f){ return '<div class="ivx-note" style="margin-top:2px">'+e(f.label)+'：'+e(f.why)+'</div>'; }).join('')
+      + (R.failed.length > 5 ? '<div class="ivx-note">'+t('ほか ','And ')+(R.failed.length - 5)+t(' 件',' more')+'</div>' : '')
+      + '<div class="ivx-note">'+t('保存できなかった行は照合待ちに残っています（ほかの人が直した・反映し直したときは、開いて確かめてください）','Rows not saved stay waiting (if someone changed them, open and check)')+'</div>' : '')
+    + (R.gmail ? '<div class="ivx-note" style="color:'+INVIN_COL.yel+'">'+t('送り元の Gmail がつながっていないので、つながるまで送りません（台帳には積んであります）','The sender’s Gmail is not connected; nothing is sent until it is (the ledger keeps them)')+'</div>' : '')
+    + (R.rename ? '<div class="ivx-note" style="color:'+INVIN_COL.yel+'">'+t('原本の名前を変えられなかったものがあります（取込状況で確かめてください。変わるまで送りません）','Some originals could not be renamed (check Intake status; not sent until renamed)')+'</div>' : '')
+    + (R.statesErr ? '<div class="ivx-note" style="color:'+INVIN_COL.yel+'">'+t('QuickBooks の状態を読めませんでした（','Could not read the QuickBooks states (')+e(R.statesErr)+t('）。照合済みの保存はできています','). The reconciliation was saved')+'</div>' : '')
+    + '<div class="ivx-note">'+t('「転送待ち」「処理中」はこのあと送ります。数は押した直後のものです','“Waiting” and “Forwarding” are sent after this; the counts are as of right after the save')+'</div></div>'
+    + '<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">'+t('閉じる','Close')+'</button>'
+    + (R.saved.length ? '<button class="btn btn-primary" onclick="invInReconResCheck()"><i class="ti ti-refresh"></i> '+t('もう一度確かめる','Check again')+'</button>' : '')+'</div>';
+  openModal(h);
+}
+async function invInReconResCheck(){
+  var R = _invIn.reconRes; if (!R || !R.saved.length || _invIn.busy) return;
+  _invIn.qbGen = (_invIn.qbGen || 0) + 1; _invIn.qbst = {};
+  try { await invInQbStates(R.saved); R.states = {}; R.statesErr = ''; R.saved.forEach(function(id){ var S = (_invIn.qbst || {})[id]; if (S) R.states[id] = S; }); }
+  catch(err) { R.statesErr = String(err && (err.code || err.message) || err); }
+  invInRerender(); invInReconResShow();
+}
 function invInQueueHtml(kind){
   var Q = _invIn[kind], e = escapeHtml;
   if (!Q) return invInLoadingCard();
   if (!Q.rows.length) return '<div class="card" style="text-align:center;color:var(--muted);padding:22px;font-size:12px"><i class="ti ti-circle-check" style="font-size:24px;display:block;margin-bottom:6px;color:'+INVIN_COL.green+'"></i>'
     + (kind==='review' ? t('確認待ちはありません','Nothing waiting for review') : t('照合待ちはありません','Nothing waiting for reconciliation'))+'</div>';
   if (kind==='review') return invInReviewTable(Q);
+  if (kind==='recon') return invInReconTable(Q);   /* v1210（B-3） */
   return '<div class="card" style="padding:4px 10px">' + Q.rows.map(function(r){
     var id = invInId(r.id);
     return '<div class="ivx-row" style="display:flex;gap:10px;align-items:center;border-top:1px solid var(--border);padding:9px 2px;flex-wrap:wrap" onclick="invInOpen(\''+id+'\',\''+(kind==='review'?'dreview':'drecon')+'\')">'
@@ -57746,13 +57893,15 @@ function invInSameResult(S){
     var qb = invInSameQb(S, pv.main);
     inner += '<div style="font-size:12px;margin-top:8px;line-height:1.7">'+t('反映済みの invoice に足します（訂正：版が上がり、価格の履歴・アプリの写し・仕入れ集計を作り直し、照合は「未照合」に戻ります）。','The pages are added to the posted invoice (a correction: its version goes up, the price history, the app copy and the purchase totals are rebuilt, and reconciliation goes back to “not reconciled”).')
       + (qb.sent ? t('この invoice はもう QuickBooks へ送っています。足したページは QuickBooks で手で足してください。',' This invoice was already sent to QuickBooks: add the new pages there by hand.')
-        : qb.wait ? t('QuickBooks へ送る予定だったこの invoice は、足すと送らなくなります（複数枚は転送側の対応待ち）。QuickBooks に手で入れたら「QuickBooks に入れた」を記録してください。',' This invoice was waiting to be sent to QuickBooks; once pages are added it is not sent (several originals wait for the forwarder). When you enter it in QuickBooks by hand, record it with “Entered in QuickBooks”.') : '')+'</div>'
+        : qb.wait ? (invInQbRoute()==='invoice-intake' ? t('足したページと合わせ、ページの順に 1 つの PDF にして 1 通で送ります（まだ送っていないので二重にはなりません）。',' The added pages are sent together with it as one PDF in page order, in one mail (it was not sent yet, so nothing is doubled).') : t('QuickBooks へ送る予定だったこの invoice は、足すと送らなくなります（複数枚は転送側の対応待ち）。QuickBooks に手で入れたら「QuickBooks に入れた」を記録してください。',' This invoice was waiting to be sent to QuickBooks; once pages are added it is not sent (several originals wait for the forwarder). When you enter it in QuickBooks by hand, record it with “Entered in QuickBooks”.')) : '')+'</div>'
       + invInSameAcks(S).map(function(c){ return '<label style="display:flex;gap:6px;align-items:center;font-size:12px;margin-top:4px;color:'+INVIN_COL.red+'"><input type="checkbox"'+(S.ack[c] ? ' checked' : '')+' onchange="invInSameAck(\''+c+'\',this.checked)"> '+t('原本で確かめた：','Checked against the original: ')+e(invInReason(c))+'</label>'; }).join('')
       + '<label style="display:flex;gap:6px;align-items:center;font-size:12px;margin-top:4px"><input type="checkbox"'+(S.adj ? ' checked' : '')+' onchange="_invIn.same.adj=this.checked"> '+t('締め済みの月なら、経理の調整として記録する','If the month is closed, record an accounting adjustment')+'</label>';
     var must = invInSameMust(S);
     if (must) inner += red(must);
   }
-  inner += '<div class="ivx-note">'+t('QuickBooks：複数枚の invoice は、転送側（ChatGPT）の対応が済むまで台帳に出しません（反映したあと、1 件の画面で「QuickBooks に入れた」を記録できます）。','QuickBooks: an invoice in several originals is not put in the forwarding ledger until the forwarder (ChatGPT) supports it (after posting, “Entered in QuickBooks” can be recorded on the invoice).')+'</div>';
+  inner += '<div class="ivx-note">'+(invInQbRoute()==='invoice-intake'
+    ? t('QuickBooks：複数枚の invoice は、ページの順に 1 つの PDF にして 1 通で送ります（反映して名前を変えたあと。ページの一部をもう送っていたら送らず、手で入れて記録します）。','QuickBooks: an invoice in several originals is sent as one PDF in page order, in one mail (after posting and renaming; if part of it was already sent it is not sent, enter it by hand and record it).')
+    : t('QuickBooks：複数枚の invoice は、転送側（ChatGPT）の対応が済むまで台帳に出しません（反映したあと、1 件の画面で「QuickBooks に入れた」を記録できます）。','QuickBooks: an invoice in several originals is not put in the forwarding ledger until the forwarder (ChatGPT) supports it (after posting, “Entered in QuickBooks” can be recorded on the invoice).'))+'</div>';
   return box(inner);
 }
 /* ---- 複数枚の invoice（1 件の画面）：ページの一覧・原本の切り替え・まとめを外す・QuickBooks ---- */
@@ -57785,14 +57934,22 @@ function invInPartsHtml(G){
   }
   var list = invInOrigFiles(G); if (!list.length) return '';
   var canEdit = invInCanEdit();
+  var S6 = (_invIn.qbst || {})[d.id], me = invInQbRoute()==='invoice-intake';   /* v1210（B-3）：このシステムが送るときは 1 通にまとめて送る */
   var h = '<div class="card" style="padding:10px 12px;border-left:3px solid #5b3fb0"><div style="font-size:12.5px;font-weight:700;margin-bottom:4px"><i class="ti ti-files"></i> '+t('複数枚の invoice：','One invoice in ')+list.length+t(' 枚',' originals')+'</div>'
     + list.map(function(x){ return '<div style="display:flex;gap:8px;align-items:center;font-size:11.5px;border-top:1px solid var(--border);padding:5px 0;flex-wrap:wrap"><b style="white-space:nowrap">'+t('','Page ')+x.no+t(' 枚目','')+'</b>'
         + '<span style="flex:1;min-width:120px;word-break:break-all;font-family:ui-monospace,monospace;font-size:11px">'+e(x.name || '—')+'</span>'
-        + (d.status==='posted' ? invInQbChip(x.qb, list.length, 'posted') : '')
+        + (d.status==='posted' && !(S6 && me) ? invInQbChip(x.qb, list.length, 'posted') : '')
         + (x.fid ? '<a style="color:var(--accent2);cursor:pointer;white-space:nowrap" onclick="invInShowOrig('+invInJs(x.main ? '' : x.fid)+')">'+t('表示','Show')+'</a> '+invInOrig(x.fid) : '')+'</div>'; }).join('');
   if (d.status==='review' && d.merge_base && canEdit) h += '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px"><button class="btn btn-secondary btn-sm"'+(B ? ' disabled' : '')+' onclick="invInUnmergeAsk()"><i class="ti ti-arrows-split"></i> '+t('まとめを外す','Take the merge back')+'</button>'
     + '<span class="ivx-note" style="margin:0">'+t('それぞれの原本を、まとめる前の要確認に戻します（反映する前だけ）','Each original goes back to review as it was before (only before posting)')+'</span></div>';
-  if (d.status==='posted') {
+  if (d.status==='posted' && S6 && me) {
+    var why6 = String(S6.why || '').replace(/^cancelled_/, ''), hand6 = S6.state==='not_sent' && /^(part_already_sent|multi_file|before_since|not_new_intake)$/.test(why6);
+    h += '<div class="ivx-note">'+(S6.state==='sent' ? (S6.manual ? t('QuickBooks：すべてのページを記録済み','QuickBooks: every page is recorded') : t('QuickBooks：全ページを、ページの順に 1 つの PDF にして送りました','QuickBooks: all pages were sent as one PDF in page order'))
+        : 'QuickBooks：'+invInQb6Chip(S6)+' '+invInQbStateLine(S6)+(S6.state==='not_sent' && !hand6 ? t('。全ページを、ページの順に 1 つの PDF にして 1 通で送ります','. All pages are sent as one PDF in page order, in one mail') : ''))+'</div>'
+      + (hand6 && canEdit ? '<button class="btn btn-secondary btn-sm" style="margin-top:4px"'+(B ? ' disabled' : '')+' onclick="invInQbManualAsk()"><i class="ti ti-check"></i> '+t('QuickBooks に入れた（記録する）','Entered in QuickBooks (record it)')+'</button>' : '');
+  } else if (d.status==='posted' && me) {
+    h += '<div class="ivx-note">'+t('QuickBooks：全ページを、ページの順に 1 つの PDF にして 1 通で送ります','QuickBooks: all pages are sent as one PDF in page order, in one mail')+'</div>';
+  } else if (d.status==='posted') {
     var unsent = list.filter(function(x){ return x.qb!=='sent'; }).length;
     h += '<div class="ivx-note">'+(unsent ? t('QuickBooks：複数枚の invoice は、転送側（ChatGPT）が対応するまで台帳に出しません。QuickBooks に手で入れたら「QuickBooks に入れた」で記録します（台帳に「送信済み」として残り、あとで二重に送りません）。','QuickBooks: an invoice in several originals is not put in the forwarding ledger until the forwarder (ChatGPT) supports it. When you enter it in QuickBooks by hand, record it with “Entered in QuickBooks” (it is kept as sent, so it is never sent twice).')
         : t('QuickBooks：すべてのページを記録済み','QuickBooks: every page is recorded'))+'</div>'
@@ -57825,6 +57982,7 @@ async function invInQbManual(){
   try { r = await invInDo(function(){ return invInAPI({ action:'qb_manual', doc_id:d.id, version:d.version, note:note }); }); }
   catch(e) { delete _invIn.loaded.doc; invInRerender(); return; }
   if (r) showToast(t('記録しました（','Recorded (')+(Number(r.added) || 0)+t(' ページ）',' pages)'), 'success');
+  _invIn.qbst = {}; _invIn.qbGen = (_invIn.qbGen || 0) + 1; delete _invIn.loaded.listqb; delete _invIn.loaded.qbun;
   delete _invIn.loaded.doc; delete _invIn.loaded.list; invInRerender();
 }
 function invInReview(){
@@ -57839,7 +57997,8 @@ function invInRecon(){
   var g = invInGate(); if (g) return g;
   invInLoadBase();
   if (_invIn.docId && _invIn.docSub==='drecon') { invInLoad('doc', invInLoadDoc); return invInHead() + invInDetail('recon'); }
-  invInLoad('recon', function(){ return invInLoadQueue('recon'); });
+  invInLoad('recon', function(){ return invInLoadQueue('recon').then(function(){ delete _invIn.loaded.reconqb; }); });
+  if (_invIn.recon && invInCanEdit()) invInLoad('reconqb', function(){ return invInQbStatesSafe(((_invIn.recon || {}).rows || []).filter(function(r){ return r.status==='posted'; }).map(function(r){ return r.id; })); });
   return invInHead() + invInQueueHtml('recon');
 }
 /* 入力は画面を描き直しても消えないよう、打つたびに覚えておく */
@@ -58883,12 +59042,31 @@ function invInReconActions(d){
       'Reconciled moves the original to the “Reconciled” Drive folder (if the move fails, the reconciliation stays and the move is retried). Moving a file by hand in Drive does not reconcile it. Reconciliation is separate from payment, bank matching and QuickBooks booking.')+'</div></div>';
   return h;
 }
+/* v1210（B-3）：照合済みにしたら、サーバーが台帳を確かめて送り始める（画面からは送らない）。結果は QuickBooks の 6 つの言葉で知らせる。
+   差異あり・未照合に戻すと、まだ送り始めていない転送は止まる（送っている途中のものは止められない） */
 async function invInReconcile(result){
   var G = _invIn.doc; if (!G) return; var d = G.doc, E = _invIn.edits || {};
   if (result==='discrepancy' && !String(E.note||'').trim()) { showToast(invInL(INVIN_ERR.note_required), 'warning'); return; }
-  try { await invInDo(function(){ return invInAPI({ action:'reconcile', doc_id:d.id, version:d.version, result:result, note:String(E.note||'').trim() }); },
-    result==='reconciled' ? t('照合済みにしました','Reconciled') : result==='discrepancy' ? t('差異ありにしました','Marked as different') : t('未照合に戻しました','Back to not reconciled')); }
+  var r;
+  try { r = await invInDo(function(){ return invInAPI({ action:'reconcile', doc_id:d.id, version:d.version, result:result, note:String(E.note||'').trim() }); }); }
   catch(e) { return; }
+  if (!r) return;
+  var msg = result==='reconciled' ? t('照合済みにしました','Reconciled') : result==='discrepancy' ? t('差異ありにしました','Marked as different') : t('未照合に戻しました','Back to not reconciled'), kind = 'success';
+  if (result==='reconciled') {
+    _invIn.qbst = {}; _invIn.qbGen = (_invIn.qbGen || 0) + 1;
+    if (invInCanEdit()) await invInQbStatesSafe([d.id]);
+    var S = (_invIn.qbst || {})[d.id];
+    if (S) {
+      msg += t('。QuickBooks：','. QuickBooks: ')+invInL(INVIN_QB6[S.state] || INVIN_QB6.not_sent)+(S.state==='not_sent' ? t('（','(')+invInQbWhy(S.why)+t('）',')') : '');
+      if (invInQbRoute()==='invoice-intake' && /^(not_sent|failed|unknown)$/.test(S.state)) kind = 'warning';
+    }
+    if (r.qb && r.qb.waiting==='gmail') { msg += t('。送り元の Gmail がつながっていないので、つながるまで待ちます','. The sender’s Gmail is not connected; waiting until it is'); kind = 'warning'; }
+    if ((r.rename || []).some(function(x){ return x && x.ok===false; })) { msg += t('。原本の名前を変えられませんでした（取込状況で確かめてください）','. Could not rename the original (check Intake status)'); kind = 'warning'; }
+  } else {
+    if (Number(r.qb_stopped) > 0) msg += t('。まだ送っていなかった ','. ')+Number(r.qb_stopped)+t(' 件を止めました（照合済みに戻すとまた送ります）',' unsent item(s) were stopped (reconcile again to send)');
+    if (Number(r.qb_busy) > 0) { msg += t('。','. ')+Number(r.qb_busy)+t(' 件はもう送っている途中なので止められません（取込状況の QuickBooks の欄で確かめてください）',' item(s) were already being sent and could not be stopped (check QuickBooks in Intake status)'); kind = 'warning'; }
+  }
+  showToast(msg, kind);
   _invIn.loaded = {}; if (result==='reconciled') { _invIn.docId = null; _invIn.doc = null; _invIn.edits = null; } invInRerender();
 }
 
@@ -58898,6 +59076,7 @@ function invInHealth(){
   invInLoadBase();
   invInLoad('problems', async function(){ _invIn.problems = await invInAPI({ action:'problems' }); });
   invInLoad('qbs', async function(){ try { _invIn.qbs = await invInAPI({ action:'qb_status' }); } catch(e) { _invIn.qbs = { error:String(e && e.code || e && e.message || e) }; } });
+  if (invInCanEdit()) invInLoad('qbun', async function(){ try { _invIn.qbun = await invInAPI({ action:'qb_unsent' }); } catch(e) { _invIn.qbun = { error:String(e && e.code || e && e.message || e) }; } });   /* v1210（B-3-4） */
   var H = _invIn.health, P = _invIn.problems, e = escapeHtml;
   var h = invInHead();
   if (!H) return h + invInLoadingCard();
@@ -58944,6 +59123,7 @@ function invInHealth(){
             + (invInCanEdit() && (f.intake_status==='error' || f.organize_status==='error' || f.rename_state==='error') ? '<button class="btn btn-secondary btn-sm" onclick="invInRetry(\''+invInId(f.id)+'\')"><i class="ti ti-refresh"></i> '+t('今すぐやり直す','Retry now')+'</button>' : '')+'</div>';
         }).join('') : '<div class="ivx-note" style="margin-top:0">'+t('ありません','None')+'</div>') + '</div>';
   }
+  h += invInQbUnsentCard();   /* v1210（B-3-4）：照合済みだが未転送 */
   h += invInQbCard(H, P);   /* v1094（UI案56）：送る担当・Gmail・数・最近の行（反映 → 名前 → 台帳 → 送信開始 → 送信済み） */
   return h;
 }
@@ -58964,6 +59144,9 @@ function invInQbTime(v, withDate){
 }
 function invInQbState(o){
   if (o.state==='cancelled' && o.last_error==='content_changed') return [t('原本が差し替わっていた（送っていない）','Original replaced (not sent)'), INVIN_COL.red];
+  if (o.state==='cancelled') return o.last_error==='merge_changed' ? [t('台帳に積んだあとページが変わった（送っていない）','Pages changed after queuing (not sent)'), INVIN_COL.red]
+    : o.last_error==='recon_cancelled' ? [t('照合を取り消した（送っていない）','Reconciliation taken back (not sent)'), INVIN_COL.gray]
+    : o.last_error==='manual' ? [t('手で記録した（送っていない）','Recorded by hand (not sent)'), INVIN_COL.gray] : [t('送らなかった','Not sent'), INVIN_COL.gray];   /* v1210（B-3） */
   var M = { pending:[t('送信待ち','Waiting'),INVIN_COL.gray], sending:[t('送信中','Sending'),INVIN_COL.gray], sent:[t('メール送信済み','Email sent'),INVIN_COL.blue],
     error:[Number(o.attempts)>=5 ? t('送れずに止まった','Stopped (not sent)') : t('送信エラー','Send error'), INVIN_COL.red], unknown:[t('結果不明','Result unknown'),INVIN_COL.org] };
   return M[o.state] || [escapeHtml(o.state||''), INVIN_COL.gray];
@@ -59023,11 +59206,12 @@ function invInQbCard(H, P){
     var sub = o.state==='sent' ? times.join(' → ')+(o.message_id ? ' · Gmail ID <span style="font-family:ui-monospace,monospace">'+e(o.message_id)+'</span>' : '')+(note ? ' · '+e(note) : '')
       : o.state==='error' ? (Number(o.attempts)>=5 ? t('やり直し 5 回を使い切りました：','Used all 5 tries: ') : t('やり直し ','Try ')+Number(o.attempts)+' / 5'+(o.next_at ? t(' · 次 ',' · next ')+invInQbTime(o.next_at, false) : '')+'：')+e(invInQbErr(o.last_error))
       : o.state==='unknown' ? e(invInQbErr(o.last_error))+(note ? ' · '+e(note) : '')
-      : o.state==='cancelled' ? t('台帳に積んだときと Drive の原本の中身が違います。Invoice取込で確かめてください','The Drive content differs from what was queued. Check it in Invoice intake')
+      : o.state==='cancelled' ? (o.last_error==='content_changed' ? t('台帳に積んだときと Drive の原本の中身が違います。Invoice取込で確かめてください','The Drive content differs from what was queued. Check it in Invoice intake') : e(invInQbWhy(o.last_error)))
       : times.join(' → ');
     return '<div style="font-size:11.5px;margin-top:8px;border-top:1px solid var(--border);padding-top:7px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">'+invInChip(st[0], st[1])
       + '<span style="flex:1;min-width:220px"><b style="word-break:break-all">'+e(o.current_name)+'</b> '+invInStoreHtml(o.store_id)+(o.route==='external'?' <span style="color:var(--muted)">'+t('前の転送（ChatGPT）','forwarder before (ChatGPT)')+'</span>':'')
       + '<br><span style="color:var(--muted);line-height:1.7">'+sub+'</span></span>'
+      + (invInCanEdit() && o.route==='invoice-intake' && o.state==='error' ? '<span style="display:flex;gap:6px;flex-wrap:wrap"><button class="btn btn-secondary btn-sm" style="min-height:36px" onclick="invInQbRetry(\''+invInId(o.id)+'\')"><i class="ti ti-refresh"></i> '+t('もう一度送る','Send again')+'</button></span>' : '')   /* v1210（B-3）：サーバーが条件を確かめてから積む */
       + (invInCanEdit() && o.state==='unknown' ? '<span style="display:flex;gap:6px;flex-wrap:wrap"><button class="btn btn-primary btn-sm" style="min-height:36px" onclick="invInQbLookup(\''+invInId(o.id)+'\')"><i class="ti ti-search"></i> '+t('Gmail の送信済みを調べる','Search the sent mail')+'</button>'
         + '<button class="btn btn-secondary btn-sm" style="min-height:36px" onclick="invInQbResolve(\''+invInId(o.id)+'\',\'pending\')">'+t('確かめて、もう一度送る','Checked: send again')+'</button>'
         + '<button class="btn btn-secondary btn-sm" style="min-height:36px" onclick="invInQbResolve(\''+invInId(o.id)+'\',\'sent\')">'+t('送信済みにする（確かめた）','Mark as sent (checked)')+'</button></span>' : '')+'</div>';
@@ -59113,6 +59297,146 @@ async function invInGmailDisconnectDo(){
   try { await invInDo(function(){ return invInAPI({ action:'gmail_disconnect' }); }, t('切りました','Disconnected')); } catch(e) { return; }
   delete _invIn.loaded.config; delete _invIn.loaded.qbs; invInRerender();
 }
+/* v1210（B-3・Moto さん 11/23）：invoice ごとの QuickBooks への転送を 6 つの言葉で出す（未転送・転送待ち・処理中・転送成功・転送失敗・結果確認待ち）。
+   状態はサーバー（qb_doc_states）が台帳から決める。画面は見せるだけで、ここからは送らない（送り直しも、サーバーが条件を確かめてから台帳に積む） */
+var INVIN_QB6 = { not_sent:['未転送','Not forwarded','gray'], queued:['転送待ち','Waiting to forward','gray'], sending:['処理中','Forwarding','blue'],
+  sent:['転送成功','Forwarded','blue'], failed:['転送失敗','Forwarding failed','red'], unknown:['結果確認待ち','Result to be checked','org'] };
+var INVIN_QB_WHY = {
+  not_found:['invoice が見つかりません','The invoice was not found'],
+  not_new_intake:['Drive 取込の前からある invoice です（このシステムからは送りません）','This invoice predates Drive intake (not sent from here)'],
+  route_not_assigned:['送る担当が決まっていません（設定の QuickBooks）','No sender is set (Settings › QuickBooks)'],
+  before_since:['送り始めより前の原本です（このシステムからは送りません）','The original is before the forwarding start (not sent from here)'],
+  not_ready:['まだ反映済みではありません','Not posted yet'],
+  rename_waiting:['名前を変える待ちです（変わったら台帳に積みます）','Waiting for the rename (queued after it)'],
+  multi_file:['複数枚の invoice は、前の転送（ChatGPT）では送りません。QuickBooks に手で入れて記録してください','The forwarder before (ChatGPT) does not send invoices of several originals. Enter it in QuickBooks by hand and record it'],
+  part_changed:['ページが変わった途中です（そろったら台帳に積みます）','The pages are changing (queued once settled)'],
+  part_in_progress:['ほかのページの転送が終わるのを待っています','Waiting for another page to finish'],
+  part_already_sent:['ページの一部をもう送っています。二重にしないため送りません（QuickBooks に手で入れて記録）','Part of the pages was already sent; not sent again to avoid a double (enter it by hand and record it)'],
+  content_changed:['台帳に積んだあと原本の中身が変わったので送っていません','The original changed after queuing, so it was not sent'],
+  merge_changed:['台帳に積んだあとページが変わったので送っていません','The pages changed after queuing, so it was not sent'],
+  recon_cancelled:['照合を取り消したので送っていません（照合済みに戻すとまた送ります）','Reconciliation was taken back, so it was not sent (reconcile again to send)'],
+  manual:['QuickBooks に手で入れたと記録しました','Recorded as entered in QuickBooks by hand'],
+  changed:['確かめるあいだに状態が変わりました。読み直してください','The state changed while checking; read it again'],
+  not_reconciled:['照合済みでないので送り直しません（照合済みにすると送ります）','Not reconciled, so not resent (reconcile it to send)'],
+  qb_off:['台帳が OFF です（設定の QuickBooks）','The ledger is off (Settings › QuickBooks)'],
+  not_in_ledger:['台帳に記録がありません（このシステムからは送っていません。ほかの方法で入れたかは分かりません）','Not in the ledger (not sent from here; whether it was entered another way is unknown)'],
+  queued:['転送待ち','Waiting to forward'], sending:['処理中','Forwarding'], failed:['転送失敗','Forwarding failed'],
+  unknown:['送ったか分かりません（結果確認待ち）','May have been sent (result to be checked)']
+};
+function invInQbWhy(code){
+  var c = String(code || '').replace(/^cancelled_/, '');
+  if (!c) return t('まだ台帳にありません（5 分ごとの取込で積みます）','Not queued yet (queued by the 5-minute run)');
+  return INVIN_QB_WHY[c] ? invInL(INVIN_QB_WHY[c]) : invInQbErr(c);
+}
+function invInQbRoute(){ var Q = _invIn.qbs, H = _invIn.health, C = _invIn.config; return _invIn.qbRoute || (C && C.settings && C.settings.qb && C.settings.qb.route) || (Q && Q.qb && Q.qb.route) || (H && H.qb_settings && H.qb_settings.route) || null; }
+function invInQb6Chip(S){
+  var m = INVIN_QB6[S && S.state] || INVIN_QB6.not_sent;
+  return invInChip(invInL(m) + (S && S.manual ? t('（手で記録）',' (by hand)') : '') + (S && S.stopped ? t('（止まった）',' (stopped)') : ''), INVIN_COL[m[2]]);
+}
+function invInQbStateLine(S){
+  var e = escapeHtml, s = S && S.state, ext = (S && S.route || invInQbRoute())==='external';
+  if (s==='queued') return ext ? t('前の転送（ChatGPT）が 1 時間ごとに送ります','The forwarder before (ChatGPT) sends it hourly') : t('台帳に積みました。すぐに送ります（Gmail がつながっていれば）','Queued; sent right away (when Gmail is connected)');
+  if (s==='sending') return t('送っているところです','Being sent');
+  if (s==='sent') return (S.manual ? t('QuickBooks に手で入れたと記録 ','Recorded as entered by hand ') : ext ? t('前の転送（ChatGPT）が送信 ','Sent by the forwarder before (ChatGPT) ') : t('Gmail で送信 ','Sent by Gmail '))
+    + invInQbTime(S.sent_at) + (S.combined ? t('（ページの順に 1 つの PDF）',' (pages in order, one PDF)') : '');
+  if (s==='failed') return (S.stopped ? t('やり直し 5 回を使い切りました：','Used all 5 tries: ') : t('やり直し ','Try ')+Number(S.attempts||0)+' / 5'+(S.next_at ? t(' · 次 ',' · next ')+invInQbTime(S.next_at, false) : '')+'：')+e(invInQbErr(S.last_error));
+  if (s==='unknown') return e(invInQbErr(S.last_error))+t('。自動では送り直しません（Gmail の送信済みを調べてください）','. Not resent automatically (search the sent mail)');
+  if (_invIn.qbEnabled===false && !(S && S.why)) return e(invInQbWhy('qb_off'));
+  return e(invInQbWhy(S && S.why));
+}
+/* 状態を読む（200 件ずつ）。読んでいるあいだに読み直し・ログアウトがあれば（qbGen が変わる）書かない */
+async function invInQbStates(ids){
+  if (!invInCanEdit()) return;
+  var seen = {}, list = [];
+  (ids || []).forEach(function(v){ var id = invInId(v); if (id && !seen[id]) { seen[id] = 1; list.push(id); } });
+  if (!list.length) return;
+  var gen = _invIn.qbGen || 0;
+  for (var i = 0; i < list.length; i += 200) {
+    var chunk = list.slice(i, i + 200);
+    var r = await invInAPI({ action:'qb_doc_states', doc_ids:chunk });
+    if ((_invIn.qbGen || 0) !== gen) return;
+    if (!_invIn.qbst) _invIn.qbst = {};
+    var st = (r && r.states) || {};
+    chunk.forEach(function(id){ if (st[id] && typeof st[id]==='object') _invIn.qbst[id] = st[id]; });
+    _invIn.qbRoute = (r && r.route) || null; _invIn.qbEnabled = !!(r && r.enabled);
+  }
+  _invIn.qbstErr = '';
+}
+async function invInQbStatesSafe(ids){
+  try { await invInQbStates(ids); }
+  catch(e) { _invIn.qbstErr = String(e && (e.code || e.message) || e); }
+}
+function invInQbReload(){
+  ['reconqb','listqb','qbs','health','problems','doc','qbun'].forEach(function(k){ delete _invIn.loaded[k]; });
+  _invIn.qbst = {}; _invIn.qbGen = (_invIn.qbGen || 0) + 1; invInRerender();
+}
+/* 転送失敗・照合の取り消しなどで送らなかったものを、もう一度送る（サーバーが今の条件を確かめる。転送成功・処理中・結果確認待ちは送り直さない） */
+async function invInQbRetry(id){
+  if (!invInCanEdit() || !invInId(id)) return;
+  var r;
+  try { r = await invInDo(function(){ return invInAPI({ action:'qb_retry', id:id }); }); } catch(e) { invInQbReload(); return; }
+  if (!r) return;
+  if (r.ok) showToast(t('もう一度送る予約をしました','Queued to send again')+(r.sending ? '' : t('（5 分ごとの取込で送ります）',' (sent by the 5-minute run)')), 'success');
+  else showToast(t('送り直していません：','Not resent: ')+invInQbWhy(r.why), 'warning');
+  invInQbReload();
+}
+/* 1 件の画面（状態を読めたとき）：6 つの言葉と理由・やり直し */
+function invInQbBlock6(G, S){
+  var e = escapeHtml, edit = invInCanEdit();
+  var row = S.id ? ((G && G.qb) || []).filter(function(o){ return o && o.id===S.id; })[0] : null;
+  var line = invInQb6Chip(S) + ' ' + invInQbStateLine(S);
+  if (S.state==='sent' && row && row.message_id) line += ' · Gmail ID <span style="font-family:ui-monospace,monospace">'+e(row.message_id)+'</span>';
+  if (Number(S.pages) > 1) line += '<br><span style="color:var(--muted)">'+t('ページ ','Pages: ')+Number(S.pages)+t(' 枚','')+'</span>';
+  var rid = S.state==='failed' ? S.id : S.state==='not_sent' ? S.cancelled_id : null, btns = '';
+  if (edit && S.can_retry && rid) btns += '<button class="btn btn-primary btn-sm" style="min-height:36px" onclick="invInQbRetry(\''+invInId(rid)+'\')"><i class="ti ti-refresh"></i> '+t('もう一度送る','Send again')+'</button>';
+  if (edit && S.state==='unknown' && S.id) btns += '<button class="btn btn-primary btn-sm" style="min-height:36px" onclick="invInQbLookup(\''+invInId(S.id)+'\')"><i class="ti ti-search"></i> '+t('Gmail の送信済みを調べる','Search the sent mail')+'</button>'
+    + '<button class="btn btn-secondary btn-sm" style="min-height:36px" onclick="invInQbResolve(\''+invInId(S.id)+'\',\'pending\')">'+t('確かめて、もう一度送る','Checked: send again')+'</button>'
+    + '<button class="btn btn-secondary btn-sm" style="min-height:36px" onclick="invInQbResolve(\''+invInId(S.id)+'\',\'sent\')">'+t('送信済みにする（確かめた）','Mark as sent (checked)')+'</button>';
+  if (btns) line += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px">'+btns+'</div>';
+  return '<div style="margin:6px 0;padding:7px 9px;border:1px solid var(--border);border-radius:8px;background:var(--surface2);line-height:1.7">'
+    + '<b>'+t('QuickBooks への転送','Forwarding to QuickBooks')+'</b><br>'+line
+    + '<br><span style="color:var(--muted)">'+t('「転送成功」は QuickBooks 宛てのメールを送ったところまでです。QuickBooks での取り込みは QuickBooks で確かめてください','“Forwarded” means the mail to QuickBooks was sent. Check in QuickBooks whether it was taken in')+'</span></div>';
+}
+/* 取込状況：照合済みなのに QuickBooks へ送った記録が無い invoice（B-3-4）。原因が分かるものと、記録だけでは分からないものを分けて出す。
+   記録が無いことだけで「未送信」とは決めない。まとめて送り直すボタンは置かない（1 件ずつ、原因を確かめてから） */
+function invInQbUnsentCard(){
+  if (!invInCanEdit()) return '';
+  var U = _invIn.qbun, e = escapeHtml;
+  var head = '<div class="card" style="padding:10px 12px"><div class="card-title" style="flex-wrap:wrap"><i class="ti ti-file-alert"></i>'+t('照合済みだが QuickBooks へ未転送','Reconciled but not forwarded to QuickBooks');
+  if (!U) return head + '</div><div class="ivx-note" style="margin-top:0">'+t('読み込み中…','Loading…')+'</div></div>';
+  if (U.error) return head + '</div><div class="ivx-note" style="margin-top:0;color:'+INVIN_COL.red+'">'+t('読めませんでした（','Could not read (')+e(U.error)+t('）。「更新」でもう一度読みます','). “Refresh” reads it again')+'</div></div>';
+  var rows = U.rows || [];
+  var h = head + '<span style="margin-left:auto;font-size:11px;font-weight:400;color:var(--muted)">'+t('照合した日 ','Reconciled on ')+invInDate(U.from)+t(' 〜',' or later')+' · '+Number(U.count || rows.length)+t(' 件','')+'</span></div>';
+  if (U.to_set===false) h += '<div class="ivx-note" style="margin-top:0;color:'+INVIN_COL.yel+'">'+t('QuickBooks の宛先がまだ決まっていません（設定の QuickBooks）','The QuickBooks address is not set (Settings › QuickBooks)')+'</div>';
+  var item = function(r){
+    var id = invInId(r.doc_id), hs = (r.history || []).slice().reverse();
+    var tryRow = r.reason==='failed' ? hs.filter(function(o){ return o.state==='error' && o.route==='invoice-intake'; })[0]
+      : /^cancelled_(content_changed|merge_changed|recon_cancelled)$/.test(String(r.reason||'')) ? hs.filter(function(o){ return o.state==='cancelled' && o.route==='invoice-intake'; })[0] : null;
+    var unk = r.reason==='unknown' ? hs.filter(function(o){ return o.state==='unknown' && o.route==='invoice-intake'; })[0] : null;
+    return '<div style="font-size:11.5px;border-top:1px solid var(--border);padding:7px 0;display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
+      + '<span style="flex:1;min-width:240px"><b>'+e(r.vendor||'—')+'</b> '+invInStoreHtml(r.store_id)+' · <span style="font-family:ui-monospace,monospace">'+e(r.invoice_no||'—')+'</span> · '+invInDate(r.invoice_date)+' · <b>'+invInMoney(r.total_cents)+'</b>'
+      + (Number(r.pages) > 1 ? ' · '+t('ページ ','pages: ')+Number(r.pages) : '')
+      + '<br><span style="color:'+(r.confirmed ? 'var(--text)' : INVIN_COL.org)+'">'+e(invInQbWhy(r.reason))+'</span>'
+      + '<br><span style="color:var(--muted)">'+t('照合 ','Reconciled ')+e(r.recon_by||'—')+' '+invInQbTime(r.recon_at)
+      + (hs.length ? ' · '+t('台帳：','Ledger: ')+hs.slice(0, 3).map(function(o){ return invInQbState(o)[0]+' '+invInQbTime(o.sent_at || o.created_at); }).join(' ← ') : '')+'</span></span>'
+      + '<span style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">'
+      + (tryRow ? '<button class="btn btn-primary btn-sm" style="min-height:36px" onclick="invInQbRetry(\''+invInId(tryRow.id)+'\')"><i class="ti ti-refresh"></i> '+t('もう一度送る','Send again')+'</button>' : '')
+      + (unk ? '<button class="btn btn-secondary btn-sm" style="min-height:36px" onclick="invInQbLookup(\''+invInId(unk.id)+'\')"><i class="ti ti-search"></i> '+t('Gmail の送信済みを調べる','Search the sent mail')+'</button>' : '')
+      + (id ? '<button class="btn btn-secondary btn-sm" style="min-height:36px" onclick="invInOpen(\''+id+'\',\'drecon\')">'+t('開く','Open')+'</button>' : '')
+      + ' '+invInOrig(r.drive_file_id)+'</span></div>';
+  };
+  var sec = function(title, list, col, note){
+    if (!list.length) return '';
+    return '<div style="margin-top:8px;font-size:12px;font-weight:700;color:'+col+'">'+title+' '+list.length+t(' 件','')+'</div>'+(note ? '<div class="ivx-note" style="margin-top:2px">'+note+'</div>' : '')
+      + list.slice(0, 100).map(item).join('') + (list.length > 100 ? '<div class="ivx-note">'+t('ほか ','And ')+(list.length - 100)+t(' 件（先頭の分を片づけると出ます）',' more (shown as the first ones are settled)')+'</div>' : '');
+  };
+  if (!rows.length) h += '<div class="ivx-note" style="margin-top:0">'+t('ありません（この期間に照合済みにした invoice は、すべて台帳で送信済みです）','None (every invoice reconciled in this period is marked sent in the ledger)')+'</div>';
+  h += sec(t('原因が分かっているもの','Cause known'), rows.filter(function(r){ return r.confirmed; }), 'var(--text)', '');
+  h += sec(t('送ったか分からないもの','Not confirmed'), rows.filter(function(r){ return !r.confirmed; }), INVIN_COL.org,
+    t('このシステムの台帳には送信済みの記録がありません。前の転送（ChatGPT）や手で QuickBooks に入れたかは、ここでは分かりません。QuickBooks で確かめてから対応してください','There is no sent record in this system’s ledger. Whether it went through the forwarder before (ChatGPT) or by hand is not known here; check in QuickBooks first'));
+  h += '<div class="ivx-note">'+t('記録が無いことだけで「未送信」とは決めていません。まとめて送り直すボタンはありません（1 件ずつ、原因を確かめてから）','A missing record alone is not taken as “not sent”. There is no bulk resend (one at a time, after checking the cause)')+'</div>';
+  return h + '</div>';
+}
 async function invInQbLookup(id){
   var r;
   try { r = await invInDo(function(){ return invInAPI({ action:'qb_lookup', id:id }); }); } catch(e) { return; }
@@ -59121,12 +59445,13 @@ async function invInQbLookup(id){
   else if (r.conflict) showToast(invInQbErr(r.conflict), 'warning');
   else if (r.error) showToast(invInQbErr(r.error), 'warning');
   else showToast(t('送信済みには見つかりませんでした。原本を確かめて「確かめて、もう一度送る」を押すか、そのままにしてください','Not found in the sent mail. Check, then “Checked: send again”, or leave it'), 'warning');
-  delete _invIn.loaded.qbs; delete _invIn.loaded.health; delete _invIn.loaded.problems; delete _invIn.loaded.doc; invInRerender();
+  invInQbReload();   /* v1210（B-3）：取込状況・照合待ち・一覧・1 件の画面の状態を読み直す */
 }
 /* 1 件の画面：反映（経理の確認）と QuickBooks への転送を分けて出す */
 function invInQbBlock(G){
   var d = (G && G.doc) || {}, e = escapeHtml;
   if (d.status!=='posted') return '';
+  var S = (_invIn.qbst || {})[d.id]; if (S) return invInQbBlock6(G, S);   /* v1210（B-3） */
   var rows = ((G && G.qb) || []).slice().sort(function(a, b){ return String(b.created_at||'').localeCompare(String(a.created_at||'')); });
   var o = rows.filter(function(x){ return x.state!=='cancelled' || x.last_error==='content_changed'; })[0];
   var line;
@@ -59228,6 +59553,7 @@ async function invInQbResolveDo(id, state){
   var note = String((document.getElementById('ivx-qb-note')||{}).value||'').trim();
   if (!note) { showToast(invInL(INVIN_ERR.reason_required), 'warning'); return; }
   try { await invInDo(function(){ return invInAPI({ action:'qb_resolve', id:id, state:state, note:note }); }, t('記録しました','Recorded')); } catch(e) { return; }
+  _invIn.qbst = {}; _invIn.qbGen = (_invIn.qbGen || 0) + 1; delete _invIn.loaded.reconqb; delete _invIn.loaded.listqb; delete _invIn.loaded.qbun;
   closeModalDirect(); delete _invIn.loaded.problems; delete _invIn.loaded.health; delete _invIn.loaded.qbs; delete _invIn.loaded.doc; invInRerender();
 }
 
