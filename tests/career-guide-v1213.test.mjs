@@ -96,6 +96,8 @@ test('案のあいだ：スタッフ・候補者には役割の文を出さな�
   for (const r of ['gm', 'ceo']) {
     const m = world({ role: r }); h = m.mount();
     assert.match(h, /文は案・会社の確認待ち/); assert.match(h, /Opening・Closing を手順どおりに終え/); assert.match(h, /GM・CEO だけに見えています/);
+    assert.match(h, /等級の位置付け <span class="cr-note">\(Excel「配点・基準点案 52 行」\)<\/span>/, 'Excel の位置付けと出どころ');
+    assert.match(h, /評価と昇格の考え方/); assert.match(h, /配点・基準点案 87 行/);
     m.crSet('view', 'map'); assert.match(m.root(), /Opening・Closing と各種リスト/); assert.match(m.root(), /◎/);
     m.crSet('view', 'cand'); assert.doesNotMatch(m.root(), /手順とルールを守って基本の仕事/, '候補者向けは公開まで GM・CEO の画面でも出さない');
   }
@@ -108,7 +110,7 @@ test('公開したら全員に出す・候補者向けにも要約・英語は�
   const p = world({ role: 'crew', status: 'published' });
   let h = p.mount();
   assert.match(h, /Opening・Closing を手順どおりに終え/); assert.doesNotMatch(h, /文は案/); assert.doesNotMatch(h, /会社が確認中/);
-  p.crSet('view', 'cand'); assert.match(p.root(), /手順とルールを守って基本の仕事/);
+  p.crSet('view', 'cand'); assert.match(p.root(), /担当作業を学び、手順・品質・スピードの基準へ近づく/, '候補者向けは Excel の等級の位置付け');
   const e = world({ role: 'crew', status: 'published', lang: 'en' }); h = e.mount();
   assert.match(h, /English translation under review/); assert.match(h, /Opening・Closing を手順どおりに終え/, '英訳の案はスタッフに出さない');
   const eg = world({ role: 'gm', lang: 'en' }); h = eg.mount();

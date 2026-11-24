@@ -46,6 +46,7 @@ export function check(guide, master) {
     s.grades.forEach((g, i) => {
       const w = s.key + '.' + g.grade;
       txt(g.summary, w + '.summary'); txt(g.scope, w + '.scope'); txt(g.develop, w + '.develop');
+      if (g.position !== undefined) { txt(g.position, w + '.position'); if (typeof g.position.src !== 'string' || !g.position.src) throw new Error(w + '.position needs src'); }
       itemsOk(g.develop.items, w + '.develop');
       if (!Array.isArray(g.tasks) || !g.tasks.length) throw new Error(w + ': tasks');
       g.tasks.forEach((t, j) => { txt(t, w + '.tasks.' + j); itemsOk(t.items, w + '.tasks.' + j); });
@@ -64,6 +65,7 @@ export function check(guide, master) {
       }
     }
   }
+  for (const [i, n] of (guide.notes || []).entries()) { txt(n, 'notes.' + i); if (typeof n.src !== 'string' || !n.src) throw new Error('notes.' + i + ' needs src'); }
   if (/G7/.test(JSON.stringify(guide.systems))) throw new Error('G7 is not part of the system (G1–G6)');
   return true;
 }
