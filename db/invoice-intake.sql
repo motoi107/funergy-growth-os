@@ -879,7 +879,11 @@ begin
  end if;
  select count(*) into nb from public.invoice_qb_outbox
  where (file_id=d.file_id or file_id in (select x.file_id from public.invoice_docs x where x.merged_into=d.id)) and state in ('sending','unknown');
- return jsonb_build_object('ok', true, 'version', d.version + 1, 'file_id', d.file_id, 'qb_stopped', nq, 'qb_busy', nb);
+ -- file_ids: every original of the invoice in page order (the answer renames them for the new version, as a posting does:
+ -- the name is made for the document's id and version, so a reconciliation asks for it again; the name itself does not change).
+ return jsonb_build_object('ok', true, 'version', d.version + 1, 'file_id', d.file_id, 'qb_stopped', nq, 'qb_busy', nb,
+  'file_ids', (select jsonb_agg(q.fid order by q.o) from (select d.file_id fid, coalesce(d.part_no, 0) o
+   union all select x.file_id, x.part_no from public.invoice_docs x where x.merged_into=d.id) q));
 end $$;
 
 -- Result of a rename/move in Drive. Failure keeps the reconciliation and is retried.
@@ -4270,7 +4274,7 @@ end $$;
 create function public.invoice_qb_doc_states(p jsonb) returns jsonb
 language plpgsql stable security invoker set search_path=public,pg_temp as $$
 declare actor uuid := nullif(p->>'actor','')::uuid; q jsonb := public.invoice_setting('qb'); res jsonb := '{}'::jsonb; v_id text;
- d public.invoice_docs; h public.invoice_docs; o public.invoice_qb_outbox; m record; shas text[]; v_last text; rd jsonb;
+ d public.invoice_docs; h public.invoice_docs; o public.invoice_qb_outbox; m record; shas text[]; v_last text; v_cid uuid; rd jsonb;
 begin
  perform public.invoice_require(actor, array['ceo','gm','office','office_crew']);
  if jsonb_typeof(p->'doc_ids') is distinct from 'array' or jsonb_array_length(p->'doc_ids') > 200 then raise exception 'bad_value'; end if;
@@ -4292,16 +4296,20 @@ begin
    order by ob.sent_at desc nulls last limit 1;
   end if;
   if o.id is null then
-   select ob.last_error into v_last from public.invoice_qb_outbox ob where ob.to_address=q->>'to' and ob.sha256 = coalesce(m.composite, h.sha256)
+   select ob.id, ob.last_error into v_cid, v_last from public.invoice_qb_outbox ob where ob.to_address=q->>'to' and ob.sha256 = coalesce(m.composite, h.sha256)
     and ob.state='cancelled' order by ob.updated_at desc limit 1;
    rd := public.invoice_qb_ready(h.file_id);
+   -- can_retry: 「もう一度送る」 would wait it again now (the same rule as invoice_qb_retry; the screen shows the button only then)
    res := res || jsonb_build_object(d.id::text, jsonb_build_object('state', 'not_sent', 'why', coalesce(v_last, rd->>'why'),
-     'cancelled', v_last is not null, 'pages', coalesce(array_length(shas, 1), 1)));
+     'cancelled', v_last is not null, 'cancelled_id', v_cid, 'pages', coalesce(array_length(shas, 1), 1),
+     'can_retry', coalesce(v_last in ('content_changed','merge_changed','recon_cancelled') and not (rd ? 'why')
+       and (v_last <> 'recon_cancelled' or h.recon_status = 'reconciled'), false)));
   else
    res := res || jsonb_build_object(d.id::text, jsonb_build_object('id', o.id,
      'state', case o.state when 'pending' then 'queued' when 'sending' then 'sending' when 'sent' then 'sent' when 'error' then 'failed' else o.state end,
      'manual', o.route = 'manual', 'combined', o.parts is not null, 'attempts', o.attempts, 'stopped', o.state = 'error' and o.attempts >= 5,
-     'last_error', o.last_error, 'sent_at', o.sent_at, 'next_at', o.next_at, 'pages', coalesce(array_length(shas, 1), 1)));
+     'last_error', o.last_error, 'sent_at', o.sent_at, 'next_at', o.next_at, 'pages', coalesce(array_length(shas, 1), 1),
+     'route', o.route, 'can_retry', o.state = 'error' and o.route = 'invoice-intake'));
   end if;
  end loop;
  return jsonb_build_object('enabled', coalesce((q->>'enabled')::boolean, false), 'route', q->>'route', 'states', res);
@@ -4325,6 +4333,10 @@ begin
   -- not sent again now: the answer says why (the screen shows it); nothing is changed
   if rd ? 'why' then return jsonb_build_object('ok', false, 'why', rd->>'why'); end if;
   if 'qb-' || (rd->>'sha256') || '-' || md5(q->>'to') is distinct from o.attempt_key then return jsonb_build_object('ok', false, 'why', 'changed'); end if;
+  -- stopped by taking the reconciliation back: sent again only once it is reconciled again (reconciling again also waits it again itself)
+  if o.last_error = 'recon_cancelled' and (select x.recon_status from public.invoice_docs x where x.id=(rd->>'doc_id')::uuid) is distinct from 'reconciled' then
+   return jsonb_build_object('ok', false, 'why', 'not_reconciled');
+  end if;
   update public.invoice_qb_outbox set state='pending', route=q->>'route', attempts=least(attempts, 4), reserved_by=null, reserved_at=null,
    next_at=null, last_error=null, updated_at=now() where id=o.id;
  else raise exception 'invalid_state';

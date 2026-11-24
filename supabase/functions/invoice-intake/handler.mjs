@@ -1399,8 +1399,15 @@ export function createHandler(deps) {
     reconcile: thenSummary(async (a, b) => {
       const r = await db.rpc('invoice_reconcile', { actor: a, doc_id: b.doc_id, version: b.version, result: b.result, note: b.note || '', diff: b.diff || null,
         stop_qb: b.result !== 'reconciled' });
-      if (b.result === 'reconciled' && r && r.file_id) {
-        try { r.qb = await qbAfterPost([r.file_id], await context(), 'reconcile'); } catch (e) { r.qb = null; console.error('invoice-intake qb after reconcile', safeErr(e)); }
+      if (r && r.file_id) {
+        const files = Array.isArray(r.file_ids) && r.file_ids.length ? r.file_ids : [r.file_id];
+        let ctx = null; try { ctx = await context(); } catch (e) { ctx = null; }
+        // The saved reconciliation raised the document's version, and the name is made for its id and version: the originals
+        // are named again now (the name stays the same, Drive is not changed then), as after a posting; the worker otherwise.
+        if (ctx && ctx.mode.rename) { r.rename = []; for (const f of files) r.rename.push(await renameNow(a, f, ctx)); }
+        if (b.result === 'reconciled' && ctx) {
+          try { r.qb = await qbAfterPost(files, ctx, 'reconcile'); } catch (e) { r.qb = null; console.error('invoice-intake qb after reconcile', safeErr(e)); }
+        }
       }
       return r;
     }, b => ids(b.doc_id)),

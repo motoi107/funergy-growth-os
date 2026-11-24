@@ -209,7 +209,7 @@ test('the small row for the dashboards: only rises, falls and 要確認 of the l
   assert.equal(a.hash, (await S.row()).hash);
 });
 
-test('deploy/invoice-price-compare-v1123: copies of the repository files; the one-file function is today’s sources; the steps in order; making it now changes nothing else',
+test('deploy/invoice-price-compare-v1123: copies of the repository files; the one-file function is as handed over; the steps in order; making it now changes nothing else',
   { skip: process.env.INVOICE_MUTATION_RUN ? 'a mutation run checks behaviour only' : false }, async () => {
   const crypto = await import('node:crypto');
   const rd = f => fs.readFileSync(new URL('../' + f, import.meta.url));
@@ -224,7 +224,8 @@ test('deploy/invoice-price-compare-v1123: copies of the repository files; the on
   const want = ['supabase/functions/invoice-intake/index.ts', 'supabase/functions/invoice-intake/handler.mjs',
     ...fs.readdirSync(new URL('../invoice/', import.meta.url)).filter(f => f.endsWith('.mjs') && !AFTER_BUNDLE.includes(f)).sort().map(f => 'invoice/' + f)];
   assert.deepEqual(Object.keys(src.sources).sort(), want.sort());
-  for (const f of want) assert.equal(src.sources[f], sha(rd(f)), f + ' changed after the bundle was built (build it again)');
+  // The function moved on with 20261216090000 (B-3・deploy/invoice-qb-reconcile-v1210/ is today's sources); this bundle stays as handed over.
+  assert.equal(src.bundle_sha256, '145c73f4528e78db21467564986d9581bb5ba96bf84e18f63b34fa1ab72b3ceb');
   const bundle = rd(D + '3_関数_invoice-intake_index.ts').toString();
   assert.ok(!/^\s*import\s/m.test(bundle) && /Deno\.serve\(createHandler/.test(bundle));
   for (const k of ['invoice_price_compare_publish', 'invoice_purchase_publish', 'invoice_link_apply', 'invoice_qb_send_check']) assert.ok(bundle.includes(k), k);

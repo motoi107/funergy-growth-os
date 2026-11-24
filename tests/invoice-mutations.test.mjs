@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const pglite = path.join(root, 'tests/runtime/node_modules/@electric-sql/pglite/dist/index.js');
+const pdflib = path.join(root, 'tests/runtime/node_modules/pdf-lib/cjs/index.js');
 const FILES = ['invoice', 'db/invoice-intake.sql', 'db/invoice-intake-precheck.sql', 'db/invoice-intake-postcheck.sql', 'db/invoice-intake-rollback.sql', 'db/invoice-intake-office-crew-revert.sql', 'supabase/migrations/20261007090000_invoice_intake.sql', 'supabase/migrations/20261007160000_invoice_intake_review_fixes.sql', 'supabase/migrations/20261007200000_invoice_intake_accounting_checks.sql', 'supabase/migrations/20261008090000_invoice_intake_store_folder.sql', 'supabase/migrations/20261009170000_invoice_office_crew_review.sql', 'supabase/migrations/20261009190000_invoice_office_crew_accounting.sql', 'supabase/migrations/20261012120000_invoice_rename_after_post.sql', 'supabase/migrations/20261019090000_invoice_purchase_summary.sql', 'supabase/migrations/20261020090000_invoice_reconciled_folder.sql', 'supabase/migrations/20261021090000_invoice_multi_file.sql', 'supabase/functions/invoice-intake/handler.mjs', 'tests/invoice-intake.test.mjs', 'tests/invoice-rules.test.mjs', 'tests/invoice-adapters.test.mjs',
   'db/invoice-purchase-stop.sql', 'db/invoice-purchase-start.sql', 'db/invoice-purchase-report.sql', 'db/invoice-purchase-before-start-check.sql', 'index.html', 'tests/invoice-purchase-summary.test.mjs', 'tests/invoice-purchase-ui.test.mjs', 'tests/invoice-multi-file-ui.test.mjs',
   'supabase/migrations/20261022090000_invoice_vendor_merge.sql', 'tests/invoice-vendor-merge.test.mjs', 'tests/invoice-vendor-merge-ui.test.mjs',
@@ -18,7 +19,8 @@ const FILES = ['invoice', 'db/invoice-intake.sql', 'db/invoice-intake-precheck.s
   'supabase/migrations/20261026090000_invoice_qb_gmail.sql', 'tests/invoice-qb-gmail.test.mjs', 'tests/invoice-qb-gmail-ui.test.mjs', 'db/invoice-qb-sender.sql',
   'supabase/migrations/20261029100000_invoice_purchase_posted.sql', 'db/invoice-purchase-posted-revert.sql', 'db/invoice-purchase-posted-compare.sql',
   'supabase/migrations/20261101100000_invoice_vendor_seed_skip_deleted.sql',
-  'supabase/migrations/20261103090000_invoice_price_compare.sql', 'tests/invoice-price-compare.test.mjs', 'tests/purchase-price-ui.test.mjs'];
+  'supabase/migrations/20261103090000_invoice_price_compare.sql', 'tests/invoice-price-compare.test.mjs', 'tests/purchase-price-ui.test.mjs',
+  'supabase/migrations/20261216090000_invoice_qb_reconcile.sql', 'tests/invoice-qb-reconcile.test.mjs'];
 
 function run(mutations, testFile) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'inv-mut-'));
@@ -32,7 +34,7 @@ function run(mutations, testFile) {
     // NODE_TEST_CONTEXT would make the child report to this runner instead of setting its exit code.
     const { NODE_TEST_CONTEXT, ...env } = process.env;
     // INVOICE_MUTATION_RUN: the deploy-folder check (hashes of the sources) is skipped, so that only behaviour can notice a change.
-    const r = spawnSync(process.execPath, ['--test', path.join(dir, testFile)], { env: { ...env, BOT_PGLITE_MODULE: pglite, INVOICE_MUTATION_RUN: '1' }, encoding: 'utf8', timeout: 240000 });
+    const r = spawnSync(process.execPath, ['--test', path.join(dir, testFile)], { env: { ...env, BOT_PGLITE_MODULE: pglite, INVOICE_PDFLIB_MODULE: pdflib, INVOICE_MUTATION_RUN: '1' }, encoding: 'utf8', timeout: 240000 });
     if (r.status === null) throw new Error('test run did not finish: ' + (r.signal || r.error));
     return r.status;
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
@@ -47,6 +49,7 @@ const VR = 'tests/invoice-vendor-register.test.mjs', VD = 'tests/invoice-vendor-
 const LK = 'tests/invoice-item-link.test.mjs', LU = 'tests/invoice-item-link-ui.test.mjs';   // 紐づけ 段階 1（Moto 2026-10-18・UI案55）
 const QG = 'tests/invoice-qb-gmail.test.mjs', QU = 'tests/invoice-qb-gmail-ui.test.mjs';   // QuickBooks からすぐ（Moto 2026-10-18・UI案56）
 const PC = 'tests/invoice-price-compare.test.mjs', PP = 'tests/purchase-price-ui.test.mjs';   // 仕入れの単価を比べる（10/30 の依頼 ②）
+const RC = 'tests/invoice-qb-reconcile.test.mjs';   // 照合済み → QuickBooks（Moto 2026-11-23・B-3）
 const CASES = [
   ['price jump check removed', UNIT, [['invoice/rules.mjs', "if (changedAtLeast(oldR, newR, st.price_jump_pct ?? 15)) r.push('price_jump');", '']]],
   ['total check removed', UNIT, [['invoice/rules.mjs', 'if (Math.abs(calc - h.total_cents) > tol)', 'if (false)']]],
@@ -63,7 +66,7 @@ const CASES = [
   ['QuickBooks route not checked (worker, posting and database)', E2E, [
     ['supabase/functions/invoice-intake/handler.mjs', "    if (ctx.qb.enabled && QB_ROUTES.includes(ctx.qb.route)) {", '    if (ctx.qb.enabled) {'],
     ['supabase/functions/invoice-intake/handler.mjs', "    if (!ctx.qb.enabled || !QB_ROUTES.includes(ctx.qb.route) || !files.length) return null;", '    if (!ctx.qb.enabled || !files.length) return null;'],
-    ['db/invoice-intake.sql', " if coalesce(q->>'route','') not in ('invoice-intake','external') then return jsonb_build_object('queued', false, 'why', 'route_not_assigned'); end if;", '']]],
+    ['db/invoice-intake.sql', " if coalesce(q->>'route','') not in ('invoice-intake','external') then return jsonb_build_object('why', 'route_not_assigned'); end if;", '']]],
   ['rows of the outside forwarder sent from here (the reservation)', QG, [
     ['db/invoice-intake.sql', "and attempts < 5 and route='invoice-intake' order by created_at", 'and attempts < 5 order by created_at']]],
   ['forwarder key not checked', E2E, [['supabase/functions/invoice-intake/handler.mjs',
@@ -96,12 +99,12 @@ const CASES = [
   ['possible duplicates forwarded before a decision', E2E, [['db/invoice-intake.sql',
     "  where f.source='drive' and f.current_sha256 is not null and f.intake_status='posted'\n", "  where f.source='drive' and f.current_sha256 is not null and f.intake_status in ('review','posted')\n"],
     ['db/invoice-intake.sql', "   and not exists(select 1 from public.invoice_docs d where d.file_id=f.id and d.sha256=f.current_sha256 and d.status='review')\n", ""],
-    ['db/invoice-intake.sql', "  return jsonb_build_object('queued', false, 'why', 'not_ready');\n", "  null;\n"]]],
+    ['db/invoice-intake.sql', "  return jsonb_build_object('why', 'not_ready');\n", "  null;\n"]]],
   ['C1: a failed or pending reading is forwarded', E2E, [['db/invoice-intake.sql',
     "  where f.source='drive' and f.current_sha256 is not null and f.intake_status='posted'\n", "  where f.source='drive' and f.current_sha256 is not null and f.intake_status not in ('pending','processing','duplicate','unsupported')\n"],
     ['db/invoice-intake.sql', "   and exists(select 1 from public.invoice_docs d0 where d0.file_id=f.id and d0.sha256=f.current_sha256 and d0.status='posted')\n", ""],
     ['db/invoice-intake.sql', "   and not exists(select 1 from public.invoice_docs d where d.file_id=f.id and d.sha256=f.current_sha256 and d.status='review')\n", ""],
-    ['db/invoice-intake.sql', "  return jsonb_build_object('queued', false, 'why', 'not_ready');\n", "  null;\n"]]],
+    ['db/invoice-intake.sql', "  return jsonb_build_object('why', 'not_ready');\n", "  null;\n"]]],
   ['C2: a correction forgets the records registered in the app', E2E, [['supabase/functions/invoice-intake/handler.mjs',
     "packing: result.reasons.some(r => r.code === 'packing_list') }, existing, app));\n    // What the reading", "packing: result.reasons.some(r => r.code === 'packing_list') }, existing, []));\n    // What the reading"]]],
   ['C3: a posted invoice is corrected into a mismatch without acknowledgement', E2E, [['db/invoice-intake.sql',
@@ -190,8 +193,8 @@ const CASES = [
     "if coalesce((v->>'auto_post')::boolean,false) and public.invoice_actor_role(actor) not in ('ceo','gm')",
     "if coalesce((v->>'auto_post')::boolean,false) and public.invoice_actor_role(actor) not in ('ceo','gm','office_crew')"]]],
   ['事務Crew: cannot reconcile', E2E, [['db/invoice-intake.sql',
-    "create function public.invoice_reconcile(p jsonb) returns jsonb\nlanguage plpgsql security invoker set search_path=public,pg_temp as $$\ndeclare d public.invoice_docs; actor uuid := nullif(p->>'actor','')::uuid; r text := p->>'result';\nbegin\n perform public.invoice_require(actor, array['ceo','gm','office','office_crew']);",
-    "create function public.invoice_reconcile(p jsonb) returns jsonb\nlanguage plpgsql security invoker set search_path=public,pg_temp as $$\ndeclare d public.invoice_docs; actor uuid := nullif(p->>'actor','')::uuid; r text := p->>'result';\nbegin\n perform public.invoice_require(actor, array['ceo','gm','office']);"]]],
+    "create function public.invoice_reconcile(p jsonb) returns jsonb\nlanguage plpgsql security invoker set search_path=public,pg_temp as $$\ndeclare d public.invoice_docs; actor uuid := nullif(p->>'actor','')::uuid; r text := p->>'result'; nq int := 0; nb int := 0;\nbegin\n perform public.invoice_require(actor, array['ceo','gm','office','office_crew']);",
+    "create function public.invoice_reconcile(p jsonb) returns jsonb\nlanguage plpgsql security invoker set search_path=public,pg_temp as $$\ndeclare d public.invoice_docs; actor uuid := nullif(p->>'actor','')::uuid; r text := p->>'result'; nq int := 0; nb int := 0;\nbegin\n perform public.invoice_require(actor, array['ceo','gm','office']);"]]],
   ['事務Crew: cannot send a forwarding again', E2E, [['db/invoice-intake.sql',
     "  perform public.invoice_require(nullif(p->>'actor','')::uuid, array['ceo','gm','office','office_crew']);\n end if;",
     "  perform public.invoice_require(nullif(p->>'actor','')::uuid, array['ceo','gm','office']);\n end if;"]]],
@@ -205,13 +208,13 @@ const CASES = [
   ['QB: a posted original waiting for its name is a candidate', E2E, [
     ['db/invoice-intake.sql', "   and f.id not in (select w.file_id from public.invoice_rename_waiting_all() w)\n", ""]]],
   ['QB: a posted original waiting for its name can be queued', E2E, [
-    ['db/invoice-intake.sql', " if public.invoice_rename_waiting(f.id) then return jsonb_build_object('queued', false, 'why', 'rename_waiting'); end if;\n", ""]]],
+    ['db/invoice-intake.sql', " if public.invoice_rename_waiting(f.id) then return jsonb_build_object('why', 'rename_waiting', 'doc_id', v_doc); end if;\n", ""]]],
   ['QB: originals saved before the start moment are forwarded', E2E, [['db/invoice-intake.sql',
     " if s ~ '^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}(:\\d{2}(\\.\\d+)?)?(Z|[+-]\\d{2}:\\d{2})$' then return s::timestamptz; end if;\n",
     " if s ~ '^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}(:\\d{2}(\\.\\d+)?)?(Z|[+-]\\d{2}:\\d{2})$' then return s::date::timestamp at time zone 'Pacific/Honolulu'; end if;\n"]]],
   ['QB: the candidates ignore the start', E2E, [['db/invoice-intake.sql', "   and f.drive_created_at >= (select public.invoice_qb_since_at())\n", ""]]],
   ['QB: queuing ignores the start', E2E, [['db/invoice-intake.sql',
-    " if not coalesce(f.drive_created_at >= public.invoice_qb_since_at(), false) then return jsonb_build_object('queued', false, 'why', 'before_since'); end if;\n", ""]]],
+    " if not coalesce(f.drive_created_at >= public.invoice_qb_since_at(), false) then return jsonb_build_object('why', 'before_since'); end if;\n", ""]]],
   ['QB: a start date begins at midnight UTC instead of Hawaii', E2E, [['db/invoice-intake.sql',
     "then return s::date::timestamp at time zone 'Pacific/Honolulu'; end if;\n", "then return s::date::timestamp at time zone 'UTC'; end if;\n"]]],
   ['QB: a broken start value stops the worker', E2E, [['db/invoice-intake.sql', "exception when others then return null;\nend $$;\n", "end $$;\n"]]],
@@ -304,14 +307,14 @@ const CASES = [
   ['purchases: rows changed from outside stay changed', PS, [['db/invoice-intake.sql', "  if v_sum is not null then\n   v_bad := ", "  if false then\n   v_bad := "]]],
   ['purchases: a store that lost its invoices keeps the old lines row', PS, [['db/invoice-intake.sql', " union select jsonb_object_keys(coalesce(v_pub.lines, '{}'::jsonb)) loop", ' loop']]],
   ['purchases: an invoice moved to another month stays in the old one', PS, [['db/invoice-intake.sql', '    where cardinality(v_ids) > 0 and exists (select 1', '    where false and exists (select 1']]],
-  ['purchases: an action writes no month (wrong invoice)', PS, [['supabase/functions/invoice-intake/handler.mjs', "diff: b.diff || null }), b => ids(b.doc_id)),", "diff: b.diff || null }), b => ids()),"]]],
+  ['purchases: an action writes no month (wrong invoice)', PS, [['supabase/functions/invoice-intake/handler.mjs', "      return r;\n    }, b => ids(b.doc_id)),", "      return r;\n    }, b => ids()),"]]],
   ['purchases: statement check without a role', PS, [['db/invoice-intake.sql', " perform public.invoice_require(v_actor, array['ceo','gm','office','office_crew']);\n", '']]],
   ['purchases: statement check in a closed month', PS, [['db/invoice-intake.sql', " if v_closed is not null and v_ym <= v_closed then raise exception 'closed_month'; end if;\n", '']]],
   ['purchases: an unclassified amount counted as confirmed', PS, [['db/invoice-intake.sql', " or needs_adjustment or unclass_m<>0 or tp is null then 'E'", " or needs_adjustment or tp is null then 'E'"]]],
   ['purchases: several stores on one page counted in full', PS, [['db/invoice-intake.sql', "    when multi or coalesce(currency,'USD')<>'USD'", "    when coalesce(currency,'USD')<>'USD'"]]],
   ['purchases: the stop switch is ignored', PS, [['db/invoice-intake.sql', " if coalesce((public.invoice_setting('purchase')->>'off')::boolean, false) then\n", " if false then\n"]]],
   ['purchases: a line class from the vendor even when the product is mapped', PS, [['db/invoice-intake.sql', "   coalesce(l4.mcls, case l4.food_kind when 'food' then 'food' when 'nonfood' then 'nonfood' end, 'unclass') c,", "   coalesce(case l4.food_kind when 'food' then 'food' when 'nonfood' then 'nonfood' end, l4.mcls, 'unclass') c,"]]],
-  ['purchases: the summary is not written after reconciling', PS, [['supabase/functions/invoice-intake/handler.mjs', '    reconcile: thenSummary((a, b) =>', '    reconcile: ((a, b) =>']]],
+  ['purchases: the summary is not written after reconciling', PS, [['supabase/functions/invoice-intake/handler.mjs', '    reconcile: thenSummary(async (a, b) => {', '    reconcile: (fn => fn)(async (a, b) => {']]],
   ["purchases: the outside forwarder's send is not followed", PS, [['supabase/functions/invoice-intake/handler.mjs', "      if (b.state === 'sent') await publishSummary(null, { outbox_id: String(b.id || '') });\n", '']]],
   ['purchases: the worker does not write the summary with intake off', PS, [['supabase/functions/invoice-intake/handler.mjs', 'const st = { off: true }; await publishSummary(st);', 'const st = { off: true };']]],
   // the app (v1077・v1078)
@@ -410,8 +413,9 @@ const CASES = [
   ["段階3: the reconciliation stays when a page is added", E2E, [["db/invoice-intake.sql", "  recon_status=case when y.status='posted' then 'unreconciled' else y.recon_status end,", "  recon_status=y.recon_status,"]]],
   ["段階3: merged pages are counted in the purchases", E2E, [["db/invoice-intake.sql", "   -- A page merged into another invoice is counted in that invoice (its lines moved there, UI案50 5).\n   and d.status <> 'merged'\n", ""]]],
   ["段階3: merged pages are listed", E2E, [["db/invoice-intake.sql", "   and (d.status <> 'merged' or p->>'status' = 'merged')\n", ""]]],
-  ["段階3: an invoice of pages goes to the ledger (enqueue)", E2E, [["db/invoice-intake.sql", "  return jsonb_build_object('queued', false, 'why', 'multi_file');\n", ""]]],
-  ["段階3: an invoice of pages is a ledger candidate", E2E, [["db/invoice-intake.sql", "   and not exists(select 1 from public.invoice_docs d0 join public.invoice_docs x on x.merged_into=d0.id where d0.file_id=f.id and d0.sha256=f.current_sha256 and d0.status='posted')\n  order by f.ingested_at", "  order by f.ingested_at"]]],
+  // B-3 (Moto 2026-11-23): this system sends an invoice of pages as one PDF; the old route (external) still keeps it out of its ledger.
+  ["段階3: an invoice of pages goes to the ledger (enqueue)", E2E, [["db/invoice-intake.sql", "  if coalesce(q->>'route','') <> 'invoice-intake' then return jsonb_build_object('why', 'multi_file', 'doc_id', m.head_doc); end if;\n", ""]]],
+  ["段階3: an invoice of pages is a ledger candidate", E2E, [["db/invoice-intake.sql", "   and (m.head_file is null or (coalesce(q->>'route','') = 'invoice-intake' and m.why is null))\n", "   and (m.head_file is null or m.why is null)\n"]]],
   ["段階3: pages are named without _p", E2E, [["invoice/naming.mjs", "  if (Number(part) >= 1) base += '_p' + Math.floor(Number(part));\n", ""]]],
   ["段階3: the page number is not passed to the name", E2E, [["supabase/functions/invoice-intake/handler.mjs", "part: Number(t.parts) > 1 ? Number(t.part_no) || 1 : null,", "part: null,"]]],
   ["段階3: the rename key is the same for every page", E2E, [["db/invoice-intake.sql", " select f.id, d.id, d.id::text || ':' || d.version || case when np.n > 1 then ':p' || coalesce(d0.part_no, 1) else '' end\n", " select f.id, d.id, d.id::text || ':' || d.version\n"]]],
@@ -688,7 +692,7 @@ const CASES = [
   ["即時: a mail to another address counts", QG, [["invoice/gmail.mjs", "    if (!hdr(m, 'to').toLowerCase().includes(toLc)) continue;\n", ""]]],
   ["即時: the same Drive file with another content counts as sent", QG, [["invoice/gmail.mjs", "    if (!shaMark) { conflict = conflict || { reason: 'same_drive_id_other_content', messageId: m.id }; continue; }", "    if (!shaMark) { sent.push({ id: m.id, own: false, internalDate: 0 }); continue; }"]]],
   ["即時: a mail without its one attachment counts as sent", QG, [["invoice/gmail.mjs", "    const okAtt = att.length === 1 && (size == null || att[0].size == null || Number(att[0].size) === Number(size));", "    const okAtt = true;"]]],
-  ["即時: the Drive bytes are not compared", QG, [["supabase/functions/invoice-intake/handler.mjs", "    if ((await sha256Hex(bytes)) !== o.sha256) { await db.rpc('invoice_qb_content_changed', { id: o.id, owner }); return 'content_changed'; }\n    // 3)", "    // 3)"]]],
+  ["即時: the Drive bytes are not compared", QG, [["supabase/functions/invoice-intake/handler.mjs", "      if ((await sha256Hex(bytes)) !== o.sha256) { await db.rpc('invoice_qb_content_changed', { id: o.id, owner }); return 'content_changed'; }\n    }\n    // 3)", "    }\n    // 3)"]]],
   ["即時: no last check before sending", QG, [["supabase/functions/invoice-intake/handler.mjs", "    try { chk = await db.rpc('invoice_qb_send_check', { id: o.id, owner, sha256: o.sha256, attempt_key: o.attempt_key, drive_file_id: f.drive_file_id }); }", "    try { chk = { ok: true }; }"]]],
   ["即時: an old reservation is used", QG, [["db/invoice-intake.sql", " if o.reserved_at < now() - interval '13 minutes' then return jsonb_build_object('ok', false, 'why', 'reservation_expired'); end if;\n", ""]]],
   ["即時: the start is not read again", QG, [["db/invoice-intake.sql", "  when not coalesce(f.drive_created_at >= public.invoice_qb_since_at(), false) then 'before_since'\n", ""]]],
@@ -777,6 +781,24 @@ const CASES = [
   ["単価 app: a row taken back stays on the device", PP, [["index.html", "      if (!rows.length) { if (pcxRaw(k) !== null) _lsRawDel(k); return true; }", "      if (!rows.length) return true;"]]],
   ["単価 app: a stale copy is not said", PP, [["index.html", "  if (D && A0 && A0.fail) h +=", "  if (false) h +="]]],
   ["単価 app: a later purchase without a record is not shown", PP, [["index.html", "(pcxNum(g.nr) && g.st !== 'not_recorded' ? '<div style=\"font-size:10px;color:#b45309;margin-top:2px\">'", "(false ? '<div style=\"font-size:10px;color:#b45309;margin-top:2px\">'"]]],
+  // B-3（Moto 2026-11-23）：照合済み → QuickBooks。送る条件は前のまま、照合が送り始めるきっかけ・状態・もう一度送る・照合取消。
+  ["B-3: reconciling does not start the send", RC, [["supabase/functions/invoice-intake/handler.mjs", "        if (b.result === 'reconciled' && ctx) {", "        if (false && ctx) {"]]],
+  ["B-3: the originals are not named again after reconciling", RC, [["supabase/functions/invoice-intake/handler.mjs", "        if (ctx && ctx.mode.rename) { r.rename = []; for (const f of files) r.rename.push(await renameNow(a, f, ctx)); }\n", ""]]],
+  ["B-3: only the first page is named again after reconciling", RC, [["supabase/functions/invoice-intake/handler.mjs", "        const files = Array.isArray(r.file_ids) && r.file_ids.length ? r.file_ids : [r.file_id];", "        const files = [r.file_id];"]]],
+  ["B-3: 照合取消 does not stop a send not started", RC, [["db/invoice-intake.sql", " if r <> 'reconciled' and d.recon_status = 'reconciled' and coalesce((p->>'stop_qb')::boolean, false) then", " if false then"]]],
+  ["B-3: a first 差異あり stops the send of the posting", RC, [["db/invoice-intake.sql", " if r <> 'reconciled' and d.recon_status = 'reconciled' and coalesce((p->>'stop_qb')::boolean, false) then", " if r <> 'reconciled' and coalesce((p->>'stop_qb')::boolean, false) then"]]],
+  ["B-3: 照合取消 takes back a send under way", RC, [["db/invoice-intake.sql", "x.merged_into=d.id)) and state in ('pending','error')\n             returning id)", "x.merged_into=d.id)) and state in ('pending','error','sending','unknown')\n             returning id)"]]],
+  ["B-3: a stopped send does not come back when reconciled again (queuing)", RC, [["db/invoice-intake.sql", "       or (o.last_error = 'recon_cancelled' and exists(", "       or (false and exists("]]],
+  ["B-3: a stopped send does not come back when reconciled again (candidates)", RC, [["db/invoice-intake.sql", "       or (o.last_error='recon_cancelled' and exists(", "       or (false and exists("]]],
+  ["B-3: 「もう一度送る」 sends an unknown result again", RC, [["db/invoice-intake.sql", " if o.state = 'error' and o.route = 'invoice-intake' then", " if o.state in ('error','unknown') and o.route = 'invoice-intake' then"]]],
+  ["B-3: 「もう一度送る」 takes the old route's rows", RC, [["db/invoice-intake.sql", " if o.state = 'error' and o.route = 'invoice-intake' then", " if o.state = 'error' then"]]],
+  ["B-3: 「もう一度送る」 does not start the send", RC, [["supabase/functions/invoice-intake/handler.mjs", "        try { const ctx = await context(); r.sending = qbKick(ctx, 'retry'); } catch { r.sending = false; }\n", ""]]],
+  ["B-3: anyone may read the send states", RC, [["db/invoice-intake.sql", "begin\n perform public.invoice_require(actor, array['ceo','gm','office','office_crew']);\n if jsonb_typeof(p->'doc_ids')", "begin\n if jsonb_typeof(p->'doc_ids')"]]],
+  ["B-3: anyone may read the unsent list", RC, [["db/invoice-intake.sql", "begin\n perform public.invoice_require(actor, array['ceo','gm','office','office_crew']);\n v_from :=", "begin\n v_from :="]]],
+  ["B-3: 「もう一度送る」 open to anyone", RC, [["db/invoice-intake.sql", "begin\n perform public.invoice_require(actor, array['ceo','gm','office','office_crew']);\n select * into o from public.invoice_qb_outbox where id=(p->>'id')::uuid for update;\n if o.id is null then raise exception 'not_found'; end if;\n if o.state = 'error'", "begin\n select * into o from public.invoice_qb_outbox where id=(p->>'id')::uuid for update;\n if o.id is null then raise exception 'not_found'; end if;\n if o.state = 'error'"]]],
+  ["B-3: the unsent list calls a send before the start explained", RC, [["db/invoice-intake.sql", "       when cl.rd->>'why' in ('before_since','not_new_intake') then false\n", ""]]],
+  ["B-3: the pages of an invoice are sent alone", RC, [["db/invoice-intake.sql", " if m.head_file is not null then\n  -- The old forwarder", " if false then\n  -- The old forwarder"]]],
+  ["B-3: the page bytes are not compared", RC, [["supabase/functions/invoice-intake/handler.mjs", "        if ((await sha256Hex(b)) !== pt.sha256) { await db.rpc('invoice_qb_content_changed', { id: o.id, owner }); return 'content_changed'; }\n", ""]]],
 ];
 
 test('every protection is covered by a failing test when removed', async (t) => {
