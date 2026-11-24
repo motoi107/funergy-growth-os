@@ -15,9 +15,11 @@ const MOD = html.slice(html.indexOf(B), html.indexOf(E) + E.length);
 const SQL = fs.readFileSync(new URL('../supabase/migrations/20261122090000_google_reviews.sql', import.meta.url), 'utf8');
 // v1209：見られる店・Places の回数の上限（この試験では上限を大きくする。上限そのものは google-places-v1209 の試験）
 const SQL1209 = fs.readFileSync(new URL('../supabase/migrations/20261215090000_google_places_caps.sql', import.meta.url), 'utf8');
+// v1209 の更新（11/23）：住所で確かめた店だけ・G4 以下は配属の店だけ（この試験の E8 は全店を見る事務Crew にした）
+const SQL1215 = fs.readFileSync(new URL('../supabase/migrations/20261215100000_google_places_scope.sql', import.meta.url), 'utf8');
 const SEES = { E5: { stores: [], am_stores: ['S1', 'S2'] }, E8: { stores: ['S1', 'S2'], am_stores: [] } };
 const NOW0 = Date.parse('2026-11-13T20:00:00Z');   // ハワイ 11/13 10:00
-const PEOPLE = { E1: ['ceo', 'Cora CEO'], E2: ['gm', 'Gabe GM'], E5: ['am', 'Ami Area'], E8: ['crew', 'Cam Crew'] };
+const PEOPLE = { E1: ['ceo', 'Cora CEO'], E2: ['gm', 'Gabe GM'], E5: ['am', 'Ami Area'], E8: ['office_crew', 'Cam Crew'] };
 const ACC = 'accounts/111', LOC1 = 'locations/901';
 const PLACE = 'ChIJ_test_place_000001';
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -49,6 +51,7 @@ async function server({ connect = true, from = '2026-10', loc = true } = {}) {
     alter default privileges in schema public grant all on functions to anon, authenticated;`);
   await pg.exec(SQL);
   await pg.exec(SQL1209);
+  await pg.exec(SQL1215);
   await pg.exec('update public.gr_settings set places_day_max = 5000, places_store_day_max = 5000, places_person_day_max = 5000, places_month_max = 100000, search_day_max = 5000, search_month_max = 100000');
   if (connect) await pg.exec(`update public.gr_bp set refresh_token = 'rt-secret', account = 'owner@example.test', status = 'ok', connected_at = now(), last_ok_at = '2026-11-13T14:30:00Z' where id = 1`);
   if (loc) {
@@ -67,7 +70,9 @@ async function server({ connect = true, from = '2026-10', loc = true } = {}) {
         [`${ACC}/${LOC1}/reviews/${n}`, r, c, who, at, rep]);
     }
   }
-  await pg.query('insert into public.gr_places (store_id, place_id) values ($1, $2)', ['S2', PLACE]);
+  // GM・CEO が住所で確かめて結んだ店（確かめた印つき）
+  await pg.query(`insert into public.gr_places (store_id, place_id, confirmed_place, confirm_how, confirmed_emp, confirmed_name, confirmed_at)
+    values ($1, $2, $2, 'address', 'E2', 'Gabe GM', now())`, ['S2', PLACE]);
   await pg.exec('set role service_role');
   const db = { async rpc(name, p) { const r = await pg.query(`select public.${name}($1::jsonb) as v`, [JSON.stringify(p ?? {})]); return r.rows[0].v; } };
   const g = fakeGoogle();
@@ -244,19 +249,30 @@ test('2 and terms (v1209): a store without Business Profile stays manual; Google
   assert.ok(!h.includes('javascript:'), 'no unsafe link');
   assert.ok(h.includes('href="https://maps.google.com/?cid=1"'), 'Google’s own link');
   assert.ok(!h.includes('places-key-xyz'), 'the key is never on the screen');
-  // 10 分たつと捨てる（また押すと取る）
-  a.S().now.S2.at -= 11 * 60000;
+  // 11/23 の更新：同じページを開いているあいだだけ出す（時間では捨てない＝1 店 1 日 1 回の上限なので）
+  a.S().now.S2.at -= 60 * 60000;
+  a.ctx.grPurgeNow();
+  h = a.ctx.grCardHtml(st, '2026-11');
+  assert.match(h, /口コミ 210 件/, 'kept while the same page visit lasts');
+  // ほかのページを描いたら捨てる。戻っても前の答えは使わない（また押すと取る）
+  a.ctx.renderPage('mypage');
+  assert.equal(a.S().now.S2, undefined, 'gone when another page is drawn');
+  a.ctx.renderPage('meeting');
   h = a.ctx.grCardHtml(st, '2026-11');
   assert.ok(!/口コミ 210 件/.test(h)); assert.match(h, /Google の評価と口コミを見る/);
-  // 会議・KPI設定から離れたら捨てる
+  // 押したあと答えが来る前にページを移ったら、遅れて来た答えは使わない
+  a.ctx.grLoadPlaces('S2'); a.ctx.renderPage('mypage'); await a.idle();
+  assert.equal(a.S().now.S2, undefined, 'a late answer after leaving is dropped');
+  a.ctx.renderPage('meeting');
   a.ctx.grLoadPlaces('S2'); await a.idle();
   assert.ok(a.S().now.S2 && a.S().now.S2.st === 'ok');
+  // 描き直しを通らずに離れたとき（念のため 1 分ごと）も捨てる
   a.ctx.curPage = 'mypage'; a.ctx.grPurgeNow();
   assert.equal(a.S().now.S2, undefined);
   // サーバーにも残らない（place_id だけ）
   await s.pg.exec('reset role');
   const cols = (await s.pg.query("select column_name from information_schema.columns where table_schema='public' and table_name='gr_places' order by 1")).rows.map(r => r.column_name);
-  assert.deepEqual(cols, ['place_id', 'set_at', 'set_emp', 'set_name', 'store_id']);
+  assert.deepEqual(cols, ['confirm_how', 'confirmed_at', 'confirmed_emp', 'confirmed_name', 'confirmed_place', 'place_id', 'set_at', 'set_emp', 'set_name', 'store_id'], 'Google の中身の列は無い（確かめた印はこちらの記録）');
   assert.deepEqual(a.wrote, []);
 });
 
@@ -269,7 +285,15 @@ test('4: KPI settings › Google reviews — GM can connect and pick; crew only 
   assert.match(h, /つながっています/); assert.match(h, /owner@example\.test/, 'GM sees the connected account');
   assert.match(h, /今すぐ取る/); assert.match(h, />切る</);
   assert.match(h, /自動（2026-10 から）/); assert.match(h, /Store One BP/);
-  assert.match(h, /grSearchOpen\('S2'\)/); assert.match(h, /grLocsOpen\('S1'\)/);
+  // 11/23 の更新：住所の目安の無い店は選べない（結べない）・確かめた店は「確かめ済み」
+  assert.ok(!/grSearchOpen\('S1'\)/.test(h), 'no hint → cannot pick'); assert.match(h, /住所の目安がありません/);
+  assert.match(h, /確かめ済み（住所で）/); assert.match(h, /grPlacesOpen\('S2'\)/); assert.match(h, /grLocsOpen\('S1'\)/);
+  assert.match(h, /上限は確かめた店の数から：1 店/);
+  await s.pg.exec('reset role');
+  await s.pg.query(`insert into public.gr_place_hint (store_id, addr, names) values ('S1', array['1','test'], array['store one'])`);
+  gm.ctx.grReloadTab(); await gm.idle();
+  h = gm.ctx.grTabHtml();
+  assert.match(h, /grSearchOpen\('S1'\)/, 'with a hint the store can be picked'); assert.match(h, /未設定（取りません）/);
   const crew = await app(s, 'E8');
   crew.ctx.grStart(); await crew.idle();
   crew.ctx.grTabHtml(); await crew.idle();
@@ -460,4 +484,125 @@ test('#151 revoked access: the settings line no longer says the hand entry is us
   assert.match(h, /それまで新しい口コミは入りません・つなぎ直すと止まったところから取ります/);
   assert.ok(!/それまでは手入力/.test(h.replace(/審査待ち[^<]*/g, '')));
   assert.ok(a.ctx.grAuto('S1'), 'still automatic, as the text now says');
+});
+
+test('v1209 (11/23): the dashboard card shows only the stores you see that are checked by address; it asks Google only when pressed; you can switch stores', async () => {
+  const s = await server();
+  const a = await app(s, 'E8');
+  a.ctx.grStart(); await a.idle();
+  let h = a.ctx.grDashCardHtml(['S1', 'S2']); await a.idle();
+  h = a.ctx.grDashCardHtml(['S1', 'S2']);
+  assert.match(h, /data-grdash="S1,S2"/); assert.match(h, /Google の評価と口コミ/);
+  assert.match(h, /Store Two/); assert.match(h, /grLoadPlaces\('S2'\)/);
+  assert.ok(!/grLoadPlaces\('S1'\)/.test(h), 'S1 is not checked by address → not on the card');
+  assert.ok(!/grDashPick/.test(h), 'one store → no switcher');
+  assert.ok(!a.calls.includes('places_now') && s.g.calls.length === 0, 'drawing the card does not ask Google');
+  // ダッシュボードで見ていない店は出さない
+  h = a.ctx.grDashCardHtml(['S1']);
+  assert.match(h, /見られる店のうち、Google マップの店を住所で確かめ済みの店はありません/);
+  assert.ok(!/KPI設定 › Google の口コミ で店を選んで/.test(h), 'crew is not told to pick');
+  // 2 店目も確かめると、選べる
+  await s.pg.exec('reset role');
+  await s.pg.query(`insert into public.gr_places (store_id, place_id, confirmed_place, confirm_how, confirmed_emp, confirmed_name, confirmed_at)
+    values ('S1', 'ChIJ_test_place_000002', 'ChIJ_test_place_000002', 'address', 'E2', 'Gabe GM', now())`);
+  await s.pg.exec('set role service_role');
+  a.ctx.grLoadKpi(true); await a.idle();
+  h = a.ctx.grDashCardHtml(['S1', 'S2']);
+  assert.match(h, /onchange="grDashPick\(this\.value\)"/);
+  assert.match(h, /<option value="S1" selected>Store One<\/option>/); assert.match(h, /data-grdash-body="S1"/);
+  a.ctx.grDashPick('S2');
+  h = a.ctx.grDashCardHtml(['S1', 'S2']);
+  assert.match(h, /<option value="S2" selected>/); assert.match(h, /data-grdash-body="S2"/);
+  a.ctx.grDashPick('<x>'); assert.equal(a.S().dash, 'S2', 'a bad id is ignored');
+  // 押すと Google に 1 回だけ聞く・口コミは最大 5 件で関連性の順の説明つき
+  a.ctx.grLoadPlaces('S2'); await a.idle();
+  h = a.ctx.grDashCardHtml(['S1', 'S2']);
+  assert.equal(a.calls.filter(x => x === 'places_now').length, 1);
+  assert.match(h, /Google が関連性の高い順に選んだ口コミです/); assert.match(h, /Pat/);
+  assert.ok(h.includes('https://maps.google.com/help/terms_maps/') && h.includes('https://policies.google.com/privacy'), 'Google terms and privacy links');
+  assert.ok(h.includes('<span class="gr-gm" translate="no">Google Maps</span>'));
+  // GM には選び方を案内する
+  const gm = await app(s, 'E2', { role: 'gm' });
+  gm.ctx.grStart(); gm.ctx.grDashCardHtml([]); await gm.idle();
+  assert.match(gm.ctx.grDashCardHtml([]), /KPI設定 › Google の口コミ で店を選んで確かめます/);
+  // 店のタブレットには出さない
+  const tab = await app(s, 'E8', { storeLogin: true, role: 'sl' });
+  assert.equal(tab.ctx.grDashCardHtml(['S1', 'S2']), '');
+  assert.deepEqual(a.wrote, []);
+});
+
+test('v1209 (11/23): picking a place — the server checks the address; a name that does not match asks first and links only on OK (recorded as by hand)', async () => {
+  const s = await server();
+  const P2 = 'ChIJ_test_place_000002';
+  s.g.places[P2] = { id: P2, displayName: { text: 'Other Bar' }, formattedAddress: '1 Test St, Honolulu, HI 96826' };
+  s.g.places.ChIJ_far_place_0000003 = { id: 'ChIJ_far_place_0000003', displayName: { text: 'Store One' }, formattedAddress: '999 Far Rd, Kailua, HI 96734' };
+  await s.pg.exec('reset role');
+  await s.pg.query(`insert into public.gr_place_hint (store_id, addr, names) values ('S1', array['1','test'], array['store one'])`);
+  await s.pg.exec('set role service_role');
+  const gm = await app(s, 'E2', { role: 'gm' });
+  gm.ctx.grStart(); gm.ctx.grTabHtml(); await gm.idle();
+  const asked = [];
+  // 1) 住所は合うが名前が違う → 確かめる（「キャンセル」なら結ばない）
+  gm.ctx.confirm = m => { asked.push(m); return false; };
+  gm.S().search = { sid: 'S1', items: [{ place_id: P2, name: 'Other Bar', address: '1 Test St' }] };
+  gm.ctx.grSearchPick(0); await gm.idle();
+  assert.equal(asked.length, 1);
+  assert.match(asked[0], /名前がこの店と合いません/); assert.match(asked[0], /Other Bar/); assert.match(asked[0], /1 Test St, Honolulu/);
+  await s.pg.exec('reset role');
+  assert.equal((await s.pg.query("select count(*)::int n from public.gr_places where store_id = 'S1'")).rows[0].n, 0, 'cancelled → not linked');
+  await s.pg.exec('set role service_role');
+  // 2) 「OK」→ confirm:true で押し直し・手で確かめた記録
+  gm.ctx.confirm = m => { asked.push(m); return true; };
+  gm.ctx.grSearchPick(0); await gm.idle();
+  await s.pg.exec('reset role');
+  const row = (await s.pg.query("select place_id, confirmed_place, confirm_how, confirmed_name from public.gr_places where store_id = 'S1'")).rows[0];
+  assert.deepEqual(row, { place_id: P2, confirmed_place: P2, confirm_how: 'manual', confirmed_name: 'Gabe GM' });
+  assert.ok(gm.toasts.some(([k, m]) => k === 'success' && /手で確かめて結びました/.test(m) && /Other Bar/.test(m)), JSON.stringify(gm.toasts));
+  // 3) 住所が違う → 結ばず、Google の店を見せる
+  await s.pg.query("delete from public.gr_places where store_id = 'S1'");
+  await s.pg.exec('set role service_role');
+  gm.S().search = { sid: 'S1', items: [{ place_id: 'ChIJ_far_place_0000003', name: 'Store One', address: '999 Far Rd' }] };
+  gm.ctx.grSearchPick(0); await gm.idle();
+  assert.ok(gm.toasts.some(([k, m]) => k === 'error' && /999 Far Rd/.test(m)), JSON.stringify(gm.toasts));
+  await s.pg.exec('reset role');
+  assert.equal((await s.pg.query("select count(*)::int n from public.gr_places where store_id = 'S1'")).rows[0].n, 0);
+  // Google に聞いたのは結ぶ確かめの 3 回だけ（Place Details の確かめ・中身は残さない）
+  assert.equal(s.g.calls.filter(x => x.startsWith('places.googleapis.com/v1/places/')).length, 4, 'cancel + OK retry (2) + far = 4 checks');
+  assert.deepEqual(gm.wrote, []);
+});
+
+test('v1209 (11/23): KPI settings for GM — today and month with what is left, the limits from the store count, stores linked outside the master, and the 1-a-day notice', async () => {
+  const s = await server();
+  await s.pg.exec('reset role');
+  await s.pg.exec(`create table public.stores (id text primary key, active boolean default true);
+    insert into public.stores (id) values ('S1'), ('S2'); grant select on public.stores to service_role;`);
+  await s.pg.query(`insert into public.gr_places (store_id, place_id) values ('S9', 'ChIJ_old_store_00000009')`);
+  await s.pg.exec('update public.gr_settings set places_store_day_max = 1, places_day_max = 40, places_month_max = 900');
+  await s.pg.exec('set role service_role');
+  const gm = await app(s, 'E2', { role: 'gm' });
+  gm.ctx.grStart(); gm.ctx.grTabHtml(); await gm.idle();
+  let h = gm.ctx.grTabHtml();
+  assert.match(h, /今日 0 \/ \d+ 回（残り \d+）・今月 0 \/ \d+ 回（残り \d+）/);
+  assert.match(h, /上限は確かめた店の数から：1 店 × 1 日 1 回/);
+  assert.match(h, /店舗マスターに無い店に Google の店が結ばれています（取りません）：S9/);
+  assert.match(h, /grPlaceUnset\('S9'\)/);
+  // 1 店 1 日 1 回：押したあとは「今日はもう取れません」と出る
+  gm.ctx.grLoadPlaces('S2'); await gm.idle();
+  const html2 = gm.ctx.grPlacesHtml('S2');
+  assert.match(html2, /口コミ 210 件/);
+  assert.match(html2, /この店の今日の分（1 店 1 日の上限）はこれで終わりです。この画面を離れると/);
+  gm.ctx.renderPage('mypage'); gm.ctx.renderPage('meeting');
+  gm.ctx.grLoadPlaces('S2'); await gm.idle();
+  const h3 = gm.ctx.grPlacesHtml('S2');
+  // 確かめた店が 1 店なので、1 日の天井（1 店 × 1 回）と店の上限が同じ 1 回
+  assert.match(h3, /(この店の今日の上限|今日の Google への問い合わせの上限)（1 回）に達しました/, h3);
+  assert.ok(!/口コミ 210 件/.test(h3));
+  assert.equal(s.g.calls.filter(x => x.startsWith('places.googleapis.com')).length, 1, 'the second press did not reach Google');
+  gm.ctx.grReloadTab(); await gm.idle();
+  h = gm.ctx.grTabHtml();
+  assert.match(h, /今日 1 \/ /, 'the press is counted');
+  const crew = await app(s, 'E8');
+  crew.ctx.grStart(); crew.ctx.grTabHtml(); await crew.idle();
+  h = crew.ctx.grTabHtml();
+  assert.ok(!/S9|Google への問い合わせ/.test(h), 'counts and orphans are for GM and CEO');
 });

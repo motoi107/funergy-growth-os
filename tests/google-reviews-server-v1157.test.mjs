@@ -11,8 +11,11 @@ import { createHandler, hstYm, hstPrevMonthStart } from '../supabase/functions/g
 const { PGlite } = await import(process.env.BOT_PGLITE_MODULE || './runtime/node_modules/@electric-sql/pglite/dist/index.js');
 const SQL = fs.readFileSync(new URL('../supabase/migrations/20261122090000_google_reviews.sql', import.meta.url), 'utf8');
 const SQL1209 = fs.readFileSync(new URL('../supabase/migrations/20261215090000_google_places_caps.sql', import.meta.url), 'utf8');
+const SQL1215 = fs.readFileSync(new URL('../supabase/migrations/20261215100000_google_places_scope.sql', import.meta.url), 'utf8');
 const NOW0 = Date.parse('2026-11-13T20:00:00Z');   // ハワイ 11/13 10:00
-const PEOPLE = { E1: ['ceo', 'Cora CEO'], E2: ['gm', 'Gabe GM'], E5: ['am', 'Ami Area'], E8: ['crew', 'Cam Crew'], E6: ['sl', 'Sam Store'] };
+// v1209 の更新（11/23）：G4 以下は配属の店だけになったので、この v1157 の試験の「GM・CEO でない人」は全店を見る事務Crew（E8）と経理（E6）にした
+//   （見られる店の決まりそのものは tests/google-places-server-v1209.test.mjs）
+const PEOPLE = { E1: ['ceo', 'Cora CEO'], E2: ['gm', 'Gabe GM'], E5: ['am', 'Ami Area'], E8: ['office_crew', 'Cam Crew'], E6: ['office', 'Sam Office'] };
 // v1209：見られる店（work-requests の whoami の stores・am_stores と同じ形）。CEO・GM は全店
 const SEES = { E5: { stores: [], am_stores: ['S1', 'S2'] }, E8: { stores: ['S1', 'S2'], am_stores: [] }, E6: { stores: ['S1', 'S2'], am_stores: [] } };
 const meOf = id => ({ emp: id, role: PEOPLE[id][0], name: PEOPLE[id][1], ...(SEES[id] || { stores: [], am_stores: [] }) });
@@ -43,7 +46,8 @@ function fakeGoogle() {
     }
     if (url.startsWith('https://places.googleapis.com/v1/places/')) {
       if (g.placesStatus !== 200) return J({ error: {} }, g.placesStatus);
-      assert.match(init.headers['X-Goog-FieldMask'], /reviews/);
+      // 結ぶときの確かめ（名前と住所だけ）と、見るとき（口コミも）
+      if (init.headers['X-Goog-FieldMask'] !== 'id,displayName,formattedAddress') assert.match(init.headers['X-Goog-FieldMask'], /reviews/);
       return J(g.place);
     }
     if (url === 'https://oauth2.googleapis.com/token') {
@@ -97,6 +101,11 @@ async function setup({ sql = true, env = {}, whoami, realWho = false, caps = fal
     alter default privileges in schema public grant all on functions to anon, authenticated;`);
   if (sql) await pg.exec(SQL);
   if (sql && sql !== 'v1157') await pg.exec(SQL1209);
+  if (sql === true) {
+    await pg.exec(SQL1215);
+    // 合成の店の住所の目安（偽の Google の店 1 Fake St・Fake Ramen One）
+    await pg.exec(`insert into public.gr_place_hint (store_id, addr, names) values ('S1', '{1,fake}', '{fake}'), ('S2', '{1,fake}', '{fake}')`);
+  }
   // v1157 の試験は回数の上限に当たらないように大きくする（上限そのものは v1209 の試験）
   if (sql && sql !== 'v1157' && !caps) await pg.exec(`update public.gr_settings set places_day_max = 5000, places_store_day_max = 5000, places_person_day_max = 5000,
     places_month_max = 100000, search_day_max = 5000, search_month_max = 100000`);
@@ -132,13 +141,13 @@ async function setup({ sql = true, env = {}, whoami, realWho = false, caps = fal
 
 test('the SQL runs twice; the public keys cannot read any table or run any function; functions run as the caller', async () => {
   const { pg } = await setup();
-  // v1157 の SQL をもう一度流したら v1209 の SQL ももう一度（v1157 の SQL は gr_place_set を前の版に戻す）
-  await pg.exec('reset role'); await pg.exec(SQL); await pg.exec(SQL1209);
+  // v1157 の SQL をもう一度流したら v1209・11/23 の SQL ももう一度・この順（前の SQL は gr_place_set などを前の版に戻す）
+  await pg.exec('reset role'); await pg.exec(SQL); await pg.exec(SQL1209); await pg.exec(SQL1215);
   const tables = (await pg.query(`select tablename from pg_tables where schemaname='public' and tablename like 'gr\\_%' order by 1`)).rows.map(r => r.tablename);
-  assert.deepEqual(tables, ['gr_bp', 'gr_bp_loc', 'gr_oauth', 'gr_places', 'gr_places_use', 'gr_reviews', 'gr_runs', 'gr_settings']);
+  assert.deepEqual(tables, ['gr_bp', 'gr_bp_loc', 'gr_oauth', 'gr_place_hint', 'gr_places', 'gr_places_use', 'gr_reviews', 'gr_runs', 'gr_settings']);
   for (const t of tables) assert.equal((await pg.query(`select relrowsecurity r from pg_class where relname=$1`, [t])).rows[0].r, true, t);
   const fns = (await pg.query(`select proname, prosecdef from pg_proc p join pg_namespace n on n.oid=p.pronamespace where nspname='public' and proname like 'gr\\_%'`)).rows;
-  assert.equal(fns.length, 26, 'v1157 の 21 ＋ v1209 の 5');
+  assert.equal(fns.length, 36, 'v1157 の 21 ＋ v1209 の 5 ＋ 11/23 の 10');
   assert.ok(fns.every(f => !f.prosecdef), 'security invoker');
   for (const role of ['anon', 'authenticated']) {
     await pg.exec(`set role ${role}`);
@@ -146,16 +155,16 @@ test('the SQL runs twice; the public keys cannot read any table or run any funct
     for (const f of ['gr_kpi', 'gr_status', 'gr_worker_key', 'gr_bp_creds', 'gr_reviews_put']) await assert.rejects(pg.query(`select public.${f}('{}'::jsonb)`), /permission denied/, role + ' ' + f);
     await pg.exec('reset role');
   }
-  // 26 の関数のどれも、公開の鍵では呼べない（PUBLIC も）・サーバーの鍵だけ
+  // 36 の関数のどれも、公開の鍵では呼べない（PUBLIC も）・サーバーの鍵だけ
   const sigs = (await pg.query(`select p.oid::regprocedure::text sig from pg_proc p join pg_namespace n on n.oid=p.pronamespace where nspname='public' and proname like 'gr\\_%'`)).rows.map(r => r.sig);
-  assert.equal(sigs.length, 26);
+  assert.equal(sigs.length, 36);
   for (const sig of sigs) {
     for (const role of ['anon', 'authenticated']) assert.equal((await pg.query(`select has_function_privilege($1, $2, 'execute') v`, [role, sig])).rows[0].v, false, role + ' ' + sig);
     assert.equal((await pg.query(`select has_function_privilege('service_role', $1, 'execute') v`, [sig])).rows[0].v, true, sig);
   }
-  // Google の決まり：Places から残すのは店と place ID だけ（評価・件数・口コミの列は無い）
+  // Google の決まり：Places から残すのは店と place ID だけ（評価・件数・口コミ・Google の名前と住所の列は無い。確かめた印はこちらの記録）
   const cols = (await pg.query(`select column_name from information_schema.columns where table_name='gr_places' order by ordinal_position`)).rows.map(r => r.column_name);
-  assert.deepEqual(cols, ['store_id', 'place_id', 'set_emp', 'set_name', 'set_at']);
+  assert.deepEqual(cols, ['store_id', 'place_id', 'set_emp', 'set_name', 'set_at', 'confirmed_place', 'confirm_how', 'confirmed_emp', 'confirmed_name', 'confirmed_at']);
   assert.equal((await pg.query('select count(*)::int n from public.gr_settings')).rows[0].n, 1);
   assert.match((await pg.query('select worker_key from public.gr_settings')).rows[0].worker_key, /^[0-9a-f]{64}$/);
 });

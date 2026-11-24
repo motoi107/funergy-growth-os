@@ -12,6 +12,13 @@
 // ・取る項目は表示に要るものだけ（評価・件数・口コミ最大 5 件・Google マップのリンク・帰属表示）。口コミは Google が関連性の順で返すもの。
 // ・店を探す（places_search）は GM・CEO だけ・Text Search Pro の項目だけ（評価・件数は取らない）・オアフ島の近くを先に。
 // ・口コミの中のリンク（投稿者・写真・元の口コミ・報告）は https の Google のアドレスだけを返す。
+// v1209 の更新（Moto さん 11/23 14:36 HST の依頼・docs/GOOGLE_PLACES_V1209_JA.md の 11）：
+// ・Google の決まりで、取った評価・口コミを残して毎朝配ることはできない（残してよいのは place ID だけ）。取るのは押したときだけのまま。
+// ・見られる店：CEO・GM・経理・事務Crew＝全店／AM＝担当（管轄）の店だけ／G4 以下＝配属の店だけ（応援の店は入れない）／
+//   G5 以上（AM 以外）＝今までどおり（GM・CEO が確かめた Corporate Chef は全店・ほかは whoami の店）。決めるのはここ（画面ではない）。
+// ・Google の店（place ID）は、Google の住所が店の住所の目安（SQL の gr_place_hint）と合うときだけ結ぶ（gr_place_confirm）。
+//   名前が合わない・同じ建物にほかの店がある（LaLa）ときは GM・CEO が手で確かめてから。確かめていない店は Google を呼ばない。
+// ・回数の上限は SQL（gr_places_take）：確かめた店の数 × 1 店 1 日の回数（はじめ 1 回）。
 
 export function postgrestDb({ fetch, url, key }) {
   const h = { apikey: key, authorization: 'Bearer ' + key, 'content-type': 'application/json' };
@@ -47,6 +54,10 @@ const CTRL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g;
 const txt = (v, n) => (typeof v === 'string' ? v.replace(CTRL, '').slice(0, n) : '');
 // v1209：店の ID の並び（whoami の stores・am_stores）
 const ids = v => (Array.isArray(v) ? [...new Set(v.filter(s => typeof s === 'string' && /^[A-Za-z0-9_-]{1,30}$/.test(s)))].slice(0, 60) : []);
+// グレード（whoami の grade：1〜7。分からなければ 0＝いちばん狭い G4 以下の決まり）
+const GRADE = v => (Number.isInteger(v) && v >= 0 && v <= 9 ? v : 0);
+// SQL が古い（関数・表が無い）か
+const missing = (e, re) => (e && e.status === 404) || re.test(String((e && e.message) || ''));
 // v1209：https の Google のアドレスだけ（投稿者・写真・元の口コミ・報告・店の Google マップ）。それ以外は空
 const GHOST = h => h === 'google.com' || h.endsWith('.google.com') || h.endsWith('.googleusercontent.com') || h.endsWith('.ggpht.com') || h === 'goo.gl' || h === 'maps.app.goo.gl';
 export function gurl(v) {
@@ -63,6 +74,8 @@ function hurl(v) {
 // 店の評価と口コミで取る項目（Place Details：Enterprise + Atmosphere の料金）。店を探すときの項目（Text Search Pro の料金）
 export const NOW_MASK = 'id,displayName,formattedAddress,googleMapsUri,rating,userRatingCount,reviews,attributions';
 export const SEARCH_MASK = 'places.id,places.displayName,places.formattedAddress,places.googleMapsUri,places.businessStatus';
+// 店を確かめるときの項目（Place Details：名前があるので Pro の料金。回数は「店を探す」と同じ上限で数える）
+export const CHECK_MASK = 'id,displayName,formattedAddress';
 const ALL_STORES = ['ceo', 'gm', 'office', 'office_crew'];   // 全店を見る役（アプリの getVisibleStores と同じ）
 const enc = new TextEncoder();
 const hex = buf => [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('');
@@ -126,7 +139,7 @@ export function createHandler(deps) {
     let a;
     if (typeof deps.whoami === 'function') {
       try { a = await deps.whoami(tok); } catch { return { err: 'auth_unavailable' }; }
-      a = a ? { emp: a.emp, role: a.role, name: a.name || '', stores: ids(a.stores), am_stores: ids(a.am_stores) } : { deny: 'pin' };
+      a = a ? { emp: a.emp, role: a.role, name: a.name || '', grade: GRADE(a.grade), stores: ids(a.stores), am_stores: ids(a.am_stores) } : { deny: 'pin' };
     } else {
       const r = await timed(wrUrl, { method: 'POST', headers: { apikey: anon, authorization: 'Bearer ' + anon, 'content-type': 'application/json' },
         body: JSON.stringify({ action: 'whoami', pin_session: tok }) }, 8000);
@@ -136,7 +149,7 @@ export function createHandler(deps) {
         const me = obj(r.j && r.j.me);
         a = me && typeof me.emp === 'string' && me.emp && me.emp.length <= 64
           ? { emp: me.emp, role: typeof me.role === 'string' ? me.role : '', name: typeof me.name === 'string' ? me.name.slice(0, 120) : '',
-              stores: ids(me.stores), am_stores: ids(me.am_stores) }
+              grade: GRADE(me.grade), stores: ids(me.stores), am_stores: ids(me.am_stores) }
           : { deny: 'pin' };
       }
     }
@@ -147,14 +160,24 @@ export function createHandler(deps) {
   }
   const who = a => ({ emp: a.emp, name: a.name || '' });
   const mgrOnly = a => { if (!MGR.includes(a.role)) throw E('forbidden', 403); };
-  // v1209：見られる店（null＝全店）。Head Chef（GM・CEO が確かめた人）は全店。確かめは 60 秒（だれかの覚えと同じ間）覚える
+  // v1209：見られる店（null＝全店）。60 秒（だれかの覚えと同じ間）覚える
+  //   CEO・GM・経理・事務Crew＝全店／AM＝担当（管轄）の店だけ／G4 以下＝配属の店だけ／G5 以上（AM 以外）＝確かめた Corporate Chef は全店・ほかは whoami の店
   async function scopeOf(a) {
     if (ALL_STORES.includes(a.role)) return null;
-    if (a.chef === undefined) {
-      try { a.chef = (await db.rpc('gr_is_chef', { emp: a.emp })) === true; } catch { return new Set([...(a.stores || []), ...(a.am_stores || [])]); }
+    if (a.role === 'am') return new Set(a.am_stores || []);
+    if (a.grade >= 5) {
+      if (a.chef === undefined) {
+        try { a.chef = (await db.rpc('gr_is_chef', { emp: a.emp })) === true; } catch { return new Set([...(a.stores || []), ...(a.am_stores || [])]); }
+      }
+      if (a.chef) return null;
+      return new Set([...(a.stores || []), ...(a.am_stores || [])]);
     }
-    if (a.chef) return null;
-    return new Set([...(a.stores || []), ...(a.am_stores || [])]);
+    if (a.home === undefined) {
+      let h;
+      try { h = await db.rpc('gr_home_store', { emp: a.emp }); } catch { return new Set(); }   // 分からなければ見せない（覚えない）
+      a.home = typeof h === 'string' && /^[A-Za-z0-9_-]{1,30}$/.test(h) ? h : null;
+    }
+    return new Set(a.home && (a.stores || []).includes(a.home) ? [a.home] : []);
   }
   async function mustSee(a, store) { const s = await scopeOf(a); if (s && !s.has(store)) throw E('forbidden_store', 403); }
   // v1209：Google を呼ぶ前に 1 回分を取る（上限なら呼ばない）。SQL が v1157 のままなら gr_old
@@ -168,7 +191,7 @@ export function createHandler(deps) {
     }
     if (obj(t) && t.ok === true) return t;
     const cap = obj(t) && typeof t.cap === 'string' && /^[a-z_]{1,20}$/.test(t.cap) ? t.cap : 'unknown';
-    if (cap === 'not_linked') return null;
+    if (cap === 'not_linked' || cap === 'not_confirmed') return { skip: cap };
     if (cap === 'unknown_store') throw E('unknown_store', 400);
     const max = obj(t) && Number.isInteger(t.max) ? t.max : null;
     throw E('places_cap', 429, { cap, ...(max != null ? { max } : {}) });
@@ -190,13 +213,17 @@ export function createHandler(deps) {
   }
   async function placesNow(a, b) {
     const store = STORE(b.store);
+    const st = await placeState(store);   // SQL が前の版なら、だれにでも gr_old（店の中身は返さない）
     await mustSee(a, store);
     const key = placesKey();
     if (!key) throw E('places_not_configured', 503);
+    if (!st.linked) return { store, linked: false };
+    if (!st.confirmed) return { store, linked: false, unconfirmed: true };
     const pid = await db.rpc('gr_place_of', { store });
     if (!pid) return { store, linked: false };
     rate(a);
-    if (!(await take(a, 'now', store))) return { store, linked: false };
+    const t = await take(a, 'now', store);
+    if (t.skip) return { store, linked: false, ...(t.skip === 'not_confirmed' ? { unconfirmed: true } : {}) };
     const lang = b.lang === 'en' ? 'en' : 'ja';
     const r = await timed(PLACES + '/places/' + encodeURIComponent(pid) + '?' + new URLSearchParams({ languageCode: lang, regionCode: 'us' }).toString(),
       { headers: { 'X-Goog-Api-Key': key, 'X-Goog-FieldMask': NOW_MASK } }, 15000);
@@ -219,7 +246,15 @@ export function createHandler(deps) {
     const rating = Number(p.rating), count = Number(p.userRatingCount);
     return { store, linked: true, name: txt(obj(p.displayName) ? p.displayName.text : '', 200), address: txt(p.formattedAddress, 300),
       rating: Number.isFinite(rating) ? Math.round(rating * 10) / 10 : null, count: Number.isInteger(count) && count >= 0 ? count : null,
-      uri: gurl(p.googleMapsUri), attributions, order: 'relevance', lang, reviews, at: new Date(now()).toISOString() };
+      uri: gurl(p.googleMapsUri), attributions, order: 'relevance', lang, reviews, at: new Date(now()).toISOString(),
+      ...(Number.isInteger(t.store_left) ? { store_left: t.store_left } : {}) };
+  }
+  // 結んだか・確かめたか（11/23 14:36 の SQL＝2b が無ければ gr_old：確かめていない店を Google に聞かない）
+  async function placeState(store) {
+    let st;
+    try { st = await db.rpc('gr_place_state', { store }); } catch (e) { if (missing(e, /gr_place_state|confirm_how|gr_place_ok/)) throw E('gr_old', 503); throw e; }
+    return { linked: !!(obj(st) && st.linked === true), confirmed: !!(obj(st) && st.confirmed === true),
+      hint: !!(obj(st) && st.hint === true), known: !(obj(st) && st.known === false) };
   }
   async function placesSearch(a, b) {
     mgrOnly(a);
@@ -240,11 +275,36 @@ export function createHandler(deps) {
         status: ['OPERATIONAL', 'CLOSED_TEMPORARILY', 'CLOSED_PERMANENTLY'].includes(x.businessStatus) ? x.businessStatus : '' }));
     return { items };
   }
+  // 結ぶ：Google から名前と住所を取り（Place Details・Pro）、SQL で店の住所の目安と比べてから（住所で確かめた／手で確かめた）。外すのはいつでも
   async function placeSet(a, b) {
     mgrOnly(a);
     const store = STORE(b.store);
-    const pid = b.place_id === null ? null : PLACE(b.place_id);
-    return db.rpc('gr_place_set', { ...who(a), store, place_id: pid });
+    if (b.place_id === null) return db.rpc('gr_place_set', { ...who(a), store, place_id: null });
+    const pid = PLACE(b.place_id);
+    const st = await placeState(store);   // 2b の SQL が無ければ Google を呼ばない
+    if (!st.known) throw E('unknown_store', 400);
+    if (!st.hint) throw E('no_hint', 409);   // 住所の目安の無い店は Google を呼ばずに止める（SQL で目安を足してから）
+    const key = placesKey();
+    if (!key) throw E('places_not_configured', 503);
+    rate(a);
+    await take(a, 'search');
+    const r = await timed(PLACES + '/places/' + encodeURIComponent(pid) + '?' + new URLSearchParams({ languageCode: 'en', regionCode: 'us' }).toString(),
+      { headers: { 'X-Goog-Api-Key': key, 'X-Goog-FieldMask': CHECK_MASK } }, 15000);
+    if (!r.ok || !obj(r.j)) throw E(placesErr(r.status), 502);
+    const gid = typeof r.j.id === 'string' && /^[A-Za-z0-9_-]{10,300}$/.test(r.j.id) ? r.j.id : pid;
+    const name = txt(obj(r.j.displayName) ? r.j.displayName.text : '', 200), address = txt(r.j.formattedAddress, 300);
+    const seen = { name, address };   // 画面に見せるだけ（残さない）
+    if (!address) throw E('address_mismatch', 409, seen);
+    let c;
+    try { c = await db.rpc('gr_place_confirm', { ...who(a), store, place_id: gid, g_name: name, g_addr: address, manual: b.confirm === true }); }
+    catch (e) {
+      const code = String((e && e.message) || '').split(/[\s:]/)[0];
+      if (['address_mismatch', 'no_hint', 'place_taken', 'unknown_store'].includes(code)) throw E(code, code === 'unknown_store' ? 400 : 409, seen);
+      if (missing(e, /gr_place_confirm/)) throw E('gr_old', 503);
+      throw e;
+    }
+    if (obj(c) && c.ok === false && c.need === 'manual') throw E('need_confirm', 409, { reason: c.reason === 'unsure' ? 'unsure' : 'name', ...seen });
+    return { store, place: true, confirmed: true, how: obj(c) && c.how === 'manual' ? 'manual' : 'address', ...seen };
   }
 
   // ---- Business Profile：つなぐ
@@ -429,10 +489,18 @@ export function createHandler(deps) {
 
   // ---- 読む
   // v1209：GM・CEO には Places の回数（今日・今月）も。SQL が v1157 のままなら出さない
+  // v1209 の更新：GM・CEO には店ごとの確かめの一覧（未設定・確かめ待ち・確かめた・目安なし）も。ほかの人は見られる店の分だけ
   async function status(a) {
     const mgr = MGR.includes(a.role);
     const st = await db.rpc('gr_status', { mgr });
-    if (mgr && obj(st)) { try { const u = await db.rpc('gr_places_usage', {}); if (obj(u)) st.usage = u; } catch { /* v1157 の SQL のまま */ } }
+    if (mgr && obj(st)) {
+      try { const u = await db.rpc('gr_places_usage', {}); if (obj(u)) st.usage = u; } catch { /* v1157 の SQL のまま */ }
+      try { const l = await db.rpc('gr_places_admin', {}); if (Array.isArray(l)) st.places_admin = l; } catch { /* 2b の SQL がまだ */ }
+    }
+    if (!mgr && obj(st) && obj(st.stores)) {
+      const s = await scopeOf(a);
+      if (s) { const r = {}; for (const id of Object.keys(st.stores)) if (s.has(id)) r[id] = st.stores[id]; st.stores = r; }
+    }
     return st;
   }
   // v1209：Google の店を結んだ店（会議のカードで「見る」を出すため・place ID は出さない）。SQL が v1157 のままなら出さない
@@ -456,14 +524,15 @@ export function createHandler(deps) {
   async function month(a, b) { const store = STORE(b.store); await mustSee(a, store); const before = BEFORE(b.before); return db.rpc('gr_month', { store, ym: YM(b.ym), ...(before ? { before } : {}) }); }
 
   const ACTIONS = {
-    // fn 2（v1209）：見られる店だけ・回数の上限・帰属表示の項目
-    whoami: async a => ({ me: { emp: a.emp, role: a.role, name: a.name }, fn: 2, places: !!placesKey(), oauth: !!(client().id && client().secret) }),
+    // fn 2（v1209）：見られる店だけ・回数の上限・帰属表示の項目／fn 3（v1209 の更新）：住所で確かめた店だけ・AM は担当の店・G4 以下は配属の店・上限は店の数から
+    whoami: async a => ({ me: { emp: a.emp, role: a.role, name: a.name }, fn: 3, places: !!placesKey(), oauth: !!(client().id && client().secret) }),
     status: a => status(a), kpi: a => kpi(a), month: (a, b) => month(a, b),
     places_now: (a, b) => placesNow(a, b), places_search: (a, b) => placesSearch(a, b), places_set: (a, b) => placeSet(a, b),
     bp_connect: a => bpConnect(a), bp_locations: a => bpLocations(a), bp_link: (a, b) => bpLink(a, b), bp_disconnect: a => bpDisconnect(a),
     sync_now: async a => { mgrOnly(a); return syncAll('manual'); },
   };
-  const ERR = { bad_value: 400, forbidden: 403, not_found: 404, conflict: 409, bad_state: 400, too_many: 429, bp_not_connected: 409, unknown_store: 400 };
+  const ERR = { bad_value: 400, forbidden: 403, not_found: 404, conflict: 409, bad_state: 400, too_many: 429, bp_not_connected: 409, unknown_store: 400,
+    need_confirm: 409, address_mismatch: 409, no_hint: 409, place_taken: 409 };
 
   return async function handler(req) {
     const origin = req.headers.get('origin');
