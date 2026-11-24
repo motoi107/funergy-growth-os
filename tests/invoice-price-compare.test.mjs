@@ -66,6 +66,9 @@ async function setup() {
 const today = new Date(Date.now() - 10 * 3600e3).toISOString().slice(0, 10);
 const day = k => { const d = new Date(today + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() - k); return d.toISOString().slice(0, 10); };
 
+// invoice/*.mjs added after the bundles handed over (they stay as handed over): pdfjoin.mjs (v1210, B-3).
+const AFTER_BUNDLE = ['pdfjoin.mjs'];
+
 test('the request’s example: 2 cases of 12 at $120 then 4 cases at $240 is $5 a piece both times — not a rise; a real change is', async () => {
   const S = await setup();
   // 12 pieces a case: the mapping gives a count unit (EA) and 12 per case → price per piece
@@ -214,11 +217,12 @@ test('deploy/invoice-price-compare-v1123: copies of the repository files; the on
   const D = 'deploy/invoice-price-compare-v1123/';
   assert.deepEqual(fs.readdirSync(new URL('../' + D, import.meta.url)).sort(), ['1_追加のSQL_単価の比較.sql', '2_確認のSQL_読むだけ.sql', '3_関数_invoice-intake_index.ts', '4_すぐに作る.sql', 'source.json', '手順.md'].sort());
   assert.ok(rd(D + '1_追加のSQL_単価の比較.sql').equals(rd('supabase/migrations/20261103090000_invoice_price_compare.sql')));
-  assert.ok(rd(D + '2_確認のSQL_読むだけ.sql').equals(rd('db/invoice-intake-postcheck.sql')));
+  // The check SQL stays as it was handed over; the postcheck moved on with 20261216090000 (B-3, deploy/invoice-qb-reconcile-v1210/).
+  assert.equal(sha(rd(D + '2_確認のSQL_読むだけ.sql')), 'b66bf278d14ef3c205f48b408b4653e6badc9c13911ea4a843462016fecca765');
   const src = JSON.parse(rd(D + 'source.json'));
   assert.equal(sha(rd(D + '3_関数_invoice-intake_index.ts')), src.bundle_sha256);
   const want = ['supabase/functions/invoice-intake/index.ts', 'supabase/functions/invoice-intake/handler.mjs',
-    ...fs.readdirSync(new URL('../invoice/', import.meta.url)).filter(f => f.endsWith('.mjs')).sort().map(f => 'invoice/' + f)];
+    ...fs.readdirSync(new URL('../invoice/', import.meta.url)).filter(f => f.endsWith('.mjs') && !AFTER_BUNDLE.includes(f)).sort().map(f => 'invoice/' + f)];
   assert.deepEqual(Object.keys(src.sources).sort(), want.sort());
   for (const f of want) assert.equal(src.sources[f], sha(rd(f)), f + ' changed after the bundle was built (build it again)');
   const bundle = rd(D + '3_関数_invoice-intake_index.ts').toString();

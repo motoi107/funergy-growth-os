@@ -31,7 +31,8 @@ with mine as (select unnest(array['invoice_settings', 'invoice_stores', 'invoice
    'invoice_qb_has_due', 'invoice_qb_send_context', 'invoice_qb_send_check', 'invoice_qb_content_changed', 'invoice_qb_unknown_due', 'invoice_qb_gmail_checked',
    'invoice_qb_row', 'invoice_qb_status', 'invoice_qb_alerts_publish', 'invoice_qb_alert_put', 'invoice_qb_alert_scan', 'invoice_qb_alert_claim',
    'invoice_qb_alert_done', 'invoice_line_route', 'invoice_qb_release', 'invoice_qb_probe_row',
-   'invoice_price_cmp', 'invoice_price_compare_data', 'invoice_price_compare_publish']) as f)
+   'invoice_price_cmp', 'invoice_price_compare_data', 'invoice_price_compare_publish',
+   'invoice_qb_merges', 'invoice_qb_ready', 'invoice_qb_doc_states', 'invoice_qb_retry', 'invoice_qb_unsent']) as f)
 select
   (select count(*) from mine where to_regclass('public.' || t) is not null) as tables,
   (select count(*) from pg_proc p join pg_namespace n on n.oid = p.pronamespace join fn on fn.f = p.proname where n.nspname = 'public') as functions,
@@ -210,4 +211,18 @@ select
   coalesce((select count(*) = 3 and bool_and(case p.proname when 'invoice_price_compare_data' then p.prosrc like '%app_duplicate_candidate%' and p.prosrc like '%check_link%'
         when 'invoice_price_compare_publish' then p.prosrc like '%invoice_purchase_prices%' else p.prosrc like '%453.59237%' end)
       from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-      where n.nspname = 'public' and p.proname in ('invoice_price_cmp', 'invoice_price_compare_data', 'invoice_price_compare_publish')), false) as price_compare;
+      where n.nspname = 'public' and p.proname in ('invoice_price_cmp', 'invoice_price_compare_data', 'invoice_price_compare_publish')), false) as price_compare,
+  -- 照合済み → QuickBooks（20261216090000, 2026-11-23 B-3）：照合したらすぐ送る予定に入れる・複数枚の invoice は 1 つの PDF・
+  -- 照合の取り消しで始まっていない送信を止める・画面に 6 つの状態・照合済みだが未転送の一覧。
+  coalesce((select count(*) = 1 from information_schema.columns where table_schema = 'public' and table_name = 'invoice_qb_outbox' and column_name = 'parts')
+    and (select count(*) = 7 and bool_and(case p.proname
+        when 'invoice_reconcile' then p.prosrc like '%recon_cancelled%' and p.prosrc like '%qb_busy%'
+        when 'invoice_qb_enqueue' then p.prosrc like '%invoice_qb_ready%'
+        when 'invoice_qb_ready' then p.prosrc like '%invoice_qb_merges%'
+        when 'invoice_qb_merges' then p.prosrc like '%part_already_sent%'
+        when 'invoice_qb_doc_states' then p.prosrc like '%not_sent%' and p.prosrc like '%failed%'
+        when 'invoice_qb_retry' then p.prosrc like '%recon_cancelled%'
+        else p.prosrc like '%confirmed%' end)
+      from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+      where n.nspname = 'public' and p.proname in ('invoice_reconcile', 'invoice_qb_enqueue', 'invoice_qb_ready', 'invoice_qb_merges', 'invoice_qb_doc_states',
+        'invoice_qb_retry', 'invoice_qb_unsent')), false) as qb_reconcile;

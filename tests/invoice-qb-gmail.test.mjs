@@ -187,6 +187,9 @@ async function env0(opts = {}) {
 const hst = t => new Date(t).toISOString();
 
 // ---------------------------------------------------------------- the mail and the judging of the sent mail
+// invoice/*.mjs added after the bundles handed over (they stay as handed over): pdfjoin.mjs (v1210, B-3).
+const AFTER_BUNDLE = ['pdfjoin.mjs'];
+
 test('(10) the mail: from, to, the three marks, one attachment of the original bytes and type, no body, no CC/BCC', () => {
   const bytes = Buffer.from(pdf('MIME-1') + 'x'.repeat(500));
   const subject = qbSubject({ currentName: '2026-10-06_VendorA_1001.pdf', driveFileId: 'drive-file-0001', sha256: 'a'.repeat(64), attemptKey: 'qb-' + 'a'.repeat(64) + '-' + 'b'.repeat(32) });
@@ -1078,7 +1081,7 @@ test('deploy folder v1094: the copies are the repository files; the one-file fun
   const src = JSON.parse(rd(D + 'source.json'));
   assert.equal(sha(rd(D + '3_関数_invoice-intake_index.ts')), src.bundle_sha256);
   const want = ['supabase/functions/invoice-intake/index.ts', 'supabase/functions/invoice-intake/handler.mjs',
-    ...fs.readdirSync(new URL('../invoice/', import.meta.url)).filter(f => f.endsWith('.mjs')).sort().map(f => 'invoice/' + f)];
+    ...fs.readdirSync(new URL('../invoice/', import.meta.url)).filter(f => f.endsWith('.mjs') && !AFTER_BUNDLE.includes(f)).sort().map(f => 'invoice/' + f)];
   assert.deepEqual(Object.keys(src.sources).sort(), want.sort());
   // The function moved on with 20261103090000 (仕入れの単価・deploy/invoice-price-compare-v1123/ is today's sources); this bundle stays as handed over.
   assert.equal(src.bundle_sha256, 'f6e3a76924b71820af42f566e396d45b0d0004ce346b19fbd8d7e1a8f6ecde8a');
