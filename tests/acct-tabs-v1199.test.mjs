@@ -145,14 +145,15 @@ test('old pairs open the new place: Invoice settings → マスター・設定; 
   assert.equal(run(c, "acOpenSub('nope')"), false);
 });
 
-test('事務Crew (6A): 経理出力 is not offered (the screen refused them before); the records tab opens on the export hub; old pair → the hub', () => {
+test('事務Crew：v1212（B-2・5 A・7 A）から 経理出力 を開ける（中はガソリン代・立替経費の区画だけ）。履歴・帳票はまず出力センター', () => {
+  // 6A（v1199）では 経理出力 を出さなかった（給与の出力があるため）。11/24 の答え 5 A で、事務Crew はこの区画だけを見て出す（renderAcctExport が給与・Tip を出さない）
   const oc = app({ role: 'office_crew' });
-  assert.deepEqual(subsOf(oc, 'reports'), ['ohub']);
+  assert.deepEqual(subsOf(oc, 'reports'), ['ohub', 'export']);
   run(oc, "acSetCat('reports')"); assert.deepEqual(state(oc), ['reports', 'ohub']);
   let html = run(oc, 'renderAcctCenter()');
-  assert.ok(!/経理出力/.test(html) && !oc.CALLED.includes('renderAcctExport'));
+  assert.match(html, /acSetSub\('export'\)">経理出力/); assert.ok(!oc.CALLED.includes('renderAcctExport'));
   assert.ok(oc.CALLED.includes('renderOfficeExport'));
-  run(oc, "_acCat='reports'; _acSub='export'"); run(oc, 'renderAcctCenter()'); assert.deepEqual(state(oc), ['reports', 'ohub']);
+  run(oc, "_acCat='reports'; _acSub='export'"); run(oc, 'renderAcctCenter()'); assert.deepEqual(state(oc), ['reports', 'export']); assert.ok(oc.CALLED.includes('renderAcctExport'));
   const of = app({ role: 'office' });
   run(of, "acSetCat('reports'); _acSub='export'"); html = run(of, 'renderAcctCenter()');
   assert.match(html, /acSetSub\('export'\)">経理出力/); assert.ok(of.CALLED.includes('renderAcctExport'));

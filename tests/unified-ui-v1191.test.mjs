@@ -100,10 +100,10 @@ test('accounting (office at HQ): the old 経理レビュー tab opens 経理セ�
   assert.ok(ids.includes('acct_center') && !ids.includes('acct_review') && !ids.includes('office_mgr'), 'the HQ menu shows 経理センター (not the old tab names)');
 });
 
-test('事務Crew: same menu as accounting but 経理出力 (payroll export) is not offered, and its direct way in is closed', () => {
+test('事務Crew: same menu as accounting; 経理出力 opens from v1212 (B-2: only the mileage & reimbursement section, no payroll or tip export)', () => {
   const c = navApp('office_crew', { store: 'OFFICE' });
-  assert.equal(run(c, "navChildAllowed('acct_export')"), false);
-  assert.notEqual(run(c, "navResolvePage('acct_export')"), 'acct_export');
+  assert.equal(run(c, "navChildAllowed('acct_export')"), true);
+  assert.equal(run(c, "navResolvePage('acct_export')"), 'acct_export');
   assert.equal(run(c, "navResolvePage('acct_center')"), 'acct_center');
 });
 

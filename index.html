@@ -8043,7 +8043,7 @@ var PAGE_GUARD = {
   monthly:          ['ceo','gm','office','office_crew'],
   office_export:    ['ceo','gm','office','office_crew'],
   hr:               ['ceo','gm','office','office_crew'],
-  acct_export:      ['ceo','gm','office'],                          /* 事務Crew は前から画面が断っていた（給与の出力があるため） */
+  acct_export:      ['ceo','gm','office','office_crew'],            /* v1212（B-2）：事務Crew はガソリン代・立替経費の区画だけ（renderAcctExport が給与・Tip を出さない） */
   settings:         ['ceo','gm','office','office_crew','chef']
 };
 /* G1 の画面から押して行く画面（マイページ・店舗オペレーション・成長の「申請・確認」・Handbook など）。ナビには出ないが前から開けていた */
@@ -50220,7 +50220,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1211';
+const APP_VERSION = '1212';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -60893,7 +60893,7 @@ var AC_TABS = [
   ]},
   { id:'reports', label:'履歴・帳票', labelEn:'Records & reports', icon:'ti-file-export', subs:[
       { id:'ohub',   label:'出力センター', labelEn:'Export center', fn:'renderOfficeExport' },
-      { id:'export', label:'経理出力', labelEn:'Accounting export',     fn:'renderAcctExport', roles:['ceo','gm','office'] }   /* 事務Crew は前から画面が断っていた（給与の出力があるため・PAGE_GUARD の acct_export と同じ） */
+      { id:'export', label:'経理出力', labelEn:'Accounting export',     fn:'renderAcctExport', roles:['ceo','gm','office','office_crew'] }   /* v1212（B-2・5 A）：事務Crew は「Payroll 別 ガソリン代・立替経費」の区画だけ（給与・Tip の出力は今までどおり出さない） */
   ]},
   { id:'master', label:'マスター・設定', labelEn:'Masters & settings', icon:'ti-adjustments', subs:[
       { id:'vendor',    label:'業者マスター', labelEn:'Vendor master',             fn:'renderVendorMaster' },   /* 7A：GM 承認の流れが無いので経理レビューに載せない */
@@ -68709,7 +68709,7 @@ function renderOfficeExport(){
     {page:'acct_export', icon:'ti-table-export', title:'給与CSV（店舗）', sub:'店舗別Payroll'},
     {fn:"setOfficeMgrTab('attend')", icon:'ti-building-skyscraper', title:'給与CSV（Office）', sub:'月給/時給混在', col:'var(--accent2)'}
   ]:[
-    {page:(navGuardAllows('acct_export')?'acct_export':'tip'), icon:'ti-coin', title:'Tip CSV（店舗）', sub:'店舗別のチップ配分'}   /* 事務Crew は経理出力の画面を開けない（前から）＝チップ管理の画面の CSV へ */
+    {page:(curRole!=='office_crew'&&navGuardAllows('acct_export')?'acct_export':'tip'), icon:'ti-coin', title:'Tip CSV（店舗）', sub:'店舗別のチップ配分'}   /* 事務Crew はチップ管理の画面の CSV へ（v1212 から経理出力は開けるが、ガソリン代・立替経費の区画だけで Tip の出力は無い） */
   ]).concat([
     {page:'acct_export', icon:'ti-file-spreadsheet', title:'経理区分エクスポート', sub:'区分別集計'}
   ]));
@@ -69376,8 +69376,17 @@ function officePayrollCardHtml(y,m){
   return html;
 }
 function renderAcctExport() {
-  if (!['ceo','gm','office'].includes(curRole)) {
+  if (!['ceo','gm','office','office_crew'].includes(curRole)) {
     return `<div class="card" style="text-align:center;padding:32px"><i class="ti ti-lock" style="font-size:36px;color:var(--muted)"></i><div style="margin-top:12px;font-weight:600">経理出力の権限がありません</div></div>`;
+  }
+  /* v1212（B-2・UI案100 の 5 A・7 A）：事務Crew は「Payroll 別 ガソリン代・立替経費」の区画だけ（見る・出す・支給済みにする）。Tip・給与の出力は今までどおり出さない */
+  if (curRole === 'office_crew') {
+    var _ref0 = acctMonthRef();
+    return `<div class="section-header"><div><div class="section-title"><i class="ti ti-file-export" style="color:var(--accent)"></i> ${t('経理出力','Accounting export')}</div><div class="section-sub">${t('事務Crew はガソリン代・立替経費の区画だけ（Tip・給与の出力は経理・GM・CEO）','Office Crew sees the mileage & reimbursement section only (tips and payroll are for accounting, GM and CEO)')}</div></div></div>
+  <div class="card" style="padding:10px;margin-bottom:10px"><div style="display:flex;align-items:center;justify-content:center;gap:12px">
+    <button class="btn btn-secondary btn-sm" onclick="setAcctMonth(-1)"><i class="ti ti-chevron-left"></i></button><span style="font-size:15px;font-weight:700">${acctMonthLabel()}</span>
+    <button class="btn btn-secondary btn-sm" onclick="setAcctMonth(1)"><i class="ti ti-chevron-right"></i></button></div></div>`
+      + (typeof peCardHtml === 'function' ? peCardHtml(_ref0.getFullYear(), _ref0.getMonth()) : '');
   }
   var stores = getVisibleStores();
   var ref = acctMonthRef();
@@ -69417,6 +69426,8 @@ function renderAcctExport() {
     <button class="btn btn-primary" style="width:100%"${_busy} onclick="exportAcctPayrollBook('${d1}','${d2}')">
       <i class="ti ti-download"></i> ${acctMonthLabel()} をまとめて出力</button>
   </div>`;
+  /* v1212（B-2・5 A）：Payroll 別 ガソリン代・立替経費（経理・GM・CEO。事務Crew は上で区画だけ） */
+  if (typeof peCardHtml === 'function') html += peCardHtml(y, m);
   if (_axPc) return html + _axPcStores() + '<div class="ax-pc2"><div class="ax-col">' + officePayrollCardHtml(y, m) + '</div><div class="ax-col">' + _axTail() + '</div></div>';
   /* v1178：PC の店ごとの出力（1 つの表）。押す関数・押せる条件（取り直し中・記録なし）は下の今の形と同じ */
   function _axPcStores(){
@@ -69764,8 +69775,9 @@ function _xlEsc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/<
 function _xlCell(c){
   var v=(c && typeof c==='object' && ('v' in c))?c.v:c;
   var bold=(c && typeof c==='object' && c.bold);
+  var money=(c && typeof c==='object' && c.money);   /* v1212（B-2）：ドルの小数 2 桁（0.00）で見せる */
   var isNum=(typeof v==='number' && isFinite(v));
-  return '<Cell'+(bold?' ss:StyleID="b"':'')+'><Data ss:Type="'+(isNum?'Number':'String')+'">'+(isNum?String(v):_xlEsc(String(v==null?'':v)))+'</Data></Cell>';
+  return '<Cell'+(bold?' ss:StyleID="b"':(money&&isNum?' ss:StyleID="m"':''))+'><Data ss:Type="'+(isNum?'Number':'String')+'">'+(isNum?String(v):_xlEsc(String(v==null?'':v)))+'</Data></Cell>';
 }
 function _xlSheetName(n){ return (String(n||'Sheet').replace(/[\\\/\?\*\[\]:]/g,' ').slice(0,31))||'Sheet'; }
 function downloadExcelSheets(sheets, filename){
@@ -69777,7 +69789,7 @@ function downloadExcelSheets(sheets, filename){
   }).join('');
   var xml='<?xml version="1.0" encoding="UTF-8"?>\n<?mso-application progid="Excel.Sheet"?>\n'
     +'<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">'
-    +'<Styles><Style ss:ID="b"><Font ss:Bold="1"/></Style></Styles>'+ws+'</Workbook>';
+    +'<Styles><Style ss:ID="b"><Font ss:Bold="1"/></Style><Style ss:ID="m"><NumberFormat ss:Format="0.00"/></Style></Styles>'+ws+'</Workbook>';
   var blob=new Blob([xml],{type:'application/vnd.ms-excel;charset=utf-8;'});
   var url=URL.createObjectURL(blob); var a=document.createElement('a'); a.href=url; a.download=filename; a.click(); URL.revokeObjectURL(url);
 }
@@ -70109,8 +70121,12 @@ async function exportAcctPayrollBook(d1, d2){
     showToast('この期間に出力できる記録がありません','danger'); return;
   }
   var lbl = (typeof acctMonthLabel==='function') ? acctMonthLabel() : '';
-  downloadExcelSheets(r.sheets, '経理まとめ_' + lbl + '.xls');
-  showToast('Tip / Shift Leader / 本部シフトイン を1ファイルで出力しました','success');
+  /* v1212（B-2・5 A）：ガソリン代・立替経費のシートを 1 枚（サーバーで両方の期間の版を作る。読めなければ理由の 1 行） */
+  var _pe = null;
+  try { if (typeof peBookSheet === 'function') { var _d = String(d1).split('-'); _pe = await peBookSheet(Number(_d[0]), Number(_d[1]) - 1); } } catch(e) { _pe = null; }
+  var _sheets = _pe ? r.sheets.concat([_pe]) : r.sheets;
+  downloadExcelSheets(_sheets, '経理まとめ_' + lbl + '.xls');
+  showToast(_pe ? 'Tip / Shift Leader / 本部シフトイン / ガソリン代・立替経費 を1ファイルで出力しました' : 'Tip / Shift Leader / 本部シフトイン を1ファイルで出力しました','success');
 }
 async function exportTipCSV(storeId, anyDate) {
   var s = STORES.find(x=>x.id===storeId)||{name:storeId};
@@ -123996,6 +124012,423 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   }catch(e){}
 })();
 /* ==== FUNERGY_GR end ==== */
+</script>
+<script>
+/* ==== FUNERGY_PE（v1212・B-2）：Payroll 別のガソリン代・立替経費（UI案100・Moto さん 11/24 04:15 HST の答え：1 B・2 A・3 B・4 A・5 A・6 はい・7 A）====
+   仕様：docs/PAYROLL_EXPENSE_V1212_JA.md。サーバーは関数 payroll-expense（PIN のログインの印・CEO・GM・経理・事務Crew だけ・SQL でも確かめる）。
+   ・経理出力の中の区画（5 A）：1〜15 日／16 日〜末日／月の両方の 3 つのタブ・6 列（申請者｜ガソリン代｜立替経費｜精算額合計｜既払・他経路支給額｜今回Payroll支給額合計）・
+     1 人 1 行（社員 ID）・PC は表・スマホはカード。行の「内訳」から元の申請へ。要確認（支払状況要確認・支給期間要確認・額・マイナス など）は帯で。
+   ・出力（Excel：まとめ・明細・要確認。月の両方は合計のシートも）はサーバーで版を作ってから（同じ中身なら前の版）。出力しただけでは支給済みにしない。
+   ・支給済みにする（4 A）：期間ごとに 1 回・いちばん新しい版のときだけ（出力のあとに変わったら出し直し）。押せるのは CEO・GM・経理・事務Crew（7 A）。
+   ・割当を変える・分ける（理由は必ず）。支給済みの期間は変えない（サーバーが断る）。
+   ・この端末（共通データ・localStorage・IndexedDB）には何も書かない。答えはこのタブのメモリだけ。ログインが変わったら捨てる。
+   ・CEO・GM の「まとめて出力」の Excel にも 1 枚（peBookSheet）。給与・Tip のシートは今のまま CEO・GM だけ。 */
+(function(){
+  'use strict';
+  var W = window, D = document;
+  var FN = '/functions/v1/payroll-expense';
+  var ROLES = ['ceo','gm','office','office_crew'];
+  var STALE_MS = 120000;
+  var ERR = {
+    signin:['PIN のログインがありません。ログアウトしてログインし直してください','There is no PIN login. Log out and log in again'],
+    signin_changed:['途中で別の人のログインに変わったので止めました','Stopped because the sign-in changed'],
+    unauthorized:['PIN のログインを確かめられませんでした（期限切れなど）。ログアウトしてログインし直してください','The PIN login could not be checked (expired?). Log out and log in again'],
+    auth_unavailable:['ログインを確かめるサーバー（work-requests）が答えません。少し待ってからもう一度','The sign-in check (work-requests) is not answering. Try again later'],
+    forbidden:['CEO・GM・経理・事務Crew だけが使えます（サーバーで確かめました）','Only CEO, GM, accounting and Office Crew can use this (checked by the server)'],
+    bad_value:['入力を確かめてください','Check the input'],
+    reason_required:['理由を入れてください','Enter a reason'],
+    sum_mismatch:['分けた額の合計が申請の額と合いません','The parts do not add up to the request amount'],
+    paid_period:['支給済みの期間です（変えられません・出し直しは「履歴」の版から）','That period is already paid (cannot change; download its version from History)'],
+    conflict:['ほかの人が先に変えました。読み直してからもう一度','Someone changed it first. Reload and try again'],
+    changed:['出力のあとに中身が変わりました。もう一度出力してから支給済みにしてください','The contents changed after the export. Export again, then mark as paid'],
+    not_exported:['まだ出力していません。出力してから支給済みにしてください','Not exported yet. Export first, then mark as paid'],
+    legacy_paid:['前の画面で精算済みになった申請があります（二重に払わない）。経理レビューで確かめてください','A request was already paid in the earlier screen (no double payment). Check it in Accounting review'],
+    not_found:['申請が見つかりません（精算確定でなくなったかもしれません）','The request was not found (it may no longer be settled)'],
+    pe_missing:['ガソリン代・立替経費のサーバー（SQL）がまだ入っていません（Moto さんに知らせてください）','The database for this section is not set up yet (tell Moto)'],
+    fn_missing:['ガソリン代・立替経費のサーバー（関数 payroll-expense）がまだ入っていません（Moto さんに知らせてください）','The server (payroll-expense) is not set up yet (tell Moto)'],
+    network:['サーバーにつながりません（通信を確かめてください）','Cannot reach the server (check the network)']
+  };
+  var KIND = { mileage:['ガソリン代','Mileage'], reimburse:['立替経費','Reimbursement'] };
+  var RV = {
+    month_end:['支払状況要確認','Payment status to check','ガソリン代の「月末処理」は支払った日ではないので、支給に入れていません。払った期間が分かれば「期間に入れる」で（既払として数えます）','A month-end mileage close is not a payment date, so it is not in any payroll. If you know the period it was paid in, use “Put in a period” (counted as already paid)'],
+    unsure:['支給期間要確認','Pay period to check','日付だけの記録で、日本時間とハワイ時間で期間の境目（15/16 日・末日/1 日）をまたぐか、精算確定の時刻がありません。確かめて「期間に入れる」で','Only a date was recorded and Japan/Hawaii time falls on both sides of a period boundary, or the settlement time is missing. Check it and use “Put in a period”'],
+    sum:['額が合わない','Amounts do not match','分けた額の合計が申請の額と合いません（申請の額が変わった）。割当を直してください','The split parts no longer add up to the request amount. Fix the allocation'],
+    out:['精算確定でなくなった','No longer settled','割当のある申請が精算確定でなくなりました（差し戻し・取り消し）。この一覧からは外しています','A request with an allocation is no longer settled (returned or cancelled). It is left out here'],
+    no_emp:['社員 ID が無い','No employee ID','前の画面から写した記録で、社員と結べていません（名前でまとめています）','A record copied from the earlier screen is not linked to an employee (grouped by name)'],
+    negative:['差額がマイナス','Negative difference','この人の今回の支給がマイナスです。給与からは引きません（今回の支給の合計に入れていません）。確かめてください','This person’s amount is negative. It is not deducted from pay (left out of the payroll total). Please check']
+  };
+  function T(ja, en){ try{ return typeof t === 'function' ? t(ja, en) : ja; }catch(e){ return ja; } }
+  function L(a){ return a ? T(a[0], a[1]) : ''; }
+  function esc(s){ return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
+  function pinTok(){ var w = W._hwSession; return (typeof w === 'string' && w) ? w : null; }
+  function role(){ try{ return curRole; }catch(e){ return ''; } }
+  function canUse(){ try{ return !curStoreLogin && ROLES.indexOf(curRole) >= 0 && !!pinTok(); }catch(e){ return false; } }
+  function nowMs(){ return Date.now(); }
+  function idOk(v){ return typeof v === 'string' && /^[0-9a-f-]{36}$/i.test(v); }
+  function perOk(p){ return typeof p === 'string' && /^20\d{2}-(0[1-9]|1[0-2])-[12]$/.test(p); }
+  function ymOf(y, m){ return y + '-' + String(m + 1).padStart(2, '0'); }
+  function money(c){
+    var n = Number(c) || 0, neg = n < 0, a = Math.abs(Math.round(n)), d = Math.floor(a / 100), r = String(a % 100).padStart(2, '0');
+    return (neg ? '-' : '') + '$' + String(d).replace(/\B(?=(\d{3})+(?!\d))/g, ',') + '.' + r;
+  }
+  function dollars(c){ return Math.round(Number(c) || 0) / 100; }
+  function md(s){ var m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(s || '')); return m ? (Number(m[2]) + '/' + Number(m[3])) : ''; }
+  function when(s){ var d = new Date(s); if (isNaN(d)) return ''; try { return d.toLocaleString(T('ja-JP','en-US'), { timeZone:'Pacific/Honolulu', month:'numeric', day:'numeric', hour:'2-digit', minute:'2-digit' }); } catch(e){ return String(s).slice(0, 16); } }
+  function perLabel(p, x){ if (!perOk(p)) return ''; var a = x && x.from ? md(x.from) : '', b = x && x.to ? md(x.to) : ''; return (a && b) ? a + '〜' + b : (p.slice(-1) === '1' ? T('1〜15日','1st–15th') : T('16日〜末日','16th–end')); }
+  function perShort(p){ return p.slice(-1) === '1' ? T('1〜15日','1st–15th') : T('16日〜末日','16th–end'); }
+  function mk(code, status){ var e = new Error(ERR[code] ? L(ERR[code]) : (T('うまくいきませんでした','Something went wrong') + (code ? '（' + code + '）' : (status ? '（HTTP ' + status + '）' : '')))); e.code = code || ''; e.status = status || 0; return e; }
+
+  function fresh(gen){ return { gen:gen, tok:null, ym:'', data:null, at:0, err:'', busy:'', tab:'p1', p:null, modal:null }; }
+  var G = fresh(0);
+  function sync(){ var tk = pinTok(); if (G.tok !== tk) { G = fresh(G.gen + 1); G.tok = tk; } }
+  W._peState = function(){ return G; };
+
+  async function api(payload){
+    sync();
+    var tok = pinTok(); if (!tok) throw mk('signin');
+    var g = G.gen, r, j = null;
+    try { r = await fetch(SUPABASE_URL + FN, { method:'POST', headers:{ apikey:SUPABASE_ANON, Authorization:'Bearer ' + SUPABASE_ANON, 'Content-Type':'application/json' },
+      body:JSON.stringify(Object.assign({}, payload, { pin_session:tok })) }); }
+    catch(e) { throw mk('network'); }
+    try { j = await r.json(); } catch(e) { j = null; }
+    if (g !== G.gen || pinTok() !== tok) throw mk('signin_changed');
+    if (r.status === 404 && !(j && j.fn)) throw mk('fn_missing', 404);
+    if (!r.ok) throw mk((j && typeof j.error === 'string') ? j.error : '', r.status);
+    return j;
+  }
+  function rerender(){ var el = D.getElementById('pe-card'); if (el) el.innerHTML = body(); }
+  function load(force){
+    sync();
+    if (!canUse() || !G.ym) return;
+    if (G.p) return;
+    if (!force && G.data && G.data.ym === G.ym && nowMs() - G.at < STALE_MS) return;
+    if (!force && G.err && nowMs() - G.at < 30000) return;   /* 失敗したら 30 秒は自分で読み直さない（描き直しのたびに呼ばない・「もう一度」で） */
+    var ym = G.ym, g = G.gen;
+    G.p = api({ action:'get', ym:ym }).then(function(j){
+      if (g !== G.gen) return; G.p = null; if (ym !== G.ym) { load(); return; }
+      G.data = j; G.at = nowMs(); G.err = ''; rerender();
+    }, function(e){ if (g !== G.gen) return; G.p = null; G.err = String(e.message || e); G.at = nowMs(); rerender(); });
+  }
+  function per(k){ var d = G.data; if (!d || !Array.isArray(d.periods)) return null; return k === 'p1' ? d.periods[0] : k === 'p2' ? d.periods[1] : null; }
+
+  /* ---------------- 画面 */
+  function css(){
+    if (D.getElementById('pe-css')) return;
+    var s = D.createElement('style'); s.id = 'pe-css';
+    s.textContent = '.pe-tabs{display:flex;gap:6px;flex-wrap:wrap;margin:6px 0 8px}.pe-tabs button{flex:1;min-width:110px}'
+      + '.pe-t{width:100%;border-collapse:collapse;font-size:12.5px}.pe-t th,.pe-t td{padding:5px 6px;border-bottom:1px solid var(--border);text-align:right;white-space:nowrap}'
+      + '.pe-t th:first-child,.pe-t td:first-child{text-align:left}.pe-t tfoot td{font-weight:700}.pe-band{border-radius:8px;padding:6px 10px;margin:6px 0;font-size:12px}'
+      + '.pe-card-ph{border:1px solid var(--border);border-radius:8px;padding:8px;margin:6px 0;font-size:12.5px}.pe-card-ph .r{display:flex;justify-content:space-between}'
+      + '@media (max-width:760px){.pe-pc{display:none}}@media (min-width:761px){.pe-ph{display:none}}';
+    try { (D.head || D.body).appendChild(s); } catch(e) {}
+  }
+  function chip(x){
+    if (!x) return '';
+    var c = x.state === 'paid' ? 'var(--green)' : x.state === 'exported' ? 'var(--accent)' : x.state === 'changed' ? 'var(--yellow)' : 'var(--muted)';
+    var s = x.state === 'paid' ? T('支給済み','Paid') + '（' + esc(when(x.paid && x.paid.at)) + '・' + esc(x.paid && x.paid.by || '') + '・' + T('版 ','v') + x.ver + '）'
+      : x.state === 'exported' ? T('出力済み','Exported') + '（' + T('版 ','v') + x.ver + '・' + esc(when(x.ver_at)) + '・' + esc(x.ver_by || '') + '）' + T('・まだ支給済みではありません',' · not marked paid yet')
+      : x.state === 'changed' ? T('出力のあとに変わりました（版 ','Changed after the export (v') + x.ver + T('）。次に出すと次の版',') — the next export is a new version')
+      : T('未出力','Not exported');
+    return '<span class="tag" style="font-size:11px;border:1px solid ' + c + ';color:' + c + '">' + s + '</span>';
+  }
+  function merge(rs){
+    var by = {}, out = [];
+    rs.forEach(function(r){ var k = r.emp; if (!by[k]) { by[k] = { emp:r.emp, name:r.name, has_emp:r.has_emp, gas:0, reimb:0, total:0, other:0, payroll:0, n:0 }; out.push(by[k]); }
+      var o = by[k]; ['gas','reimb','total','other','payroll','n'].forEach(function(f){ o[f] += Number(r[f]) || 0; }); });
+    return out.sort(function(a, b){ return String(a.name).localeCompare(String(b.name)); });
+  }
+  function rowsOf(k){ if (k === 'both') return merge(((per('p1') || {}).rows || []).concat((per('p2') || {}).rows || [])); var x = per(k); return (x && x.rows) || []; }
+  function tot(rs){ var o = { gas:0, reimb:0, total:0, other:0, payroll:0 }; rs.forEach(function(r){ ['gas','reimb','total','other'].forEach(function(f){ o[f] += Number(r[f]) || 0; }); o.payroll += Math.max(Number(r.payroll) || 0, 0); }); return o; }
+  function table(rs, k){
+    var tt = tot(rs), canDrill = k !== 'both';
+    var head = '<tr><th>' + T('申請者','Employee') + '</th><th>' + T('ガソリン代','Mileage') + '</th><th>' + T('立替経費','Reimbursement') + '</th><th>' + T('精算額合計','Settled total')
+      + '</th><th>' + T('既払・他経路支給額','Already paid / other route') + '</th><th>' + T('今回Payroll支給額合計','This payroll') + '</th>' + (canDrill ? '<th></th>' : '') + '</tr>';
+    var body = rs.map(function(r){
+      var neg = Number(r.payroll) < 0;
+      return '<tr' + (neg ? ' style="background:rgba(239,68,68,.08)"' : '') + '><td><b>' + esc(r.name) + '</b>' + (r.has_emp === false ? ' <span class="tag tag-yellow" style="font-size:9px">' + L(RV.no_emp) + '</span>' : '') + '</td><td>' + money(r.gas) + '</td><td>' + money(r.reimb)
+        + '</td><td>' + money(r.total) + '</td><td>' + money(r.other) + '</td><td><b>' + money(r.payroll) + '</b>' + (neg ? ' <span class="tag tag-red" style="font-size:9px">' + L(RV.negative) + '</span>' : '') + '</td>'
+        + (canDrill ? '<td><button class="btn btn-secondary btn-sm" onclick="peDrill(\'' + k + '\',' + esc(JSON.stringify(String(r.emp))).replace(/&quot;/g, '&#34;') + ')">' + T('内訳','Details') + '</button></td>' : '') + '</tr>';
+    }).join('');
+    var foot = '<tr><td>' + T('合計','Total') + '（' + rs.length + T('人','') + '）</td><td>' + money(tt.gas) + '</td><td>' + money(tt.reimb) + '</td><td>' + money(tt.total) + '</td><td>' + money(tt.other) + '</td><td>' + money(tt.payroll) + '</td>' + (canDrill ? '<td></td>' : '') + '</tr>';
+    var pc = '<div class="pe-pc" style="overflow-x:auto"><table class="pe-t"><thead>' + head + '</thead><tbody>' + body + '</tbody><tfoot>' + foot + '</tfoot></table></div>';
+    var ph = '<div class="pe-ph">' + rs.map(function(r){
+      return '<div class="pe-card-ph"><div class="r"><b>' + esc(r.name) + '</b><b>' + money(r.payroll) + '</b></div>'
+        + '<div class="r"><span>' + T('ガソリン代','Mileage') + '</span><span>' + money(r.gas) + '</span></div><div class="r"><span>' + T('立替経費','Reimbursement') + '</span><span>' + money(r.reimb) + '</span></div>'
+        + '<div class="r"><span>' + T('精算額合計','Settled total') + '</span><span>' + money(r.total) + '</span></div><div class="r"><span>' + T('既払・他経路','Already paid') + '</span><span>' + money(r.other) + '</span></div>'
+        + (canDrill ? '<div style="text-align:right;margin-top:4px"><button class="btn btn-secondary btn-sm" onclick="peDrill(\'' + k + '\',' + esc(JSON.stringify(String(r.emp))).replace(/&quot;/g, '&#34;') + ')">' + T('内訳','Details') + '</button></div>' : '') + '</div>';
+    }).join('') + '<div class="pe-card-ph"><div class="r"><b>' + T('今回Payroll支給額合計','This payroll') + '</b><b>' + money(tt.payroll) + '</b></div></div></div>';
+    return rs.length ? pc + ph : '<div class="k2-note" style="padding:8px 0">' + T('この期間に精算確定・精算済みのガソリン代・立替経費はありません','No settled or paid mileage / reimbursements in this period') + '</div>';
+  }
+  function reviewHtml(k){
+    var d = G.data, items = (d && d.review) || [];
+    var neg = []; (k === 'both' ? ['p1','p2'] : [k]).forEach(function(q){ var x = per(q); ((x && x.rows) || []).forEach(function(r){ if (Number(r.payroll) < 0) neg.push(r); }); });
+    var late = []; (k === 'both' ? ['p1','p2'] : [k]).forEach(function(q){ var x = per(q); late = late.concat((x && x.late) || []); });
+    var groups = {}; items.forEach(function(it){ (groups[it.type] = groups[it.type] || []).push(it); });
+    var h = '';
+    ['month_end','unsure','sum','out','no_emp'].forEach(function(tp){
+      var g = groups[tp]; if (!g || !g.length) return;
+      var act = (tp === 'month_end' || tp === 'unsure' || tp === 'sum');
+      h += '<details class="pe-band" style="background:rgba(234,179,8,.10);border:1px solid var(--yellow)"><summary><b>' + L(RV[tp]) + '</b> ' + g.length + T('件',' item(s)') + ' <span style="color:var(--muted)">' + esc(T(RV[tp][2], RV[tp][3])) + '</span></summary>'
+        + g.map(function(it){ return '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:3px 0;border-top:1px dashed var(--border)"><span>' + esc(it.code || '') + '</span><span>' + L(KIND[it.kind]) + '</span><b>' + esc(it.name || '') + '</b><span>' + money(it.cents) + '</span>'
+          + (it.paid_at_text ? '<span style="color:var(--muted)">' + T('記録：','Recorded: ') + esc(it.paid_at_text) + '</span>' : '') + (it.period ? '<span style="color:var(--muted)">' + esc(perShort(it.period)) + '</span>' : '')
+          + (act && idOk(it.id) ? '<button class="btn btn-secondary btn-sm" onclick="peAssignOpen(\'' + it.id + '\')">' + T('期間に入れる・直す','Put in a period / fix') + '</button>' : '')
+          + (idOk(it.id) && typeof W.wrOpen === 'function' ? '<button class="btn btn-secondary btn-sm" onclick="wrOpen(\'' + it.id + '\')">' + T('申請を開く','Open request') + '</button>' : '') + '</div>'; }).join('') + '</details>';
+    });
+    if (neg.length) h += '<div class="pe-band" style="background:rgba(239,68,68,.08);border:1px solid var(--red)"><b>' + L(RV.negative) + '</b>：' + neg.map(function(r){ return esc(r.name) + ' ' + money(r.payroll); }).join('、') + '<div style="color:var(--muted)">' + esc(T(RV.negative[2], RV.negative[3])) + '</div></div>';
+    if (late.length) h += '<div class="pe-band" style="background:rgba(234,179,8,.10);border:1px solid var(--yellow)"><b>' + T('支給済みのあとに入った記録','Records added after the period was paid') + '</b> ' + late.length + T('件',' item(s)') + '<div style="color:var(--muted)">' + T('支給済みの写しは変えていません。既払の記録（前の画面の支払済 など）なら支給には影響しません。確かめてください','The paid copy is not changed. If these are already-paid records (earlier screen), they do not change the payroll. Please check') + '</div>'
+      + late.map(function(l){ return '<div>' + esc(l.code) + ' ' + L(KIND[l.kind]) + ' ' + esc(l.name) + ' ' + money(l.cents) + '</div>'; }).join('') + '</div>';
+    return h;
+  }
+  function body(){
+    sync();
+    if (!canUse()) return '<div class="k2-note">' + T('CEO・GM・経理・事務Crew が個人の PIN でログインしたときだけ使えます','Available when CEO, GM, accounting or Office Crew sign in with their own PIN') + '</div>';
+    load();
+    var d = G.data;
+    if (!d || d.ym !== G.ym) return G.err ? '<div class="alert alert-danger" style="font-size:12px">' + esc(G.err) + ' <button class="btn btn-secondary btn-sm" onclick="peReload()">' + T('もう一度','Retry') + '</button></div>' : '<div class="k2-note">' + T('読み込み中…','Loading…') + '</div>';
+    var k = G.tab, p1 = per('p1'), p2 = per('p2'), x = per(k);
+    var tabs = '<div class="pe-tabs">' + [['p1', p1], ['p2', p2], ['both', null]].map(function(q){
+      var on = q[0] === k, lab = q[1] ? perLabel(q[1].period, q[1]) + '<div style="font-size:10.5px;font-weight:400">' + T('支給日 ','Pay day ') + md(q[1].pay_day) + (q[1].state === 'paid' ? T('・支給済み',' · paid') : '') + '</div>' : T('月の両方','Both periods');
+      return '<button class="btn ' + (on ? 'btn-primary' : 'btn-secondary') + ' btn-sm" onclick="peTab(\'' + q[0] + '\')">' + lab + '</button>'; }).join('') + '</div>';
+    var h = tabs;
+    if (G.err) h += '<div class="alert alert-danger" style="font-size:12px">' + esc(G.err) + '</div>';
+    if (x) h += '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:4px">' + chip(x) + '</div>';
+    else h += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:4px">' + chip(p1) + chip(p2) + '</div>';
+    h += reviewHtml(k) + table(rowsOf(k), k);
+    var busy = G.busy ? ' disabled' : '';
+    h += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">'
+      + '<button class="btn btn-primary btn-sm"' + busy + ' onclick="peExport(\'' + k + '\')"><i class="ti ti-download"></i> ' + (k === 'both' ? T('月の両方を Excel で出力','Export both periods (Excel)') : (x && x.state === 'paid' ? T('支給済みの版を Excel で','Download the paid version (Excel)') : T('Excel で出力（版を残す）','Export to Excel (keeps a version)'))) + '</button>'
+      + (x && x.state !== 'paid' ? '<button class="btn btn-secondary btn-sm"' + busy + ' onclick="pePaidAsk(\'' + x.period + '\')"><i class="ti ti-circle-check"></i> ' + T('支給済みにする','Mark as paid') + '</button>' : '')
+      + '<button class="btn btn-secondary btn-sm" onclick="peHist()"><i class="ti ti-history"></i> ' + T('出力の履歴','Export history') + '</button>'
+      + '<button class="btn btn-secondary btn-sm" onclick="peCfgOpen()"><i class="ti ti-calendar"></i> ' + T('支給日の決まり','Pay day rules') + '</button>'
+      + '<button class="btn btn-secondary btn-sm" onclick="peReload()"><i class="ti ti-refresh"></i></button></div>';
+    h += '<div class="k2-note" style="margin-top:6px;line-height:1.6">' + T('精算確定（経理の「確認した」）の日（ハワイ時間）の期間に自動で入ります（その期間が支給済みなら次の期間）。前に精算済みにしたものは支払日の期間の「既払・他経路」。出力しただけでは支給済みになりません。支給済みにすると、その版の申請は精算済み（Payroll）になります。給与・Tip は入りません。',
+      'Settled requests go to the period of their settlement day (Hawaii time); if that period is paid, the next one. Requests paid before count as already paid in the period of their payment day. Exporting does not mark anything paid. Marking a period paid settles the requests of that version (Payroll). Wages and tips are not included.') + '</div>';
+    return h;
+  }
+  W.peCardHtml = function(y, m){
+    css(); sync();
+    var ym = ymOf(y, m); if (G.ym !== ym) { G.ym = ym; G.err = ''; }
+    return '<div class="card" id="pe-wrap" style="border:1.5px solid var(--accent)"><div class="card-title"><i class="ti ti-gas-station" style="color:var(--accent)"></i>' + T('Payroll 別 ガソリン代・立替経費','Mileage & reimbursements by payroll')
+      + ' <span style="font-size:12px;color:var(--muted);font-weight:400;margin-left:6px">' + esc(ym) + '</span></div><div id="pe-card">' + body() + '</div></div>';
+  };
+  W.peTab = function(k){ if (['p1','p2','both'].indexOf(k) < 0) return; G.tab = k; rerender(); };
+  W.peReload = function(){ G.err = ''; load(true); rerender(); };
+
+  /* ---------------- 内訳（1 人） */
+  W.peDrill = function(k, emp){
+    var x = per(k); if (!x) return;
+    var ls = (x.lines || []).filter(function(l){ return l.emp === emp; }); if (!ls.length) return;
+    var paid = x.state === 'paid';
+    var st = { pay:T('今回 Payroll','This payroll'), other:T('既払・他経路','Already paid / other route'), payroll:T('この期間で支給済み','Paid in this period') };
+    var h = '<div style="font-weight:700;margin-bottom:6px">' + esc(ls[0].name) + ' · ' + esc(perLabel(x.period, x)) + '（' + T('支給日 ','pay day ') + md(x.pay_day) + '）</div>'
+      + '<div style="overflow-x:auto"><table class="pe-t"><thead><tr><th>' + T('申請','Request') + '</th><th>' + T('種類','Kind') + '</th><th>' + T('使用日','Date used') + '</th><th>' + T('金額','Amount') + '</th><th>' + T('区分','Status') + '</th><th>' + T('割当','Allocation') + '</th><th></th></tr></thead><tbody>'
+      + ls.map(function(l){
+        return '<tr><td>' + esc(l.code) + '</td><td>' + L(KIND[l.kind]) + '</td><td>' + esc(md(l.use_date)) + '</td><td>' + money(l.cents) + (l.split ? '<div style="font-size:10px;color:var(--muted)">' + T('分けた分（申請 ','part of ') + money(l.amount) + '）</div>' : '') + '</td><td>' + esc(st[l.state] || l.state)
+          + (l.state === 'other' && l.pay_date ? '<div style="font-size:10px;color:var(--muted)">' + T('支払日 ','paid ') + esc(md(l.pay_date)) + (l.pay_method ? '・' + esc(l.pay_method) : '') + '</div>' : '') + '</td><td>' + (l.how === 'manual' ? T('手で：','By hand: ') + esc(l.reason || '') : T('自動','Auto')) + '</td><td style="white-space:nowrap">'
+          + (!paid && idOk(l.id) ? '<button class="btn btn-secondary btn-sm" onclick="peAssignOpen(\'' + l.id + '\')">' + T('期間を変える・分ける','Change / split') + '</button> ' : '')
+          + (idOk(l.id) && typeof W.wrOpen === 'function' ? '<button class="btn btn-secondary btn-sm" onclick="wrOpen(\'' + l.id + '\')">' + T('申請を開く','Open request') + '</button>' : '') + '</td></tr>';
+      }).join('') + '</tbody></table></div><div style="text-align:right;margin-top:8px"><button class="btn btn-secondary" onclick="closeModalDirect()">' + T('閉じる','Close') + '</button></div>';
+    try { openModal(h); } catch(e) {}
+  };
+
+  /* ---------------- 割当を変える・分ける */
+  function periodsAround(){
+    var out = [], ym = G.ym; if (!ym) return out;
+    var y = Number(ym.slice(0, 4)), m = Number(ym.slice(5, 7)) - 1;
+    for (var i = -1; i <= 1; i++) { var d = new Date(Date.UTC(y, m + i, 1)), s = d.getUTCFullYear() + '-' + String(d.getUTCMonth() + 1).padStart(2, '0'); out.push(s + '-1', s + '-2'); }
+    return out;
+  }
+  function paidSet(){ var s = {}; ((G.data && G.data.versions) || []).forEach(function(v){ if (v.paid) s[v.period] = 1; }); ((G.data && G.data.periods) || []).forEach(function(x){ if (x.state === 'paid') s[x.period] = 1; }); return s; }
+  function perOpts(sel){ var ps = paidSet(); return periodsAround().map(function(p){ return '<option value="' + p + '"' + (ps[p] ? ' disabled' : '') + (p === sel ? ' selected' : '') + '>' + esc(p.slice(0, 7) + ' ' + perShort(p)) + (ps[p] ? T('（支給済み）',' (paid)') : '') + '</option>'; }).join(''); }
+  W.peAssignOpen = function(id){
+    if (!idOk(id)) return;
+    G.modal = { id:id, r:null, err:'' };
+    try { openModal('<div id="pe-assign">' + T('読み込み中…','Loading…') + '</div>'); } catch(e) {}
+    var g = G.gen;
+    api({ action:'req', id:id }).then(function(r){ if (g !== G.gen || !G.modal || G.modal.id !== id) return; G.modal.r = r; drawAssign(); },
+      function(e){ if (g !== G.gen || !G.modal || G.modal.id !== id) return; G.modal.err = String(e.message || e); drawAssign(); });
+  };
+  function drawAssign(){
+    var el = D.getElementById('pe-assign'); if (!el || !G.modal) return;
+    var M = G.modal, r = M.r;
+    if (!r) { el.innerHTML = '<div class="alert alert-danger">' + esc(M.err) + '</div>'; return; }
+    var cur = (r.alloc || []).filter(function(a){ return !a.off_at; });
+    var cp = cur.length ? cur[0].period : (G.ym ? G.ym + '-1' : '');
+    el.innerHTML = '<div style="font-weight:700">' + esc(r.code) + ' · ' + L(KIND[r.kind]) + ' · ' + esc(r.name) + ' · ' + money(r.cents) + '</div>'
+      + '<div style="font-size:12px;color:var(--muted);margin:4px 0">' + T('今の割当：','Now: ') + (cur.length ? cur.map(function(a){ return esc(a.period) + (a.cents != null ? ' ' + money(a.cents) : '') + '（' + (a.how === 'manual' ? T('手で','by hand') : T('自動','auto')) + '）'; }).join('、') : T('なし（要確認）','none (to check)')) + '</div>'
+      + '<label style="display:block;margin-top:6px"><input type="radio" name="pe-how" value="one" checked> ' + T('まるごとこの期間に','Whole amount to') + ' <select id="pe-p1" class="form-input" style="display:inline-block;width:auto">' + perOpts(cp) + '</select></label>'
+      + '<label style="display:block;margin-top:6px"><input type="radio" name="pe-how" value="split"> ' + T('2 つの期間に分ける','Split into two periods') + '</label>'
+      + '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-left:22px"><select id="pe-s1" class="form-input" style="width:auto">' + perOpts(cp) + '</select><input id="pe-c1" class="form-input" style="width:110px" placeholder="$" inputmode="decimal">'
+      + '<select id="pe-s2" class="form-input" style="width:auto">' + perOpts('') + '</select><input id="pe-c2" class="form-input" style="width:110px" placeholder="$" inputmode="decimal"></div>'
+      + '<input id="pe-reason" class="form-input" style="margin-top:8px" maxlength="200" placeholder="' + T('理由（必ず）','Reason (required)') + '">'
+      + (M.err ? '<div class="alert alert-danger" style="margin-top:6px;font-size:12px">' + esc(M.err) + '</div>' : '')
+      + '<details style="margin-top:6px;font-size:11.5px"><summary>' + T('割当の記録','Allocation history') + '</summary>' + (r.alloc || []).map(function(a){ return '<div>' + esc(a.period) + (a.cents != null ? ' ' + money(a.cents) : '') + ' · ' + (a.how === 'manual' ? T('手で','by hand') + '（' + esc(a.by || '') + '：' + esc(a.reason || '') + '）' : T('自動','auto') + '（' + esc(a.basis || '') + '）') + ' · ' + esc(when(a.at)) + (a.off_at ? ' → ' + T('外した ','removed ') + esc(when(a.off_at)) + '（' + esc(a.off_reason || '') + '）' : '') + '</div>'; }).join('') + '</details>'
+      + '<div style="display:flex;gap:6px;justify-content:flex-end;margin-top:10px"><button class="btn btn-secondary" onclick="closeModalDirect()">' + T('やめる','Cancel') + '</button><button class="btn btn-primary" onclick="peAssignGo()">' + T('保存','Save') + '</button></div>';
+  }
+  function cents(v){ var s = String(v || '').replace(/[$,\s]/g, ''); if (!/^\d+(\.\d{1,2})?$/.test(s)) return null; return Math.round(Number(s) * 100); }
+  function val(id){ var e = D.getElementById(id); return e ? e.value : ''; }
+  W.peAssignGo = async function(){
+    var M = G.modal; if (!M || !M.r || G.busy) return;
+    var reason = String(val('pe-reason') || '').trim(); if (!reason) { M.err = L(ERR.reason_required); drawAssign(); return; }
+    var how = 'one'; try { var q = D.querySelector('input[name="pe-how"]:checked'); if (q) how = q.value; } catch(e) {}
+    var body;
+    if (how === 'split') {
+      var a = cents(val('pe-c1')), b = cents(val('pe-c2')), s1 = val('pe-s1'), s2 = val('pe-s2');
+      if (a == null || b == null || !perOk(s1) || !perOk(s2) || s1 === s2) { M.err = L(ERR.bad_value); drawAssign(); return; }
+      if (a + b !== Number(M.r.cents)) { M.err = L(ERR.sum_mismatch) + '（' + money(a + b) + ' / ' + money(M.r.cents) + '）'; drawAssign(); return; }
+      body = { action:'assign', id:M.id, parts:[{ period:s1, cents:a }, { period:s2, cents:b }], reason:reason };
+    } else {
+      var p = val('pe-p1'); if (!perOk(p)) { M.err = L(ERR.bad_value); drawAssign(); return; }
+      body = { action:'assign', ids:[M.id], period:p, reason:reason };
+    }
+    G.busy = 'assign';
+    try { await api(body); G.modal = null; try { closeModalDirect(); } catch(e) {} try { showToast(T('割当を保存しました','Allocation saved'), 'success'); } catch(e) {} G.busy = ''; load(true); rerender(); }
+    catch(e){ G.busy = ''; M.err = String(e.message || e); drawAssign(); }
+  };
+
+  /* ---------------- Excel（まとめ・明細・要確認。月の両方は合計も） */
+  function head(r){ return r.map(function(v){ return { v:v, bold:true }; }); }
+  function m$(c){ return { v:dollars(c), money:true }; }
+  var STL = { pay:['今回Payroll','This payroll'], other:['既払・他経路','Already paid / other route'], payroll:['支給済み','Paid'] };
+  function sheetsOf(snaps, review, both){
+    var sum = [], det = [], rev = [];
+    snaps.forEach(function(s, i){
+      if (i) sum.push([]);
+      sum.push([{ v:T('期間','Period') + ' ' + s.period + '（' + perLabel(s.period, { from:s.from, to:s.to }) + '）', bold:true }]);
+      sum.push([T('支給日','Pay day'), String(s.pay_day || '')]);
+      sum.push([T('版','Version'), s.ver, T('出力','Exported'), when(s.at), String(s.by || '')]);
+      if (s.paid) sum.push([T('支給済み','Paid'), T('はい','yes')]);
+      sum.push(head([T('申請者','Employee'), T('社員ID','Employee ID'), T('ガソリン代','Mileage'), T('立替経費','Reimbursement'), T('精算額合計','Settled total'), T('既払・他経路支給額','Already paid / other route'), T('今回Payroll支給額合計','This payroll')]));
+      (s.rows || []).forEach(function(r){ sum.push([String(r.name || ''), r.has_emp === false ? '' : String(r.emp || ''), m$(r.gas), m$(r.reimb), m$(r.total), m$(r.other), m$(r.payroll)]); });
+      var tt = s.totals || {};
+      sum.push([{ v:T('合計','Total'), bold:true }, (tt.people || 0) + T('人',' people'), m$(tt.gas), m$(tt.reimb), m$(tt.total), m$(tt.other), m$(tt.payroll)]);
+      if (tt.negative) sum.push([T('※ 差額がマイナスの人は今回の支給の合計に入れていません（給与から引かない）','* People with a negative amount are left out of the payroll total (not deducted from pay)')]);
+      (s.lines || []).forEach(function(l){ det.push([s.period, String(l.code || ''), L(KIND[l.kind]), String(l.name || ''), l.has_emp === false ? '' : String(l.emp || ''), String(l.use_date || ''), String(l.checked_at ? String(l.checked_at).slice(0, 10) : ''), String(l.pay_date || ''), m$(l.cents), L(STL[l.state]), l.how === 'manual' ? T('手で：','By hand: ') + String(l.reason || '') : T('自動','Auto')]); });
+      ((s.rows || []).filter(function(r){ return Number(r.payroll) < 0; })).forEach(function(r){ rev.push([L(RV.negative), s.period, '', String(r.name || ''), m$(r.payroll), T(RV.negative[2], RV.negative[3])]); });
+    });
+    det.unshift(head([T('期間','Period'), T('申請番号','Request'), T('種類','Kind'), T('申請者','Employee'), T('社員ID','Employee ID'), T('使用日','Date used'), T('精算確定日','Settled'), T('支払日','Paid on'), T('金額','Amount'), T('区分','Status'), T('割当','Allocation')]));
+    (review || []).forEach(function(it){ rev.push([L(RV[it.type]), String(it.period || ''), String(it.code || ''), String(it.name || ''), m$(it.cents), T(RV[it.type] ? RV[it.type][2] : '', RV[it.type] ? RV[it.type][3] : '') + (it.paid_at_text ? '（' + it.paid_at_text + '）' : '')]); });
+    rev.unshift(head([T('要確認','To check'), T('期間','Period'), T('申請番号','Request'), T('申請者','Employee'), T('金額','Amount'), T('理由','Why')]));
+    if (rev.length === 1) rev.push([T('要確認はありません','Nothing to check')]);
+    var sh = [{ name:T('まとめ','Summary'), rows:sum }, { name:T('明細','Lines'), rows:det }, { name:T('要確認','To check'), rows:rev }];
+    if (both) {
+      var all = merge(snaps.reduce(function(a, s){ return a.concat(s.rows || []); }, [])), tt = tot(all);
+      var tr = [head([T('申請者','Employee'), T('社員ID','Employee ID'), T('ガソリン代','Mileage'), T('立替経費','Reimbursement'), T('精算額合計','Settled total'), T('既払・他経路支給額','Already paid / other route'), T('今回Payroll支給額合計','This payroll')])];
+      all.forEach(function(r){ tr.push([String(r.name || ''), r.has_emp === false ? '' : String(r.emp || ''), m$(r.gas), m$(r.reimb), m$(r.total), m$(r.other), m$(r.payroll)]); });
+      tr.push([{ v:T('合計','Total'), bold:true }, all.length + T('人',' people'), m$(tt.gas), m$(tt.reimb), m$(tt.total), m$(tt.other), m$(tt.payroll)]);
+      sh.push({ name:T('合計（月の両方）','Total (both periods)'), rows:tr });
+    }
+    return sh;
+  }
+  W._peSheets = sheetsOf;
+  async function snapOf(p){
+    var x = (G.data && G.data.periods || []).filter(function(q){ return q.period === p; })[0];
+    var s = (x && x.state === 'paid') ? await api({ action:'ver', period:p, ver:x.ver }) : await api({ action:'export', period:p });
+    if (x && x.state === 'paid') s.paid = true;
+    s.from = s.from || (x && x.from); s.to = s.to || (x && x.to);
+    return s;
+  }
+  W.peExport = async function(k){
+    if (G.busy || !G.data) return;
+    var ps = k === 'both' ? [G.ym + '-1', G.ym + '-2'] : (per(k) ? [per(k).period] : []);
+    if (!ps.length) return;
+    G.busy = 'export'; rerender();
+    try {
+      var snaps = []; for (var i = 0; i < ps.length; i++) snaps.push(await snapOf(ps[i]));
+      var rev = (G.data.review || []);
+      var name = 'Payroll_' + T('ガソリン代立替経費','mileage_reimb') + '_' + (k === 'both' ? G.ym + '_' + T('両方','both') : ps[0] + '_' + T('版','v') + snaps[0].ver) + '.xls';
+      downloadExcelSheets(sheetsOf(snaps, rev, k === 'both'), name);
+      try { showToast(T('出力しました（版 ','Exported (v') + snaps.map(function(s){ return s.ver + (s.same ? T('・前と同じ中身',' same as before') : ''); }).join(' / ') + T('）。まだ支給済みではありません',') — not marked paid yet'), 'success'); } catch(e) {}
+      G.busy = ''; load(true);
+    } catch(e) { G.busy = ''; G.err = String(e.message || e); }
+    rerender();
+  };
+  /* CEO・GM の「まとめて出力」に足す 1 枚（両方の期間・版を作る）。読めなければ理由の 1 行 */
+  W.peBookSheet = async function(y, m){
+    var ym = ymOf(y, m);
+    try {
+      if (!canUse()) return null;
+      var g = await api({ action:'get', ym:ym }), snaps = [];
+      for (var i = 0; i < 2; i++) { var x = g.periods[i]; var s = x.state === 'paid' ? await api({ action:'ver', period:x.period, ver:x.ver }) : await api({ action:'export', period:x.period }); s.from = x.from; s.to = x.to; s.paid = x.state === 'paid'; snaps.push(s); }
+      if (G.ym === ym) load(true);
+      var sh = sheetsOf(snaps, g.review || [], true);
+      var rows = sh[0].rows.concat([[]], [[{ v:T('要確認','To check'), bold:true }]], sh[2].rows.slice(1));
+      return { name:T('ガソリン代・立替経費','Mileage & reimbursements'), rows:rows };
+    } catch(e) { return { name:T('ガソリン代・立替経費','Mileage & reimbursements'), rows:[[T('読めませんでした：','Could not read: ') + String(e.message || e)]] }; }
+  };
+
+  /* ---------------- 支給済みにする（期間ごとに 1 回） */
+  W.pePaidAsk = function(p){
+    var x = (G.data && G.data.periods || []).filter(function(q){ return q.period === p; })[0]; if (!x) return;
+    var nrev = ((G.data && G.data.review) || []).length, tt = x.totals || {};
+    var ok = x.state === 'exported';
+    var h = '<div style="font-weight:700;margin-bottom:6px">' + T('支給済みにする','Mark as paid') + '：' + esc(perLabel(p, x)) + '（' + T('支給日 ','pay day ') + md(x.pay_day) + '）</div>'
+      + (ok ? '<div>' + T('版 ','Version ') + x.ver + '（' + esc(when(x.ver_at)) + '・' + esc(x.ver_by || '') + '）· ' + (tt.people || 0) + T('人',' people') + ' · ' + T('今回Payroll ','this payroll ') + '<b>' + money(tt.payroll) + '</b></div>'
+        + '<div class="k2-note" style="margin:6px 0">' + T('この版の「今回Payroll」の申請を精算済み（Payroll・支給日）にします。この期間の割当はもう変えられません。取り消しはできません（まちがえたら Claude に）。','The “this payroll” requests of this version become paid (Payroll, pay day). The allocations of this period can no longer change. This cannot be undone (tell Claude if it was a mistake).') + '</div>'
+        + (nrev || tt.negative ? '<div class="alert alert-warning" style="font-size:12px">' + T('要確認が ','There are ') + (nrev + (tt.negative || 0)) + T(' 件あります。確かめてから押してください',' items to check. Please check them first') + '</div>' : '')
+        + '<input id="pe-note" class="form-input" maxlength="200" placeholder="' + T('メモ（任意）','Note (optional)') + '">'
+        + '<div style="display:flex;gap:6px;justify-content:flex-end;margin-top:10px"><button class="btn btn-secondary" onclick="closeModalDirect()">' + T('やめる','Cancel') + '</button><button class="btn btn-primary" onclick="pePaidGo(\'' + p + '\')">' + T('支給済みにする','Mark as paid') + '</button></div>'
+       : '<div class="alert alert-warning">' + (x.state === 'changed' ? L(ERR.changed) : L(ERR.not_exported)) + '</div><div style="text-align:right;margin-top:8px"><button class="btn btn-secondary" onclick="closeModalDirect()">' + T('閉じる','Close') + '</button></div>');
+    try { openModal(h); } catch(e) {}
+  };
+  W.pePaidGo = async function(p){
+    var x = (G.data && G.data.periods || []).filter(function(q){ return q.period === p; })[0]; if (!x || G.busy || x.state !== 'exported') return;
+    G.busy = 'paid';
+    try {
+      var r = await api({ action:'paid', period:p, ver:x.ver, fp:x.ver_fp, note:String(val('pe-note') || '').slice(0, 200) });
+      try { closeModalDirect(); } catch(e) {}
+      try { showToast(T('支給済みにしました（申請 ','Marked as paid (') + (r.paid_requests || 0) + T(' 件を精算済みに）',' request(s) settled)'), 'success'); } catch(e) {}
+      G.busy = ''; load(true);
+    } catch(e) { G.busy = ''; try { closeModalDirect(); } catch(e2) {} G.err = String(e.message || e); load(true); }
+    rerender();
+  };
+
+  /* ---------------- 出力の履歴（版の写しを出し直す） */
+  W.peHist = function(){
+    var vs = (G.data && G.data.versions) || [];
+    var h = '<div style="font-weight:700;margin-bottom:6px">' + T('出力の履歴','Export history') + ' · ' + esc(G.ym) + '</div>'
+      + (vs.length ? vs.map(function(v){ return '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:4px 0;border-bottom:1px solid var(--border)"><span>' + esc(v.period.slice(0, 7) + ' ' + perShort(v.period)) + '</span><b>' + T('版 ','v') + v.ver + '</b><span>' + esc(when(v.at)) + '</span><span>' + esc(v.by || '') + '</span><span>' + money(v.totals && v.totals.payroll) + '</span>'
+        + (v.paid ? '<span class="tag tag-green" style="font-size:10px">' + T('支給済み','Paid') + '</span>' : '') + '<button class="btn btn-secondary btn-sm" onclick="peVerDl(\'' + v.period + '\',' + Number(v.ver) + ')">' + T('この版を Excel で','Download this version') + '</button></div>'; }).join('')
+        : '<div class="k2-note">' + T('この月はまだ出力していません','Nothing exported for this month yet') + '</div>')
+      + '<div style="text-align:right;margin-top:8px"><button class="btn btn-secondary" onclick="closeModalDirect()">' + T('閉じる','Close') + '</button></div>';
+    try { openModal(h); } catch(e) {}
+  };
+  W.peVerDl = async function(p, v){
+    if (!perOk(p) || !(v >= 1)) return;
+    try { var s = await api({ action:'ver', period:p, ver:v }); var x = (G.data && G.data.periods || []).filter(function(q){ return q.period === p; })[0]; s.from = x && x.from; s.to = x && x.to;
+      downloadExcelSheets(sheetsOf([s], s.review || [], false), 'Payroll_' + T('ガソリン代立替経費','mileage_reimb') + '_' + p + '_' + T('版','v') + v + '.xls'); }
+    catch(e) { try { showToast(String(e.message || e), 'danger'); } catch(e2) {} }
+  };
+
+  /* ---------------- 支給日の決まり（CEO・GM・経理が変える。事務Crew は見るだけ） */
+  W.peCfgOpen = function(){
+    var c = (G.data && G.data.settings) || null; if (!c) return;
+    var can = !!(G.data.can && G.data.can.settings);
+    var dis = can ? '' : ' disabled';
+    var h = '<div style="font-weight:700;margin-bottom:6px">' + T('支給日の決まり','Pay day rules') + '</div>'
+      + '<div style="font-size:12.5px;line-height:1.7">' + T('1〜15 日の期間：同じ月の ','1st–15th: day ') + '<input id="pe-d1" class="form-input" style="display:inline-block;width:60px" value="' + Number(c.day_first) + '"' + dis + '>' + T(' 日','') + '<br>'
+      + T('16 日〜末日の期間：翌月の ','16th–end: next month, day ') + '<input id="pe-d2" class="form-input" style="display:inline-block;width:60px" value="' + Number(c.day_second) + '"' + dis + '>' + T(' 日','') + '<br>'
+      + T('土日なら前の金曜・平日の祝日なら前の営業日。祝日は米国の銀行の休日（Federal Reserve）が初めの値です。','Weekends move to the Friday before; a weekday holiday moves to the business day before. Holidays start from the US bank holidays (Federal Reserve).') + '</div>'
+      + '<div style="font-size:12px;margin-top:6px">' + T('休日（今年と来年）：','Holidays (this and next year): ') + esc((c.holidays || []).join(', ')) + '</div>'
+      + '<label style="display:block;margin-top:6px;font-size:12px">' + T('足す休日（YYYY-MM-DD・カンマで）','Add holidays (YYYY-MM-DD, comma separated)') + '<input id="pe-add" class="form-input" value="' + esc((c.holidays_add || []).join(', ')) + '"' + dis + '></label>'
+      + '<label style="display:block;margin-top:6px;font-size:12px">' + T('外す休日','Remove holidays') + '<input id="pe-off" class="form-input" value="' + esc((c.holidays_off || []).join(', ')) + '"' + dis + '></label>'
+      + (c.updated_by ? '<div class="k2-note">' + T('最後に変えた人：','Last changed by: ') + esc(c.updated_by) + ' · ' + esc(when(c.updated_at)) + '</div>' : '')
+      + '<div class="k2-note">' + T('支給済みの期間の支給日は変わりません（写しに残っています）。','Paid periods keep their pay day (it is in their copy).') + '</div>'
+      + '<div style="display:flex;gap:6px;justify-content:flex-end;margin-top:10px"><button class="btn btn-secondary" onclick="closeModalDirect()">' + T('閉じる','Close') + '</button>' + (can ? '<button class="btn btn-primary" onclick="peCfgSave()">' + T('保存','Save') + '</button>' : '') + '</div>';
+    try { openModal(h); } catch(e) {}
+  };
+  function dates(v){ return String(v || '').split(/[\s,、]+/).map(function(s){ return s.trim(); }).filter(Boolean); }
+  W.peCfgSave = async function(){
+    var c = G.data && G.data.settings; if (!c || G.busy) return;
+    var d1 = Number(val('pe-d1')), d2 = Number(val('pe-d2')), add = dates(val('pe-add')), off = dates(val('pe-off'));
+    if (!(d1 >= 1 && d1 <= 28 && Math.floor(d1) === d1 && d2 >= 1 && d2 <= 28 && Math.floor(d2) === d2) || add.concat(off).some(function(s){ return !/^20\d{2}-\d{2}-\d{2}$/.test(s); })) { try { showToast(L(ERR.bad_value), 'danger'); } catch(e) {} return; }
+    G.busy = 'cfg';
+    try { await api({ action:'cfg_save', day_first:d1, day_second:d2, add:add, off:off, expect_rev:Number(c.rev) }); try { closeModalDirect(); showToast(T('支給日の決まりを保存しました','Pay day rules saved'), 'success'); } catch(e) {} }
+    catch(e) { try { showToast(String(e.message || e), 'danger'); } catch(e2) {} }
+    G.busy = ''; load(true); rerender();
+  };
+})();
+/* ==== FUNERGY_PE end ==== */
 </script>
 <script>
 /* ==== FUNERGY_LAYOUT start（v1172・Moto さん 11/14 21:52 HST：UI案82「１〜５ A」）====
