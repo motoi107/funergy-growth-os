@@ -1,5 +1,11 @@
 # Claude / Codex 共通記録
 
+## 2026-11-24 2b：事務Crew のメールのアカウントの手順と SQL のひな形（Claude（Team・Claude Code）・ブランチ `claude/payroll-expense-1212`・#218 の直しの上・コード・表・関数は変えない）
+
+- Moto さん 11/24「GMやCEOの様にメールで登録（ログインはPINでも入れる様に）」→ `deploy/office-crew-account-2b/`（① 確かめ・② 1 人ずつ足すひな形・③ 確かめ・止める）。足すのは manager_auth の 1 行（office_crew・社員の ID）だけ。止まる：メールが無い・社員が 0／2 人以上・退職・事務Crew でない・CEO／GM／経理のメール（役割を下げない）・別の社員・1 人 2 つ。退職のときは止めるを必ず（Invoice取込はメールの役割だけを見る）。仕様 `docs/ACCT_VIEW_V1211_JA.md` の 9。
+- 試験：`tests/office-crew-account-2b.test.mjs` 5/5・わざと壊す 5 通りすべて落ちる。CI に足した。本番では流していない。名前・メールはリポジトリに書かない。
+- 次：B-2（v1212）。
+
 ## 2026-11-24 v1211：#218 の Codex の再レビュー（`5e71c68` まで・7134072683）の直し（Claude（Team・Claude Code）・ブランチ `claude/acct-view-1211`・push できないので引き継ぎ一式で渡す）
 
 - #217 の直し（`a43957c`・#216 を含む）を取り込んだ（マージ）。
