@@ -296,7 +296,7 @@ export function createHandler(deps) {
   const db = deps.db || postgrestDb({ fetch, url, key: service });
   // The PIN sign-in's mark is checked by this function (the same key and form as auth-pin). None: PIN is refused.
   const verifyPin = typeof deps.verifyPin === 'function' ? deps.verifyPin : null;
-  const origins = ['https://funergy-plus.com', ...String(env('MR_ALLOWED_ORIGINS') || '').split(',').map(s => s.trim()).filter(Boolean)];
+  const origins = [...new Set(['https://funergy-plus.com', 'capacitor://localhost', ...String(env('MR_ALLOWED_ORIGINS') || '').split(',').map(s => s.trim()).filter(Boolean)])];
   const timeout = () => (typeof AbortSignal !== 'undefined' && AbortSignal.timeout ? AbortSignal.timeout(8000) : undefined);
 
   // Who is calling and how they signed in. The body's pin_session is the PIN sign-in; without one, an Auth bearer (not the

@@ -78,7 +78,7 @@ export function createHandler(deps) {
   const url = env('SUPABASE_URL'), service = env('SUPABASE_SERVICE_ROLE_KEY'), anon = env('SUPABASE_ANON_KEY');
   const db = deps.db || postgrestDb({ fetch, url, key: service });
   const signMark = typeof deps.signMark === 'function' ? deps.signMark : null;
-  const origins = ['https://funergy-plus.com', ...String(env('DL_ALLOWED_ORIGINS') || '').split(',').map(s => s.trim()).filter(Boolean)];
+  const origins = [...new Set(['https://funergy-plus.com', 'capacitor://localhost', ...String(env('DL_ALLOWED_ORIGINS') || '').split(',').map(s => s.trim()).filter(Boolean)])];
   const timeout = () => (typeof AbortSignal !== 'undefined' && AbortSignal.timeout ? AbortSignal.timeout(8000) : undefined);
   const randomB64 = deps.random || (() => b64u(crypto.getRandomValues(new Uint8Array(32))));
 

@@ -40,7 +40,7 @@ export function createHandler(deps) {
   const url = env('SUPABASE_URL'), service = env('SUPABASE_SERVICE_ROLE_KEY'), anon = env('SUPABASE_ANON_KEY');
   const db = deps.db || postgrestDb({ fetch, url, key: service });
   const wrUrl = env('PE_WR_URL') || (url + '/functions/v1/work-requests');
-  const origins = ['https://funergy-plus.com', ...String(env('PE_ALLOWED_ORIGINS') || '').split(',').map(s => s.trim()).filter(Boolean)];
+  const origins = [...new Set(['https://funergy-plus.com', 'capacitor://localhost', ...String(env('PE_ALLOWED_ORIGINS') || '').split(',').map(s => s.trim()).filter(Boolean)])];
   const cache = new Map();   // sha256(印) → { a, exp }（60 秒。同じ印で何度も work-requests を呼ばない。権限は SQL がいつも確かめ直す）
   const enc = new TextEncoder();
   const sha = async s => [...new Uint8Array(await crypto.subtle.digest('SHA-256', enc.encode(s)))].map(b => b.toString(16).padStart(2, '0')).join('');

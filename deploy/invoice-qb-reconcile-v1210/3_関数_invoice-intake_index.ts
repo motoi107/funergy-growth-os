@@ -1845,7 +1845,7 @@ function createHandler(deps) {
     if (mailer) return mailerTransport(mailer);
     return createGmail({ fetch, getCreds: gmailCreds });
   }
-  const origins = ["https://funergy-plus.com", ...String(env("INVOICE_ALLOWED_ORIGINS") || "").split(",").map((s) => s.trim()).filter(Boolean)];
+  const origins = [...new Set(["https://funergy-plus.com", "capacitor://localhost", ...String(env("INVOICE_ALLOWED_ORIGINS") || "").split(",").map((s) => s.trim()).filter(Boolean)])];
   async function context() {
     const c = await db.rpc("invoice_worker_context", {});
     const mode = c.settings.mode || {}, rules = c.settings.rules || {}, qb = c.settings.qb || {};

@@ -104,7 +104,7 @@ export function createHandler(deps) {
     if (mailer) return mailerTransport(mailer);
     return createGmail({ fetch, getCreds: gmailCreds });
   }
-  const origins = ['https://funergy-plus.com', ...String(env('INVOICE_ALLOWED_ORIGINS') || '').split(',').map(s => s.trim()).filter(Boolean)];
+  const origins = [...new Set(['https://funergy-plus.com', 'capacitor://localhost', ...String(env('INVOICE_ALLOWED_ORIGINS') || '').split(',').map(s => s.trim()).filter(Boolean)])];
 
   // ------------------------------------------------------------------ worker
   async function context() {

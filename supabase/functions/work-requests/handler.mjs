@@ -379,7 +379,7 @@ export function createHandler(deps) {
     if (g && g.locked) return { ok: false, locked: g.locked, left: 0 };
     return { g, ok: await secretOk(pin, g) };
   }
-  const origins = ['https://funergy-plus.com', ...String(env('WR_ALLOWED_ORIGINS') || '').split(',').map(s => s.trim()).filter(Boolean)];
+  const origins = [...new Set(['https://funergy-plus.com', 'capacitor://localhost', ...String(env('WR_ALLOWED_ORIGINS') || '').split(',').map(s => s.trim()).filter(Boolean)])];
 
   // 呼んだ人：本文の pin_session（auth-pin が出した印）だけ。メールのログインは使わない（アプリは PIN だけ）。
   async function actorOf(body) {
