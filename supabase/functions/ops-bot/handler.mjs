@@ -1,3 +1,4 @@
+import { browserOrigins } from '../_shared/browser-origins.mjs';
 import {parseCompletionReply,completionReceipt,parseCaseReply,replyHelp,replyChoices,responseReceipt} from '../../../bot/case-replies.mjs';
 import { createClockDetector } from '../../../bot/clock-detector.mjs';
 import {cashTipFindings,formatCashTipReport,reportRoute,caseCategory} from '../../../bot/cash-tip-report.mjs';
@@ -596,7 +597,7 @@ export function createHandler({env,fetch:fetcher=globalThis.fetch}){
  }
  return async function handler(req){
   const origin=req.headers.get('origin');
-  const allowed=['https://funergy-plus.com','https://www.funergy-plus.com','https://motoi107.github.io'];
+  const allowed=browserOrigins('', ['https://www.funergy-plus.com','https://motoi107.github.io']);
   const cors=origin&&allowed.includes(origin)?{'Access-Control-Allow-Origin':origin,'Vary':'Origin','Access-Control-Allow-Headers':'authorization, apikey, content-type','Access-Control-Allow-Methods':'GET, POST, OPTIONS'}:{};
   const json=(data,status=200)=>new Response(JSON.stringify(data),{status,headers:{...cors,'Content-Type':'application/json','Cache-Control':'no-store'}});
   try{

@@ -1,3 +1,4 @@
+import { browserOrigins } from '../_shared/browser-origins.mjs';
 // payroll-expense（v1212・B-2）：Payroll 別のガソリン代・立替経費。仕様：docs/PAYROLL_EXPENSE_V1212_JA.md
 // ・だれか：PIN のログインの印（本文の pin_session）を関数 work-requests の whoami に確かめてもらう（PIN を確かめるコードは入れない）。
 //   店のタブレット（店舗の PIN）は whoami が断る。読める・出せる・支給済みにできるのは CEO・GM・経理・事務Crew（確かめた PIN の事務Crew も）。
@@ -40,7 +41,7 @@ export function createHandler(deps) {
   const url = env('SUPABASE_URL'), service = env('SUPABASE_SERVICE_ROLE_KEY'), anon = env('SUPABASE_ANON_KEY');
   const db = deps.db || postgrestDb({ fetch, url, key: service });
   const wrUrl = env('PE_WR_URL') || (url + '/functions/v1/work-requests');
-  const origins = ['https://funergy-plus.com', ...String(env('PE_ALLOWED_ORIGINS') || '').split(',').map(s => s.trim()).filter(Boolean)];
+  const origins = browserOrigins(env('PE_ALLOWED_ORIGINS'));
   const cache = new Map();   // sha256(印) → { a, exp }（60 秒。同じ印で何度も work-requests を呼ばない。権限は SQL がいつも確かめ直す）
   const enc = new TextEncoder();
   const sha = async s => [...new Uint8Array(await crypto.subtle.digest('SHA-256', enc.encode(s)))].map(b => b.toString(16).padStart(2, '0')).join('');
