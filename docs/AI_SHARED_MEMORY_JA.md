@@ -1,5 +1,13 @@
 # Claude / Codex 共通記録
 
+## App Store 審査の準備（Claude（Team・Claude Code）・ブランチ `claude/appstore-review-pages`・`main` e0e20ce の上・アプリは変えていない）
+
+- 依頼：iPhone 版（App Store Connect app 6831074913・Unlisted）の審査用に、プライバシーポリシーとサポートの静的ページ（英語・日本語）と、審査用デモアカウントの要件（作らない）。
+- 作ったもの：`privacy/index.html`・`privacy/ja/index.html`・`support/index.html`・`support/ja/index.html`（ログイン不要・スクリプトなし・noindex）、`docs/APPSTORE_REVIEW_JA.md`（根拠の表・`[要確認]` の一覧・デモアカウントの案・審査メモの下書き）、`tests/appstore-pages.test.mjs`（CI に 1 段）。
+- 決まり：コードから決まらないこと（施行日・運営者の正式名称・ホスティング・第三者への提供・保存期間・依頼の窓口・問い合わせ先・iPhone 本体の SDK・リポジトリに無い関数の外部サービス）は `[要確認]`。埋めてからマージ（マージ＝公開）。
+- デモアカウントの案：審査用の店（新しく作る・外のサービスとつながない）の G1 を 1 人・架空の名前・個人の欄は空・PIN は 0000 以外・チャットと事前経費のカードを個人の例外で隠す・保存の確かめは Daily Operations。作るのは Moto さん。
+- `sw.js` は画面の移動の中身を `index.html` の控えに入れる（今の決まり）。`/privacy/` を開くとオフラインの控えが一時的にそのページになる。今回は変えていない（直すなら別の PR）。
+
 ## 2026-11-24 Moto さんの答え（A-2 の権限・役割の文の確かめ方・OJTマップ）と Excel の照らし合わせ（Claude（Team）・ブランチ `claude/grade-unify-a`）
 
 - 権限の 5 つ（育成計画・OJT）：「この内容で問題ありません」＝確定。役割の文は GM・CEO がアプリ（キャリア・育成 › 役割と責任マップ・等級の説明）で確かめる（CEO も）。確認用のドキュメント https://claude.ai/artifact/D5ec4qG4c5ivx937zj7ak9 。OJTマップは廃止（A-2-3 に入れた）。

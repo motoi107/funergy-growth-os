@@ -1,5 +1,12 @@
 # 改修・自動化の作業記録
 
+## App Store 審査の準備（ブランチ `claude/appstore-review-pages`）
+
+1. 済（Claude（Team））：プライバシーポリシー・サポートのページ（英語・日本語）と、審査用デモアカウントの要件（`docs/APPSTORE_REVIEW_JA.md`）。push できないので引き継ぎ一式で Personal がドラフト PR に。
+2. 次（Moto さん）：`[要確認]`（ポリシー 9・サポート 1・`docs/APPSTORE_REVIEW_JA.md` の 2）を埋める → 埋めたらマージ（＝公開）→ App Store Connect に URL。
+3. 次（Moto さん）：デモアカウントの案（`docs/APPSTORE_REVIEW_JA.md` の 5）を決める → 本番で作る → iPhone アプリでドライラン（PIN のログイン・保存・出ない画面）。
+4. 決めること（Moto さん）：アプリの中にプライバシーポリシーへの導線を足すか・どこに（`index.html` の変更＝別の PR）／`sw.js` の控えの直し（別の PR）。
+
 ## 2026-11-23 統合実装プロンプト（A・B-1・B-2・B-3）
 
 0. 済（Claude（Team）11/24）：push できない（git の proxy が 403）ので、Moto さん 11/24「push しないで進める」＝ブランチごとの引き継ぎ一式を Personal で GitHub に。前の引き継ぎ（Moto さん 11/24 04:39 HST）：次は会社の Team のアカウントの新しいセッションで。最初に `claude/payroll-expense-1212` を取り、共有記録の先頭（11/24 の節・#216 の直しの設計）を読み、push できるかを確かめる。順番：#216 → #217 → #218 → 2b → B-2。
