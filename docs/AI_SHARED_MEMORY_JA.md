@@ -1,5 +1,13 @@
 # Claude / Codex 共通記録
 
+## 2026-11-25 本番（funergy-os）にリポジトリを合わせる（Grok・ブランチ `cursor/prod-ops-align-2e66`・本番は変更していない）
+
+- 読み取り：2026-11-25 の書き出しと、cron 2 件の command だけ（`ops-bot-morning-summary` と `ops-bot-payroll-month-close-collect`）。デプロイ・cron 変更・LINE 送信はしていない。
+- ops-bot：本番 v36 にあって main に無かったのは、給与期間の勤怠レポート（`formatPayrollLaborReport`・`collectPayrollLabor`・`labor_payroll_collect`・収集が揃うまで送らない）。`bot/` のモジュールは本番と同じ。main の方が新しいのはアプリの Origin（`capacitor://localhost`。PR #221）。本番のバンドルには無いので残した。
+- SQL：`bot_collection_days`・`bot_labor_payroll_period`・`bot_labor_payroll_snapshot` を追加。`bot_morning_snapshot` の `finance_ok` だけ、収集日（`bot_collection_days`）に合わせた。`bot_reserve_morning_report` と `cash_tip_autofill` は本番と中身が同じなので置き換えていない。
+- 中間レビュー：新しい行の提出期限は `schedule.submit_day`（20 日）。既存の空の期限は変えない。GM・CEO の上書きはそのまま。期限後の提出は拒否しない。`flags.notify` は false のまま。画面は「まだ提出できます」。アプリは 1216。
+- 文書：`docs/BOT_OPERATIONS_JA.md` の先頭が現行。古い「毎朝 09:00」などは【2026-11-25 削除：現行ではない】。案内（休日・キックオフ・棚卸・Q コミット・回収）は案で、未実装。
+
 ## 2026-11-24 Moto さんの答え（A-2 の権限・役割の文の確かめ方・OJTマップ）と Excel の照らし合わせ（Claude（Team）・ブランチ `claude/grade-unify-a`）
 
 - 権限の 5 つ（育成計画・OJT）：「この内容で問題ありません」＝確定。役割の文は GM・CEO がアプリ（キャリア・育成 › 役割と責任マップ・等級の説明）で確かめる（CEO も）。確認用のドキュメント https://claude.ai/artifact/D5ec4qG4c5ivx937zj7ak9 。OJTマップは廃止（A-2-3 に入れた）。

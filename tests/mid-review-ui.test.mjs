@@ -272,7 +272,7 @@ test('全店 (the fictional stores, live): status, input person, separate counts
   }
   assert.match(s, /港町（デモ） 担当：Yuki（AM） 提出済み（提出版 1）/);
   assert.match(s, /丘の上（デモ） .* ✓ 確認完了（提出版 1）/);
-  assert.match(s, /川沿い（デモ） 管轄 未設定 下書き（未提出） 入力担当： GM Test まだ提出されていない 提出 10\/15 期限超過 返信 未設定/);
+  assert.match(s, /川沿い（デモ） 管轄 未設定 下書き（未提出） 入力担当： GM Test まだ提出されていない 提出 10\/15 期限超過・提出できます 返信 未設定/);
   assert.match(s, /海岸（デモ） .* 提出 未設定 返信 未設定/);
   assert.match(s, /公園通り（デモ） .* 提出 未設定 返信 10\/17 期限超過/);
   assert.match(h, /担当・閲覧設定/);

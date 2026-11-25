@@ -6,6 +6,12 @@ import {createHandler} from '../supabase/functions/ops-bot/handler.mjs';
 const laborGroup='C'+'a'.repeat(32),financeGroup='C'+'b'.repeat(32);
 const guid=n=>'00000000-0000-4000-8000-'+String(n).padStart(12,'0');
 const clock={nightFrom:'03:00',nightTo:'05:00',longH:12,shortMin:15};
+function payrollMirror(snapshot){
+ const rows=(snapshot.details||[]).filter(c=>c.kind==='labor').map(c=>({...c,kind:'labor',business_date:c.business_date||snapshot.from||snapshot.day}));
+ const from=snapshot.from||snapshot.day,to=snapshot.to||snapshot.day;
+ const period={day:snapshot.day,from,to,expected:Number.isInteger(snapshot.expected)?snapshot.expected:1,ok:Number.isInteger(snapshot.ok)?snapshot.ok:1,failed:Number.isInteger(snapshot.failed)?snapshot.failed:0,payroll_from:from,payroll_to:to,is_final:false};
+ return {day:snapshot.day,snapshot_at:snapshot.snapshot_at||new Date().toISOString(),from,to,labor_period:period,active_stores:snapshot.active_stores||1,expected:period.expected,ok:period.ok,failed:period.failed,detail_total:rows.length,details:rows};
+}
 test('isolated report routes, immutable retries, read-only preview and private SQL',async t=>{
  const db=new PGlite(),q=async(s,p=[])=>(await db.query(s,p)).rows;
  try{
@@ -33,6 +39,7 @@ test('isolated report routes, immutable retries, read-only preview and private S
    if(url.includes('/stores?'))return Response.json([{id:'TEST',data:{}}]);
    if(url.includes('/app_state?'))return Response.json([{key:'cash_tips_TEST',value:cash}]);
    if(url.endsWith('/rpc/bot_morning_snapshot'))return Response.json(snapshot);
+   if(url.endsWith('/rpc/bot_labor_payroll_snapshot'))return Response.json(payrollMirror(snapshot));
    if(url.includes('/rpc/')){writes.push(url);const r=await rpc(url.split('/rpc/')[1],JSON.parse(init.body));if(changeRoute&&url.endsWith('bot_reserve_morning_report'))config.routes.labor={group_id:financeGroup,label:'HQ'};return Response.json(r);}
    if(url.endsWith('/summary'))return Response.json({groupName:url.includes(laborGroup)?'Corrections':'HQ'});
    if(url.endsWith('/message/push')){const body=JSON.parse(init.body);pushes.push({key:init.headers['X-Line-Retry-Key'],body});if(body.to===laborGroup&&failLabor){failLabor=false;return new Response(null,{status:429});}return new Response(null,{status:200});}
@@ -105,6 +112,7 @@ test('legacy in-flight combined report cannot send after routes activate or the 
    if(url.includes('kind=eq.lifecycle_notice'))return Response.json([]);
    if(url.includes('/bot_groups?'))return Response.json(enabled?[{group_id:financeGroup,label:'HQ',all_stores:true}]:[]);
    if(url.endsWith('bot_morning_snapshot'))return Response.json(snapshot);
+   if(url.endsWith('bot_labor_payroll_snapshot'))return Response.json({});
    if(url.endsWith('bot_reserve_morning_summary_v3')){
     const b=JSON.parse(init.body);
     if(transition==='activate_routes')config={...config,routes:{labor:{group_id:laborGroup,label:'Corrections'},finance:{group_id:financeGroup,label:'HQ'}}};else enabled=false;
@@ -128,6 +136,7 @@ test('requested attendance-only send does not send, flush or fetch other categor
   if(url.includes('key=eq.morning_summary'))return Response.json([{value:config}]);
   if(url.includes('/bot_groups?'))return Response.json([{group_id:laborGroup,label:'Corrections',all_stores:true}]);
   if(url.endsWith('bot_morning_snapshot'))return Response.json(snapshot);
+  if(url.endsWith('bot_labor_payroll_snapshot'))return Response.json(payrollMirror(snapshot));
   if(url.endsWith('bot_reserve_morning_report')){const b=JSON.parse(init.body);reserves.push(b);return Response.json({id:1,data:{state:'pending',batches:[{state:'pending',request_id:guid(1),messages:b.p_messages}]}});}
   if(url.endsWith('bot_finish_morning_summary_batch'))return Response.json(null);
   if(url.endsWith('/message/push')){pushes.push(JSON.parse(init.body));return new Response(null,{status:200});}

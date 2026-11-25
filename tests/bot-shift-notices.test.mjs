@@ -26,6 +26,7 @@ test('morning worker enriches saved cases before reservation without changing de
   if(url.includes('key=eq.morning_summary'))return Response.json([{value:{enabled:true,group_id:group,label:'HQ'}}]);
   if(url.includes('/bot_groups?'))return Response.json([{group_id:group,label:'HQ',all_stores:true}]);
   if(url.endsWith('/rpc/bot_morning_snapshot'))return Response.json({day:'2026-09-09',details:[detail],counts:{labor:1},stores:[]});
+  if(url.endsWith('/rpc/bot_labor_payroll_snapshot'))return Response.json({});
   if(url.includes('/bot_cases?code=in.'))return Response.json([{code:'#123',payload:{employee_name:'Example',kinds:['long'],cfg,shifts:[{inDate:'2026-09-08T20:00:00Z',outDate:'2026-09-09T09:00:00Z'}]}}]);
   if(url.endsWith('/rpc/bot_reserve_morning_summary_v3')){reserved=JSON.parse(init.body);return Response.json({id:1,data:{state:'pending',batches:[{state:'pending',messages:reserved.p_messages,request_id:guid}]}});}
   if(url.endsWith('/rpc/bot_finish_morning_summary_batch'))return Response.json(null);
