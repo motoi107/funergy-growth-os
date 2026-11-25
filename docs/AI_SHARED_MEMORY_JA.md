@@ -1,5 +1,41 @@
 # Claude / Codex 共通記録
 
+## 2026-11-24 Moto さんの答え（A-2 の権限・役割の文の確かめ方・OJTマップ）と Excel の照らし合わせ（Claude（Team）・ブランチ `claude/grade-unify-a`）
+
+- 権限の 5 つ（育成計画・OJT）：「この内容で問題ありません」＝確定。役割の文は GM・CEO がアプリ（キャリア・育成 › 役割と責任マップ・等級の説明）で確かめる（CEO も）。確認用のドキュメント https://claude.ai/artifact/D5ec4qG4c5ivx937zj7ak9 。OJTマップは廃止（A-2-3 に入れた）。
+- Excel（Q4 のマスターの元と同じ・sha256 一致）を照らした：「配点・基準点案」52〜57・81〜86 行に等級の位置付けがあった（前に「無い」としたのは見落とし）→ 役割の文のマスターに position・notes として入れた。
+- v1215：マイページ・Handbook（第 3・5・7 章）・業務ガイドからキャリア・育成への入口。説明の記録（8 A）は役割の文の公開のとき。
+- 次：A-2-3（ブランチ `claude/grade-unify-a23`・v1216・旧の OJT・成長管理と OJTマップを止める）は、新しい画面を本番で確かめてからマージ。
+
+## 2026-11-24 v1214：A-2-2 育成計画・OJT と過去の記録の画面（Claude（Team・Claude Code）・ブランチ `claude/grade-unify-a`・アプリ 1214・SQL と関数は A-2-1 のまま）
+
+- 作ったもの（`docs/GRADE_UNIFY_A_JA.md` の 8）：キャリア・育成の「育成計画・OJT」（一覧・1 人の計画・課題・記録・習得確認）と「過去の記録」（旧の記録の写し・GM・CEO は写す）。ssCall は gpfn の無い答えを前の版とみなす。旧の OJT管理・成長管理に案内の帯。
+- 旧の画面と旧の保存はまだ止めていない（A-2-3＝Moto さんが新しい画面を確かめたあと）。OJTマップ（Tip の進みにつながる）をどうするかを確かめる。
+- 試験：gp-app-a2 3（VM・本物の関数と SQL）・career-guide-v1213 を直した・`check-static-release.py` pass/1214。
+
+## 2026-11-24 A-2-1：育成計画・OJT のサーバー（Claude（Team・Claude Code）・ブランチ `claude/grade-unify-a`・SQL `20261219090000`・関数 secure-state（gpfn:1）・アプリは 1213 のまま）
+
+- 作ったもの（`docs/GRADE_UNIFY_A_JA.md` の 7）：表 6（gp_plans・gp_tasks・gp_notes・gp_log・gp_runs・gp_legacy）と関数 7。1 人 1 つの計画・版・状態（未開始・実施中・確認待ち・再練習・習得確認済み・取りやめ）・習得確認は確認者・日・根拠。旧の OJT・成長管理の記録は全部「旧として保存」で写す（答え 5 B・元は変えない）。
+- 権限は新しく作らない＝Career Score Q4 の採点の範囲（cs4Ctx）。指導者は自分の課題・本人は希望とメモと「実施中」「確認待ち」・習得確認は採点できる人で確認者（GM・CEO はいつも）。Moto さんに確かめる 5 つ（7 の節）。
+- 入れる一式 `deploy/growth-plan-a2/`（①〜⑤）。build-secure-state-one.mjs はここに書く（Career Score Q4 の 1 ファイルは sha256 で固定）。前の版の 1 ファイルの試験は gpfn を外して比べる。
+- 試験：gp-server-a2 5・gp-deploy-a2 2・secure-state に関係する 64 ファイル（落ちるのは前からの cs-strengths だけ）。
+- 次：A-2-2（画面・v1214：育成計画・OJT のタブ・本人の頁・過去の記録・旧画面を読むだけに）。OJTマップ（Phase・Tip の進み）を止めるかは Moto さんに確かめる。
+
+## 2026-11-24 v1213：A-1 キャリア・育成（制度・役割ガイド・役割と責任マップ）（統合実装プロンプトの A・Claude（Team・Claude Code）・ブランチ `claude/grade-unify-a`（v1212 の上）・アプリ 1213・SQL・関数は変えていない）
+
+- 作ったもの（`docs/GRADE_UNIFY_A_JA.md` の 6）：役割の文のマスター `careerscore/role-guide-q4-v1.json`（4 系統 × 6 段・業務の分担・日英・数は書かない＝Q4 のマスターを読む）と `scripts/gen-index-roleguide.mjs`（CI で `--check`）。画面「キャリア・育成」（`career`・4 つのタブ・全員が開ける・読むだけ）。採用 › キャリア説明は新しいガイドが既定・前の 4 つは「旧制度の説明（読むだけ）」。旧の責任マトリクスは書けない（`respLocked`）。
+- 文は Claude の案（`status: draft`）：GM・CEO だけに「案」で出る。ほかの人・候補者・店のタブレットは「会社が確認中」（評価の見方だけ）。英語は確かめるまで GM・CEO だけ英語の案。公開は Moto さんが確かめたあと JSON の status と approval を変えて PR。
+- 試験：`tests/career-guide-v1213.test.mjs` 7・`hr-ui88-v1182` を直した・`check-static-release.py` pass/1213。
+- 次：Moto さんが文を確かめる → A-2（育成計画・OJT の表と関数・旧 OJT／成長管理／OJTマップを全部旧として保存・過去の記録）→ A-3 → C。push はできないので引き継ぎ一式で。
+
+## 2026-11-24 A-0：Q4 グレード制度・キャリア・OJT・成長管理の一本化の始まり（統合実装プロンプトの A・Claude（Team・Claude Code）・ブランチ `claude/grade-unify-a`（v1212 の上）・文書だけ）
+
+- 依頼の全文を `docs/INTEGRATED_PROMPT_20261123_JA.md` に写した（Moto さんが 11/24 に貼った。Excel と前回の指示書はリポジトリに入れない）。作業の記録・段階（A-0〜A-3）・全体の洗い出し 22 行・正本と G7 の確認・決めてほしいこと 8 つは `docs/GRADE_UNIFY_A_JA.md`。
+- わかったこと：Excel に等級ごとの役割と責任・任せる仕事・次の段階の条件のシートが無い（アプリの説明は承認済みとは言えない）。G7 は評価制度の定義が無い（賞与の基本額の表と並べ順だけ・G6 までの固定の配列が 7 か所）→ 要設定・本人には「基準確認中」・G6 の 95 点は使わない。
+- UI案101（https://claude.ai/artifact/WN6njxQvKv8UVeooeVoYjz ・6 枚・名前は架空・役割の文は［案］）。コード・SQL・関数は変えていない。
+- Moto さんの答え（11/24）：1 A・2 A・3「G6までで良いです」・4 A・5 B・6 A「全て一新して再構築」・7 A・8 A（読み方は `docs/GRADE_UNIFY_A_JA.md` の 4b）。要点：制度は G1〜G6（G7 は入れない・賞与の表などの G7 の値は変えない）／役割の文は Claude の案 → Moto さんの確認まで出さない／進行中の旧 OJT・成長計画は全部旧として保存し新しい計画は一から／責任マトリクスは同じマスターに新しく作り直す。
+- 次：A-1（Excel・前回の指示書はまだ届いていない。届くまではリポジトリの `cs-q4-v1.json` から案を作る）。push はできないので引き継ぎ一式で。
+
 ## 2026-11-24 v1212：Payroll 別のガソリン代・立替経費（B-2・UI案100 の答え 11/24・Claude（Team・Claude Code）・ブランチ `claude/payroll-expense-1212`・#218 の直しと 2b の上・SQL `20261218090000`・新しい関数 payroll-expense・アプリ 1212・本番未反映）
 
 - 作ったもの（仕様 `docs/PAYROLL_EXPENSE_V1212_JA.md` の 8）：共通 DB の支給日の決まり・割当（精算確定の日の期間に保存・支給済みなら次の期間・理由つきで変える／分ける・前の割当は残す）・出力の版（同じ中身なら前の版）・支給済み（期間ごとに 1 回・いちばん新しい版・変わっていないとき・申請を精算済み（Payroll・支給日）に）。3 B（支払日の期間の既払・日本時間 → ハワイ・境目だけ支給期間要確認・月末処理は支払状況要確認）。負の差額は引かない。

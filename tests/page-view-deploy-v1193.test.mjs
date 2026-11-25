@@ -66,6 +66,7 @@ test('the one-file secure-state answers the same as the module handler (pv_get a
       delete b[1].affn;   // v1195 の handler は答えに affn:1 も付ける（v1193 の 1 ファイルは付けない）
       delete b[1].tabok;  // v1197 の handler は pv_full に tabok:1 も付ける（店のタブレットの列を受け取れる）
       delete b[1].cs4fn;   // Career Score Q4 の段階 3-1 から handler は答えに cs4fn:1 も付ける（この版の 1 ファイルは付けない）
+      delete b[1].gpfn;   // キャリア・育成 A-2 から gpfn:1 も
       assert.deepEqual(a, b);
     }
     const g = await ask(mod.createHandler({ env, fetch: fetchStub, now }), { action: 'pv_get' });

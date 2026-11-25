@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const DIR = 'supabase/functions/secure-state/';
 export const PARTS = ['labor-core.gen.mjs', 'labor.mjs', 'csq4.gen.mjs', 'handler.mjs'];
-export const OUT = 'deploy/career-score-q4-server/4_関数_secure-state_index.ts';
+export const OUT = 'deploy/growth-plan-a2/4_関数_secure-state_index.ts';   // キャリア・育成 A-2 から（Career Score Q4 段階 3-1 の 1 ファイルは渡したときのまま・sha256 で固定）
 export const TAIL = '\n// ---- 起動（supabase/functions/secure-state/index.ts と同じ）\nDeno.serve(createHandler({ env: (key: string) => Deno.env.get(key) }));\n';
 const IMPORT_RE = /^import \{[^}]*\} from '\.\/[a-z0-9.-]+\.mjs';\n/gm;
 
@@ -26,7 +26,7 @@ export function build(root = ROOT) {
     if (/^import\s/m.test(body)) throw new Error(f + ' has an import this script does not join');
     chunks.push('// ==== ' + DIR + f + ' ====\n' + body.replace(/\n*$/, '\n'));
   }
-  const head = '// secure-state の 1 ファイル（Career Score Q4 段階 3-1・アプリ v1207 のまま）：Supabase › Edge Functions › secure-state に、このファイルの中身をそのまま貼って Deploy（Verify JWT は OFF のまま）。\n'
+  const head = '// secure-state の 1 ファイル（キャリア・育成 A-2：育成計画・OJT・旧の記録の写し＝gp_*。Career Score Q4（cs4_*）とそれより前の頼みもそのまま）：Supabase › Edge Functions › secure-state に、このファイルの中身をそのまま貼って Deploy（Verify JWT は OFF のまま）。\n'
     + '// 作り方：node scripts/build-secure-state-one.mjs（' + PARTS.map(p => DIR + p).join(' → ') + ' を import の行だけ外して並べる）。手で直さない。\n';
   const out = head + chunks.join('\n') + TAIL;
   syntaxCheck(out);

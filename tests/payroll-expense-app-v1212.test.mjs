@@ -77,7 +77,7 @@ function app(srv, emp, { role = 'office_crew', storeLogin = false, en = false } 
 
 test('入っている：index.html に FUNERGY_PE・版 1212（ページと SW）・経理出力の中の区画・事務Crew は区画だけ・CEO／GM のまとめての出力に 1 枚', () => {
   assert.ok(MOD.length > 1000);
-  assert.match(html, /const APP_VERSION = '1212';/); assert.match(sw, /const SW_BUILD = '1212';/);
+  { const v = (html.match(/const APP_VERSION = '(\d+)';/) || [])[1], w = (sw.match(/const SW_BUILD = '(\d+)';/) || [])[1]; assert.ok(Number(v) >= 1212, v); assert.equal(v, w); }   // 1212 以上（ページと SW が同じ）
   assert.match(html, /acct_export:\s+\['ceo','gm','office','office_crew'\]/);
   assert.match(html, /id:'export', label:'経理出力', labelEn:'Accounting export',\s+fn:'renderAcctExport', roles:\['ceo','gm','office','office_crew'\]/);
   const f = html.slice(html.indexOf('function renderAcctExport() {'), html.indexOf('function renderAcctExport() {') + 4000);
