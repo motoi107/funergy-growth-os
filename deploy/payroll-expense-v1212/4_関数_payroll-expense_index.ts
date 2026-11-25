@@ -148,4 +148,5 @@ export function createHandler(deps) {
     }
   };
 }
+
 Deno.serve(createHandler({ env: (key) => Deno.env.get(key) }));
