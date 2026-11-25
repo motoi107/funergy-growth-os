@@ -1,4 +1,3 @@
-import { browserOrigins } from '../_shared/browser-origins.mjs';
 // google-reviews（v1157・UI案73）：Google の口コミ。仕様：docs/GOOGLE_REVIEWS_V1157_JA.md
 // ・Places API（新）：店の総合評価・件数・Google が返す口コミ（最大 5 件）は、見るときにここで取る。Google の決まり
 //   （place ID のほかは残してはいけない）に合わせ、残すのは店と place ID だけ（SQL の gr_places）。
@@ -110,7 +109,7 @@ export function createHandler(deps) {
   const url = env('SUPABASE_URL'), service = env('SUPABASE_SERVICE_ROLE_KEY'), anon = env('SUPABASE_ANON_KEY');
   const db = deps.db || postgrestDb({ fetch, url, key: service });
   const wrUrl = env('GR_WR_URL') || (url + '/functions/v1/work-requests');
-  const origins = browserOrigins(env('GR_ALLOWED_ORIGINS'));
+  const origins = [...new Set(['https://funergy-plus.com', 'capacitor://localhost', ...String(env('GR_ALLOWED_ORIGINS') || '').split(',').map(s => s.trim()).filter(Boolean)])];
   const appUrl = () => env('GR_APP_URL') || origins[0] + '/';
   const redirectUri = () => env('GBP_OAUTH_REDIRECT_URI') || (url + '/functions/v1/google-reviews');
   const client = () => ({ id: env('GBP_OAUTH_CLIENT_ID') || env('GMAIL_OAUTH_CLIENT_ID') || '', secret: env('GBP_OAUTH_CLIENT_SECRET') || env('GMAIL_OAUTH_CLIENT_SECRET') || '' });

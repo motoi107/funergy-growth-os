@@ -2362,7 +2362,7 @@ export function createHandler(deps) {
   const now = deps.now || (() => Date.now());
   const url = env('SUPABASE_URL'), service = env('SUPABASE_SERVICE_ROLE_KEY'), anon = env('SUPABASE_ANON_KEY');
   const wrUrl = env('SS_WR_URL') || (url + '/functions/v1/work-requests');
-  const origins = ['https://funergy-plus.com', ...String(env('SS_ALLOWED_ORIGINS') || '').split(',').map(s => s.trim()).filter(Boolean)];
+  const origins = [...new Set(['https://funergy-plus.com', 'capacitor://localhost', ...String(env('SS_ALLOWED_ORIGINS') || '').split(',').map(s => s.trim()).filter(Boolean)])];
   const sv = { apikey: service, authorization: 'Bearer ' + service };
   const timeout = (ms = 8000) => (typeof AbortSignal !== 'undefined' && AbortSignal.timeout ? AbortSignal.timeout(ms) : undefined);
   const cache = new Map();     // sha256(印) → { a, exp }（60 秒。同じ印で何度も work-requests を呼ばない）

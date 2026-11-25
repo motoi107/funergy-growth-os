@@ -1,4 +1,3 @@
-import { browserOrigins } from '../_shared/browser-origins.mjs';
 // mid-review: the 中間レビュー API, v2 (段階 4・UI案44 B案). Spec: docs/MID_REVIEW_V2_JA.md.
 // Two ways in, decided here and nowhere else: the PIN sign-in's mark checked by deps.verifyPin (via 'pin', the only way
 // the app uses since v1122) or a Supabase Auth sign-in (via 'email'). The database (mr_members, mr_can) decides the role, the stores and every permission.
@@ -297,7 +296,7 @@ export function createHandler(deps) {
   const db = deps.db || postgrestDb({ fetch, url, key: service });
   // The PIN sign-in's mark is checked by this function (the same key and form as auth-pin). None: PIN is refused.
   const verifyPin = typeof deps.verifyPin === 'function' ? deps.verifyPin : null;
-  const origins = browserOrigins(env('MR_ALLOWED_ORIGINS'));
+  const origins = [...new Set(['https://funergy-plus.com', 'capacitor://localhost', ...String(env('MR_ALLOWED_ORIGINS') || '').split(',').map(s => s.trim()).filter(Boolean)])];
   const timeout = () => (typeof AbortSignal !== 'undefined' && AbortSignal.timeout ? AbortSignal.timeout(8000) : undefined);
 
   // Who is calling and how they signed in. The body's pin_session is the PIN sign-in; without one, an Auth bearer (not the

@@ -1,4 +1,3 @@
-import { browserOrigins } from '../_shared/browser-origins.mjs';
 // bonus-close: ボーナスの仮締め・支給額確定・修正・支給済み・調整記録の API（v1109・UI案61 の ②）。Spec: docs/BONUS_CLOSE_V1109_JA.md.
 // v1116: 人ごとの「無条件で基準額」と特別報酬（docs/BONUS_BASE_SPECIAL_V1116_JA.md）。
 // One way in: a Supabase Auth sign-in (email). The database (manager_auth via bc_actor) decides the role: CEO / GM write,
@@ -58,7 +57,7 @@ export function createHandler(deps) {
   const fetch = deps.fetch || globalThis.fetch.bind(globalThis);
   const url = env('SUPABASE_URL'), service = env('SUPABASE_SERVICE_ROLE_KEY'), anon = env('SUPABASE_ANON_KEY');
   const db = deps.db || postgrestDb({ fetch, url, key: service });
-  const origins = browserOrigins(env('BC_ALLOWED_ORIGINS'));
+  const origins = [...new Set(['https://funergy-plus.com', 'capacitor://localhost', ...String(env('BC_ALLOWED_ORIGINS') || '').split(',').map(s => s.trim()).filter(Boolean)])];
   const timeout = () => (typeof AbortSignal !== 'undefined' && AbortSignal.timeout ? AbortSignal.timeout(8000) : undefined);
 
   // The email sign-in only (an Auth bearer that is not the anon key). The PIN sign-in is not accepted for bonus amounts.

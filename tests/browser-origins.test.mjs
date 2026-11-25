@@ -9,15 +9,19 @@ test('the published site stays first and the installed app origin is added once'
   assert.equal(origins[1], INSTALLED_APP_ORIGIN);
   assert.deepEqual(browserOrigins('https://funergy-plus.com, capacitor://localhost, https://extra.example'), [
     'https://funergy-plus.com', 'capacitor://localhost', 'https://extra.example']);
-  assert.deepEqual(browserOrigins('', ['https://www.funergy-plus.com', 'https://motoi107.github.io']).slice(0, 4), [
+  assert.deepEqual(browserOrigins('', ['https://www.funergy-plus.com', 'https://motoi107.github.io']), [
     'https://funergy-plus.com', 'capacitor://localhost', 'https://www.funergy-plus.com', 'https://motoi107.github.io']);
 });
 
-test('each shared function asks the same allowlist helper', () => {
-  for (const name of ['device-login', 'secure-state', 'work-requests', 'invoice-intake', 'mid-review', 'bonus-close', 'payroll-expense', 'google-reviews', 'ops-bot']) {
+test('each shared function inlines the same origins and does not import another file', () => {
+  const literal = "['https://funergy-plus.com', 'capacitor://localhost'";
+  const ops = "['https://funergy-plus.com','capacitor://localhost','https://www.funergy-plus.com','https://motoi107.github.io']";
+  for (const name of ['device-login', 'secure-state', 'work-requests', 'invoice-intake', 'mid-review', 'bonus-close', 'payroll-expense', 'google-reviews']) {
     const text = readFileSync(new URL(`../supabase/functions/${name}/handler.mjs`, import.meta.url), 'utf8');
-    assert.match(text, /import \{ browserOrigins \} from '\.\.\/_shared\/browser-origins\.mjs';/);
-    assert.match(text, /browserOrigins\(/);
-    assert.equal(text.includes("['https://funergy-plus.com', ...String(env("), false);
+    assert.equal(text.includes(literal), true, name);
+    assert.equal(text.includes('browser-origins.mjs'), false, name);
   }
+  const bot = readFileSync(new URL('../supabase/functions/ops-bot/handler.mjs', import.meta.url), 'utf8');
+  assert.equal(bot.includes(ops), true);
+  assert.equal(bot.includes('browser-origins.mjs'), false);
 });

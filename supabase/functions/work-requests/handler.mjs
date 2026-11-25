@@ -1,4 +1,3 @@
-import { browserOrigins } from '../_shared/browser-origins.mjs';
 // work-requests: ワークセンターの申請の API（v1131・1 段目＝経費 3 種／v1132・2 段目＝評価の変更 3 種と表示設定／v1133・反映の押さえ／v1155・段階 2＝予算と前の承認タブの種類／v1156・チャット／v1161・チャットの添付／v1168・チャットの守り／v1169・Codex の P2 の直し）。
 // 仕様：docs/WORK_REQUESTS_V1131_JA.md・docs/WORK_REQUESTS_V1132_JA.md・docs/WORK_REQUESTS_V1133_JA.md・docs/WORKCENTER_APPROVALS_STAGE2_JA.md・docs/CHAT_V1156_JA.md・docs/CHAT_FILES_V1161_JA.md・docs/CHAT_GUARD_V1168_JA.md・docs/FIXES_V1169_JA.md
 // 入り方は PIN のログインの印だけ（deps.verifyPin が確かめて { emp_id, name } を返す）。アプリが送る役割・名前・承認した人は使わない。
@@ -380,7 +379,7 @@ export function createHandler(deps) {
     if (g && g.locked) return { ok: false, locked: g.locked, left: 0 };
     return { g, ok: await secretOk(pin, g) };
   }
-  const origins = browserOrigins(env('WR_ALLOWED_ORIGINS'));
+  const origins = [...new Set(['https://funergy-plus.com', 'capacitor://localhost', ...String(env('WR_ALLOWED_ORIGINS') || '').split(',').map(s => s.trim()).filter(Boolean)])];
 
   // 呼んだ人：本文の pin_session（auth-pin が出した印）だけ。メールのログインは使わない（アプリは PIN だけ）。
   async function actorOf(body) {

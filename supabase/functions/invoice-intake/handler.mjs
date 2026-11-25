@@ -1,4 +1,3 @@
-import { browserOrigins } from '../_shared/browser-origins.mjs';
 // invoice-intake: reads invoices dropped into per-store Google Drive folders,
 // posts the clean ones, queues the rest for review, organises originals and
 // keeps the QuickBooks forwarding ledger. Runs from a schedule; no browser needed.
@@ -105,7 +104,7 @@ export function createHandler(deps) {
     if (mailer) return mailerTransport(mailer);
     return createGmail({ fetch, getCreds: gmailCreds });
   }
-  const origins = browserOrigins(env('INVOICE_ALLOWED_ORIGINS'));
+  const origins = [...new Set(['https://funergy-plus.com', 'capacitor://localhost', ...String(env('INVOICE_ALLOWED_ORIGINS') || '').split(',').map(s => s.trim()).filter(Boolean)])];
 
   // ------------------------------------------------------------------ worker
   async function context() {
