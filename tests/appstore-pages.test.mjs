@@ -1,6 +1,6 @@
 // App Store 審査用の静的ページ（/privacy/・/privacy/ja/・/support/・/support/ja/）。仕様：docs/APPSTORE_REVIEW_JA.md。
 // ログインせずに開ける・スクリプトを持たない・外のファイルを読まない・英語版と日本語版の節がそろっていることを確かめる。
-// 中身の文（[要確認] を埋めたあと）は確かめない。
+// 印（[要確認]＝事実を確かめる・[案]＝会社が決める）の数は英語と日本語でそろえる。中身の文は確かめない。
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, existsSync } from 'node:fs';
@@ -40,6 +40,7 @@ test('ログイン・スクリプト・外のファイルに頼らない（静�
     for (const v of [...attrs(h, 'src'), ...attrs(h, 'href')]) {
       if (/^#[a-z-]+$/.test(v)) continue;
       if (/^https:\/\/funergy-plus\.com\/(privacy|support)\/(ja\/)?$/.test(v)) continue;   // hreflang の行だけ
+      if (v === 'mailto:office@funergygroup.com') continue;   // 会社の公開の窓口（案）
       assert.match(v, /^\/(privacy|support|appicons)\//, `${p.url} → ${v}`);
       assert.ok(existsSync(fileOf(v)), `${p.url} → ${v} が無い`);
     }
@@ -53,7 +54,7 @@ test('英語版と日本語版の節がそろい、互いに行き来できる',
     assert.deepEqual(ids(h), ids(read(p.pair)), `${p.url} と ${p.pair}`);
     assert.ok(attrs(h, 'href').includes(p.pair), `${p.url} → ${p.pair}`);
     assert.ok(attrs(h, 'href').includes(p.other), `${p.url} → ${p.other}`);
-    assert.equal((h.match(/\[要確認/g) || []).length, (read(p.pair).match(/\[要確認/g) || []).length, `${p.url} と ${p.pair} の [要確認] の数`);
+    for (const m of [/\[要確認/g, /\[案/g, /class="todo"/g, /class="plan"/g]) assert.equal((h.match(m) || []).length, (read(p.pair).match(m) || []).length, `${p.url} と ${p.pair} の ${m} の数`);
   }
   assert.deepEqual(ids(read('/privacy/')), ['scope', 'collect', 'use', 'access', 'services', 'retention', 'choices', 'security', 'contact']);
   assert.ok(ids(read('/support/')).includes('contact'));
