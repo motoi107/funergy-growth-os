@@ -2242,6 +2242,11 @@ th.u11-hbch, td.u11-hbch { text-align:center; width:32px; }
 </style>
 </head>
 <body>
+<!-- v1219：審査用デモのあいだだけ出す。印が無いときは出さない。 -->
+<div id="fg-review-banner" style="display:none;position:sticky;top:0;z-index:80;background:#123a66;color:#fff;text-align:center;padding:8px 12px;font-size:13px;font-weight:700">
+  Demo / 審査用 — fake data
+  <button type="button" id="fg-review-back" onclick="fgReviewSwitch(false)" style="margin-left:12px;padding:6px 10px;border:0;border-radius:8px;background:#fff;color:#123a66;font-weight:700;cursor:pointer">Return to production / 本番に戻る</button>
+</div>
 
 <!-- ====== LOGIN ====== -->
 <div id="login-screen">
@@ -2249,6 +2254,7 @@ th.u11-hbch, td.u11-hbch { text-align:center; width:32px; }
     <div class="login-logo"><i class="ti ti-flame" style="font-size:24px;color:#fff;"></i></div>
     <div class="login-title">Funergy<span style="color:var(--accent)">+</span></div>
     <div class="login-sub" id="login-step-sub">所属を選択してください</div>
+    <p id="fg-review-msg" style="display:none;margin:8px 0 0;padding:8px 10px;border-radius:8px;background:#fff1b8;color:#4d3a00;font-size:12px;line-height:1.5"></p>
 
     <!-- 言語切替 -->
     <div id="lang-toggle" style="display:flex;gap:6px;justify-content:center;margin:10px 0 4px">
@@ -3505,8 +3511,77 @@ th.u11-hbch, td.u11-hbch { text-align:center; width:32px; }
 /* ============================================================
    SUPABASE / TOAST 連携設定
 ============================================================ */
-const SUPABASE_URL = 'https://tgbhgxzehzeouopklhje.supabase.co';
-const SUPABASE_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRnYmhneHplaHplb3VvcGtsaGplIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODExMTIzODAsImV4cCI6MjA5NjY4ODM4MH0.A0cdXLDONy_HPvQhaHbfP-flsNYImg0ZFJd5AIQihdM';
+/* v1219 review demo start
+   印 fg_env==='review' のときだけ審査用の公開プロジェクト。印が無いときは本番の定数のまま（読み込みのときに一度だけ決める）。 */
+function fgReviewDemo(){
+  try { return localStorage.getItem('fg_env') === 'review'; } catch(e) { return false; }
+}
+var FG_REVIEW_URL = 'https://wjujeonfmjwvliunotuc.supabase.co';
+var FG_REVIEW_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6IndqdWplb25mbWp3dmxpdW5vdHVjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTU2NTg2MDQsImV4cCI6MjExMTIzNDYwNH0.BUiXEu2bPszkVKfTs8mG-LlJhzrb-wtktUU70aXFOQo';
+var FG_PROD_URL = 'https://tgbhgxzehzeouopklhje.supabase.co';
+var FG_PROD_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRnYmhneHplaHplb3VvcGtsaGplIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODExMTIzODAsImV4cCI6MjA5NjY4ODM4MH0.A0cdXLDONy_HPvQhaHbfP-flsNYImg0ZFJd5AIQihdM';
+const SUPABASE_URL = fgReviewDemo() ? FG_REVIEW_URL : FG_PROD_URL;
+const SUPABASE_ANON = fgReviewDemo() ? FG_REVIEW_ANON : FG_PROD_ANON;
+/* デモのプロジェクトに無い Edge Function を使う画面。auth-pin・secure-state・device-login・work-requests 以外。 */
+var FG_REVIEW_HIDDEN = { dashboard:1, labor:1, attendance:1, invoice:1, acct_review:1, acct_center:1, office_mgr:1, office_export:1, monthly:1, purchase_detail:1, mid_review:1, discount:1, hiring:1, onboarding:1 };
+function fgReviewHidden(pid){ return fgReviewDemo() && !!FG_REVIEW_HIDDEN[pid]; }
+function fgReviewPending(){
+  try { if (typeof _outboxGet === 'function' && _outboxGet().length) return true; } catch(e) { return true; }
+  try { if (typeof empDirtyCount === 'function' && empDirtyCount()) return true; } catch(e) { return true; }
+  try { if (typeof shiftPlanPendingList === 'function' && shiftPlanPendingList().length) return true; } catch(e) { return true; }
+  try {
+    var touched = localStorage.getItem('vendor_touched_v1');
+    if (touched) { var o = JSON.parse(touched); if (o && typeof o === 'object' && Object.keys(o).length) return true; }
+  } catch(e) { return true; }
+  try {
+    var inf = localStorage.getItem('_ux_inflight');
+    if (inf && inf !== 'null' && inf !== '{}') return true;
+  } catch(e) { return true; }
+  return false;
+}
+function fgReviewSay(msg){
+  try { if (typeof showToast === 'function') showToast(msg, 'warning'); } catch(e) {}
+  try { var m = document.getElementById('fg-review-msg'); if (m) { m.textContent = msg; m.style.display = 'block'; } } catch(e) {}
+}
+function fgReviewClearLocal(){
+  try {
+    var keys = [];
+    for (var i = 0; i < localStorage.length; i++) keys.push(localStorage.key(i));
+    keys.forEach(function(k){ if (k) localStorage.removeItem(k); });
+  } catch(e) {}
+  try { if (typeof _idbClearAll === 'function') _idbClearAll(); } catch(e) {}
+  try { sessionStorage.clear(); } catch(e) {}
+  try { window._authSession = null; curRole = null; curUserName = null; curStore = null; } catch(e) {}
+}
+function fgReviewSwitch(on){
+  on = !!on;
+  if (on === fgReviewDemo()) return true;
+  if (fgReviewPending()) {
+    fgReviewSay(typeof t === 'function'
+      ? t('送っていない保存があるので、切り替えません。送り終わってからもう一度押してください。','Unsent changes are still on this device. Wait until they are sent, then try again.')
+      : 'Unsent changes are still on this device. Wait until they are sent, then try again.');
+    return false;
+  }
+  var ask = on
+    ? '審査用（デモ）に切り替えます。この端末の控えを消します。架空のデータだけです。'
+    : '本番に戻します。この端末の控えを消します。';
+  try { if (typeof confirm === 'function' && !confirm(ask)) return false; } catch(e) {}
+  fgReviewClearLocal();
+  try { if (on) localStorage.setItem('fg_env', 'review'); } catch(e) {}
+  try { setTimeout(function(){ location.reload(); }, 400); } catch(e) {}
+  return true;
+}
+function fgReviewPaint(){
+  try {
+    var b = document.getElementById('fg-review-banner');
+    if (b) b.style.display = fgReviewDemo() ? 'block' : 'none';
+  } catch(e) {}
+}
+try {
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', function(){ fgReviewPaint(); });
+  else fgReviewPaint();
+} catch(e) {}
+/* v1219 review demo end */
 /* FUNERGY_FINANCIAL_WEB_INTEGRATION_V1: original functions are hoisted.
    Install fences before startup; native previews keep their separate gateway. */
 if (!window.FUNERGY_NATIVE_CONFIG) {
@@ -4234,6 +4309,7 @@ const DEFAULT_STORES = [
   {id:'F04-A', name:'Aiea',     color:'#1B9AD6', am:'Yuki Nagatani', brand:'Totoya',   toastGuid:'99c94a86-9c5a-4f06-8a57-c543bb7f4a50', hours:'11:00-22:00', days:'毎日', active:true},
   {id:'F05',   name:'Marujuu',  color:'#8B5E3C', am:'Yuki',      brand:'Marujuu',  toastGuid:'43c185a2-4415-4f48-8c67-c3c730573559', hours:'11:00-22:00', days:'毎日', active:true},
 ];
+if (fgReviewDemo()) DEFAULT_STORES.splice(0, DEFAULT_STORES.length);   /* v1219：デモでは組み込みの店を出さない */
 /* STORES = 全店舗（lookup用）。表示はactiveStores()で絞る */
 function getStoresAll() {
   var s = ls('m_stores', DEFAULT_STORES);
@@ -8077,6 +8153,7 @@ function navGuardPage(page){
   return to;
 }
 function navChildAllowed(pid){
+  if (typeof fgReviewHidden === 'function' && fgReviewHidden(pid)) return false;   /* v1219：デモに無い関数の画面は出さない。切り出した試験では関数が無いので今までどおり */
   if (pid==='approval') return false;
   /* v1193（UI案95）：「画面の表示」で決めた画面は、その決め方（今の役割の決まりより広げた画面は見るだけ：FUNERGY_PV.ro） */
   try { if (window.FUNERGY_PV && FUNERGY_PV.on()) { var _pd = FUNERGY_PV.decide(pid); if (_pd) return _pd.show; } } catch(e){}
@@ -8098,7 +8175,9 @@ function _navChildAllowedToday(pid){
 function firstAllowedChild(group) {
   if (!group || !group.children || !group.children.length) return 'mypage';
   var allowed = group.children.filter(navChildAllowed);
-  return allowed[0] || group.children[0];
+  if (allowed[0]) return allowed[0];
+  if (typeof fgReviewDemo === 'function' && fgReviewDemo()) return 'mypage';   /* v1219：隠した画面へ落ちない。切り出した試験では関数が無いので今までどおり */
+  return group.children[0];
 }
 /* v1084: そのページが今の役職のナビにあって開けるか（廃止した画面の行き先を決めるときに使う） */
 function navPageAllowed(id){
@@ -8972,6 +9051,7 @@ const DEFAULT_VENDORS = [
   {id:'vi21', name:'Times', contact:'', phone:'', sms:'', email:'', line:'', method:'Email', cutoff:'15:00', leadtime:1, minOrder:0, delivery:'', terms:'NET30', rating:3, webform:'', storeMethods:{}},
   {id:'vi22', name:'Japan Import', contact:'', phone:'', sms:'', email:'', line:'', method:'Email', cutoff:'15:00', leadtime:1, minOrder:0, delivery:'', terms:'NET30', rating:3, webform:'', storeMethods:{}}
 ];
+if (fgReviewDemo()) DEFAULT_VENDORS.splice(0, DEFAULT_VENDORS.length);   /* v1219：デモでは組み込みの業者を出さない */
 const ORDER_METHODS = ['LINE','Text','Email','電話','Webフォーム','FAX','その他'];
 
 /* 初期 従業員マスター (拡張版) */
@@ -9115,6 +9195,7 @@ const DEFAULT_EMPLOYEES = [
   {id:'imp136', name:'Elizabeth Nguyen', role:'crew', store:'F04-A', support:[], emp:'パート', step:1, status:'在籍', perms:'crew', wage:0, coef:0.8, title:'P-Crew', isSL:false, email:''},
   {id:'imp137', name:'Cole Tanaka', role:'crew', store:'F04-A', support:[], emp:'パート', step:1, status:'在籍', perms:'crew', wage:0, coef:0.8, title:'P-Crew', isSL:false, email:''},
 ];
+if (fgReviewDemo()) DEFAULT_EMPLOYEES.splice(0, DEFAULT_EMPLOYEES.length);   /* v1219：デモでは組み込みの名前を出さない */
 
 const EMP_TYPES = ['正社員','パート','アルバイト','役員'];
 const EMP_STATUS = ['在籍','研修中','休職','退職'];
@@ -11075,7 +11156,7 @@ function _lsRawDel(key){
    起動直後（IDBの読み込みが終わる前）に同期で読む必要があるもの、および
    端末ごとに異なるべきもの。移行漏れではなく意図的な据え置きであることを明示する。
    ここに載っていないキーが localStorage を直接触っていたら、それは漏れ。 */
-var LS_DEVICE_LOCAL = ['funergy_lang','supa_sync','heavy_ready','haptics_on'];
+var LS_DEVICE_LOCAL = ['funergy_lang','supa_sync','heavy_ready','haptics_on','fg_env'];   /* v1219：審査用デモの印。端末だけ。雲へも大容量の整理へも出さない */
 function lsIsDeviceLocal(key){
   if(!key) return false;
   if(LS_DEVICE_LOCAL.indexOf(key)>=0) return true;
@@ -22903,11 +22984,13 @@ function bootLogin() {
   if (!grid) return;
   // Officeを店舗と同列・同サイズで先頭に表示
   var officeCard = `<div class="store-btn" style="border-left:3px solid var(--accent)" onclick="loginPickLocation('OFFICE',this)"><i class="ti ti-building-skyscraper" style="font-size:13px;margin-right:3px"></i>Office</div>`;   /* v776: 従業員登録の選択肢と表記を揃える */
+  var demoCard = (typeof fgReviewDemo === 'function' && fgReviewDemo()) ? '' : '<div class="store-btn" id="fg-review-entry" style="border-left:3px solid #123a66" onclick="fgReviewSwitch(true)">審査用（デモ）</div>';   /* v1219：Office の隣。デモの中では出さない */
   // ②に空欄（レイアウト用の非表示セル）
   var blankCard = `<div class="store-btn" style="visibility:hidden;pointer-events:none"></div>`;
   // ログイン画面の並び順（共通の sortByLoginOrder を使用）。ログインは誰もロックアウトしないよう全店表示。
   var ordered = sortByLoginOrder(getStoresAll());
-  grid.innerHTML = officeCard + blankCard + ordered.map(s =>
+  try { fgReviewPaint(); } catch(e) {}
+  grid.innerHTML = officeCard + demoCard + blankCard + ordered.map(s =>
     `<div class="store-btn" style="border-left:3px solid ${s.color}" onclick="loginPickLocation('${s.id}',this)">${s.name}</div>`
   ).join('');
   try { if (window.FUNERGY_DL) window.FUNERGY_DL.paintEntry(); } catch(e) {}   /* v1183（v1189 でやめた）：前の入口が残っていれば消す */
@@ -25755,6 +25838,7 @@ function mrScopeSave(){
 /* ===== v1066 中間レビュー ここまで ===== */
 
 function renderPage(page) {
+  if (typeof fgReviewHidden === 'function' && fgReviewHidden(page)) { var _fgDemoEl = document.getElementById('main-content'); if (_fgDemoEl) _fgDemoEl.innerHTML = '<div class="card" style="padding:14px">Demo / 審査用 — this screen is not in the demo.</div>'; return; }   /* v1219 */
 /* FUNERGY_WEB_OFFICE_SOURCE_V1 renderPage */
 if(typeof window.FUNERGY_WEB_OFFICE_RENDER==='function')return window.FUNERGY_WEB_OFFICE_RENDER(page,()=>(function renderPage(page) {
   try{ mdCacheClear(); }catch(e){}   /* v859: 描画のたびに集計キャッシュを捨てる */
@@ -50240,7 +50324,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1218';
+const APP_VERSION = '1219';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。

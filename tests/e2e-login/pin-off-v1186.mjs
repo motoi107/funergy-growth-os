@@ -16,7 +16,7 @@ const ROOT = path.resolve(new URL('../..', import.meta.url).pathname);
 const APP_DIR = process.env.APP_DIR || ROOT;
 const VENDOR = process.env.VENDOR_DIR || '/tmp/e2e/vendor', CERT = process.env.CERT_DIR || '/tmp/e2e/cert', SHOTS = process.env.SHOTS || '';
 const { PGlite } = await import(process.env.BOT_PGLITE_MODULE || path.join(ROOT, 'tests/runtime/node_modules/@electric-sql/pglite/dist/index.js'));
-const ANON = (fs.readFileSync(path.join(APP_DIR, 'index.html'), 'utf8').match(/const SUPABASE_ANON = '([^']+)'/) || [])[1];
+const ANON = ((src => src.match(/var FG_PROD_ANON = '([^']+)'/) || src.match(/const SUPABASE_ANON = '([^']+)'/) || [])[1])(fs.readFileSync(path.join(APP_DIR, 'index.html'), 'utf8'));
 const PORT = 8093, ORIGIN = `http://localhost:${PORT}`;
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const results = [];

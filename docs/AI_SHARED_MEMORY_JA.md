@@ -1,5 +1,11 @@
 # Claude / Codex 共通記録
 
+## 2026-11-25 審査用デモの入口（ブランチ `claude/review-demo-entry`・v1219・#226 のあと）
+
+- 公開のアプリに、印 `localStorage fg_env==='review'` のときだけ審査用 Supabase（`wjujeonfmjwvliunotuc`）へ向く入口を足した。印が無いときは本番の URL と anon のまま。`fg_env` は `LS_DEVICE_LOCAL`（端末だけ。大容量の整理で消さない。雲へ送らない）。APP_VERSION / SW_BUILD は `1219`（v1217・v1218 の次）。
+- 架空のデータは `review-demo/seed/01_demo_data.sql`。PIN・`credentials.txt`・スキーマ・Edge Function のコードはこのリポジトリに置かない。
+- `claude/grade-unify-a23` は v1216 のまま。このマージでは触らない。
+
 ## App Store 審査の準備（Claude（Team・Claude Code）・ブランチ 3 つ・`main` e0e20ce の上）
 
 - 依頼：iPhone 版（App Store Connect app 6831074913・Unlisted）の審査用に、プライバシーポリシーとサポートのページ（英語・日本語）と、審査用デモアカウントの要件（作らない）。続けて Moto さんの答え（10 項目・決める 5 項目・追加の 2 点）。仕様と残りの一覧：`docs/APPSTORE_REVIEW_JA.md`（11 の節）。
