@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { PGlite } from './runtime/node_modules/@electric-sql/pglite/dist/index.js';
-import { createHandler, formatPayrollLaborReport } from '../supabase/functions/ops-bot/handler.mjs';
+import { createHandler, formatMorningSummary, formatPayrollLaborReport } from '../supabase/functions/ops-bot/handler.mjs';
 
 const root = new URL('../', import.meta.url);
 const read = name => fs.readFileSync(new URL(name, root), 'utf8');
@@ -64,6 +64,29 @@ test('payroll snapshot counts collection inside the period and keeps labor cases
   assert.ok(days.filter(d => d.store_id === 'F02').every(d => d.d >= '2026-11-20'));
   await pg.exec('set role anon');
   await assert.rejects(() => pg.query('select bot_labor_payroll_snapshot()'), /permission denied/);
+  await pg.close();
+});
+
+test('a later store start does not make a finished finance collection look unfinished', async () => {
+  const pg = await db();
+  await pg.query(`insert into bot_settings(key, value) values('worker', $1), ('collection_range', $2)
+    on conflict (key) do update set value = excluded.value`,
+    [JSON.stringify({ finance_enabled: true }), JSON.stringify({ first_business_dates: { F02: '2026-11-20' } })]);
+  await pg.query(`insert into bot_scan_days(store_id, business_date, cycle_date, state, finance_collected, attempted_at)
+    select s.store_id, d::date, '2026-11-25', 'ok', true, '2026-11-25 18:00:00+00'
+    from store_config s cross join generate_series('2026-11-01'::date, '2026-11-24'::date, interval '1 day') d`);
+  await pg.query(`insert into bot_cases(source_key, kind, store_id, business_date, subject, status, payload)
+    values ('void-in','void','F01','2026-11-18','Void','review',$1)`, [JSON.stringify({ scope: 'payment', amount: 1 })]);
+  const snap = (await pg.query(`select bot_morning_snapshot('2026-11-25 18:00:00+00') v`)).rows[0].v;
+  assert.equal(snap.expected, 48);
+  assert.equal(snap.ok, 48);
+  assert.equal(snap.finance_expected, 29);
+  assert.equal(snap.finance_ok, 29);
+  const text = formatMorningSummary(snap, { category: 'finance' });
+  assert.equal(text.complete, true);
+  assert.match(text.text, /決済確認：29\/29/);
+  assert.doesNotMatch(text.text, /取得未完了/);
+  assert.doesNotMatch(text.text, /決済データの取得が未完了/);
   await pg.close();
 });
 

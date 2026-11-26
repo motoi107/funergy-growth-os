@@ -1,7 +1,8 @@
 -- Production labor payroll reports (funergy-os, read 2026-11-25).
 -- Does not schedule cron and does not send LINE. Apply on a database that already has bot_morning_snapshot.
--- bot_morning_snapshot is the 20260912224146 body, except finance_ok counts only days in bot_collection_days
+-- bot_morning_snapshot is the 20260912224146 body, except finance counts only days in bot_collection_days
 -- (active stores, from the later of month start and collection_range.first_business_dates, through yesterday).
+-- finance_expected is that same day count, so a later store start does not make finance look unfinished.
 -- bot_reserve_morning_report and cash_tip_autofill already match production and are not replaced.
 
 CREATE OR REPLACE FUNCTION public.bot_collection_days(p_now timestamp with time zone DEFAULT now())
@@ -44,6 +45,7 @@ AS $function$
  select jsonb_build_object('day',b.today_day,'snapshot_at',p_now,'from',b.from_day,'to',b.to_day,'expected',b.expected,'ok',b.ok,'failed',b.failed,
   'active_stores',(select count(*) from public.store_config where active),
   'finance_enabled',coalesce((select (value->>'finance_enabled')::boolean from public.bot_settings where key='worker'),false),
+  'finance_expected',(select count(*) from public.bot_collection_days(p_now)),
   'finance_ok',(select count(*) from public.bot_scan_days q join public.bot_collection_days(p_now) d using(store_id,business_date) where q.cycle_date=b.today_day and q.state='ok' and q.finance_collected),
   'counts',jsonb_build_object('labor',(select count(*) from open_cases where kind='labor'),'void',(select count(*) from open_cases where kind='void'),'unpaid',(select count(*) from open_cases where kind='unpaid')),
   'progress_counts',jsonb_build_object('not_sent',(select count(*) from open_cases where progress='not_sent'),'notify_failed',(select count(*) from open_cases where progress='notify_failed'),'waiting',(select count(*) from open_cases where progress='waiting'),'reminder_failed',(select count(*) from open_cases where progress='reminder_failed'),'in_progress',(select count(*) from open_cases where progress='in_progress'),'recheck',(select count(*) from open_cases where progress='recheck'),'send_check',(select count(*) from open_cases where progress='send_check'),'review',(select count(*) from open_cases where progress='review')),

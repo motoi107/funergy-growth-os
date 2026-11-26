@@ -24602,15 +24602,24 @@ function mrStoreHtml(){
   if (ctx.op === 'write' && ctx.edit) h += '<div class="mr-subbar" id="mr-subbar">' + mrSubBarInner(ctx) + '</div>';
   return h;
 }
+function mrDeadlineBits(r){
+  r = r || {}; var dl = r.deadlines || {};
+  return t('提出期限：','Submit by: ')+(dl.submit ? escapeHtml(mrMD(dl.submit)) : t('未設定','not set'))+'・'+t('返信期限：','Reply by: ')+(dl.reply ? escapeHtml(mrMD(dl.reply)) : t('未設定','not set'))
+    + ((r.overdue || {}).submit ? ' <span class="mr-chip mr-c-miss">'+t('提出期限を過ぎています（まだ提出できます）','Submission overdue (you can still submit)')+'</span>' : '')
+    + ((r.overdue || {}).reply ? ' <span class="mr-chip mr-c-miss">'+t('返信期限を過ぎています','Reply overdue')+'</span>' : '');
+}
+function mrPaintDeadlines(){
+  var el = document.getElementById('mr-deadlines'); if (!el || !_mr.rec) return;
+  el.innerHTML = mrDeadlineBits(_mr.rec.review || {});
+}
 function mrPageHead(ctx){
-  var e = escapeHtml, R = ctx.R, r = ctx.r || {}, dl = r.deadlines || {}, o = mrOps(R);
+  var e = escapeHtml, R = ctx.R, r = ctx.r || {}, o = mrOps(R);
   var opL = ctx.op === 'write' ? (ctx.edit ? t('報告を書く','Write the report') : t('報告を見る','View the report')) : (o.review ? t('確認して返信する','Check and reply') : t('見るだけ','View only'));
   var h = '<div class="card mr-hd"><div class="mr-hd-l"><div class="mr-m"><button class="mr-linkb mr-back" onclick="mrBack()">← '+t('全店一覧','All stores')+'</button><span class="mr-crumb">　'+t('予実 › 中間レビュー › ','Budget › Mid-month review › ')+e(R.store.name)+'</span></div>'
     + '<div class="mr-hd-t">'+e(R.store.name)+'　'+(curLang === 'en' ? e('Mid-month review ' + R.ym) : '<span class="mr-l-pc">'+Number(R.ym.slice(0,4))+' 年 </span>'+Number(R.ym.slice(5,7))+' 月 の中間レビュー')+'</div>'
     + '<div class="mr-m">'+mrInputL(R.store.input)+'・'+t('あなたの操作：','Your task: ')+'<b class="'+(ctx.op === 'review' ? 'mr-blue' : '')+'">'+e(opL)+'</b>・'
-    + t('提出期限：','Submit by: ')+(dl.submit ? e(mrMD(dl.submit)) : t('未設定','not set'))+'・'+t('返信期限：','Reply by: ')+(dl.reply ? e(mrMD(dl.reply)) : t('未設定','not set'))
-    + (ctx.P.deadline && r.status !== 'confirmed' && !_mr.dlOpen ? '<button class="mr-linkb mr-blue mr-dlb" onclick="_mr.dlOpen=true;mrRerender()">'+t('期限を変える','Change the dates')+'</button>' : '')
-    + ((r.overdue || {}).submit ? ' <span class="mr-chip mr-c-miss">'+t('提出期限を過ぎています（まだ提出できます）','Submission overdue (you can still submit)')+'</span>' : '') + ((r.overdue || {}).reply ? ' <span class="mr-chip mr-c-miss">'+t('返信期限を過ぎています','Reply overdue')+'</span>' : '') + '</div>'
+    + '<span id="mr-deadlines">'+mrDeadlineBits(r)+'</span>'
+    + (ctx.P.deadline && r.status !== 'confirmed' && !_mr.dlOpen ? '<button class="mr-linkb mr-blue mr-dlb" onclick="_mr.dlOpen=true;mrRerender()">'+t('期限を変える','Change the dates')+'</button>' : '') + '</div>'
     + (ctx.op === 'review' && ctx.sub ? '<div class="mr-m">'+e(t('提出版 ' + ctx.sub.no + '（' + mrHst(ctx.sub.at) + '・' + (ctx.sub.by || '') + '）を見ています', 'Viewing version ' + ctx.sub.no + ' (' + mrHst(ctx.sub.at) + ', ' + (ctx.sub.by || '') + ')'))+'</div>' : '')
     + '</div><div class="mr-hd-r">' + mrStatusChip(r.status ? r : { status:'none' });
   if (ctx.op === 'write' && ctx.edit) h += mrSaveChipHtml() + '<button class="btn btn-secondary btn-sm" onclick="mrSaveAndClose()">'+t('下書きのまま閉じる','Close as a draft')+'</button>';
@@ -25276,7 +25285,12 @@ async function mrSaveNow(){
       var res = await mrAPI({ action:'save', env:R.env, ym:R.ym, store_id:R.store.store_id, expect_version:ed.version || 0, body:body });
       if (g !== _mrGen || _mr.ed !== ed) return false;
       ed.version = res.version; ed.savedAt = res.updated_at; ed.err = '';
-      if (R.review) { R.review.version = res.version; R.review.status = res.status; R.review.unsubmitted = R.review.submitted_no > 0; }
+      if (res.deadlines) {
+        if (!R.review) R.review = { status: res.status, version: res.version, submitted_no: 0, deadlines: res.deadlines, overdue: res.overdue || { submit: false, reply: false } };
+        else { R.review.deadlines = res.deadlines; if (res.overdue) R.review.overdue = res.overdue; }
+      }
+      if (R.review) { R.review.version = res.version; R.review.status = res.status; R.review.unsubmitted = (R.review.submitted_no || 0) > 0; }
+      mrPaintDeadlines(); mrLiveRefresh();
       if (ed.pending) { ed.state = 'dirty'; ed.saveP = null; return mrSaveNow(); }
       ed.state = 'saved'; mrSaveChip(); return true;
     } catch(err) {

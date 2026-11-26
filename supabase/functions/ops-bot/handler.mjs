@@ -189,13 +189,14 @@ function morningStoreMessages(details,total,stores=[],category=null){
  return sections;
 }
 export function formatMorningSummary(s,{resend=false,category=null}={}){
- const n=k=>Number(s?.counts?.[k]||0),complete=Number(s?.active_stores)>0&&Number(s?.ok)===Number(s?.expected)&&Number(s?.failed)===0&&(category==='labor'||s?.finance_enabled===true&&Number(s?.finance_ok)===Number(s?.expected));
+ const finN=s?.finance_expected==null?Number(s?.expected||0):Number(s.finance_expected);
+ const n=k=>Number(s?.counts?.[k]||0),complete=Number(s?.active_stores)>0&&Number(s?.ok)===Number(s?.expected)&&Number(s?.failed)===0&&(category==='labor'||s?.finance_enabled===true&&Number(s?.finance_ok)===finN);
  const labor=n('labor'),voids=n('void'),unpaid=n('unpaid'),total=labor+voids+unpaid,period=Number(s.expected)===0&&Number(s.active_stores)>0?'当月は対象日なし':s.from+'〜'+s.to,p=s.progress_counts||{};
  const title=category==='labor'?'勤怠管理レポート':category==='finance'?'会計管理レポート':'毎朝 本部確認レポート';
- const lines=['【'+title+(resend?'｜再送':'')+'】',...(category?['管理担当：'+(category==='labor'?'Moto・Yuki':'経理')]:[]),'対象：'+period,category==='labor'?'勤怠取得：'+Number(s.ok||0)+'/'+Number(s.expected||0):'取得：'+Number(s.ok||0)+'/'+Number(s.expected||0)+'　決済確認：'+Number(s.finance_ok||0)+'/'+Number(s.expected||0),'未解決：'+total+'件'+(category==='labor'?'（勤怠）':category==='finance'?'（Payment Void '+voids+'／Unpaid '+unpaid+'）':'（勤怠 '+labor+'／Payment Void '+voids+'／Unpaid '+unpaid+'）')];
+ const lines=['【'+title+(resend?'｜再送':'')+'】',...(category?['管理担当：'+(category==='labor'?'Moto・Yuki':'経理')]:[]),'対象：'+period,category==='labor'?'勤怠取得：'+Number(s.ok||0)+'/'+Number(s.expected||0):'取得：'+Number(s.ok||0)+'/'+Number(s.expected||0)+'　決済確認：'+Number(s.finance_ok||0)+'/'+finN,'未解決：'+total+'件'+(category==='labor'?'（勤怠）':category==='finance'?'（Payment Void '+voids+'／Unpaid '+unpaid+'）':'（勤怠 '+labor+'／Payment Void '+voids+'／Unpaid '+unpaid+'）')];
  if(total>0)lines.push('進捗：未通知 '+Number(p.not_sent||0)+'／通知失敗 '+Number(p.notify_failed||0)+'／対応待ち '+Number(p.waiting||0)+'／再通知失敗 '+Number(p.reminder_failed||0)+'／修正中 '+Number(p.in_progress||0)+'／再確認待ち '+Number(p.recheck||0)+'／本部確認 '+Number(p.review||0)+'／送信確認 '+Number(p.send_check||0));
  if(Number(s?.active_stores)===0)lines.push('⚠️ 有効店舗がありません');
- if(category!=='labor'&&(s?.finance_enabled!==true||Number(s?.finance_ok)!==Number(s?.expected)))lines.push('⚠️ 決済データの取得が未完了です');
+ if(category!=='labor'&&(s?.finance_enabled!==true||Number(s?.finance_ok)!==finN))lines.push('⚠️ 決済データの取得が未完了です');
  if(!complete)lines.push('⚠️ 取得未完了：'+Number(s.ok||0)+'/'+Number(s.expected||0)+'、失敗 '+Number(s.failed||0));
  else if(total===0)lines.push('✅ 現在、未解決の異常はありません');
  else lines.push('✅ データ取得完了　店舗別レポートを確認してください');

@@ -52,6 +52,7 @@ async function server({ on = true, demo = true, verifier = true } = {}) {
       delete from mr_stores where env = 'demo';`);
   }
   await pg.exec(LIVE_SQL);
+  await pg.exec(fs.readFileSync(new URL('../supabase/migrations/20261220100000_mr_schedule_deadlines.sql', import.meta.url), 'utf8'));
   if (!on) await pg.query(`update mr_settings set value = value || '{"private":false}' where key = 'flags'`);
   await pg.exec('set role service_role');
   const db = { async rpc(name, p) { const r = await pg.query(`select public.${name}($1::jsonb) as v`, [JSON.stringify(p ?? {})]); return r.rows[0].v; } };
@@ -1269,4 +1270,51 @@ test('v1122 the month\'s input people on two screens: the older save is not writ
   await g.run('mrAccMonthSave()'); await g.flush(); await g.show();
   assert.match(g.html, /あなたの変更（入力担当に Chef Oka を足す）は、もう入っています（保存しなくて大丈夫）。/); assert.equal(g.run('mrSetUnsaved()'), false);
   assert.deepEqual(await db(), { input_emps: ['E14', 'E13', 'E10'], input_version: 3 });
+});
+
+test('first save shows the schedule submit day and keeps text typed while that save is in flight', async () => {
+  const S = await server({ demo: false }); await live(S);
+  const c = app(S, { pin: 'pin-E12' });
+  await openStore(c, 'F01');
+  assert.match(strip(c.html), /提出期限：未設定/);
+  assert.doesNotMatch(c.html, /まだ提出できます/);
+  const orig = c.fetch;
+  c.fetch = async (url, init) => {
+    const body = JSON.parse(init.body);
+    if (body.action === 'save' && body.body && body.body.prev && body.body.prev.sales && body.body.prev.sales.comment === '最初') c.run("mrSetVal('prev.sales.comment','最初と続き')");
+    return orig(url, init);
+  };
+  c.run("mrSetVal('prev.sales.comment','最初')");
+  await c.flush();
+  c.renderPage();
+  assert.match(c.html, /最初と続き/);
+  assert.doesNotMatch(c.html, />最初</);
+  assert.match(strip(c.html), /提出期限：10\/20/);
+  assert.match(c.html, /提出期限を過ぎています（まだ提出できます）/);
+  const row = (await S.q(`select deadlines, body->'prev'->'sales'->>'comment' as comment from mr_reviews where store_id='F01' and ym='2026-10'`))[0];
+  assert.equal(row.deadlines.submit, '2026-10-20');
+  assert.equal(row.comment, '最初と続き');
+
+  const en = app(S, { pin: 'pin-E12', lang: 'en' });
+  await en.show(); en.run("mrSetYm('2026-11')"); await openStore(en, 'F01');
+  assert.match(strip(en.html), /Submit by: not set/);
+  en.run("mrSetVal('consult','none')"); await en.flush(); en.renderPage();
+  assert.match(strip(en.html), /Submit by: 11\/20/);
+  assert.match(en.html, /Submission overdue \(you can still submit\)/);
+
+  await S.q(`insert into mr_reviews(env, store_id, ym, status, body, deadlines, version) values ('live','F02','2026-10','draft','{"v":2}','{}',1)`);
+  const empty = app(S, { who: 'am1', pin: 'pin-E5' });
+  await openStore(empty, 'F02');
+  assert.match(strip(empty.html), /提出期限：未設定/);
+  empty.run("mrSetVal('consult','none')"); await empty.flush(); empty.renderPage();
+  assert.match(strip(empty.html), /提出期限：未設定/);
+  assert.doesNotMatch(empty.html, /まだ提出できます/);
+
+  await S.api('gm', { action: 'deadline_save', env: 'live', ym: '2026-10', store_id: 'F05', deadlines: { submit: '2026-10-18', reply: '' } });
+  const over = app(S, { pin: 'pin-E14' });
+  await openStore(over, 'F05');
+  assert.match(strip(over.html), /提出期限：10\/18/);
+  over.run("mrSetVal('consult','none')"); await over.flush(); over.renderPage();
+  assert.match(strip(over.html), /提出期限：10\/18/);
+  assert.doesNotMatch(strip(over.html), /提出期限：10\/20/);
 });

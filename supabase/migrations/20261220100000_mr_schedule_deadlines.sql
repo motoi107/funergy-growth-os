@@ -61,7 +61,7 @@ begin
   exception when unique_violation then raise exception 'conflict';
   end;
   perform public.mr_event(r.id, r.env, m.user_id::text, 'create', jsonb_build_object('by', v_name));
-  return jsonb_build_object('id', r.id, 'version', r.version, 'status', 'draft', 'updated_at', r.updated_at);
+  return jsonb_build_object('id', r.id, 'version', r.version, 'status', 'draft', 'updated_at', r.updated_at, 'deadlines', r.deadlines, 'overdue', public.mr_overdue(r));
  end if;
  if public.mr_legacy(r) then raise exception 'legacy'; end if;
  if v_exp <> r.version then raise exception 'conflict'; end if;
@@ -69,5 +69,5 @@ begin
  if r.status not in ('draft','submitted') then raise exception 'legacy'; end if;
  update public.mr_reviews set body = v_body, version = version + 1, updated_at = now(), updated_by = v_name where id = r.id returning * into r;
  if r.version = 1 then perform public.mr_event(r.id, r.env, m.user_id::text, 'create', jsonb_build_object('by', v_name)); end if;
- return jsonb_build_object('id', r.id, 'version', r.version, 'status', r.status, 'updated_at', r.updated_at);
+ return jsonb_build_object('id', r.id, 'version', r.version, 'status', r.status, 'updated_at', r.updated_at, 'deadlines', r.deadlines, 'overdue', public.mr_overdue(r));
 end $$;
