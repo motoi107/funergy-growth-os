@@ -1,11 +1,11 @@
 # 改修・自動化の作業記録
 
-## App Store 審査の準備（ブランチ `claude/appstore-review-pages`）
+## App Store 審査の準備（ブランチ `claude/appstore-review-pages`・`claude/sw-static-nav`・`claude/app-privacy-link`）
 
-1. 済（Claude（Team））：プライバシーポリシー・サポートのページ（英語・日本語）と、審査用デモアカウントの要件（`docs/APPSTORE_REVIEW_JA.md`）。push できないので引き継ぎ一式で Personal がドラフト PR に。
-2. 次（Moto さん）：`[要確認]`（ポリシー 9・サポート 1・`docs/APPSTORE_REVIEW_JA.md` の 2）を埋める → 埋めたらマージ（＝公開）→ App Store Connect に URL。
-3. 次（Moto さん）：デモアカウントの案（`docs/APPSTORE_REVIEW_JA.md` の 5）を決める → 本番で作る → iPhone アプリでドライラン（PIN のログイン・保存・出ない画面）。
-4. 決めること（Moto さん）：アプリの中にプライバシーポリシーへの導線を足すか・どこに（`index.html` の変更＝別の PR）／`sw.js` の控えの直し（別の PR）。
+1. 済（Claude（Team））：4 ページ・仕様（`docs/APPSTORE_REVIEW_JA.md`）・Moto さんの答えの反映・v1217（SW）・v1218（アプリの中のリンク）。push できないので引き継ぎ一式で Personal がドラフト PR に。
+2. 次（Moto さん・会社）：`docs/APPSTORE_REVIEW_JA.md` の 11-1（施行日・部屋番号・窓口の受付・保存の方針・第三者・同等の保護・デモの形とアカウントの種類・マージの順）。
+3. 次（Moto さん・確かめる）：11-2（funergy-native の SDK と Web の取り込み・Info.plist・リポジトリに無い関数・本番の SQL・実機のログインとリンク・初期 PIN）。
+4. 次（Claude・決まったら）：デモの形が A（審査用の環境）なら、`index.html` の入口と接続先の切り替え・架空のデータ・環境を作る手順。
 
 ## 2026-11-23 統合実装プロンプト（A・B-1・B-2・B-3）
 

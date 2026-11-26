@@ -1,13 +1,12 @@
 # Claude / Codex 共通記録
 
-## App Store 審査の準備（Claude（Team・Claude Code）・ブランチ `claude/appstore-review-pages`・`main` e0e20ce の上・アプリは変えていない）
+## App Store 審査の準備（Claude（Team・Claude Code）・ブランチ 3 つ・`main` e0e20ce の上）
 
-- 依頼：iPhone 版（App Store Connect app 6831074913・Unlisted）の審査用に、プライバシーポリシーとサポートの静的ページ（英語・日本語）と、審査用デモアカウントの要件（作らない）。
-- 作ったもの：`privacy/index.html`・`privacy/ja/index.html`・`support/index.html`・`support/ja/index.html`（ログイン不要・スクリプトなし・noindex）、`docs/APPSTORE_REVIEW_JA.md`（根拠の表・`[要確認]` の一覧・デモアカウントの案・審査メモの下書き）、`tests/appstore-pages.test.mjs`（CI に 1 段）。
-- 決まり：コードから決まらないこと（施行日・運営者の正式名称・ホスティング・第三者への提供・保存期間・依頼の窓口・問い合わせ先・iPhone 本体の SDK・リポジトリに無い関数の外部サービス）は `[要確認]`。埋めてからマージ（マージ＝公開）。
-- デモアカウントの案：審査用の店（新しく作る・外のサービスとつながない）の G1 を 1 人・架空の名前・個人の欄は空・PIN は 0000 以外・チャットと事前経費のカードを個人の例外で隠す・保存の確かめは Daily Operations。作るのは Moto さん。
-- `sw.js` は画面の移動の中身を `index.html` の控えに入れる（今の決まり）。`/privacy/` を開くとオフラインの控えが一時的にそのページになる。今回は変えていない（直すなら別の PR）。
-
+- 依頼：iPhone 版（App Store Connect app 6831074913・Unlisted）の審査用に、プライバシーポリシーとサポートのページ（英語・日本語）と、審査用デモアカウントの要件（作らない）。続けて Moto さんの答え（10 項目・決める 5 項目・追加の 2 点）。仕様と残りの一覧：`docs/APPSTORE_REVIEW_JA.md`（11 の節）。
+- `claude/appstore-review-pages`：4 ページ（ログイン不要・noindex のまま）・仕様・試験。印は [要確認]（事実）と [案]（会社が決める）。会社名 Funergy Group Inc.・窓口 office@funergygroup.com（案）・GitHub Pages・Toast Payroll（自動の連携はリポジトリに無い）・QuickBooks（請求書をメールで転送）を反映。
+- `claude/sw-static-nav`（v1217）：SW が静的ページを index.html の控えにしていた（再現した）のを直す。`claude/app-privacy-link`（v1218・v1217 の上）：ログインの画面の下とマイページの下にプライバシーポリシー・サポートへのリンク。1216 は a23 が使う。
+- 調べてわかったこと：REST はだれでも公開の鍵で読むので、G1 の審査アカウントでも全店の `app_state`（秘密のキー以外）と全員の従業員の行が端末に届く。店を止めると G1 が自分の店を開けない・動かすと集計に入る。申請は CEO・GM・経理・事務Crew に見える。→ 本番の共有の DB では審査の要件を満たせない。案は別の審査用の環境（A）。決めるのは Moto さん。
+- iPhone の `motoi107/funergy-native` はこのセッションからは読めない（SDK・Web の直しが提出ビルドに入るか・Info.plist は要確認）。
 ## 2026-11-24 Moto さんの答え（A-2 の権限・役割の文の確かめ方・OJTマップ）と Excel の照らし合わせ（Claude（Team）・ブランチ `claude/grade-unify-a`）
 
 - 権限の 5 つ（育成計画・OJT）：「この内容で問題ありません」＝確定。役割の文は GM・CEO がアプリ（キャリア・育成 › 役割と責任マップ・等級の説明）で確かめる（CEO も）。確認用のドキュメント https://claude.ai/artifact/D5ec4qG4c5ivx937zj7ak9 。OJTマップは廃止（A-2-3 に入れた）。
