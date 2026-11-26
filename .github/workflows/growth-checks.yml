@@ -30,16 +30,24 @@ jobs:
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: '22'
+      - name: Check v1219 App Store review demo entry (production stays the default; the review flag switches the public URL and key; built-in names are emptied; the banner and return button; a switch with unsent data is refused)
+        run: node --test tests/review-demo-v1219.test.mjs
+      - name: Check v1220 review-demo switch (IndexedDB clears finish before reload; recovery, drafts and unsent invoice images block the switch; the login card has an English label)
+        run: node --test tests/review-demo-v1220.test.mjs
       - name: Install the test runtime (fake-indexeddb and PGlite, locked versions)
         run: npm ci --prefix tests/runtime --ignore-scripts --no-audit --no-fund
       - name: Check guarded financial saves with synthetic data
         run: node --test tests/financial-web-*.test.mjs
       - name: Check the save order and the common screen rules (FUNERGY_UX) with synthetic data
         run: node --test tests/ux-core.test.mjs
+      - name: Check v1217 service worker (static pages such as /privacy/ and /support/ do not replace the offline copy of the app; the app shell is still cached)
+        run: node --test tests/sw-static-nav-v1217.test.mjs
       - name: Check v1136 and v1137 (device-only entries reach the cloud, conditional writes and item-level merge on two devices, a pull keeps unsent edits, the save/sync/diagnosis status and the sent-only "saved" messages) with synthetic data
         run: node --test tests/local-only-sync-v1136.test.mjs tests/local-only-sync-concurrency-v1136.test.mjs tests/save-status-v1137.test.mjs
       - name: Check v1138 (large values live only in IndexedDB, the device storage is freed, interrupted writes and unsent edits come back) with synthetic data
         run: node --test tests/storage-slim-v1138.test.mjs
+      - name: Check v1218 links to the privacy policy and support pages inside the app (login screen before sign-in and My Page; Japanese or English page by the app language; public site URLs)
+        run: node --test tests/app-privacy-link-v1218.test.mjs
       - name: Check v1139 secure-state (the real handler, the screen code in a VM, the RLS SQL and the checks on PGlite, the deploy files; synthetic data)
         run: node --test tests/secure-state-server.test.mjs tests/secure-state-client.test.mjs tests/secure-state-rls.test.mjs tests/secure-state-deploy.test.mjs
       - name: Check v1140 secure-state Career Score (who sees whom, the write rules, the screen code in a VM with the v1139 function too, the RLS SQL and the checks on PGlite; synthetic data)
@@ -190,6 +198,8 @@ jobs:
         run: node scripts/gen-index-roleguide.mjs --check && node --test --test-concurrency=1 tests/career-guide-v1213.test.mjs
       - name: Check A-2-1 growth plans and OJT on the server (gp_* tables and functions; one active plan per person; versions; states and a basis for mastery; who manages, trains and confirms (the Career Score Q4 scorers); the person writes only their wish; old OJT and growth records copied as saved-as-old with a reason, the source unchanged; the deploy folder and the one-file secure-state; real SQL on PGlite, the real handler; synthetic data)
         run: node --test --test-concurrency=1 tests/gp-server-a2.test.mjs tests/gp-deploy-a2.test.mjs tests/gp-app-a2.test.mjs
+      - name: Check the App Store pages (privacy and support, English and Japanese; static, no scripts, no files from other sites, the same sections in both languages)
+        run: node --test tests/appstore-pages.test.mjs
       - name: Check v1159 work center step 3 (the old Approvals tab closes when the server says step 3; GM/CEO copy its records automatically (pending to work center pending, 2026 decisions to read-only history); the server reads status, store and requester from the shared data; budgets; the real SQL on PGlite, the real handler, the screen in a VM, the deploy files; synthetic data)
         run: node --test --test-concurrency=1 tests/work-requests-stage3-server.test.mjs tests/wc-stage3-v1159.test.mjs tests/work-requests-stage3-deploy.test.mjs
       - name: Check the step 3 move of old budgets and a new budget request for the same store and month never make two pending requests (two real PostgreSQL sessions, temporary server, synthetic data; no skipped test)

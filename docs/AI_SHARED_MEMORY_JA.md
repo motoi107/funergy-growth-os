@@ -6,9 +6,35 @@
 - `ops-bot-range-resume` の本番は 07:00 HST から（リポジトリは 08:00 のままだった）。08:00 の勤怠レポートの前に、当月を古い順に取り直すため。リポジトリの `db/ops-bot-range-schedule.sql` を 07:00 に合わせた。
 - ops-bot：本番 v36 にあって main に無かったのは、給与期間の勤怠レポート（`formatPayrollLaborReport`・`collectPayrollLabor`・`labor_payroll_collect`・収集が揃うまで送らない）。`bot/` のモジュールは本番と同じ。main の方が新しいのはアプリの Origin（`capacitor://localhost`。PR #221）。本番のバンドルには無いので残した。
 - SQL：`bot_collection_days`・`bot_labor_payroll_period`・`bot_labor_payroll_snapshot` を追加。`bot_morning_snapshot` の `finance_ok` と `finance_expected` は収集日（`bot_collection_days`。開店日より前を数えない）に合わせた。朝の会計の文は、`finance_expected` があるときその件数と `finance_ok` を比べる（勤怠の expected・ok は変えない）。`bot_reserve_morning_report` と `cash_tip_autofill` は本番と中身が同じなので置き換えていない。
-- 中間レビュー：新しい行の提出期限は `schedule.submit_day`（20 日）。行を作るのは最初の保存（`mr_save`。答えに期限と超過を含め、画面は全面の読み直しをせず、保存前からある見出しのノードと提出欄だけを更新する）と、期限の保存・月の入力担当の保存（`mr_review_row`）。店を開いただけでは行を作らない。既存の空の期限は変えない。GM・CEO の上書きはそのまま。期限後の提出は拒否しない。`flags.notify` は false のまま。画面は「まだ提出できます」。アプリは 1216。試験は保存後に `renderPage` を呼ばず、そのノードを直接見る（描き直しを外すと落ちる）。
+- 中間レビュー：新しい行の提出期限は `schedule.submit_day`（20 日）。行を作るのは最初の保存（`mr_save`。答えに期限と超過を含め、画面は全面の読み直しをせず、保存前からある見出しのノードと提出欄だけを更新する）と、期限の保存・月の入力担当の保存（`mr_review_row`）。店を開いただけでは行を作らない。既存の空の期限は変えない。GM・CEO の上書きはそのまま。期限後の提出は拒否しない。`flags.notify` は false のまま。画面は「まだ提出できます」。試験は保存後に `renderPage` を呼ばず、そのノードを直接見る（描き直しを外すと落ちる）。
 - 文書：`docs/BOT_OPERATIONS_JA.md` の先頭が現行。古い「毎朝 09:00」などは【2026-11-25 削除：現行ではない】。案内（休日・キックオフ・棚卸・Q コミット・回収）は案で、未実装。
 - main `589cc01`（#224）を取り込んだ。貼り付け用の空行と bonus-close の許可リストは #224 のまま。ops-bot の貼る 1 ファイルは、このブランチで給与期間レポートと `finance_expected` を含めて作り直している。
+- main `d239957`（v1221・ログインの画面、審査用デモ、SW、プライバシー）を取り込んだ。ログインの画面と SW の静的ページの扱いは main のまま。APP_VERSION / SW_BUILD は 1223。1222 は開いている #231（キャリア・育成）が使うので、ここでは使わない。
+## 2026-11-26 v1221 ログインの画面を整える（Claude・ブランチ `claude/login-ui-1221`・main `b9f9b3e`（v1220）の上・アプリだけ・本番未反映）
+
+- 依頼：Moto さん「Grok が更新した内容の UI を検査・ログインの画面を優先して整理」。履歴に Grok と書いた変更は無い。最近の変更（v1217〜v1220）を見た。仕様・見つけたこと・試験：`docs/LOGIN_UI_V1221_JA.md`。
+- 見た目だけ：主の操作は所属 → 名前（どの方式の人も名前から）。パスキーは所属の下の「または」・「続ける」はいちばん上・言葉は右上・補足と版は「ログインで困ったとき」・審査用（デモ）の入口は店の並びから画面の下へ（隠さない）・Office は 1 行（v1220 で店の並びに空きができていた）・スマホは枠をやめて上に寄せる（キーボードの高さで「ログイン」が隠れていた）・「PIN でログイン（試しのあいだ）」→「PIN でログイン」。
+- 変えていない：ログインの方式・本人確認・権限・ログアウト・関数・SQL・要素の ID。認証の気づき（「初期PINは 0000 です」の案内・電話とタブレットは最初から「自分だけが使う端末」）は会社が決める。
+- 試験：本物の Chrome `tests/e2e-login/login-ui-v1221.mjs` 74/74（同じ台本で v1220 は 52/53）・passkey 38/38・pin-off 19/19・email-login 35/36（マイページの 1 つは main でも NG）。v1219 の e2e の 4 つは始まる前に落ちていた（`[1]` の位置）のを直した。
+
+## 2026-11-26 審査用デモの切り替え（v1220・下書き・マージは Moto さん）
+
+- 切り替えは、`funergy_os_kv`・`funergy_pending_images`・`funergy_bulk_invoices`・`funergy-dl` を開いて消し、取引と deleteDatabase が終わってから再読み込みする。失敗したら印を立てず、再読み込みしない。
+- 売上・予算の復旧、`_hr_unsent`・`_ss_unsent`、未送信の伝票画像とまとめて取り込みの写真があるときは切り替えない。印が無いときは本番の URL と anon のまま。
+
+## 2026-11-25 審査用デモの入口（ブランチ `claude/review-demo-entry`・v1219・#226 のあと）
+
+- 公開のアプリに、印 `localStorage fg_env==='review'` のときだけ審査用 Supabase（`wjujeonfmjwvliunotuc`）へ向く入口を足した。印が無いときは本番の URL と anon のまま。`fg_env` は `LS_DEVICE_LOCAL`（端末だけ。大容量の整理で消さない。雲へ送らない）。APP_VERSION / SW_BUILD は `1219`（v1217・v1218 の次）。
+- 架空のデータは `review-demo/seed/01_demo_data.sql`。PIN・`credentials.txt`・スキーマ・Edge Function のコードはこのリポジトリに置かない。
+- `claude/grade-unify-a23` は v1216 のまま。このマージでは触らない。
+
+## App Store 審査の準備（Claude（Team・Claude Code）・ブランチ 3 つ・`main` e0e20ce の上）
+
+- 依頼：iPhone 版（App Store Connect app 6831074913・Unlisted）の審査用に、プライバシーポリシーとサポートのページ（英語・日本語）と、審査用デモアカウントの要件（作らない）。続けて Moto さんの答え（10 項目・決める 5 項目・追加の 2 点）。仕様と残りの一覧：`docs/APPSTORE_REVIEW_JA.md`（11 の節）。
+- `claude/appstore-review-pages`：4 ページ（ログイン不要・noindex のまま）・仕様・試験。Moto さん 11-1 の 1〜7：施行日はハワイ時間の 2026年11月25日・STE 203・窓口 office@funergygroup.com・業務／雇用／給与／税／会計は 5 年・提供先はコードに出るものだけ（販売しない・法令か同意のときだけ開示・同等の保護）・削除の依頼があっても残す記録がある。画面の `[要確認]` は外した（広告・解析の SDK は無い、Toast Payroll は手入力、外部は Toast・Anthropic・Google ドライブに書いた範囲、退職の守りは入っている、自動削除は操作のとき、そのほかに決まった期間は無い）。デモ（11-1 の 8・9）は未定。
+- `claude/sw-static-nav`（v1217）：SW が静的ページを index.html の控えにしていた（再現した）のを直す。`claude/app-privacy-link`（v1218・v1217 の上）：ログインの画面の下とマイページの下にプライバシーポリシー・サポートへのリンク。1216 は a23 が使う。
+- 調べてわかったこと：REST はだれでも公開の鍵で読むので、G1 の審査アカウントでも全店の `app_state`（秘密のキー以外）と全員の従業員の行が端末に届く。店を止めると G1 が自分の店を開けない・動かすと集計に入る。申請は CEO・GM・経理・事務Crew に見える。→ 本番の共有の DB では審査の要件を満たせない。案は別の審査用の環境（A）。決めるのは Moto さん。
+- iPhone の `motoi107/funergy-native` はこのセッションからは読めない（SDK・Web の直しが提出ビルドに入るか・Info.plist は要確認）。
 
 ## 2026-11-25 貼り付け用を今の関数に合わせる（#221 の Origin・ブランチ `cursor/fix-paste-handler-match-b1f8`・handler は変えていない）
 

@@ -117,7 +117,7 @@ test('① Today: with only the punch card in ①, the “Nothing to do today” 
 });
 
 test('renderMypage: the punch card is the first card of ① for those people (manager side); the same function as the accounting home', () => {
-  const mg = MYPAGE.slice(MYPAGE.indexOf('  if (!isCrewView) {\n    /* v1203'), MYPAGE.indexOf('    return mpSecLayout(html);\n  }\n'));
+  const mg = MYPAGE.slice(MYPAGE.indexOf('  if (!isCrewView) {\n    /* v1203'), MYPAGE.indexOf("    return mpSecLayout(html) + legalLinksHtml('mypage');"));
   assert.match(mg, /var _punch = false; try \{ _punch = mpHqPunch\(\); \} catch\(e\) \{\}\n\s*if \(_punch\) html \+= _ms\(1,5\) \+ officeClockCard\(\);/);
   assert.match(mg, /mpTodayHtml\(\{ shifts:_mgSh\.today, shiftGo:_mgSh\.go, helps:helps\.length, punch:_punch \}\)/);
   assert.ok(mg.indexOf('_ms(1,5)') < mg.indexOf('_ms(1,10)'));

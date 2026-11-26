@@ -165,7 +165,7 @@ test('renderMypage: G1 (crew) and the store account keep the v1177 layout; every
   assert.match(MYPAGE, /if \(!_newF\) html \+= `<div class="card" style="display:flex;align-items:center;gap:10px;padding:12px;cursor:pointer" onclick="openStaffPass\(\)">/);
   assert.match(MYPAGE, /if \(_newF\) html \+= _ms\(5,20\);[^\n]*\n\s*try \{ if \(!window\.FUNERGY_PV \|\| FUNERGY_PV\.cardShown\('times'\)\) html \+= timesCardHtml\(\)/);
   // 管理者の側（G4 以上・本部）：② 申請・⑤ 会社から・③ 自分のシフト（8A）・① 今日やること・④ Personal Growth Dashboard（名前はそのまま）
-  const mg = MYPAGE.slice(MYPAGE.indexOf('  if (!isCrewView) {\n    /* v1203'), MYPAGE.indexOf('    return mpSecLayout(html);\n  }\n') + 30);
+  const mg = MYPAGE.slice(MYPAGE.indexOf('  if (!isCrewView) {\n    /* v1203'), MYPAGE.indexOf("    return mpSecLayout(html) + legalLinksHtml('mypage');") + 30);
   assert.match(mg, /html \+= _ms\(2,10\) \+ mpReqCardHtml\(me\);/);
   assert.match(mg, /if \(_mgSh\.keys\.length\) html \+= _ms\(3,5\) \+ mpShiftCardHtml\(_mgSh\.keys\);/);
   assert.match(mg, /_ms\(1,10\) \+ mpTodayHtml\(\{ shifts:_mgSh\.today, shiftGo:_mgSh\.go, helps:helps\.length[^}]*\}\)/);
@@ -173,7 +173,7 @@ test('renderMypage: G1 (crew) and the store account keep the v1177 layout; every
   assert.doesNotMatch(mg.replace(/\/\*[\s\S]*?\*\//g, ''), /mpLayout\(html, true\)/);
   // スタッフの側（G2・G3）：前の休暇と申請の 2 枚は G1 だけ・最後に ① と 6 つの段・G1 は mpLayout
   assert.match(MYPAGE, /if \(_newF\) html \+= _ms\(2,10\) \+ mpReqCardHtml\(me\);\n  if \(!_newF\) \{\n  html \+= _mp\('w',50\);/);
-  assert.match(MYPAGE, /if \(_newF\) \{\n[^\n]*\n\s*var _todayKeys = mpTodayShiftLabels\(myShifts\);[\s\S]*?return mpSecLayout\(html\);\n  \}\n  html = mpLayout\(html\);/);
+  assert.match(MYPAGE, /if \(_newF\) \{\n[^\n]*\n\s*var _todayKeys = mpTodayShiftLabels\(myShifts\);[\s\S]*?return mpSecLayout\(html\) \+ legalLinksHtml\('mypage'\);[^\n]*\n  \}\n  html = mpLayout\(html\);/);
   assert.match(MYPAGE, /p\.author===me && \(p\.status\|\|'未対応'\)!=='解決' && rs\.length && rs\[rs\.length-1\]\.byMgr/, 'a reply counts only while the manager wrote last and it is not resolved');
   for (const name of ["t('今月の勤怠記録',", "t('Your Skill Progress',", "Personal Growth Dashboard", "t('休暇申請','Time Off')"]) assert.ok(MYPAGE.includes(name), '7B: ' + name);
 });
