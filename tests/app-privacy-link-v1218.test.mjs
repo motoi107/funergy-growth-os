@@ -42,7 +42,8 @@ test('日本語は日本語のページ、English は英語のページ（公開
 });
 
 test('ログインの画面：入れ物があり、言葉を切り替えるたびに入れ直す（ログインの前に開ける）', () => {
-  assert.match(IDX, /<div id="login-version"[^>]*><\/div>\n    <div id="login-legal"><\/div>/);
+  // v1221：版は「ログインで困ったとき」の中・その下にプライバシーポリシー・サポート（ログインの前にも見える）
+  assert.match(IDX, /<div id="login-version"[^>]*><\/div>\n      <\/details>\n    <div id="login-legal"><\/div>/);
   const r = fnSource('refreshLoginLabels');
   assert.match(r, /getElementById\('login-legal'\)[\s\S]*legalLinksHtml\('login'\)/);
   assert.match(fnSource('pickLang'), /refreshLoginLabels\(\)/);

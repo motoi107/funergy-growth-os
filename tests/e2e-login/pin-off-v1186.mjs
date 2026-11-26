@@ -16,7 +16,7 @@ const ROOT = path.resolve(new URL('../..', import.meta.url).pathname);
 const APP_DIR = process.env.APP_DIR || ROOT;
 const VENDOR = process.env.VENDOR_DIR || '/tmp/e2e/vendor', CERT = process.env.CERT_DIR || '/tmp/e2e/cert', SHOTS = process.env.SHOTS || '';
 const { PGlite } = await import(process.env.BOT_PGLITE_MODULE || path.join(ROOT, 'tests/runtime/node_modules/@electric-sql/pglite/dist/index.js'));
-const ANON = ((src => src.match(/var FG_PROD_ANON = '([^']+)'/) || src.match(/const SUPABASE_ANON = '([^']+)'/) || [])[1])(fs.readFileSync(path.join(APP_DIR, 'index.html'), 'utf8'));
+const ANON = (src => (src.match(/var FG_PROD_ANON = '([^']+)'/) || src.match(/const SUPABASE_ANON = '([^']+)'/) || [])[1])(fs.readFileSync(path.join(APP_DIR, 'index.html'), 'utf8'));   // v1221：v1219 の書き方では [1] が関数に付いて、台本が始まる前に落ちていた
 const PORT = 8093, ORIGIN = `http://localhost:${PORT}`;
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const results = [];
@@ -223,7 +223,7 @@ await G.ctx.close();
 const O = await device(1280, 'en');
 await pickName(O, 'OFFICE', 'Dee Office');
 const mo = await text(O.page, 'login-step-mail');
-ok('経理（英語・PC）：メールの段・PIN のボタンなし', await vis(O.page, 'login-step-mail') && !(await pinBtn(O.page)) && /Log in with email and password/.test(mo) && !/Log in with PIN/.test(mo), mo.slice(0, 160));
+ok('経理（英語・PC）：メールの段・PIN のボタンなし', await vis(O.page, 'login-step-mail') && !(await pinBtn(O.page)) && /Email/.test(mo) && /Password/.test(mo) && !/Log in with PIN/.test(mo), mo.slice(0, 160));   // v1221：段の題は上の見出しだけ
 await O.ctx.close();
 
 // Crew は今までどおり PIN

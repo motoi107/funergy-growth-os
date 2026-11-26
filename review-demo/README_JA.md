@@ -68,7 +68,7 @@ URL：`https://wjujeonfmjwvliunotuc.supabase.co`
 `index.html` 3507–3508 の `const SUPABASE_URL` / `SUPABASE_ANON` が 132 か所から使われる 1 か所なので、ここを切り替えれば REST・RPC・Edge Function・Auth が全部デモに向く。
 
 1. **切り替え（3507 の直前）**：`localStorage` の印（例 `fg_env==='review'`）を読み、デモなら URL を `https://wjujeonfmjwvliunotuc.supabase.co`、鍵をデモの anon に。定数のままにする（ほかは変えない）。
-2. **入口（`bootLogin` 22904 の Office のカードの隣）**：「審査用（デモ）／Demo for App Review」のカード。押すと確認 → 端末の控えを消す → 印を立てて再読み込み。デモの中ではログインの画面の上に「審査用（デモ）・架空のデータ」の帯と「本番に戻る」。
+2. **入口（`bootLogin` 22904 の Office のカードの隣。v1221 からはログインの画面のいちばん下、プライバシーポリシー・サポートの下の「Review (Demo) / 審査用（デモ）」）**：「審査用（デモ）／Demo for App Review」のカード。押すと確認 → 端末の控えを消す → 印を立てて再読み込み。デモの中ではログインの画面の上に「審査用（デモ）・架空のデータ」の帯と「本番に戻る」。
 3. **端末の控えを混ぜない**：`m_employees`・`m_stores`・app_state の写し・IndexedDB・送信待ち（outbox）は本番とデモで共有になる。切り替えるときに消す（送信待ちが残っていたら切り替えさせない）か、キーに接頭辞を付ける。
 4. **組み込みの既定値を出さない**：`DEFAULT_EMPLOYEES`（8979〜・実在の名前）・`DEFAULT_STORES`（4226）・`DEFAULT_VENDORS`（8943）は、雲から読めないときの代わりに出る。デモでは空の配列にする（読めなかったときに実在の名前がログインの画面に出ないように）。
 5. **デモに無い関数を使う画面**：上の範囲外の Edge Function は 404 になる（Toast 売上・請求書・中間レビュー・賞与・Google レビューなど）。デモでは入口を隠すか、エラーのままにするかを決める。

@@ -16,7 +16,7 @@ const ROOT = path.resolve(new URL('../..', import.meta.url).pathname);
 const APP_DIR = process.env.APP_DIR || ROOT;
 const VENDOR = process.env.VENDOR_DIR || '/tmp/e2e/vendor', CERT = process.env.CERT_DIR || '/tmp/e2e/cert', SHOTS = process.env.SHOTS || '';
 const { PGlite } = await import(process.env.BOT_PGLITE_MODULE || path.join(ROOT, 'tests/runtime/node_modules/@electric-sql/pglite/dist/index.js'));
-const ANON = ((src => src.match(/var FG_PROD_ANON = '([^']+)'/) || src.match(/const SUPABASE_ANON = '([^']+)'/) || [])[1])(fs.readFileSync(path.join(APP_DIR, 'index.html'), 'utf8'));
+const ANON = (src => (src.match(/var FG_PROD_ANON = '([^']+)'/) || src.match(/const SUPABASE_ANON = '([^']+)'/) || [])[1])(fs.readFileSync(path.join(APP_DIR, 'index.html'), 'utf8'));   // v1221：v1219 の書き方では [1] が関数に付いて、台本が始まる前に落ちていた
 // v1189 で「ログインの試し」はやめた（UI案92 の 7A）。v1189 からのアプリはこの台本の画面を持たない。前の版を見るときは APP_DIR に前の index.html を
 { const v = Number(((fs.readFileSync(path.join(APP_DIR, 'index.html'), 'utf8').match(/const APP_VERSION = '(\d+)'/) || [])[1]) || 0);
   if (v >= 1189) { console.log(`SKIP v1183 の「ログインの試し」は v1189 でやめた（アプリは ${v}）。tests/e2e-login/passkey-v1189.mjs を使う`); process.exit(0); } }
