@@ -1,8 +1,9 @@
 # Claude / Codex 共通記録
 
-## 2026-11-25 本番（funergy-os）にリポジトリを合わせる（Grok・ブランチ `cursor/prod-ops-align-2e66`・本番は変更していない）
+## 2026-11-25 本番（funergy-os）にリポジトリを合わせる（Cursor のエージェント・ブランチ `cursor/prod-ops-align-2e66`・本番は変更していない）
 
-- 読み取り：2026-11-25 の書き出しと、cron 2 件の command だけ（`ops-bot-morning-summary` と `ops-bot-payroll-month-close-collect`）。デプロイ・cron 変更・LINE 送信はしていない。
+- 読み取り：2026-11-25 の書き出しと、cron の command（朝の勤怠レポート、1 日の収集、`ops-bot-range-resume`、店のワーカー）。デプロイ・cron 変更・LINE 送信はしていない。関数と朝の cron は、この PR の前から本番にある。この PR はそれをリポジトリに写した。
+- `ops-bot-range-resume` の本番は 07:00 HST から（リポジトリは 08:00 のままだった）。08:00 の勤怠レポートの前に、当月を古い順に取り直すため。リポジトリの `db/ops-bot-range-schedule.sql` を 07:00 に合わせた。
 - ops-bot：本番 v36 にあって main に無かったのは、給与期間の勤怠レポート（`formatPayrollLaborReport`・`collectPayrollLabor`・`labor_payroll_collect`・収集が揃うまで送らない）。`bot/` のモジュールは本番と同じ。main の方が新しいのはアプリの Origin（`capacitor://localhost`。PR #221）。本番のバンドルには無いので残した。
 - SQL：`bot_collection_days`・`bot_labor_payroll_period`・`bot_labor_payroll_snapshot` を追加。`bot_morning_snapshot` の `finance_ok` だけ、収集日（`bot_collection_days`）に合わせた。`bot_reserve_morning_report` と `cash_tip_autofill` は本番と中身が同じなので置き換えていない。
 - 中間レビュー：新しい行の提出期限は `schedule.submit_day`（20 日）。既存の空の期限は変えない。GM・CEO の上書きはそのまま。期限後の提出は拒否しない。`flags.notify` は false のまま。画面は「まだ提出できます」。アプリは 1216。

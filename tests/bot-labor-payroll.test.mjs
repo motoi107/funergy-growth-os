@@ -109,4 +109,72 @@ test('the schedule file is the production cron and does not embed a worker key',
   assert.match(sql, /labor_payroll_collect/);
   assert.doesNotMatch(sql, /0,5,10 19 \* \* \*/);
   assert.doesNotMatch(sql, /eyJ|SUPABASE_ANON_KEY|TOAST_RESTAURANT_GUID/);
+  const resume = read('db/ops-bot-range-schedule.sql');
+  assert.match(resume, /time '07:00'/);
+  assert.doesNotMatch(resume, /time '08:00'/);
+});
+
+test('month-close collect scans one missing day on the 1st and does not record a failed scan', async () => {
+  const realNow = Date.now;
+  Date.now = () => Date.parse('2026-12-01T18:00:00Z');
+  const events = [];
+  let toastLogins = 0;
+  let scannedDate = '';
+  const queue = [];
+  const h = createHandler({
+    env: k => ({ SUPABASE_URL: 'https://db.test', SUPABASE_SERVICE_ROLE_KEY: 'service', SUPABASE_ANON_KEY: 'anon', TOAST_CLIENT_ID: 'synthetic', TOAST_CLIENT_SECRET: 'synthetic', LINE_CHANNEL_ACCESS_TOKEN: 'synthetic' })[k],
+    fetch: async (url, init) => {
+      if (url.includes('key=eq.worker')) return Response.json([{ value: { enabled: true, key: 'worker' } }]);
+      if (url.includes('key=eq.clock')) return Response.json([{ value: { nightFrom: '03:00', nightTo: '05:00', longH: 12, shortMin: 15 } }]);
+      if (url.includes('key=eq.job_check')) return Response.json(queue.job ? [{ value: queue.job }] : []);
+      if (url.includes('/store_config?')) return Response.json([{ store_id: 'F01', name: 'One', restaurant_guid: 'guid', active: true }]);
+      if (url.endsWith('/rpc/bot_labor_payroll_snapshot')) return Response.json(queue.snap);
+      if (url.endsWith('/rpc/bot_take_run')) return Response.json(true);
+      if (url.endsWith('/rpc/bot_case_write')) return Response.json({});
+      if (url.includes('/bot_runs?')) return Response.json([]);
+      if (url.includes('/bot_cases?')) return Response.json([]);
+      if (url.includes('/app_state?')) return Response.json([]);
+      if (url.includes('/employees?')) { if (queue.employeesFail) return new Response('no', { status: 500 }); return Response.json([]); }
+      if (url.includes('/authentication/login')) { toastLogins++; if (queue.toastFail) return new Response('no', { status: 500 }); return Response.json({ token: { accessToken: 't' } }); }
+      if (url.includes('/labor/v1/timeEntries')) { scannedDate = url; return Response.json([]); }
+      if (url.includes('/labor/v1/employees')) return Response.json([]);
+      if (url.includes('/bot_events') && init?.method === 'POST') { events.push(JSON.parse(init.body)); return Response.json([{ event_key: 'saved' }]); }
+      if (url.endsWith('/message/push')) throw Error('line');
+      throw Error(url);
+    }
+  });
+  const call = () => h(new Request('https://fn.test', { method: 'POST', headers: { 'x-bot-worker-key': 'worker' }, body: JSON.stringify({ action: 'worker', mode: 'labor_payroll_collect', store_id: 'F01' }) }));
+  const period = { day: '2026-12-01', from: '2026-11-16', to: '2026-11-30' };
+  try {
+    queue.snap = { day: '2026-11-25' };
+    assert.equal((await (await call()).json()).reason, 'not_month_close');
+    assert.equal(toastLogins, 0);
+    queue.snap = { ...period, collection_missing: [] };
+    assert.equal((await (await call()).json()).reason, 'payroll_collection_complete');
+    assert.equal(toastLogins, 0);
+    queue.snap = { ...period, collection_missing: [{ store_id: 'F01', business_date: '2026-11-01' }, { store_id: 'F01', business_date: '2026-11-18' }] };
+    assert.equal((await (await call()).json()).error, 'labor_payroll_period_mismatch');
+    assert.equal(events.length, 0);
+    queue.snap = { ...period, collection_missing: [{ store_id: 'F01', business_date: '2026-11-18' }, { store_id: 'F01', business_date: '2026-11-19' }] };
+    const ok = await (await call()).json();
+    assert.equal(ok.business_date, '2026-11-18');
+    assert.equal(ok.payroll_labor_only, true);
+    assert.match(scannedDate, /20261118/);
+    assert.equal(events.length, 1);
+    assert.equal(events[0].event_key, 'payroll-labor-scan:2026-12-01:F01:2026-11-18');
+    assert.equal(events[0].data.state, 'ok');
+    queue.toastFail = true;
+    const failed = await call();
+    assert.equal(failed.status, 400);
+    assert.equal((await failed.json()).error, 'toast_auth_failed');
+    assert.equal(events.length, 1);
+    queue.toastFail = false;
+    queue.job = { stores: { F01: { enabled: true, cutoff: '16:30', from: '2020-01-01', g1p: 'exclude', straddle: { enabled: false, minutes: 30 }, jobs: {} } } };
+    queue.employeesFail = true;
+    const job = await call();
+    assert.equal((await job.json()).error, 'payroll_job_check_failed');
+    assert.equal(events.length, 1);
+  } finally {
+    Date.now = realNow;
+  }
 });
