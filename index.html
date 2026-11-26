@@ -129445,25 +129445,53 @@ window.FUNERGY_ROLE_GUIDE = {"version":"ROLE_GUIDE_2026_Q4_V1","basedOn":"CAREER
   /* ---------------------------------------------------------------- あなた（Q4 の評価表・従業員マスター・育成計画） */
   var CR = { k:'', me:null, meErr:'', meLoading:false, asg:null, asgErr:'', asgLoading:false };
   function crSync(){ var k = gpWho(); if (k !== CR.k) { CR.k = k; CR.me = null; CR.meErr = ''; CR.meLoading = false; CR.asg = null; CR.asgErr = ''; CR.asgLoading = false; } }
+  /* 応答が遅れたとき、別の表示・別の画面・入力中の欄を作り直さない（希望などの未保存を消さない） */
+  function crBusy(view){
+    try {
+      if (typeof curPage !== 'undefined' && curPage && curPage !== 'career') return true;
+      if (view && S.view !== view) return true;
+      var root = document.getElementById('cr-root');
+      if (!root || typeof root.querySelectorAll !== 'function') return !root;
+      var active = document.activeElement;
+      if (active && root.contains && root.contains(active)) {
+        var tag = String(active.tagName || '').toUpperCase();
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
+      }
+      var nodes = root.querySelectorAll('input, textarea, select');
+      for (var i = 0; i < nodes.length; i++) {
+        var el = nodes[i], ty = String(el.type || '').toLowerCase();
+        if (ty === 'hidden' || ty === 'button' || ty === 'submit') continue;
+        if (ty === 'checkbox' || ty === 'radio') { if (el.checked !== el.defaultChecked) return true; continue; }
+        if (String(el.tagName || '').toUpperCase() === 'SELECT') {
+          var sel = el.selectedIndex, def = 0, saw = false, opts = el.options || [];
+          for (var j = 0; j < opts.length; j++) if (opts[j].defaultSelected) { def = j; saw = true; break; }
+          if (sel !== (saw ? def : 0)) return true;
+          continue;
+        }
+        if (String(el.value == null ? '' : el.value) !== String(el.defaultValue == null ? '' : el.defaultValue)) return true;
+      }
+      return false;
+    } catch (e) { return true; }
+  }
   async function loadMe(){
     crSync(); if (!CR.k || CR.meLoading || CR.me || CR.meErr) return;
-    CR.meLoading = true; var k = CR.k;
+    CR.meLoading = true; var k = CR.k, view = S.view;
     var r = await gpCall({ action:'cs4_me' });
     if (k !== CR.k) return;
     CR.meLoading = false;
     if (r.ok && r.j && !r.j.nosql && !r.j.none) CR.me = r.j; else CR.meErr = (r.j && r.j.nosql) ? 'nosql' : (r.legacy ? 'legacy' : (r.error || 'net'));
-    paint();
+    if (!crBusy(view)) paint();
   }
   /* 組織マップの Q4 の評価表：採点できる人の一覧（cs4_roster）に入っている人の分だけ（今の閲覧の範囲のまま） */
   async function loadAsg(){
     crSync(); if (!CR.k || CR.asgLoading || CR.asg || CR.asgErr || !allows('leadership')) return;
-    CR.asgLoading = true; var k = CR.k;
+    CR.asgLoading = true; var k = CR.k, view = S.view;
     var r = await gpCall({ action:'cs4_roster' });
     if (k !== CR.k) return;
     CR.asgLoading = false;
     if (r.ok && r.j && Array.isArray(r.j.rows)) { var m = {}; r.j.rows.forEach(function(x){ m[String(x.emp)] = x.assign || null; }); CR.asg = m; }
     else CR.asgErr = 'none';
-    paint();
+    if (!crBusy(view)) paint();
   }
   function meEmp(){
     try{
@@ -130243,9 +130271,10 @@ window.FUNERGY_ROLE_GUIDE = {"version":"ROLE_GUIDE_2026_Q4_V1","basedOn":"CAREER
       crBtn('matrix', '役割・責任マトリクスを開く', 'Open the matrix'));
   };
   /* v1216（A-2-3・答え 5 B・Moto さん 11/24「OJTマップは廃止」）：旧の OJT・成長管理の記録（app_state のキー）はこの端末で書かない（読むだけ）。
-     写しは関数の gp_legacy（全部「旧として保存」）。career_cfg（専門職の見る・直す範囲）・career_history・スキル・成長カルテは止めない */
-  var FROZEN = ['ojt_enroll', 'grade_ojt', 'ojt_phase_map', 'ojt_gate_criteria', 'crew_education', 'career_track', 'train_master', 'trainees', 'trainee_checklists',
-    'dev_pipe', 'dev_pipe_start', 'dev_nominations', 'dev_start', 'dev_data'];
+     写しは関数の gp_legacy（全部「旧として保存」）。career_cfg（専門職の見る・直す範囲）・career_history・スキル・成長カルテは止めない。
+     v1222（Moto さん・選択肢 A）：育成指名・Leaderを目指す・教材マスターは v1221 と同じく書く（dev_nominations・dev_pipe・dev_pipe_start・train_master） */
+  var FROZEN = ['ojt_enroll', 'grade_ojt', 'ojt_phase_map', 'ojt_gate_criteria', 'crew_education', 'career_track', 'trainees', 'trainee_checklists',
+    'dev_start', 'dev_data'];
   var frozenAt = {};
   W.crFrozen = function(key){
     key = String(key || '');

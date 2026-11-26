@@ -254,3 +254,87 @@ test('v1222（Moto さん 11/26・UI案102 の答え）：順は G → Prep → 
   assert.match(o.root(), /上司（報告先）は会社の決まりから自動で出しています（ここでは入力しません）/);
   o.crSet('org', 'F01'); o.crSet('person', 'S3'); assert.match(o.root(), /上司（報告先）<\/div><div class="cr-p">Mia Manager/);
 });
+
+test('v1222：遅れた cs4 の読み込みは、別の表示・別の画面・未保存の希望を消さない', async () => {
+  const open = () => {
+    const els = {}, pending = [], q = [];
+    const c = {
+      curRole: 'crew', curLang: 'ja', curPage: 'career', curStoreLogin: null, curUserName: 'Aki Crew', gone: [],
+      navGuardAllows: () => true, go: p => c.gone.push(p), renderPage: () => {},
+      document: { getElementById: id => els[id] || null, activeElement: null },
+      ssCall: p => (p.action === 'cs4_me' || p.action === 'cs4_roster')
+        ? new Promise(r => pending.push({ action: p.action, r }))
+        : new Promise(() => {}),
+      setTimeout: fn => { q.push(fn); return 0; },
+    };
+    c.window = c; c.t = ja => ja;
+    vm.createContext(c);
+    vm.runInContext(CSQ4, c); vm.runInContext(RG, c); vm.runInContext(MOD, c);
+    const box = (html, fields) => {
+      const node = { innerHTML: html, contains: n => (fields || []).indexOf(n) >= 0, querySelectorAll: () => fields || [] };
+      els['cr-root'] = node;
+      return node;
+    };
+    return { c, els, pending, flush: () => { while (q.length) q.shift()(); }, box };
+  };
+  const settle = async (pending, action, body) => {
+    const hit = pending.filter(x => x.action === action);
+    assert.ok(hit.length >= 1, action);
+    hit.forEach(x => x.r(body));
+    await new Promise(r => setTimeout(r, 30));
+  };
+  // 未保存の希望（入力中・値が default と違う）は作り直さない
+  {
+    const w = open();
+    w.c.FUNERGY_CAREER.pageHtml(); w.flush();
+    w.c.crSet('view', 'plan');
+    const wish = { tagName: 'TEXTAREA', type: '', value: 'UNSAVED typed wish', defaultValue: 'saved wish' };
+    const node = w.box('KEEP-WISH', [wish]);
+    w.c.document.activeElement = wish;
+    await settle(w.pending, 'cs4_me', { ok: true, j: { assign: { system: 'G', grade: 'G1', type: 'Server中心' } } });
+    assert.equal(node.innerHTML, 'KEEP-WISH');
+    assert.equal(wish.value, 'UNSAVED typed wish');
+  }
+  // 読み始めたあとに別の表示へ移っていたら、その表示を作り直さない
+  {
+    const w = open();
+    w.c.FUNERGY_CAREER.pageHtml(); w.flush();
+    w.c.crSet('view', 'plan');
+    const node = w.box('KEEP-PLAN', []);
+    await settle(w.pending, 'cs4_me', { ok: true, j: { assign: { system: 'G', grade: 'G1' } } });
+    assert.equal(node.innerHTML, 'KEEP-PLAN');
+  }
+  // キャリアの画面を離れていたら、ほかの画面を描き直さない
+  {
+    const w = open();
+    w.c.FUNERGY_CAREER.pageHtml(); w.flush();
+    w.c.curPage = 'mypage';
+    const node = w.box('KEEP-PAGE', []);
+    await settle(w.pending, 'cs4_me', { ok: true, j: { assign: { system: 'G', grade: 'G1' } } });
+    assert.equal(node.innerHTML, 'KEEP-PAGE');
+    assert.deepEqual(w.c.gone, []);
+  }
+  // 同じ表示のまま、入力が無ければ描き直す（キャッシュした評価表が出る）
+  {
+    const w = open();
+    w.c.FUNERGY_CAREER.pageHtml(); w.flush();
+    const node = w.box('OLD-MAP', []);
+    await settle(w.pending, 'cs4_me', { ok: true, j: { assign: { system: 'G', grade: 'G1', type: 'Server中心' } } });
+    assert.match(node.innerHTML, /自分のキャリアを見る/);
+    assert.match(node.innerHTML, /Server中心/);
+    assert.doesNotMatch(node.innerHTML, /OLD-MAP/);
+  }
+  // 組織マップの cs4_roster も、入力中は描き直さない
+  {
+    const w = open();
+    w.c.curRole = 'gm';
+    w.c.FUNERGY_CAREER.pageHtml(); w.flush();
+    w.box('TEMP', []);
+    w.c.crSet('view', 'org'); w.flush();
+    const field = { tagName: 'INPUT', type: 'text', value: 'typed', defaultValue: '' };
+    const node = w.box('KEEP-ORG', [field]);
+    await settle(w.pending, 'cs4_roster', { ok: true, j: { rows: [] } });
+    assert.equal(node.innerHTML, 'KEEP-ORG');
+    assert.equal(field.value, 'typed');
+  }
+});

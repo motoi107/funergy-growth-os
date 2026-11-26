@@ -10,6 +10,7 @@
 - Moto さん 11/26（UI案102 を見て）：職名 G1 Crew・G4 Store Manager・G5 Area Manager（複数店舗・管轄責任）・G6 General Manager（全社運営責任）。配属のラベル 店舗配属＝G1〜G4・Chef S1〜S2・Prep／本部配属＝G5・G6・Chef S3〜S6・経理 S。決まった名前なので全員・候補者に出す（G2・G3・S の職名は公開まで GM・CEO だけ）。
 - UI案102 の答え（11/26）：1・2・4〜8 は A。3＝上司は決まりから（店舗配属＝店の G4・G4 のいない店と G4 本人＝管轄 AM（G5）・いなければ G6・本部は「—」）。テーマカラーと順＝G オレンジ → Prep 深緑 → Chef 黄色 → 経理 紫。
 - マージの前：本番で gp_* の育成計画と過去の記録を確かめる。`claude/grade-unify-a23` は別にマージしない。
+- Moto さん（選択肢 A・11/26）：育成指名（`dev_nominations`）・「Leaderを目指す」（`dev_pipe`・`dev_pipe_start`）・教材マスター（`train_master`）は v1221 と同じく書く。遅れた `cs4_me` / `cs4_roster` は、別の表示・別の画面・入力中の欄があるときは `#cr-root` を作り直さない。
 
 ## 2026-11-26 v1221 ログインの画面を整える（Claude・ブランチ `claude/login-ui-1221`・main `b9f9b3e`（v1220）の上・アプリだけ・本番未反映）
 

@@ -130,8 +130,18 @@ test('v1216（A-2-3）：旧の OJT・成長管理を止める — メニュー�
   assert.doesNotMatch(html, /myOjtCard\(\) \+ renderMypage\(\)/, 'the old OJT card is not on My page');
   const S = await setup();
   const gm = screen(S, 'gm', 'gm');
-  for (const k of ['ojt_enroll', 'grade_ojt', 'ojt_phase_map', 'ojt_gate_criteria', 'ojt_def_g3', 'trainees', 'dev_pipe', 'dev_data']) assert.equal(gm.crFrozen(k), true, k);
-  for (const k of ['career_cfg', 'career_history', 'skills', 'growth_karte', 'grade_hist', 'tip_history', 'ojtx']) assert.equal(gm.crFrozen(k), false, k);
+  for (const k of ['ojt_enroll', 'grade_ojt', 'ojt_phase_map', 'ojt_gate_criteria', 'ojt_def_g3', 'trainees', 'dev_start', 'dev_data']) assert.equal(gm.crFrozen(k), true, k);
+  // v1222（Moto さん・選択肢 A）：育成指名・Leaderを目指す・教材マスターは v1221 と同じく書く
+  for (const k of ['career_cfg', 'career_history', 'skills', 'growth_karte', 'grade_hist', 'tip_history', 'ojtx', 'dev_nominations', 'dev_pipe', 'dev_pipe_start', 'train_master']) assert.equal(gm.crFrozen(k), false, k);
+  const saved = {};
+  const lsSetLike = (key, val) => { if (gm.crFrozen(key)) return false; saved[key] = val; return true; };
+  assert.equal(lsSetLike('dev_nominations', [{ id: 'n1' }]), true);
+  assert.equal(lsSetLike('dev_pipe', { Kai: { stage: 1 } }), true);
+  assert.equal(lsSetLike('dev_pipe_start', { Kai: { d: '2026-11-01' } }), true);
+  assert.equal(lsSetLike('train_master', { benefits: 'meal' }), true);
+  assert.equal(lsSetLike('ojt_enroll', { x: 1 }), false);
+  assert.deepEqual(saved.dev_nominations, [{ id: 'n1' }]);
+  assert.equal(saved.ojt_enroll, undefined);
   // v1222：裏の書き込み（同期など）は黙って止める（ログインのたびに知らせが出ていた）。知らせは旧の画面で押したときだけ・1 分に 1 回
   assert.equal(gm.toasts.length, 0, 'no notice for background writes outside the old pages');
   gm.curPage = 'ojt_admin';
