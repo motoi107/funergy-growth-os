@@ -8052,7 +8052,7 @@ const MENU_GROUPS = [
       G2 には出したくない等の調整は設定側でできる。 */
    children:['staff_master','hiring','shift_admin','tip','hr','vacation','mileage','totoya_docs','crew_handbook']},
   {id:'g_growth', label:'育成・評価', icon:'ti-school', roles:['ceo','gm','office','am','sl'],
-    children:['career','skill','ojt_admin','growth_mgr','leadership','growthhub']},   /* v1213：キャリア・育成を先頭に */
+    children:['career','skill','leadership','growthhub']},   /* v1213：キャリア・育成を先頭に / v1216（A-2-3）：OJT管理・成長管理は外す（過去の記録から読むだけで開く） */
   {id:'g_food', label:'食材管理', icon:'ti-receipt', roles:['ceo','gm','office','am','sl'],
     /* v1084: 経理センター・経理レビューは食材管理の右隣のタブへ（下の 2 つ）。日次食材差異・備品発注は廃止 */
     children:['menu','recipe','ingredient_master','ing_transfer','vendor_master','inventory','purchase_detail','invoice']},   /* v1087: 発注は廃止 */
@@ -8127,8 +8127,8 @@ const CHEF_GROUPS = [
   {id:'gc_store', label:'店舗', icon:'ti-building-store',
     children:['store_cmd','shift_admin','vacation','mileage']},
   {id:'gc_hr', label:'人材・育成', icon:'ti-users',
-    children:['staff_master','hiring','tip','career','skill','ojt_admin','growth_mgr','leadership',
-              'growthhub','totoya_docs','crew_handbook']},   /* v1213：キャリア・育成 */
+    children:['staff_master','hiring','tip','career','skill','leadership',
+              'growthhub','totoya_docs','crew_handbook']},   /* v1213：キャリア・育成 / v1216（A-2-3）：OJT管理・成長管理は外す */
   {id:'gc_my', label:'マイページ', icon:'ti-user',
     children:['mypage','discount','required','settings']},   /* v1191：profile は外す（中身が無かった） */
 ];
@@ -8137,7 +8137,7 @@ const CREW_GROUPS = [
   {id:'g_mypage', label:'マイページ', icon:'ti-user', children:['mypage','discount']},   /* v897 / v1084: 対応依頼は廃止 */
   {id:'g_handbook', label:'Handbook', icon:'ti-book', children:['crew_handbook']},
   {id:'g_myshift', label:'シフト', icon:'ti-calendar-event', children:['shift_staff']},
-  {id:'g_skill', label:'スキル', icon:'ti-stairs-up', children:['career','skill','ojtmap','totoya_docs']},   /* v1213：キャリア・育成（自分の系統・等級の説明を読む） */
+  {id:'g_skill', label:'スキル', icon:'ti-stairs-up', children:['career','skill','totoya_docs']},   /* v1216（A-2-3・Moto さん 11/24）：OJTマップは廃止 */   /* v1213：キャリア・育成（自分の系統・等級の説明を読む） */
   {id:'g_tip', label:'チップ', icon:'ti-coin', children:['tiprate']},
   {id:'g_store', label:'店舗オペレーション', icon:'ti-building-store', children:['store_cmd']},
   {id:'g_chat', label:'チャット', icon:'ti-messages', children:['chat']},   /* v1156（3A：G1 も DM・グループ） */
@@ -8430,6 +8430,9 @@ function navAcctLanding(){
      寄せ先を開けない役職なら、その人のホーム。寄せることで見える人は増えない。 */
 var NAV_RETIRED = { foodcost:'purchase', fv_variance:'inventory', supply_order:'inventory', order:'inventory', mgmt_ctrl:'tasks', mc_requests:'mypage', profile:'mypage' };   /* v1191：profile は中身が無かった */
 function navResolvePage(page){
+  /* v1216（A-2-3）：旧の OJT・成長管理は止めた。OJTマップ（廃止）・OJT管理・成長管理への古い行き先（通知・お気に入り・ブックマーク）はキャリア・育成へ。
+     旧の OJT管理・成長管理は「過去の記録」から押したときだけ読むだけで開く（crOpenOldPage）。保存は crFrozen で止める */
+  if (page === 'ojtmap' || ((page === 'ojt_admin' || page === 'growth_mgr') && window._crOldView !== page)) { try{ if (window.crPrep) crPrep(page === 'ojtmap' ? 'plan' : 'history'); }catch(e){} page = 'career'; }
   if (page === 'budget' && typeof budgetTab !== 'undefined') {
     if (budgetTab === 'meeting' || budgetTab === 'purchase') { page = budgetTab; budgetTab = 'daily'; }
     else if (budgetTab === 'analysis') budgetTab = 'daily';
@@ -13958,6 +13961,7 @@ function lsSet(key, val) {
 /* FUNERGY_WEB_OFFICE_SOURCE_V1 lsSet */
 if(typeof window.FUNERGY_WEB_OFFICE_WRITE==='function')window.FUNERGY_WEB_OFFICE_WRITE(key,val);else if(/^ocs_(?:asg|ev)_/.test(key))throw Error('web_office_not_ready');return (function lsSet(key, val) {
   /* v1193（UI案95）：「画面の表示」で見るだけにした画面では、押して保存する同期のデータを書かない（この端末の印・下書きは書く） */
+  if(window.crFrozen && window.crFrozen(key)) return false;   /* v1216（A-2-3）：旧の OJT・成長管理の記録は読むだけ（新しい計画はキャリア・育成） */
   if(window.FUNERGY_PV && typeof window.FUNERGY_PV.writeBlocked==='function' && window.FUNERGY_PV.writeBlocked(key)) return false;
   var sp = _SPLIT_KEYS && _SPLIT_KEYS[key]; if(sp){ return _splitWrite(key, sp, val); }
   /* v1140：見られない人の Career Score の行は、この端末で作らない・直さない（一部だけの写しにしない）。分割の行（申請・履歴）もここを通る */
@@ -26202,7 +26206,7 @@ case 'acct_center':
     case 'growth_mgr':   el.innerHTML = (window.crOldBanner ? crOldBanner() : '') + renderGrowthManager(); break;   /* v1214（A-2）：新しい育成計画への案内 */
     case 'ojt_admin':    el.innerHTML = (window.crOldBanner ? crOldBanner() : '') + renderOjtAdmin(); break;   /* v1214（A-2）：新しい育成計画への案内 */
     case 'approval':     workTab='approval'; el.innerHTML = renderWorkCenter(); break;
-    case 'mypage':       el.innerHTML = _myOjtOpen ? myOjtCard() : (renderFavCard() + (window.crMyCard ? crMyCard() : '') + myOjtCard() + renderMypage()); break;   /* v1215（A-3）：キャリア・育成の入口 */   /* v1025: OJTを開いている間はOJT画面だけ */
+    case 'mypage':       el.innerHTML = renderFavCard() + (window.crMyCard ? crMyCard() : '') + renderMypage(); break;   /* v1215（A-3）：キャリア・育成の入口 / v1216（A-2-3）：旧の OJT のカードは出さない（記録は過去の記録） */   /* v1025: OJTを開いている間はOJT画面だけ */
     case 'store_master': el.innerHTML = renderStoreMaster(); break;
     case 'kpi_master': el.innerHTML = renderKpiMaster(); break;
     case 'acct_export':  el.innerHTML = renderAcctExport(); break;
@@ -26344,7 +26348,7 @@ case 'acct_center':
     case 'growth_mgr':   el.innerHTML = (window.crOldBanner ? crOldBanner() : '') + renderGrowthManager(); break;   /* v1214（A-2）：新しい育成計画への案内 */
     case 'ojt_admin':    el.innerHTML = (window.crOldBanner ? crOldBanner() : '') + renderOjtAdmin(); break;   /* v1214（A-2）：新しい育成計画への案内 */
     case 'approval':     workTab='approval'; el.innerHTML = renderWorkCenter(); break;
-    case 'mypage':       el.innerHTML = _myOjtOpen ? myOjtCard() : (renderFavCard() + (window.crMyCard ? crMyCard() : '') + myOjtCard() + renderMypage()); break;   /* v1215（A-3）：キャリア・育成の入口 */   /* v1025: OJTを開いている間はOJT画面だけ */
+    case 'mypage':       el.innerHTML = renderFavCard() + (window.crMyCard ? crMyCard() : '') + renderMypage(); break;   /* v1215（A-3）：キャリア・育成の入口 / v1216（A-2-3）：旧の OJT のカードは出さない（記録は過去の記録） */   /* v1025: OJTを開いている間はOJT画面だけ */
     case 'store_master': el.innerHTML = renderStoreMaster(); break;
     case 'kpi_master': el.innerHTML = renderKpiMaster(); break;
     case 'acct_export':  el.innerHTML = renderAcctExport(); break;
@@ -50561,7 +50565,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1221';
+const APP_VERSION = '1222';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -62678,12 +62682,13 @@ function renderTotoyaG2(){
    （今の制度の説明には使わない・消さない。責任マトリクスは同じマスターに作り直したので、旧の表は直せない）。Totoya の資料は今のまま。 */
 var CE_OLD_MODES = ['internal','show','rolemap','respmatrix'];
 function renderCareerExplain(){
-  if(!window._ceMode) window._ceMode='guide';
+  /* v1222：制度・役割の説明は「キャリア・育成」の 1 か所だけ（ここに同じ説明を並べない）。候補者向けは同じマスターから（社内の名前・記録は出さない） */
+  if(!window._ceMode || window._ceMode==='guide') window._ceMode='cand';
   var mode=window._ceMode;
   var isOld = mode==='old' || CE_OLD_MODES.indexOf(mode)>=0;
   var h=`<div style="display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap">
-    <button class="phase-tab${mode==='guide'?' active':''}" onclick="setCeMode('guide')"><i class="ti ti-route"></i> ${t('制度・役割ガイド','System and role guide')}</button>
     <button class="phase-tab${mode==='cand'?' active':''}" onclick="setCeMode('cand')"><i class="ti ti-eye"></i> ${t('候補者向け（面接で見せる）','For candidates (interviews)')}</button>
+    <button class="phase-tab" onclick="if(window.crGo)crGo('map');else go('career')"><i class="ti ti-route"></i> ${t('制度・役割（キャリア・育成で開く）','Roles and system (opens Career & Development)')}</button>
     <button class="phase-tab${mode==='totoya_sl'?' active':''}" onclick="setCeMode('totoya_sl')"><i class="ti ti-star"></i> Totoya Shift Leader</button>
     <button class="phase-tab${mode==='totoya_g2'?' active':''}" onclick="setCeMode('totoya_g2')"><i class="ti ti-user-check"></i> G2（Totoya）</button>
     <button class="phase-tab${isOld?' active':''}" onclick="setCeMode('old')"><i class="ti ti-archive"></i> ${t('旧制度の説明（読むだけ）','Old system (read only)')}</button>
@@ -62692,14 +62697,13 @@ function renderCareerExplain(){
   if(mode==='totoya_g2') return h + renderTotoyaG2();
   if(isOld) return h + renderCareerExplainOld(mode==='old' ? 'internal' : mode);
   if(!window.FUNERGY_CAREER) return h + '<div class="card"><p style="color:var(--muted)">'+t('読み込み中','Loading')+'</p></div>';
-  return h + '<div style="margin-bottom:10px"><button type="button" class="btn btn-secondary btn-sm" onclick="go(\'career\')"><i class="ti ti-route"></i> '+t('「キャリア・育成」で開く','Open in Career & Development')+'</button></div>'
-    + FUNERGY_CAREER.embedHtml(mode==='cand' ? 'cand' : 'guide');
+  return h + FUNERGY_CAREER.embedHtml('cand');
 }
 /* 旧制度の説明（読むだけ）。当時の文をそのまま出す。今の制度の説明ではないことを毎回上に出す */
 function renderCareerExplainOld(m){
   var tabs=[['internal','社内向け 完全ガイド（旧）','Internal guide (old)'],['show','候補者向け（旧）','For candidates (old)'],['rolemap','役割と責任マップ（旧）','Roles map (old)'],['respmatrix','責任マトリクス（旧）','Responsibility matrix (old)']];
   var h='<div class="alert alert-warning" style="padding:10px 12px;margin-bottom:10px"><i class="ti ti-archive"></i><div style="font-size:12.5px;line-height:1.65">'
-    +escapeHtml(t('旧制度の説明です（当時の文・読むだけ）。今の制度の説明ではありません。今の役割と評価は「制度・役割ガイド」を見てください。','These are old-system explanations (as written then, read only). They are not the current system. See the System and role guide for the current roles and evaluation.'))+'</div></div>'
+    +escapeHtml(t('旧制度の説明です（当時の文・読むだけ）。今の制度の説明ではありません。今の役割と評価は「キャリア・育成」を見てください。','These are old-system explanations (as written then, read only). They are not the current system. See Career & Development for the current roles and evaluation.'))+'</div></div>'
     +'<div style="display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap">'
     +tabs.map(function(x){ return '<button class="phase-tab'+(m===x[0]?' active':'')+'" onclick="setCeMode(\''+x[0]+'\')">'+escapeHtml(t(x[1],x[2]))+'</button>'; }).join('')+'</div>';
   if(m==='rolemap') return h + renderResponsibilityMap();
@@ -129220,8 +129224,8 @@ window.FUNERGY_ROLE_GUIDE = {"version":"ROLE_GUIDE_2026_Q4_V1","basedOn":"CAREER
   function allows(p){ try{ return typeof navGuardAllows === 'function' ? !!navGuardAllows(p) : true; }catch(e){ return false; } }
   function fmt(n){ var x = Number(n); return isFinite(x) ? x.toFixed(2) : '—'; }
 
-  var SYS = ['G', 'S_CHEF', 'S_OFFICE', 'PREP'];
-  var S = { tab:'guide', view:'grade', sys:'G', grade:'G1', type:'', embed:'' };
+  var SYS = ['G', 'PREP', 'S_CHEF', 'S_OFFICE'];   /* v1222（Moto さん 11/26）：G → Prep → Chef → 経理 の順 */
+  var S = { view:'map', sys:'G', grade:'G1', type:'', embed:'', from:'map', cat:'daily', mxsys:'', org:'', person:'' };   /* v1222：1 つのタブ（tab は前の名前を set で受ける） */
   function sysR(k){ var a = (R && R.systems) || []; for (var i = 0; i < a.length; i++) if (a[i].key === k) return a[i]; return null; }
   function sysM(k){ return (M && M.systems && M.systems[k]) || null; }
   function grades(k){ var s = sysR(k); return s ? s.grades.map(function(g){ return g.grade; }) : []; }
@@ -129307,6 +129311,54 @@ window.FUNERGY_ROLE_GUIDE = {"version":"ROLE_GUIDE_2026_Q4_V1","basedOn":"CAREER
     + '.cr-notes{margin-top:6px;border-left:3px solid var(--border);padding-left:8px;font-size:12.5px;line-height:1.6;display:flex;flex-direction:column;gap:4px}'
     + '.cr-add{margin-top:8px;border:1px dashed var(--border);border-radius:10px;padding:8px 10px}.cr-add summary{cursor:pointer;font-weight:600;font-size:13px;min-height:32px}'
     + '.cr-pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:11.5px;background:var(--surface2);border-radius:8px;padding:8px;max-height:260px;overflow:auto}'
+    /* v1222：1 つの「キャリア・育成」 */
+    + '.cr-ic{display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;border-radius:9px;font-size:18px;flex-shrink:0}'
+    + '.cr-you{border:1px solid var(--border);border-radius:14px;background:var(--surface);padding:12px 14px;margin-bottom:10px}'
+    + '.cr-you-h{font-weight:700;font-size:14px;margin-bottom:8px;display:flex;gap:6px;align-items:center}'
+    + '.cr-you-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px}'
+    + '.cr-you-i{background:var(--surface2);border-radius:10px;padding:8px 10px;display:flex;flex-direction:column;gap:6px;align-items:flex-start}'
+    + '.cr-you-v{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:13px}'
+    + '.cr-youb{display:inline-block;font-size:10.5px;font-weight:700;background:var(--c,var(--accent));color:#fff;border-radius:8px;padding:1px 7px;vertical-align:middle}'
+    + '.cr-tiles{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:0 0 12px}'
+    + '.cr-tile{min-height:56px;border:1px solid var(--border);border-radius:12px;background:var(--surface);font:inherit;color:var(--text);cursor:pointer;display:flex;align-items:center;gap:8px;padding:8px 10px;text-align:left}'
+    + '.cr-tile>i{font-size:20px;color:var(--muted);flex-shrink:0}.cr-tile>span{display:flex;flex-direction:column;min-width:0}.cr-tile b{font-size:13px;line-height:1.3}.cr-tile-d{font-size:11px;color:var(--muted);line-height:1.35}'
+    + '.cr-tile.on{border:2px solid var(--accent);background:#FFF7F1}.cr-tile.on>i{color:var(--accent)}'
+    + '.cr-tile-s{display:none}@media (max-width:600px){.cr-tile{flex-direction:column;align-items:flex-start;gap:2px;padding:8px}.cr-tile-d,.cr-tile-l{display:none}.cr-tile-s{display:block}.cr-tile b{font-size:12px;white-space:nowrap}}'
+    + '.cr-lane{margin-bottom:14px}.cr-lane-h{display:flex;gap:10px;align-items:center;margin-bottom:6px}.cr-lane-h b{font-size:14px}'
+    + '.cr-track{display:flex;align-items:stretch;gap:2px;overflow-x:auto;-webkit-overflow-scrolling:touch;padding:2px 2px 6px;scroll-snap-type:x proximity}'
+    + '.cr-card{flex:1 0 128px;min-height:92px;text-align:left;border:1px solid var(--border);border-top:4px solid var(--l,var(--c));border-radius:12px;background:var(--surface);padding:9px 10px;font:inherit;color:var(--text);cursor:pointer;display:flex;flex-direction:column;gap:3px;scroll-snap-align:start}'
+    + '.cr-card:hover,.cr-card:focus-visible{background:var(--b)}.cr-card-g{font-weight:800;font-size:16px;color:var(--c)}.cr-card-t{font-size:12px;font-weight:700;line-height:1.35}'
+    + '.cr-card-d{font-size:11.5px;color:var(--muted);line-height:1.45;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}'
+    + '.cr-card-s{font-size:11.5px;font-weight:600;line-height:1.35}.cr-card-a{margin-top:auto;padding-top:4px}'
+    + '.cr-asg{display:inline-flex;align-items:center;gap:3px;font-size:11px;font-weight:600;line-height:1.5;padding:1px 8px;border-radius:10px;white-space:nowrap}.cr-asg-store{background:#F1ECE4;color:#4A3F33}.cr-asg-hq{background:#E8EFF6;color:#1E3F60}'
+    + '.cr-mine{box-shadow:inset 0 0 0 2px var(--c)}.cr-arrow{align-self:center;color:var(--muted);font-size:18px;flex-shrink:0;padding:0 1px}'
+    + '.cr-back{min-height:40px;background:none;border:0;color:var(--accent);font:inherit;font-size:13.5px;cursor:pointer;padding:0;display:inline-flex;gap:4px;align-items:center}'
+    + '.cr-dhead{border-left:5px solid var(--l,var(--c));background:var(--b);border-radius:12px;padding:6px 12px 8px;margin-bottom:10px}'
+    + '.cr-dtitle{display:flex;gap:10px;align-items:center;margin:4px 0}.cr-dg{font-size:24px;font-weight:800;color:var(--c);line-height:1.2}.cr-pn{margin:6px 0 0}'
+    + '.cr-step{border:1px solid var(--border);border-radius:12px;background:var(--surface);margin-bottom:8px}'
+    + '.cr-step>summary{list-style:none;display:flex;gap:10px;align-items:center;min-height:56px;padding:8px 12px;cursor:pointer}'
+    + '.cr-step>summary::-webkit-details-marker{display:none}.cr-step>summary::after{content:"＋";margin-left:auto;color:var(--muted);font-weight:700}.cr-step[open]>summary::after{content:"－"}'
+    + '.cr-step>summary>span:nth-child(2){display:flex;flex-direction:column;min-width:0}.cr-step-t{font-weight:700;font-size:14px}.cr-step-s{font-size:11.5px;color:var(--muted);line-height:1.4;overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}'
+    + '.cr-step-n{width:28px;height:28px;border-radius:50%;background:var(--accent);color:#fff;display:inline-flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;flex-shrink:0}'
+    + '.cr-step-b{padding:0 12px 12px;border-top:1px solid var(--border)}'
+    + '.cr-kv{margin:10px 0 0}.cr-kv>div:first-child{font-size:12px;color:var(--muted);font-weight:700;margin-bottom:3px}'
+    + '.cr-more{margin-top:10px;border:1px solid var(--border);border-radius:10px;padding:0 10px}.cr-more>summary{cursor:pointer;min-height:44px;display:flex;align-items:center;font-weight:600;font-size:13px}.cr-more>div{padding-bottom:10px}'
+    + '.cr-items{list-style:none;padding:0;margin:4px 0 0;font-size:12.5px;line-height:1.55}.cr-items li{padding:6px 0;border-bottom:1px solid var(--border)}.cr-items .cr-note{white-space:pre-line}'
+    + '.cr-big{display:flex;align-items:baseline;gap:6px;flex-wrap:wrap;margin-top:10px}.cr-big>span{font-size:12px;color:var(--muted)}.cr-big b{font-size:26px}'
+    + '.cr-next{display:flex;align-items:center;gap:8px;font-size:15px;margin-top:10px}.cr-next b{color:var(--accent)}'
+    + '.cr-up{color:#15803D;font-size:10px}.cr-down{color:#B91C1C;font-size:10px}'
+    + '.cr-rev{margin-top:10px;border:1px dashed #A78BFA;background:#FAF5FF;border-radius:10px;padding:8px 10px}.cr-rev-h{font-weight:700;font-size:13px;color:#6B21A8}'
+    + '.cr-prow{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:4px 0}'
+    + '.cr-legend{display:flex;flex-wrap:wrap;gap:6px 14px;margin:2px 0 8px;font-size:12px}'
+    + '.cr-mk{display:inline-flex;flex-direction:column;align-items:center;font-size:10.5px;line-height:1.2;gap:1px;min-width:34px}.cr-legend .cr-mk{flex-direction:row;gap:4px;font-size:12px}'
+    + '.cr-mk b{font-size:14px}.cr-mk-lead b{color:#B45309}.cr-mk-do b{color:#0F766E}.cr-mk-support b{color:#6B21A8}.cr-mk-approve b{color:#1D4ED8}.cr-mk-none{color:var(--muted)}.cr-mk-none b{color:#B8B1A7}'
+    + '.cr-mx-h{display:flex;gap:8px;align-items:center;margin:12px 0 6px}'
+    + '.cr-mx th:first-child,.cr-mx td:first-child{position:sticky;left:0;background:var(--surface);z-index:1;min-width:132px;max-width:200px}.cr-mx th:first-child{background:var(--surface2)}'
+    + '.cr-th{background:none;border:0;font:inherit;font-weight:700;color:var(--accent);cursor:pointer;min-height:32px;padding:0 2px;white-space:nowrap}'
+    + '.cr-org td{text-align:left}.cr-name{background:none;border:0;font:inherit;font-weight:700;color:var(--accent);cursor:pointer;text-align:left;padding:4px 0;min-height:36px}'
+    + '.cr-tag{display:inline-block;font-size:10.5px;border-radius:8px;padding:1px 7px;background:var(--surface2);color:var(--muted);white-space:nowrap}'
+    + '.cr-person{border:2px solid var(--accent);border-radius:12px;background:var(--surface);padding:10px 12px;margin-bottom:10px}'
+    + '.cr-foot{display:flex;flex-wrap:wrap;gap:6px;margin-top:14px;padding-top:10px;border-top:1px solid var(--border)}'
     + '</style>';
   function ids(k, list){
     return (list || []).map(function(id){ var n = itemName(k, id); return '<span class="cr-id" title="' + esc(n) + '">' + esc(id) + (n ? ' ' + esc(n) : '') + '</span>'; }).join('');
@@ -129322,52 +129374,203 @@ window.FUNERGY_ROLE_GUIDE = {"version":"ROLE_GUIDE_2026_Q4_V1","basedOn":"CAREER
         : '<div class="cr-warn">' + esc(T('役割の説明は会社が確認中です。評価の見方（項目・配点・基準点・最低条件）は今の Q4 のとおりです。',
             'The role descriptions are under company review. How evaluation works (items, weights, base score, minimum conditions) is the current Q4 system.')) + '</div>';
     }
-    if (isEn() && !enPublished() && !mgr()) h += '<div class="cr-warn">English translation under review. The role text is shown in Japanese until it is checked.</div>';
+    if (isEn() && published() && !enPublished() && !mgr()) h += '<div class="cr-warn">English translation under review. The role text is shown in Japanese until it is checked.</div>';
     return h;
   }
 
-  /* ---------------------------------------------------------------- 制度・役割ガイド */
-  function sysChips(){
-    return '<div class="cr-row"><span class="cr-note" style="width:44px">' + esc(T('系統', 'Track')) + '</span>' + SYS.map(function(k){
-      var s = sysR(k); return '<button type="button" class="cr-chip' + (S.sys === k ? ' on' : '') + '" onclick="crSet(\'sys\',\'' + k + '\')">' + esc(s ? (isEn() ? s.name.en : s.name.ja) : k) + '</button>';
-    }).join('') + '</div>';
+  /* ---------------------------------------------------------------- v1222：1 つの「キャリア・育成」（Moto さん 11/26） */
+  /* 前の 4 つ（制度・役割ガイド／育成計画・OJT／役割と責任マップ／候補者向け）を 1 つにまとめた。
+     最初の画面：あなたが見るところ（Q4 の評価表・育成計画）＋ キャリアマップ／役割・責任マトリクス／店舗別の組織マップ。
+     カードを押すと 1〜5 を一続きで：役割・仕事内容・責任範囲 → 評価項目・評価方法 → 次の段階の条件 → 習得するスキル・OJT → 育成計画・進捗。
+     ・数（基準点・配点・最低条件・Prep の段の条件）は Q4 のマスターだけ。役割の文は公開まで GM・CEO だけ（11/26 の答え「今までどおり全部隠す」）。
+     ・組織マップは従業員マスターと店舗マスターから出すだけ（ここで入力しない）。Q4 の評価表は採点できる人にだけ（cs4_roster・11/26 の答え）。
+       個人の評価・給与・連絡先は出さない。上司・報告先の欄は従業員データに無いので作らない（店舗マスターの管轄 AM・担当 Chef だけ）。
+     ・候補者向けは同じマスターを読むが、社内の名前・組織・個人の記録・育成計画は出さない。 */
+  var UI = {
+    /* v1222（Moto さん 11/26）：G＝アプリと同じオレンジ・Prep＝深緑・Chef＝黄色・経理＝紫。color は文字（白地で 4.5:1 以上）、line は帯の色 */
+    G:        { icon:'ti-building-store',  color:'#C2410C', line:'#F0661F', bg:'#FFF1E8', pre:['', ''],           title:['G（店舗・本部の運営）', 'G (store and HQ operations)'] },
+    S_CHEF:   { icon:'ti-chef-hat',        color:'#A16207', line:'#EAB308', bg:'#FEF8D7', pre:['Chef ', 'Chef '],  title:['Chef の S（S Chef）', 'Chef S track (S Chef)'] },
+    S_OFFICE: { icon:'ti-calculator',      color:'#7E22CE', line:'#9333EA', bg:'#F3E8FD', pre:['経理 ', 'Acct '],  title:['経理の S（S Office・経理・人事）', 'Accounting S track (S Office, Accounting, HR)'] },
+    PREP:     { icon:'ti-tools-kitchen-2', color:'#166534', line:'#15803D', bg:'#E7F4EC', pre:['', ''],           title:['Prep（段 P1〜P6）', 'Prep (steps P1–P6)'] }
+  };
+  var SHORT = { G:['G', 'G'], S_CHEF:['Chef S', 'Chef S'], S_OFFICE:['経理 S', 'Acct S'], PREP:['Prep', 'Prep'] };
+  /* v1222（Moto さん 11/26）：キャリアマップの職名と配属。Moto さんが決めた名前なので、役割の文（案）の公開を待たずに全員・候補者に出す。
+     ここに無い等級は今までどおり（職名は役割の文の公開まで GM・CEO だけ） */
+  var OFFICIAL = {
+    G: { G1:{ t:['Crew', 'Crew'] }, G4:{ t:['Store Manager', 'Store Manager'] },
+         G5:{ t:['Area Manager', 'Area Manager'], s:['複数店舗・管轄責任', 'Multi-store, area responsibility'] },
+         G6:{ t:['General Manager', 'General Manager'], s:['全社運営責任', 'Company-wide operations'] } }
+  };
+  var ASSIGN = { G:{ G1:'store', G2:'store', G3:'store', G4:'store', G5:'hq', G6:'hq' },
+    S_CHEF:{ S1:'store', S2:'store', S3:'hq', S4:'hq', S5:'hq', S6:'hq' },
+    S_OFFICE:{ S1:'hq', S2:'hq', S3:'hq', S4:'hq', S5:'hq', S6:'hq' },
+    PREP:{ P1:'store', P2:'store', P3:'store', P4:'store', P5:'store', P6:'store' } };
+  function official(k, g){ return OFFICIAL[k] && OFFICIAL[k][g] || null; }
+  function assignTag(k, g){
+    var a = ASSIGN[k] && ASSIGN[k][g]; if (!a) return '';
+    return '<span class="cr-asg cr-asg-' + a + '"><i class="ti ' + (a === 'hq' ? 'ti-building' : 'ti-building-store') + '" aria-hidden="true"></i> ' + esc(a === 'hq' ? T('本部配属', 'HQ-based') : T('店舗配属', 'Store-based')) + '</span>';
   }
-  function gradeBtns(){
-    var h = '<div class="cr-row"><span class="cr-note" style="width:44px">' + esc(T('等級', 'Grade')) + '</span>' + grades(S.sys).map(function(g){
-      return '<button type="button" class="cr-g' + (S.grade === g ? ' on' : '') + '" onclick="crSet(\'grade\',\'' + g + '\')">' + esc(g) + '</button>';
-    }).join('') + '<span class="cr-note">' + esc(T('選んでも、あなたの Grade・所属・権限は変わりません（読むだけ）', 'Choosing does not change your Grade, store or permissions (read only)')) + '</span></div>';
-    if (S.sys === 'G') {
-      var ts = typesOf(S.grade);
-      if (ts.length > 1) h += '<div class="cr-row"><span class="cr-note" style="width:44px">' + esc(T('担当型', 'Type')) + '</span>' + ts.map(function(ty){
-        return '<button type="button" class="cr-chip' + (S.type === ty ? ' on' : '') + '" onclick="crSet(\'type\',' + esc(JSON.stringify(ty)) + ')">' + esc(ty) + '</button>';
-      }).join('') + '</div>';
+  function lab(k, g){ var u = UI[k]; return u ? T(u.pre[0], u.pre[1]) + (g || '') : String(g || ''); }
+  function sysIcon(k, size){ var u = UI[k] || UI.G; return '<span class="cr-ic" style="background:' + u.bg + ';color:' + u.color + (size ? ';width:' + size + 'px;height:' + size + 'px;font-size:' + Math.round(size * 0.55) + 'px' : '') + '" aria-hidden="true"><i class="ti ' + u.icon + '"></i></span>'; }
+  function sysTitle(k){ var u = UI[k]; return u ? T(u.title[0], u.title[1]) : k; }
+  function payOf(step){ var P = sysM('PREP'); var a = (P && P.pay) || []; for (var i = 0; i < a.length; i++) if (a[i].step === step) return a[i]; return null; }
+  function prepCond(p){
+    if (!p) return '';
+    if (!Number(p.speedMin)) return T('P2 の条件にまだ届いていない段', 'Below the P2 conditions');
+    return T('速さ ', 'Speed ') + fmt(p.speedMin) + (p.speedInclusive ? T(' 以上', '+') : T(' 超', ' over')) + T('・習得範囲 ', ' · range ') + Math.round(Number(p.rangeMin) * 100) + T('% 以上', '%+');
+  }
+  function catsOn(k, g, ty){ var w = weightsOf(k, g, ty) || {}; return Object.keys(w).filter(function(c){ return Number(w[c]) > 0; }).sort(function(a, b){ return Number(w[b]) - Number(w[a]); }).map(function(c){ return { key:c, w:Number(w[c]) }; }); }
+  function topCats(k, g){
+    if (k === 'G' && typesOf(g).length > 1) return T('担当型で配点が変わる', 'Weights depend on the type');
+    return catsOn(k, g, '').slice(0, 2).map(function(c){ return catName(k, c.key) + ' ' + c.w; }).join('・');
+  }
+  function roleSub(k, g){ var o = official(k, g); return o && o.s ? T(o.s[0], o.s[1]) : ''; }
+  function roleName(k, g, cand){
+    var o = official(k, g); if (o) return T(o.t[0], o.t[1]);
+    var r = gradeR(k, g); if (!r || !r.position || !textOk() || (cand && !published())) return '';
+    var s = L(r.position), i = s.indexOf('：'); if (i > 0 && i < 30) return s.slice(0, i);
+    var j = s.indexOf('。'), x = j > 0 ? s.slice(0, j) : s;
+    if (x.length <= 40) return x;
+    var c = x.lastIndexOf('、', 40); return c > 8 ? x.slice(0, c) : x.slice(0, 40) + '…';   /* v1222：語の途中で切らない */
+  }
+  function oneLine(k, g, cand){
+    var r = gradeR(k, g);
+    if (textOk() && r && !(cand && !published())) return L(r.summary);   /* 候補者向けは公開した文だけ */
+    if (k === 'PREP') return prepCond(payOf(g));
+    return T('基準点 ', 'Base ') + baseOf(k, g) + T(' 点 · ', ' · ') + topCats(k, g);
+  }
+  function kv(label, body){ return '<div class="cr-kv"><div>' + esc(label) + '</div><div class="cr-p">' + body + '</div></div>'; }
+  function more(label, body){ return '<details class="cr-more"><summary>' + esc(label) + '</summary><div>' + body + '</div></details>'; }
+
+  /* ---------------------------------------------------------------- あなた（Q4 の評価表・従業員マスター・育成計画） */
+  var CR = { k:'', me:null, meErr:'', meLoading:false, asg:null, asgErr:'', asgLoading:false };
+  function crSync(){ var k = gpWho(); if (k !== CR.k) { CR.k = k; CR.me = null; CR.meErr = ''; CR.meLoading = false; CR.asg = null; CR.asgErr = ''; CR.asgLoading = false; } }
+  async function loadMe(){
+    crSync(); if (!CR.k || CR.meLoading || CR.me || CR.meErr) return;
+    CR.meLoading = true; var k = CR.k;
+    var r = await gpCall({ action:'cs4_me' });
+    if (k !== CR.k) return;
+    CR.meLoading = false;
+    if (r.ok && r.j && !r.j.nosql && !r.j.none) CR.me = r.j; else CR.meErr = (r.j && r.j.nosql) ? 'nosql' : (r.legacy ? 'legacy' : (r.error || 'net'));
+    paint();
+  }
+  /* 組織マップの Q4 の評価表：採点できる人の一覧（cs4_roster）に入っている人の分だけ（今の閲覧の範囲のまま） */
+  async function loadAsg(){
+    crSync(); if (!CR.k || CR.asgLoading || CR.asg || CR.asgErr || !allows('leadership')) return;
+    CR.asgLoading = true; var k = CR.k;
+    var r = await gpCall({ action:'cs4_roster' });
+    if (k !== CR.k) return;
+    CR.asgLoading = false;
+    if (r.ok && r.j && Array.isArray(r.j.rows)) { var m = {}; r.j.rows.forEach(function(x){ m[String(x.emp)] = x.assign || null; }); CR.asg = m; }
+    else CR.asgErr = 'none';
+    paint();
+  }
+  function meEmp(){
+    try{
+      if (storeLogin()) return null;
+      if (typeof loginPerson !== 'undefined' && loginPerson && loginPerson.id != null && loginPerson.id !== '') return loginPerson;
+      var n = typeof curUserName !== 'undefined' ? curUserName : '';
+      return n ? (people().filter(function(e){ return e.name === n; })[0] || null) : null;
+    }catch(e){ return null; }
+  }
+  function myAsg(){ return CR.me && CR.me.assign && CR.me.assign.system ? CR.me.assign : null; }
+  function isMine(k, g){ var a = myAsg(); return !!(a && a.system === k && (k === 'PREP' || a.grade === g)); }
+  function planCounts(pl, tasks){
+    var c = { all:0, waiting:0, retry:0, mastered:0 };
+    (tasks || []).forEach(function(t){ if (t.state === 'dropped') return; c.all++; if (c[t.state] !== undefined) c[t.state]++; });
+    return c;
+  }
+  function myPlanLine(){
+    if (GP.err) return '<span class="cr-note">' + esc(GP.err === 'legacy' || GP.err === 'nosql' ? T('サーバーの準備がまだです', 'The server is not ready yet') : T('読めませんでした', 'Could not load')) + '</span>';
+    if (!GP.loaded) return '<span class="cr-note">' + esc(T('読み込み中…', 'Loading…')) + '</span>';
+    var pl = GP.me && GP.me.plan;
+    if (!pl) return '<span class="cr-note">' + esc(T('まだありません（上司と作ります）', 'None yet (made with your manager)')) + '</span>';
+    var c = planCounts(pl, GP.me.tasks);
+    return '<b>' + esc(lab(pl.system, pl.grade || '')) + (pl.target_grade ? ' → ' + esc(lab(pl.system, pl.target_grade)) : '') + '</b> <span class="cr-note">' + esc(T('OJT ', 'OJT ')) + c.all + esc(T(' 件・確認待ち ', ' · waiting ')) + c.waiting + esc(T('・習得 ', ' · mastered ')) + c.mastered + '</span>';
+  }
+  function youCard(){
+    if (storeLogin()) return '<div class="cr-you"><div class="cr-p">' + esc(T('店の共有ログインです。キャリアの説明と組織マップは見られます。自分の育成計画は、自分の PIN でログインして見ます。', 'This is the shared store login. You can read the career guide and the organization map. Sign in with your own PIN to see your plan.')) + '</div></div>';
+    crSync(); gpSync();
+    if (CR.k && !CR.me && !CR.meErr && !CR.meLoading) setTimeout(loadMe, 0);
+    if (!GP.loaded && !GP.loading) setTimeout(function(){ gpLoad(false); }, 0);
+    var a = myAsg(), emp = meEmp(), h = '<div class="cr-you"><div class="cr-you-h"><i class="ti ti-user-check"></i> ' + esc(T('あなたが見るところ', 'Start here')) + '</div><div class="cr-you-grid">';
+    h += '<div class="cr-you-i"><div class="cr-note">' + esc(T('Q4 の評価表（あなたの系統・等級）', 'Your Q4 sheet (track and grade)')) + '</div>';
+    if (a) h += '<div class="cr-you-v">' + sysIcon(a.system, 26) + ' <b>' + esc(a.system === 'PREP' ? 'Prep' : lab(a.system, a.grade || '')) + '</b>' + (a.type ? ' <span class="cr-note">' + esc(a.type) + '</span>' : '') + '</div>'
+      + '<button type="button" class="btn btn-primary btn-sm cr-btn" onclick="crOpen(\'' + a.system + '\',\'' + esc(a.system === 'PREP' ? 'P1' : a.grade) + '\')">' + esc(T('自分のキャリアを見る', 'See my career')) + '</button>';
+    else if (!CR.k || CR.meLoading || (!CR.me && !CR.meErr)) h += '<div class="cr-note">' + esc(T('読み込み中…', 'Loading…')) + '</div>';
+    else if (CR.me) h += '<div class="cr-p">' + esc(T('まだ決まっていません（GM・CEO が決めます）', 'Not set yet (GM or CEO sets it)')) + '</div>';
+    else h += '<div class="cr-note">' + esc(T('読めませんでした（サーバーの準備がまだの場合があります）', 'Could not load (the server may not be ready)')) + '</div>';
+    h += '</div>';
+    if (emp) h += '<div class="cr-you-i"><div class="cr-note">' + esc(T('従業員マスターの Grade（肩書き）', 'Grade in the staff master (title)')) + '</div><div class="cr-you-v"><b>' + esc(empGradeOf(emp) || T('未設定', 'Not set')) + '</b> <span class="cr-note">' + esc(emp.title || '') + '</span></div></div>';
+    h += '<div class="cr-you-i"><div class="cr-note">' + esc(T('わたしの育成計画', 'My development plan')) + '</div><div class="cr-you-v">' + myPlanLine() + '</div>'
+      + '<button type="button" class="btn btn-secondary btn-sm cr-btn" onclick="crSet(\'view\',\'plan\')">' + esc(T('育成計画・OJT を開く', 'Open plan and OJT')) + '</button></div>';
+    var rows = (GP.roster && GP.roster.rows) || [];
+    if (rows.length) {
+      var wait = rows.reduce(function(s, r){ return s + (r.plan && r.plan.counts ? Number(r.plan.counts.waiting) || 0 : 0); }, 0);
+      h += '<div class="cr-you-i"><div class="cr-note">' + esc(T('担当する人の育成計画', 'Plans you handle')) + '</div><div class="cr-you-v"><b>' + rows.length + esc(T(' 人', ' people')) + '</b> <span class="cr-note">' + esc(T('確認待ち ', 'waiting ')) + wait + '</span></div>'
+        + '<button type="button" class="btn btn-secondary btn-sm cr-btn" onclick="crSet(\'view\',\'plan\')">' + esc(T('一覧を開く', 'Open the list')) + '</button></div>';
+    }
+    return h + '</div></div>';
+  }
+  function empGradeOf(e){ try{ return typeof empGrade === 'function' ? empGrade(e) : ''; }catch(x){ return ''; } }
+
+  /* ---------------------------------------------------------------- ① キャリアマップ */
+  function mapCard(k, g, cand){
+    var u = UI[k], rn = roleName(k, g, cand), mine = !cand && isMine(k, g) && k !== 'PREP';
+    return '<button type="button" class="cr-card' + (mine ? ' cr-mine' : '') + '" style="--c:' + u.color + ';--l:' + (u.line || u.color) + ';--b:' + u.bg + '" onclick="crOpen(\'' + k + '\',\'' + g + '\'' + (cand ? ',1' : '') + ')">'
+      + '<span class="cr-card-g">' + esc(lab(k, g)) + (mine ? ' <span class="cr-youb">' + esc(T('あなた', 'You')) + '</span>' : '') + '</span>'
+      + (rn ? '<span class="cr-card-t">' + esc(rn) + '</span>' : '') + (roleSub(k, g) ? '<span class="cr-card-s">' + esc(roleSub(k, g)) + '</span>' : '')
+      + '<span class="cr-card-d">' + esc(oneLine(k, g, cand)) + '</span><span class="cr-card-a">' + assignTag(k, g) + '</span></button>';
+  }
+  function laneNote(k){
+    if (k === 'PREP') return T('段は品質の確認・速さ・習得範囲で決まります（G・S の等級とは別）', 'Steps are set by quality checks, speed and range (separate from G and S grades)');
+    if (k === 'G') return T('G1 → G6（G7 は制度に入っていません）', 'G1 → G6 (no G7 in this system)');
+    return T('S1 → S6（G と同じ数字でも、同じ役職・権限ではありません）', 'S1 → S6 (the same number as a G grade is not the same role or authority)');
+  }
+  function lane(k, cand){
+    var gs = grades(k), a = !cand && myAsg(), mine = !!(a && a.system === k);
+    return '<section class="cr-lane"><div class="cr-lane-h">' + sysIcon(k) + '<div><b>' + esc(sysTitle(k)) + '</b>' + (mine ? ' <span class="cr-youb" style="--c:' + UI[k].color + '">' + esc(T('あなたの系統', 'Your track')) + '</span>' : '') + '<div class="cr-note">' + esc(laneNote(k)) + '</div></div></div>'
+      + '<div class="cr-track">' + gs.map(function(g, i){ return (i ? '<span class="cr-arrow" aria-hidden="true">›</span>' : '') + mapCard(k, g, cand); }).join('') + '</div></section>';
+  }
+  function careerMap(cand){
+    var h = '';
+    if (!textOk() || (cand && !published())) h += '<div class="cr-note" style="margin:0 0 8px">' + esc(T('役割の説明と一部の職名は会社が確認中です。カードには Q4 の評価の基準（基準点・重点の分野、Prep は段の条件）と配属を出しています。', 'Role descriptions and some role names are under company review. Cards show the Q4 basics (base score and main areas; for Prep, the step conditions) and where the role is based.')) + '</div>';
+    else if (!published()) h += '<div class="cr-row">' + draftBadge() + enBadge() + '</div>';
+    h += SYS.map(function(k){ return lane(k, cand); }).join('');
+    h += '<div class="cr-note" style="margin-top:4px">' + esc(T('矢印は同じ系統の中の段階です。系統をまたぐ移り方（G から S など）は制度で決まっていません。どの段階も、スコアだけで自動で上がることはありません。', 'Arrows are steps inside one track. Moving across tracks (e.g. G to S) is not defined. No step is reached by score alone.')) + '</div>';
+    return h;
+  }
+
+  /* ---------------------------------------------------------------- カードの中（1〜5 を一続きで） */
+  function step(n, id, title, sub, body, open){
+    return '<details class="cr-step" id="cr-s-' + id + '"' + (open ? ' open' : '') + '><summary><span class="cr-step-n">' + n + '</span><span><span class="cr-step-t">' + esc(title) + '</span>' + (sub ? '<span class="cr-step-s">' + esc(sub) + '</span>' : '') + '</span></summary><div class="cr-step-b">' + body + '</div></details>';
+  }
+  function masterTitles(k, g){
+    var h = '';
+    if (k === 'G') {
+      var ts = (typeof GRADE_TITLES !== 'undefined' && GRADE_TITLES[g]) ? GRADE_TITLES[g] : [];
+      h = kv(T('従業員マスターでこの Grade になる肩書き', 'Titles that map to this Grade in the staff master'), ts.length ? ts.map(function(x){ return '<span class="cr-id">' + esc(x) + '</span>'; }).join('') : esc(T('なし', 'None')))
+        + '<div class="cr-note">' + esc(T('肩書き→Grade の表はアプリの権限に使う表です。Head Chef・Accountant など Chef・経理の肩書きも G の数字で持っています。Q4 の評価表（Chef の S・経理の S）は人ごとに別に決めます。', 'The title → Grade table is used for app permissions. Chef and accounting titles such as Head Chef and Accountant also map to G numbers there. The Q4 sheet (Chef S, Accounting S) is set separately for each person.')) + '</div>';
+    } else if (k === 'PREP') {
+      h = '<div class="cr-note">' + esc(T('従業員マスターでは、Prep・Prep Specialist の肩書きは G1-P です。Q4 の評価表は Prep（等級なし）で、段（P1〜P6）は測定と認定で決まります。', 'In the staff master, Prep and Prep Specialist map to G1-P. The Q4 sheet is Prep (no grade); the step (P1–P6) is set by measurement and certification.')) + '</div>';
+    } else {
+      h = '<div class="cr-note">' + esc(T('S の等級は従業員マスターにはありません（肩書き→Grade の表は G の数字だけ）。Q4 の評価表で、GM・CEO が人ごとに決めます。', 'S grades are not in the staff master (its title → Grade table only has G numbers). GM or CEO sets them per person in the Q4 sheet.')) + '</div>';
     }
     return h;
   }
-  function roleCard(){
-    var g = gradeR(S.sys, S.grade); if (!g) return '';
-    var h = '<div class="card"><div class="card-title" style="flex-wrap:wrap;gap:8px">' + esc(S.grade) + (S.sys === 'G' && S.type ? ' · ' + esc(S.type) : '') + ' ' + (textOk() ? draftBadge() + enBadge() : '') + '</div>';
-    if (!textOk()) {
-      h += '<div class="cr-p">' + esc(T('役割の説明は会社が確認中です。', 'The role description is under company review.')) + '</div>';
-    } else {
-      if (g.position) h += '<div class="cr-sec">' + esc(T('等級の位置付け', 'Grade position')) + ' <span class="cr-note">(' + esc(T('Excel「', 'Excel "') + g.position.src + T('」', '"')) + ')</span></div><div class="cr-p">' + esc(L(g.position)) + '</div>';
-      h += '<div class="cr-sec">' + esc(T('役割の要約', 'Role summary')) + '</div><div class="cr-p">' + esc(L(g.summary)) + '</div>'
-        + '<div class="cr-sec">' + esc(T('担当範囲', 'Scope')) + '</div><div class="cr-p">' + esc(L(g.scope)) + '</div>'
-        + '<div class="cr-sec">' + esc(T('任せる仕事（関係する評価項目）', 'Work you are trusted with (related items)')) + '</div><ul class="cr-ul">'
-        + g.tasks.map(function(x){ return '<li>' + esc(L(x)) + '<div>' + ids(S.sys, x.items) + '</div></li>'; }).join('') + '</ul>'
-        + '<div class="cr-sec">' + esc(T('指導・育成', 'Coaching and development')) + '</div><div class="cr-p">' + esc(L(g.develop)) + '</div><div>' + ids(S.sys, g.develop.items) + '</div>';
+  function roleBody(k, g, cand){
+    var r = gradeR(k, g), h = '';
+    if (!r || !textOk() || (cand && !published())) h += '<div class="cr-p">' + esc(T('役割の説明は会社が確認中です。', 'The role description is under company review.')) + '</div>';
+    else {
+      if (!published()) h += '<div class="cr-row">' + draftBadge() + enBadge() + '</div>';
+      if (r.position) h += kv(T('等級の位置付け（制度資料）', 'Grade position (system document)'), esc(L(r.position)) + ' <span class="cr-note">(Excel「' + esc(r.position.src) + '」)</span>');
+      h += kv(T('何を任される立場か', 'What you are trusted with'), esc(L(r.summary)))
+        + kv(T('責任を持つ範囲', 'Scope of responsibility'), esc(L(r.scope)))
+        + kv(T('主な仕事', 'Main work'), '<ul class="cr-ul">' + (r.tasks || []).map(function(x){ return '<li>' + esc(L(x)) + (cand ? '' : '<div>' + ids(k, x.items) + '</div>') + '</li>'; }).join('') + '</ul>')
+        + kv(T('指導・育成', 'Coaching and development'), esc(L(r.develop)) + (cand ? '' : '<div>' + ids(k, (r.develop && r.develop.items) || []) + '</div>'));
+      if (!cand) h += kv(T('自分で判断できること／相談・承認が要ること', 'What you decide yourself / what needs approval'), '<span class="cr-note">' + esc(T('制度資料に書かれていません（未設定）。', 'Not written in the system documents (not set).')) + '</span>');
     }
-    h += '</div>';
-    h += '<div class="card"><div class="card-title">' + esc(g.next ? T('次の段階', 'Next stage') : T('次の段階', 'Next stage')) + '</div>';
-    if (!g.next) h += '<div class="cr-p">' + esc(S.sys === 'G' ? T('G6 がいちばん上の等級です（制度は G1〜G6）。', 'G6 is the top grade (the system is G1–G6).') : T('いちばん上の等級です。', 'This is the top grade.')) + '</div>';
-    else if (textOk()) h += '<div class="cr-p">' + esc(L(g.next)) + '</div>';
-    else h += '<div class="cr-p">' + esc(T('次の段階の条件の文は会社が確認中です。', 'The text for next-stage conditions is under company review.')) + '</div>';
-    if (g.next) {
-      h += '<div class="cr-note" style="margin-top:6px">' + esc(T('それぞれ別に確かめます', 'Each is checked separately')) + '</div><div class="cr-checks">'
-        + (R.nextChecks || []).map(function(c){ return '<div>' + esc(isEn() ? c.en : c.ja) + '</div>'; }).join('') + '</div>'
-        + '<div class="cr-note" style="margin-top:6px">' + esc(isEn() ? R.nextNote.en : R.nextNote.ja) + '</div>';
-    }
-    h += '</div>';
+    if (!cand) h += masterTitles(k, g);
     return h;
   }
   var STATE_DEF = [
@@ -129377,77 +129580,264 @@ window.FUNERGY_ROLE_GUIDE = {"version":"ROLE_GUIDE_2026_Q4_V1","basedOn":"CAREER
     ['非該当', 'Not applicable', '役割として当てはまらない（理由つき）', 'Does not apply to the role (with reason)'],
     ['会社都合の今回対象外', 'Excluded this period by the company', '上司が確かめ、この期間だけ外す（次の期間に続かない）', 'Checked by the manager, excluded for this period only']
   ];
-  function evalCard(){
-    var h = '<div class="card"><div class="card-title">' + esc(T('評価の見方（Q4 の Career Score と同じ）', 'How you are evaluated (same as Q4 Career Score)')) + '</div>';
-    if (S.sys === 'PREP') {
+  var WHO_WHEN = [
+    ['いつ：四半期ごと（2026 Q4 はハワイ時間の 10/1〜12/31）。', 'When: every quarter (2026 Q4 is Oct 1 – Dec 31, Hawaii time).'],
+    ['だれが：CEO・GM はだれでも。AM は担当の店の人。確かめた G4 以上は自分の店の下の等級の人。確かめた Head Chef はキッチンの下の等級の人。G3 は自分の店の G2 の人（確認依頼まで）。経理は事務Crew。', 'Who: CEO and GM can assess anyone; AMs, their stores; verified G4+ the lower grades in their store; a verified Head Chef the lower kitchen grades; G3 the G2s in their store (up to a check request); accounting, office crew.'],
+    ['確定と公開は CEO・GM。本人は点数を変えられず、共有された内容と公開済みを見て、「任されていないため見直しを希望」を出せます。', 'CEO or GM confirms and publishes. You cannot change scores; you see what is shared and published, and can ask for a review if you were not given the work.']
+  ];
+  var CALC = [
+    ['項目ごとに 0〜3 点。カテゴリーごとの平均を 3 で割って配点を掛け、合計を対象の配点で割って 100 点満点にします。', 'Each item is 0–3. Each category average is divided by 3 and multiplied by its weight; the sum is scaled to 100.'],
+    ['非該当（理由つき）は外します。G の「未担当」は 0 点で数えます。未評価が残るあいだは確定しません。', 'Not applicable (with a reason) is left out. "Not assigned" in G counts as 0. Nothing is confirmed while items are unevaluated.'],
+    ['基準点は丸める前の値で判定します。最低条件は総合点とは別に見ます。', 'The base score is judged before rounding. Minimum conditions are checked separately from the total.']
+  ];
+  function scaleList(){ var sc = M.scale || {}; return '<ul class="cr-ul">' + ['3', '2', '1', '0'].filter(function(x){ return sc[x]; }).map(function(x){ return '<li><b>' + x + T(' 点', '') + '</b> ' + esc(sc[x]) + '</li>'; }).join('') + '</ul>'; }
+  function itemsOf(k, cat){ var s = sysM(k); return ((s && s.items) || []).filter(function(i){ return i.cat === cat; }); }
+  function itemList(arr){
+    return '<ul class="cr-items">' + arr.map(function(i){ return '<li><b>' + esc(i.id) + '</b> ' + esc(i.name) + (i.desc ? '<div class="cr-note">' + esc(i.desc) + '</div>' : '') + '</li>'; }).join('') + '</ul>';
+  }
+  function typeChips(k, g){
+    if (k !== 'G') return '';
+    var ts = typesOf(g), ma = isMine(k, g) ? myAsg() : null, mineTy = ma ? ma.type : '';
+    if (ts.length < 2) return ts.length ? '<div class="cr-note">' + esc(T('担当型：', 'Type: ') + ts[0]) + '</div>' : '';
+    return '<div class="cr-row"><span class="cr-note">' + esc(T('担当型', 'Type')) + '</span>' + ts.map(function(ty){ return '<button type="button" class="cr-chip' + (S.type === ty ? ' on' : '') + '" onclick="crSet(\'type\',' + esc(JSON.stringify(ty)) + ')">' + esc(ty) + (mineTy === ty ? ' · ' + esc(T('あなた', 'you')) : '') + '</button>'; }).join('') + '</div>';
+  }
+  function prepEval(cand){
+    var P = sysM('PREP'), h = '';
+    h += kv(T('今のアプリの決まり（Q4 のマスター）', 'Current app rules (Q4 master)'), esc(T('品質の確認（Q1〜Q3）がすべてクリアのうえで、速さと習得範囲で段（P1〜P6）を決めます。行動の確認（理念など）のスコアは段の決め方に掛けません。', 'Once all quality checks (Q1–Q3) are clear, the step (P1–P6) is set by speed and range. The behavior check score is not used to set the step.')))
+      + '<div class="cr-scroll"><table class="cr-tbl"><tr><th>' + esc(T('段', 'Step')) + '</th><th>' + esc(T('速さ', 'Speed')) + '</th><th>' + esc(T('習得範囲', 'Range')) + '</th></tr>'
+      + (P.pay || []).map(function(p){
+        var sp = Number(p.speedMin) ? (fmt(p.speedMin) + (p.speedInclusive ? T(' 以上', '+') : T(' 超', ' over'))) : '—';
+        var rg = Number(p.rangeMin) ? (Math.round(Number(p.rangeMin) * 100) + T('% 以上', '%+')) : '—';
+        return '<tr' + (p.step === S.grade ? ' style="font-weight:700"' : '') + '><td>' + esc(p.step) + '</td><td>' + esc(sp) + '</td><td>' + esc(rg) + '</td></tr>';
+      }).join('') + '</table></div>'
+      + kv(T('品質の確認（どれか 1 つでも未達なら段は上がりません）', 'Quality checks (all must be clear)'), (P.quality || []).map(function(q){ return '<div><b>' + esc(q.id) + '</b> ' + esc(q.name) + (cand ? '' : '<div class="cr-note">' + esc(q.desc || '') + '</div>') + '</div>'; }).join(''))
+      + kv(T('速さ・習得範囲の測り方（今のマスターの文）', 'How speed and range are measured (current master)'), '<span class="cr-note">' + esc(P.payNotes ? P.payNotes.speed : '') + '<br>' + esc(P.payNotes ? P.payNotes.range : '') + '</span>');
+    h += '<div class="cr-rev"><div class="cr-rev-h"><i class="ti ti-pencil-cog"></i> ' + esc(T('改定の方針（まだアプリに入っていません）', 'Planned revision (not in the app yet)')) + '</div><ul class="cr-ul">'
+      + [['習得範囲：判断基準つきの 5 段階から選ぶ。', 'Range: choose one of 5 levels with set criteria.'],
+         ['スピード：店舗・カテゴリーごとに決めた作業コースの標準時間と、実際にかかった時間で確かめる。', 'Speed: checked against the standard time of work courses set per store and category, compared with the actual time.'],
+         ['「別日に 3 回測って最低値を使う」今の決まりはやめる方針。', 'The current "measure 3 times on different days and use the lowest" rule is to be dropped.'],
+         ['査定は 3 か月ごと。', 'Reviews every 3 months.']].map(function(x){ return '<li>' + esc(T(x[0], x[1])) + '</li>'; }).join('')
+      + '</ul><div class="cr-note">' + esc(T('アプリが変わるまでは、上の「今のアプリの決まり」で動きます。習得範囲が広いこと（任せられる作業が多い）と、作業が速いことは別々の評価です。', 'Until the app changes, the current rules above apply. A wide range (many tasks you can do) and being fast are separate evaluations.')) + '</div></div>';
+    if (!cand) h += more(T('行動の確認（' + (P.items || []).length + ' 項目）', 'Behavior check (' + (P.items || []).length + ' items)'), itemList(P.items || []));
+    return h;
+  }
+  function evalBody(k, g, cand){
+    if (k === 'PREP') return prepEval(cand) + '<div class="cr-warn" style="margin-top:8px">' + esc(isEn() ? R.separateRules.en : R.separateRules.ja) + '</div>' + (cand ? '' : evalLinks());
+    var b = baseOf(k, g), cs = catsOn(k, g, S.type), h = typeChips(k, g);
+    h += '<div class="cr-big"><span>' + esc(T('基準点', 'Base score')) + '</span><b>' + esc(b == null ? '—' : b) + '</b><span>' + esc(T('点（100 点満点・丸める前の値で判定）', 'points (out of 100, judged before rounding)')) + '</span></div>'
+      + kv(T('評価のカテゴリーと配点（合計 100）', 'Categories and weights (total 100)'), '<div class="cr-w">' + cs.map(function(c){ return '<div>' + esc(catName(k, c.key)) + ' <b>' + esc(c.w) + '</b></div>'; }).join('') + '</div>')
+      + kv(T('点のつけ方（項目ごとに 0〜3 点）', 'How items are scored (0–3 each)'), scaleList())
+      + kv(T('最低条件（総合点とは別）', 'Minimum conditions (separate from the total)'), '<ul class="cr-ul">' + minimumLines(k, g, S.type).map(function(x){ return '<li>' + esc(x) + '</li>'; }).join('') + '</ul>');
+    if (cand) return h;
+    h += more(T('評価の根拠になる項目（確認の要点・例）', 'Items and what counts as evidence'), cs.map(function(c){ var its = itemsOf(k, c.key); return its.length ? '<div class="cr-sec">' + esc(catName(k, c.key)) + ' <span class="cr-note">' + its.length + T(' 項目', ' items') + '</span></div>' + itemList(its) : ''; }).join(''))
+      + more(T('だれが・いつ評価するか（今のアプリの決まり）', 'Who assesses and when (current app rules)'), '<ul class="cr-ul">' + WHO_WHEN.map(function(x){ return '<li>' + esc(T(x[0], x[1])) + '</li>'; }).join('') + '</ul>')
+      + more(T('計算のしかた・総合点への反映', 'How the total is calculated'), '<ul class="cr-ul">' + CALC.map(function(x){ return '<li>' + esc(T(x[0], x[1])) + '</li>'; }).join('') + '</ul>'
+        + '<div class="cr-sec">' + esc(T('点数の状態の違い', 'Score states')) + '</div><div class="cr-p">' + STATE_DEF.filter(function(d){ return k === 'G' || d[0] !== '未担当（G だけ）'; }).map(function(d){ return '<b>' + esc(isEn() ? d[1] : d[0]) + '</b> ' + esc(isEn() ? d[3] : d[2]); }).join('<br>') + '</div>');
+    if (textOk() && (R.notes || []).length) h += more(T('評価と昇格の考え方（制度資料）', 'How evaluation and promotion work (system document)'), '<ul class="cr-ul">' + R.notes.map(function(n){ return '<li>' + esc(L(n)) + ' <span class="cr-note">(' + esc(n.src) + ')</span></li>'; }).join('') + '</ul>');
+    return h + '<div class="cr-warn" style="margin-top:8px">' + esc(isEn() ? R.separateRules.en : R.separateRules.ja) + '</div>' + evalLinks();
+  }
+  function evalLinks(){ return '<div class="cr-row" style="margin-top:8px">' + (allows('leadership') ? goBtn('leadership', 'Career Score（評価の画面）を開く', 'Open Career Score') : goBtn('mypage', 'マイページで自分の評価を見る', 'See your evaluation on My page')) + '</div>'; }
+  function nextOf(k, g){ var gs = grades(k), i = gs.indexOf(g); return i >= 0 && i < gs.length - 1 ? gs[i + 1] : ''; }
+  function nextBody(k, g, cand){
+    var r = gradeR(k, g), nx = nextOf(k, g), h = '';
+    if (!nx) return '<div class="cr-p">' + esc(k === 'G' ? T('G6 がいちばん上の等級です（制度は G1〜G6）。', 'G6 is the top grade (the system is G1–G6).') : k === 'PREP' ? T('P6 がいちばん上の段です。', 'P6 is the top step.') : T('S6 がいちばん上の等級です。', 'S6 is the top grade.')) + '</div>';
+    h += '<div class="cr-next"><span>' + esc(lab(k, g)) + '</span><i class="ti ti-arrow-right"></i><b>' + esc(lab(k, nx)) + '</b></div>';
+    if (k === 'PREP') {
+      h += kv(T('次の段の条件（今のマスター）', 'Next step conditions (current master)'), esc(prepCond(payOf(nx))) + esc(T('・品質の確認 Q1〜Q3 がすべてクリア', ' · all quality checks Q1–Q3 clear')))
+        + '<div class="cr-note">' + esc(T('表の判定が今より低くても、自動では下げません（今のまま・確認）。Prep の段は昇格の申請とは別の決まりです。', 'If the table gives a lower step, it is not lowered automatically (kept, then checked). Prep steps follow their own rules, not the promotion request.')) + '</div>';
+      return h;
+    }
+    if (r && r.next && textOk() && !(cand && !published())) h += kv(T('次の段階で増える仕事と責任', 'What grows at the next step'), esc(L(r.next)) + (published() ? '' : ' ' + draftBadge()));
+    else h += kv(T('次の段階で増える仕事と責任', 'What grows at the next step'), '<span class="cr-note">' + esc(T('文は会社が確認中です。', 'Text under company review.')) + '</span>');
+    var b0 = baseOf(k, g), b1 = baseOf(k, nx), w0 = weightsOf(k, g, S.type) || {}, w1 = weightsOf(k, nx, '') || {};
+    h += kv(T('基準点と配点の変わり方（Q4 のマスター）', 'How the base score and weights change (Q4 master)'), '<div class="cr-note">' + esc(T('基準点 ', 'Base ')) + b0 + ' → <b>' + b1 + '</b>' + (k === 'G' && typesOf(nx).length > 1 ? esc(T('（次の等級の配点は担当型ごと。下は「' + typesOf(nx)[0] + '」）', ' (next-grade weights depend on the type; shown: "' + typesOf(nx)[0] + '")')) : '') + '</div><div class="cr-w">'
+      + Object.keys(w1).filter(function(c){ return Number(w1[c]) > 0 || Number(w0[c]) > 0; }).map(function(c){ var a = Number(w0[c]) || 0, z = Number(w1[c]) || 0; return '<div>' + esc(catName(k, c)) + ' ' + a + ' → <b>' + z + '</b>' + (z > a ? ' <span class="cr-up" title="' + esc(T('増える', 'up')) + '">▲</span>' : z < a ? ' <span class="cr-down" title="' + esc(T('減る', 'down')) + '">▼</span>' : '') + '</div>'; }).join('') + '</div>');
+    h += kv(T('次の段階に進むための確かめ（それぞれ別に）', 'Checks for the next step (each separately)'), '<div class="cr-checks">' + (R.nextChecks || []).map(function(c){ return '<div>' + esc(isEn() ? c.en : c.ja) + '</div>'; }).join('') + '</div><div class="cr-note" style="margin-top:6px">' + esc(isEn() ? R.nextNote.en : R.nextNote.ja) + '</div>');
+    return h;
+  }
+  function examples(k, g){
+    var cs = k === 'PREP' ? [] : catsOn(k, g, S.type).filter(function(c){ return c.key !== 'PHILO'; });
+    var src = k === 'PREP' ? (sysM('PREP').items || []) : [].concat.apply([], cs.map(function(c){ return itemsOf(k, c.key); }));
+    var out = [];
+    src.forEach(function(i){ var m = String(i.desc || '').match(/例：([^\n]+)/); if (m && out.length < 5) out.push({ id:i.id, ex:m[1] }); });
+    return out;
+  }
+  function skillBody(k, g){
+    var h = '';
+    if (k === 'PREP') {
       var P = sysM('PREP');
-      h += '<div class="cr-p">' + esc(T('Prep は、品質の確認（Q1〜Q3）がすべてクリアのうえで、作業の速さと習得範囲で段（P1〜P6）を決めます。', 'For Prep, once all quality checks (Q1–Q3) are clear, the step (P1–P6) is set by speed and range.')) + '</div>'
-        + '<div class="cr-scroll"><table class="cr-tbl" style="margin-top:6px"><tr><th>' + esc(T('段', 'Step')) + '</th><th>' + esc(T('速さ', 'Speed')) + '</th><th>' + esc(T('習得範囲', 'Range')) + '</th></tr>'
-        + (P.pay || []).map(function(p){
-          var sp = Number(p.speedMin) ? (fmt(p.speedMin) + (p.speedInclusive ? T(' 以上', ' or more') : T(' 超', ' over'))) : '—';
-          var rg = Number(p.rangeMin) ? (Math.round(Number(p.rangeMin) * 100) + T('% 以上', '% or more')) : '—';
-          return '<tr' + (p.step === S.grade ? ' style="font-weight:700"' : '') + '><td>' + esc(p.step) + '</td><td>' + esc(sp) + '</td><td>' + esc(rg) + '</td></tr>';
-        }).join('') + '</table></div>'
-        + '<div class="cr-sec">' + esc(T('品質の確認', 'Quality checks')) + '</div><div class="cr-p">' + (P.quality || []).map(function(q){ return esc(q.id + ' ' + q.name); }).join('　') + '</div>'
-        + '<div class="cr-note" style="margin-top:6px">' + esc(P.payNotes ? (P.payNotes.speed + ' ' + P.payNotes.range) : '') + '</div>';
+      h += kv(T('身につけること（今のマスター）', 'What to learn (current master)'), esc(T('品質の確認 Q1〜Q3・行動の確認 ' + (P.items || []).length + ' 項目・店で必要な作業（習得範囲）と速さ。', 'Quality checks Q1–Q3, the ' + (P.items || []).length + '-item behavior check, the store\'s tasks (range) and speed.')));
     } else {
-      var b = baseOf(S.sys, S.grade), w = weightsOf(S.sys, S.grade, S.type) || {};
-      h += '<div class="cr-p">' + esc(T('基準点', 'Base score')) + ' <b style="font-size:22px">' + esc(b == null ? '—' : b) + '</b> ' + esc(T('点 · 総合点は丸める前の値で判定', 'points · the total is judged before rounding')) + '</div>'
-        + '<div class="cr-sec">' + esc(T('カテゴリーの配点（合計 100）', 'Category weights (total 100)')) + '</div><div class="cr-w">'
-        + Object.keys(w).filter(function(c){ return Number(w[c]) > 0; }).map(function(c){ return '<div>' + esc(catName(S.sys, c)) + ' <b>' + esc(w[c]) + '</b></div>'; }).join('') + '</div>'
-        + '<div class="cr-sec">' + esc(T('最低条件（総合点とは別）', 'Minimum conditions (separate from the total)')) + '</div><ul class="cr-ul">'
-        + minimumLines(S.sys, S.grade, S.type).map(function(x){ return '<li>' + esc(x) + '</li>'; }).join('') + '</ul>';
+      var cs = catsOn(k, g, S.type);
+      h += kv(T('この等級で評価される項目', 'Items evaluated at this grade'), '<div class="cr-w">' + cs.map(function(c){ return '<div>' + esc(catName(k, c.key)) + ' <b>' + itemsOf(k, c.key).length + '</b>' + esc(T(' 項目', '')) + '</div>'; }).join('') + '</div>');
     }
-    h += '</div><div class="card"><div class="card-title">' + esc(T('点数の状態の違い', 'Score states')) + '</div><div class="cr-p">'
-      + STATE_DEF.filter(function(d){ return S.sys === 'G' || d[0] !== '未担当（G だけ）'; }).map(function(d){ return '<b>' + esc(isEn() ? d[1] : d[0]) + '</b> ' + esc(isEn() ? d[3] : d[2]); }).join('<br>') + '</div></div>'
-      + (textOk() && (R.notes || []).length ? '<div class="card"><div class="card-title">' + esc(T('評価と昇格の考え方', 'How evaluation and promotion work')) + '</div><ul class="cr-ul">' + R.notes.map(function(n){ return '<li>' + esc(L(n)) + ' <span class="cr-note">(' + esc(n.src) + ')</span></li>'; }).join('') + '</ul></div>' : '')
-      + '<div class="cr-warn">' + esc(isEn() ? R.separateRules.en : R.separateRules.ja) + '</div>';
+    var ex = examples(k, g);
+    if (ex.length) h += kv(T('現場で取り組める行動の例（制度資料の「例」）', 'Examples you can try at work (from the system document)'), '<ul class="cr-ul">' + ex.map(function(x){ return '<li>' + esc(x.ex) + ' <span class="cr-note">' + esc(x.id) + '</span></li>'; }).join('') + '</ul><div class="cr-note">' + esc(T('例です。新しい必須条件ではありません。評価は上の項目と基準で決まります。', 'These are examples, not new requirements. Evaluation follows the items and standards above.')) + '</div>');
+    h += kv(T('OJT', 'OJT'), esc(T('OJT は上司が育成計画の中で、この評価項目に結んで作ります（全部の項目を OJT にする必要はありません）。OJT を終えても、点数・Grade・時給・Tip Rate は自動では変わりません。', 'Your manager creates OJT inside your development plan, linked to these items (not every item needs one). Finishing OJT does not change scores, Grade, wage or Tip Rate automatically.')));
+    if (!storeLogin()) h += '<div class="cr-row"><button type="button" class="btn btn-secondary cr-btn" onclick="crSet(\'view\',\'plan\')">' + esc(T('育成計画・OJT を開く', 'Open plan and OJT')) + '</button></div>';
     return h;
   }
-  function gradeView(){ return sysChips() + gradeBtns() + '<div class="cr-cols"><div>' + roleCard() + '</div><div>' + evalCard() + '</div></div>'; }
+  function planBody(k, g){
+    if (storeLogin()) return '<div class="cr-p">' + esc(T('店の共有ログインでは個人の計画は出しません。自分の PIN でログインして見ます。', 'Personal plans are not shown on the shared store login. Sign in with your own PIN.')) + '</div>';
+    gpSync(); if (!GP.loaded && !GP.loading) setTimeout(function(){ gpLoad(false); }, 0);
+    var h = kv(T('わたしの育成計画', 'My development plan'), myPlanLine());
+    var pl = GP.me && GP.me.plan;
+    if (pl && (pl.system !== k || (k !== 'PREP' && pl.grade !== g))) h += '<div class="cr-note">' + esc(T('（あなたの計画は ' + lab(pl.system, pl.grade || '') + ' のものです）', '(Your plan is for ' + lab(pl.system, pl.grade || '') + ')')) + '</div>';
+    var rows = ((GP.roster && GP.roster.rows) || []).filter(function(r){ return r.plan && r.plan.system === k && (k === 'PREP' || r.plan.grade === g); });
+    if (rows.length) h += kv(T('あなたが担当する、この等級の人', 'People you handle at this grade'), rows.map(function(r){ var c = r.plan.counts || {}; return '<div class="cr-prow"><b>' + esc(r.name) + '</b> <span class="cr-note">' + esc(r.store || '') + ' · ' + esc(T('確認待ち ', 'waiting ')) + (c.waiting || 0) + esc(T('・習得 ', ' · mastered ')) + (c.mastered || 0) + '</span> <button type="button" class="btn btn-secondary btn-sm" onclick="crPlanOf(' + esc(JSON.stringify(r.emp)) + ')">' + esc(T('開く', 'Open')) + '</button></div>'; }).join(''));
+    return h + '<div class="cr-row"><button type="button" class="btn btn-primary cr-btn" onclick="crSet(\'view\',\'plan\')">' + esc(T('育成計画・OJT を開く', 'Open plan and OJT')) + '</button></div>';
+  }
+  function backBtn(to, label){ return '<button type="button" class="cr-back" onclick="crSet(\'view\',\'' + to + '\')"><i class="ti ti-arrow-left"></i> ' + esc(label) + '</button>'; }
+  function detailView(cand){
+    var k = S.sys, g = S.grade, u = UI[k], gs = grades(k), i = gs.indexOf(g), rn = roleName(k, g, cand);
+    var back = cand ? backBtn('cand', T('キャリアの一覧', 'All careers')) : backBtn(S.from || 'map', { map:T('キャリアマップ', 'Career map'), matrix:T('役割・責任マトリクス', 'Responsibility matrix'), org:T('組織マップ', 'Organization map') }[S.from || 'map'] || T('キャリアマップ', 'Career map'));
+    var h = '<div class="cr-dhead" style="--c:' + u.color + ';--l:' + (u.line || u.color) + ';--b:' + u.bg + '">' + back
+      + '<div class="cr-dtitle">' + sysIcon(k, 44) + '<div><div class="cr-dg">' + esc(lab(k, g)) + (!cand && isMine(k, g) && k !== 'PREP' ? ' <span class="cr-youb">' + esc(T('あなた', 'You')) + '</span>' : '') + '</div><div class="cr-note">' + esc(sysTitle(k)) + (rn ? ' · ' + esc(rn) : '') + (roleSub(k, g) ? ' · ' + esc(roleSub(k, g)) : '') + '</div><div style="margin-top:3px">' + assignTag(k, g) + '</div></div></div>'
+      + '<div class="cr-row cr-pn">' + (i > 0 ? '<button type="button" class="cr-chip" onclick="crSet(\'grade\',\'' + gs[i - 1] + '\')">‹ ' + esc(lab(k, gs[i - 1])) + '</button>' : '') + (i < gs.length - 1 ? '<button type="button" class="cr-chip" onclick="crSet(\'grade\',\'' + gs[i + 1] + '\')">' + esc(lab(k, gs[i + 1])) + ' ›</button>' : '') + '</div></div>';
+    h += step(1, 'role', T('役割・仕事内容・責任範囲', 'Role, work and scope'), textOk() && !(cand && !published()) ? oneLine(k, g) : T('会社が確認中', 'Under company review'), roleBody(k, g, cand), true)
+      + step(2, 'eval', T('評価項目・評価方法', 'What is evaluated and how'), k === 'PREP' ? T('品質の確認・速さ・習得範囲', 'Quality, speed and range') : T('基準点 ', 'Base ') + baseOf(k, g) + T(' 点 · ', ' · ') + topCats(k, g), evalBody(k, g, cand), false)
+      + step(3, 'next', T('次のキャリアへの成長条件', 'Conditions for the next step'), nextOf(k, g) ? lab(k, g) + ' → ' + lab(k, nextOf(k, g)) : T('いちばん上', 'Top'), nextBody(k, g, cand), false);
+    if (!cand) h += step(4, 'skill', T('習得するスキル・OJT 項目', 'Skills and OJT items'), T('評価項目・行動の例・OJT', 'Items, examples, OJT'), skillBody(k, g), false)
+      + step(5, 'plan', T('育成計画・現在の進捗', 'Development plan and progress'), storeLogin() ? '' : T('あなたの計画・担当する人', 'Your plan and people you handle'), planBody(k, g), false);
+    else h += '<div class="cr-warn">' + esc(T('この画面に個人の評価や記録、社内の名前は出しません。', 'This screen shows no individual evaluations, records or staff names.')) + '</div>';
+    return h;
+  }
 
-  /* ---------------------------------------------------------------- 役割と責任マップ（業務の分担） */
+  /* ---------------------------------------------------------------- ② 役割・責任マトリクス（業務 × 等級。役割の文と同じマスター） */
+  var MX_CATS = [
+    ['daily', ['日常業務', 'Daily work'], { G:['店舗運営', 'サービス', 'キッチン', '衛生・安全'] }],
+    ['people', ['スタッフ育成', 'Developing staff'], { G:['人材育成'], S_CHEF:['指導・育成'], S_OFFICE:['指導・育成'] }],
+    ['store', ['店舗運営・管理', 'Running stores'], { G:['マネジメント', 'マーケティング', '管轄・全社'] }],
+    ['numbers', ['数値管理', 'Numbers'], { G:['数字', '在庫・原価'], S_CHEF:['在庫・原価'] }],
+    ['acct', ['経理業務', 'Accounting work'], { S_OFFICE:['専門実務', '品質・管理', '効率・改善'] }],
+    ['kitchen', ['調理・品質管理', 'Cooking and quality'], { S_CHEF:['技術', '品質', '衛生', '効率', '商品'] }],
+    ['prep', ['仕込み', 'Prep work'], { PREP:['品質', '衛生', '協力'] }]
+  ];
   function markOf(key){ var a = R.marks || []; for (var i = 0; i < a.length; i++) if (a[i].key === key) return a[i]; return null; }
-  function mapView(){
-    var k = S.sys, s = sysR(k), gs = grades(k);
-    var h = sysChips();
-    h += '<div class="card"><div class="card-title" style="flex-wrap:wrap;gap:8px">' + esc(T('役割と責任マップ', 'Roles and responsibilities map')) + ' · ' + esc(isEn() ? s.name.en : s.name.ja) + ' ' + (textOk() ? draftBadge() + enBadge() : '') + '</div>'
-      + '<div class="cr-scroll"><table class="cr-tbl"><tr><th></th>' + gs.map(function(g){ return '<th>' + esc(g) + '</th>'; }).join('') + '</tr>';
-    if (k === 'G') h += '<tr><td>' + esc(T('担当型', 'Type')) + '</td>' + gs.map(function(g){ return '<td>' + esc(typesOf(g).join(' / ')) + '</td>'; }).join('') + '</tr>';
-    if (k !== 'PREP') h += '<tr><td>' + esc(T('基準点', 'Base score')) + '</td>' + gs.map(function(g){ return '<td>' + esc(baseOf(k, g)) + '</td>'; }).join('') + '</tr>';
-    h += '<tr><td>' + esc(T('担当範囲', 'Scope')) + '</td>' + gs.map(function(g){ var r = gradeR(k, g); return '<td>' + esc(textOk() && r ? L(r.scope) : T('確認中', 'Under review')) + '</td>'; }).join('') + '</tr>';
-    if (k !== 'PREP') {
-      var dev = k === 'G' ? 'DEVELOP' : 'TEACH';
-      h += '<tr><td>' + esc(T('指導・育成の配点', 'Coaching weight')) + '</td>' + gs.map(function(g){ var w = weightsOf(k, g, '') || {}; return '<td>' + esc(w[dev] == null ? '—' : w[dev]) + '</td>'; }).join('') + '</tr>';
-    } else {
-      h += '<tr><td>' + esc(T('速さ・習得範囲', 'Speed / range')) + '</td>' + (sysM('PREP').pay || []).map(function(p){ return '<td>' + esc(Number(p.speedMin) ? fmt(p.speedMin) + ' · ' + Math.round(Number(p.rangeMin) * 100) + '%' : '—') + '</td>'; }).join('') + '</tr>';
-    }
-    h += '</table></div></div>';
-    h += '<div class="card"><div class="card-title" style="flex-wrap:wrap;gap:8px">' + esc(T('業務の分担', 'Who does what')) + ' ' + (textOk() ? draftBadge() + enBadge() : '') + '</div>';
-    if (!textOk()) return h + '<div class="cr-p">' + esc(T('業務の分担は会社が確認中です。', 'The split of work is under company review.')) + '</div></div>';
-    h += '<div class="cr-note" style="margin-bottom:6px">' + (R.marks || []).map(function(m){ return '<b>' + esc(m.sym) + '</b> ' + esc(isEn() ? m.en : m.ja); }).join('　') + '　' + esc(T('空欄＝その等級の仕事ではない', 'Blank = not that grade\'s work')) + '</div>'
-      + '<div class="cr-scroll"><table class="cr-tbl"><tr><th>' + esc(T('業務', 'Work')) + '</th>' + gs.map(function(g){ return '<th>' + esc(g) + '</th>'; }).join('') + '</tr>'
-      + (s.duties || []).map(function(d){
-        return '<tr><td><div class="cr-note">' + esc(L(d.area)) + '</div><b>' + esc(L(d.duty)) + '</b>' + (d.note ? '<div class="cr-note">' + esc(L(d.note)) + '</div>' : '') + '<div>' + ids(k, d.items) + '</div></td>'
-          + gs.map(function(g){ var m = d.marks && d.marks[g] ? markOf(d.marks[g]) : null; return '<td title="' + esc(m ? (isEn() ? m.en : m.ja) : '') + '">' + esc(m ? m.sym : '') + '</td>'; }).join('') + '</tr>';
-      }).join('') + '</table></div></div>';
+  var MK_SHORT = { lead:['責任', 'Owns'], 'do':['担当', 'Does'], support:['確認', 'Checks'], approve:['承認', 'Approves'] };
+  function mxCat(){ for (var i = 0; i < MX_CATS.length; i++) if (MX_CATS[i][0] === S.cat) return MX_CATS[i]; return null; }
+  function mxRows(k){
+    var s = sysR(k), c = mxCat(); if (!s) return [];
+    if (S.cat === 'all') return s.duties || [];
+    if (S.cat === 'other') { var known = {}; MX_CATS.forEach(function(x){ (x[2][k] || []).forEach(function(a){ known[a] = 1; }); }); return (s.duties || []).filter(function(d){ return !known[d.area.ja]; }); }
+    var areas = c && c[2][k]; if (!areas) return [];
+    return (s.duties || []).filter(function(d){ return areas.indexOf(d.area.ja) >= 0; });
+  }
+  function mxHasOther(){ return SYS.some(function(k){ var keep = S.cat; S.cat = 'other'; var n = mxRows(k).length; S.cat = keep; return n > 0; }); }
+  function mxTable(k){
+    var rows = mxRows(k), gs = grades(k); if (!rows.length) return '';
+    return '<div class="cr-mx-h">' + sysIcon(k, 24) + ' <b>' + esc(sysTitle(k)) + '</b></div><div class="cr-scroll"><table class="cr-tbl cr-mx"><tr><th>' + esc(T('業務', 'Work')) + '</th>' + gs.map(function(g){ return '<th><button type="button" class="cr-th" onclick="crOpen(\'' + k + '\',\'' + g + '\')">' + esc(lab(k, g)) + '</button></th>'; }).join('') + '</tr>'
+      + rows.map(function(d){
+        return '<tr><td><div class="cr-note">' + esc(L(d.area)) + '</div><b>' + esc(L(d.duty)) + '</b>' + (d.note ? '<div class="cr-note">' + esc(L(d.note)) + '</div>' : '') + '<div>' + ids(k, d.items) + '</div></td>' + gs.map(function(g){
+          var key = d.marks && d.marks[g], m = key ? markOf(key) : null;
+          return m ? '<td><span class="cr-mk cr-mk-' + key + '" title="' + esc(isEn() ? m.en : m.ja) + '"><b>' + esc(m.sym) + '</b>' + esc(T(MK_SHORT[key][0], MK_SHORT[key][1])) + '</span></td>' : '<td><span class="cr-mk cr-mk-none" title="' + esc(T('対象外', 'Not in scope')) + '"><b>—</b>' + esc(T('対象外', 'n/a')) + '</span></td>';
+        }).join('') + '</tr>';
+      }).join('') + '</table></div>';
+  }
+  function matrixView(){
+    var h = '<div class="cr-note" style="margin-bottom:6px">' + esc(T('業務ごとに、どの等級が担当し・確認し・承認するかを比べます。等級の名前を押すと、その等級の説明を開きます。', 'Compare who does, checks and approves each kind of work. Tap a grade to open its page.')) + '</div>';
+    if (!textOk()) return h + '<div class="card"><div class="cr-p">' + esc(T('業務の分担（責任マトリクス）は会社が確認中です。', 'The split of work (responsibility matrix) is under company review.')) + '</div></div>';
+    var cats = MX_CATS.map(function(x){ return [x[0], x[1]]; }).concat(mxHasOther() ? [['other', ['そのほか', 'Other']]] : []).concat([['all', ['すべて', 'All']]]);
+    h += '<div class="cr-row">' + cats.map(function(c){ return '<button type="button" class="cr-chip' + (S.cat === c[0] ? ' on' : '') + '" onclick="crSet(\'cat\',\'' + c[0] + '\')">' + esc(T(c[1][0], c[1][1])) + '</button>'; }).join('') + '</div>';
+    var ks = SYS.filter(function(k){ return mxRows(k).length; });
+    if (ks.length > 1) h += '<div class="cr-row"><span class="cr-note">' + esc(T('系統', 'Track')) + '</span><button type="button" class="cr-chip' + (!S.mxsys ? ' on' : '') + '" onclick="crSet(\'mxsys\',\'\')">' + esc(T('すべて', 'All')) + '</button>' + ks.map(function(k){ return '<button type="button" class="cr-chip' + (S.mxsys === k ? ' on' : '') + '" onclick="crSet(\'mxsys\',\'' + k + '\')">' + sysIcon(k, 22) + ' ' + esc(T(SHORT[k][0], SHORT[k][1])) + '</button>'; }).join('') + '</div>';
+    h += '<div class="cr-legend">' + (R.marks || []).map(function(m){ return '<span class="cr-mk cr-mk-' + m.key + '"><b>' + esc(m.sym) + '</b>' + esc(isEn() ? m.en : m.ja) + '</span>'; }).join('') + '<span class="cr-mk cr-mk-none"><b>—</b>' + esc(T('対象外', 'Not in scope')) + '</span></div>';
+    if (!published()) h += '<div class="cr-row">' + draftBadge() + enBadge() + '</div>';
+    var shown = ks.filter(function(k){ return !S.mxsys || S.mxsys === k; });
+    h += shown.length ? shown.map(mxTable).join('') : '<div class="cr-note">' + esc(T('この分類の業務はありません。', 'No work in this group.')) + '</div>';
+    h += '<div class="cr-note" style="margin-top:6px">' + esc(T('この表は役職上の責任です。アプリで操作できる範囲（権限）は別の設定で決まっていて、この表では変わりません。分類（日常業務など）は見やすくするための分け方です。', 'This table shows job responsibilities. What you can operate in the app (permissions) is set separately and is not changed by this table. The groups (Daily work, etc.) are only for easier viewing.')) + '</div>';
     return h;
   }
 
-  /* ---------------------------------------------------------------- 候補者向け（面接で見せる・個人の記録は出さない） */
+  /* ---------------------------------------------------------------- ③ 店舗別の組織マップ（従業員マスター・店舗マスターから。ここでは入力しない） */
+  function people(){ try{ return (typeof getEmployees === 'function' ? getEmployees() : []).filter(function(e){ return e && e.name && e.status !== '退職' && !e.osDisabled; }); }catch(e){ return []; } }
+  function storeList(){ try{ var a = (typeof getStoresAll === 'function' ? getStoresAll() : (typeof STORES !== 'undefined' ? STORES : [])).filter(function(s){ return s && s.id && s.active !== false; }); return typeof sortByLoginOrder === 'function' ? sortByLoginOrder(a) : a; }catch(e){ return []; } }
+  function storeName(id){ var a = storeList(); for (var i = 0; i < a.length; i++) if (a[i].id === id) return a[i].name; return id === 'OFFICE' ? 'Office' : id === 'ALL' ? T('全店', 'All stores') : String(id || ''); }
+  var HQ = 'HQ';
+  function orgMembers(sid){
+    var ps = people(), out = [], seen = {};
+    function add(e, tag){ var k = String(e.id); if (!seen[k]) { seen[k] = { e:e, tags:[] }; out.push(seen[k]); } if (tag && seen[k].tags.indexOf(tag) < 0) seen[k].tags.push(tag); }
+    if (sid === HQ) { ps.forEach(function(e){ if (!e.store || e.store === 'OFFICE' || e.store === 'ALL') add(e, ''); }); return out; }
+    var st = null; storeList().forEach(function(s){ if (s.id === sid) st = s; });
+    ps.forEach(function(e){ if (e.store === sid) add(e, ''); });
+    ps.forEach(function(e){ if (e.store !== sid && (e.support || []).indexOf(sid) >= 0) add(e, 'support'); });
+    if (st) ps.forEach(function(e){ if (st.am && e.name === st.am) add(e, 'am'); if (st.chef && e.name === st.chef) add(e, 'chef'); });
+    return out;
+  }
+  /* v1222（Moto さん 11/26・UI案102 の 3）：上司（報告先）は決まりから出す（入力しない）。
+     店舗配属の人＝その店の G4（Store Manager）。G4 がいない店と G4 本人＝その店を管轄する G5（店舗マスターの管轄 AM）、いなければ G6。
+     本部の人（所属が本部・Office・全店）と G5・G6 は決まりが無いので「—」。Head Chef（Chef S3 以上＝本部配属）は店の G4 に数えない */
+  var HQ_G4_TITLES = ['Head Chef', 'Office Manager', 'Accountant'];
+  function isHqStore(st){ return !st || st === 'OFFICE' || st === 'ALL'; }
+  function storeG4(e){ return empGradeOf(e) === 'G4' && e.role !== 'chef' && HQ_G4_TITLES.indexOf(e.title) < 0; }
+  function supOf(e){
+    if (!e || isHqStore(e.store)) return { kind:'hq', list:[] };
+    var g = empGradeOf(e); if (g === 'G5' || g === 'G6' || e.role === 'chef' || HQ_G4_TITLES.indexOf(e.title) >= 0) return { kind:'hq', list:[] };   /* Head Chef など本部配属の職は店の決まりの外 */
+    var ps = people();
+    if (!storeG4(e)) { var g4 = ps.filter(function(x){ return x.store === e.store && storeG4(x) && String(x.id) !== String(e.id); }); if (g4.length) return { kind:'g4', list:g4.map(function(x){ return x.name; }) }; }
+    var st = null; storeList().forEach(function(x){ if (x.id === e.store) st = x; });
+    if (st && st.am) return { kind:'am', list:[st.am] };
+    var g6 = ps.filter(function(x){ return empGradeOf(x) === 'G6'; });
+    return g6.length ? { kind:'g6', list:g6.map(function(x){ return x.name; }) } : { kind:'none', list:[] };
+  }
+  var SUP_SRC = { g4:['店の G4', 'store G4'], am:['管轄 AM', 'area manager'], g6:['G6', 'G6'] };
+  function supCell(e){
+    var r = supOf(e);
+    if (r.kind === 'hq') return '<span class="cr-note" title="' + esc(T('本部の人の上司は決まりがありません', 'No rule for HQ staff')) + '">—</span>';
+    if (!r.list.length) return '<span class="cr-note">' + esc(T('未設定', 'Not set')) + '</span>';
+    return esc(r.list.join('・')) + ' <span class="cr-note">（' + esc(T(SUP_SRC[r.kind][0], SUP_SRC[r.kind][1])) + '）</span>';
+  }
+  var ORG_TAG = { support:['兼務（応援）', 'Also works here'], am:['管轄 AM（店舗マスター）', 'Area manager (store master)'], chef:['担当 Chef（店舗マスター）', 'Chef in charge (store master)'] };
+  function gnum(e){ var g = empGradeOf(e); var n = parseInt(String(g).replace(/[^0-9]/g, ''), 10); return isFinite(n) ? n : -1; }
+  function q4Cell(e){
+    if (!CR.asg) return '';
+    if (!Object.prototype.hasOwnProperty.call(CR.asg, String(e.id))) return '<span class="cr-note">—</span>';
+    var a = CR.asg[String(e.id)];
+    return a && a.system ? sysIcon(a.system, 20) + ' ' + esc(a.system === 'PREP' ? 'Prep' : lab(a.system, a.grade || '')) : '<span class="cr-note">' + esc(T('未設定', 'Not set')) + '</span>';
+  }
+  function personPanel(id){
+    var e = null; people().forEach(function(x){ if (String(x.id) === String(id)) e = x; }); if (!e) return '';
+    var g = empGradeOf(e), a = CR.asg && CR.asg[String(e.id)], btns = '';
+    if (a && a.system) btns += '<button type="button" class="btn btn-primary btn-sm cr-btn" onclick="crOpen(\'' + a.system + '\',\'' + (a.system === 'PREP' ? 'P1' : a.grade) + '\')">' + esc(T('Q4 の評価表のキャリア（', 'Career of the Q4 sheet (') + (a.system === 'PREP' ? 'Prep' : lab(a.system, a.grade || '')) + T('）を開く', ')')) + '</button>';
+    if (/^G[1-6]$/.test(g)) btns += '<button type="button" class="btn btn-secondary btn-sm cr-btn" onclick="crOpen(\'G\',\'' + g + '\')">' + esc(T('従業員マスターの Grade（' + g + '）の説明', 'Staff-master Grade (' + g + ')')) + '</button>';
+    if (g === 'G1-P') btns += '<button type="button" class="btn btn-secondary btn-sm cr-btn" onclick="crOpen(\'PREP\',\'P1\')">' + esc(T('Prep の説明（従業員マスター G1-P）', 'Prep (staff master G1-P)')) + '</button>';
+    return '<div class="cr-person"><div class="cr-row" style="justify-content:space-between"><b style="font-size:16px">' + esc(e.name) + '</b><button type="button" class="cr-back" onclick="crSet(\'person\',\'\')">' + esc(T('閉じる', 'Close')) + ' ×</button></div>'
+      + kv(T('役職（肩書き）', 'Title'), esc(e.title || T('未設定', 'Not set')))
+      + kv(T('Grade（従業員マスター）', 'Grade (staff master)'), esc(g || T('未設定', 'Not set')))
+      + kv(T('所属', 'Store'), esc(e.store ? storeName(e.store) : T('未設定', 'Not set')) + ((e.support || []).length ? '<div class="cr-note">' + esc(T('兼務（応援）：', 'Also works at: ')) + esc((e.support || []).map(storeName).join('・')) + '</div>' : ''))
+      + kv(T('上司（報告先）', 'Reports to'), supCell(e))
+      + (CR.asg ? kv(T('Q4 の評価表', 'Q4 sheet'), Object.prototype.hasOwnProperty.call(CR.asg, String(e.id)) ? q4Cell(e) : '<span class="cr-note">' + esc(T('あなたの採点の範囲外のため出していません', 'Not shown (outside your assessment scope)')) + '</span>') : '')
+      + (btns ? '<div class="cr-row">' + btns + '</div>' : '') + '</div>';
+  }
+  function orgView(){
+    crSync(); if (CR.k && !CR.asg && !CR.asgErr && !CR.asgLoading && allows('leadership')) setTimeout(loadAsg, 0);
+    var sts = storeList(), opts = sts.map(function(s){ return [s.id, s.name]; }).concat([[HQ, T('本部・Office', 'HQ / Office')]]);
+    if (!S.org || !opts.some(function(o){ return o[0] === S.org; })) { var mine = null; try{ mine = typeof curStore !== 'undefined' ? curStore : null; }catch(e){} S.org = opts.some(function(o){ return o[0] === mine; }) ? mine : (opts[0] ? opts[0][0] : HQ); }
+    var h = '<div class="cr-note" style="margin-bottom:6px">' + esc(T('従業員マスターと店舗マスターから自動で出しています（ここでは入力しません）。個人の評価・給与・連絡先は出しません。', 'Built from the staff and store masters automatically (no entry here). No individual evaluations, pay or contact details.')) + '</div>'
+      + '<div class="cr-row cr-org-sts">' + opts.map(function(o){ return '<button type="button" class="cr-chip' + (S.org === o[0] ? ' on' : '') + '" onclick="crSet(\'org\',' + esc(JSON.stringify(o[0])) + ')">' + esc(o[1]) + '</button>'; }).join('') + '</div>';
+    if (S.person) h += personPanel(S.person);
+    var mem = orgMembers(S.org).sort(function(a, b){ return gnum(b.e) - gnum(a.e) || String(a.e.name).localeCompare(String(b.e.name)); });
+    var st = null; sts.forEach(function(s){ if (s.id === S.org) st = s; });
+    h += '<div class="card"><div class="card-title" style="flex-wrap:wrap;gap:8px">' + esc(S.org === HQ ? T('本部・Office', 'HQ / Office') : storeName(S.org)) + ' <span class="cr-note">' + mem.length + esc(T(' 人', ' people')) + '</span></div>';
+    if (st) h += '<div class="cr-note" style="margin-bottom:6px">' + esc(T('管轄 AM（店舗マスター）：', 'Area manager (store master): ')) + esc(st.am || T('未設定', 'Not set')) + (st.chef ? ' · ' + esc(T('担当 Chef：', 'Chef: ')) + esc(st.chef) : '') + '</div>';
+    if (!mem.length) h += '<div class="cr-note">' + esc(T('この所属の人はいません。', 'No one here.')) + '</div>';
+    else h += '<div class="cr-scroll"><table class="cr-tbl cr-org"><tr><th>' + esc(T('名前', 'Name')) + '</th><th>' + esc(T('役職（肩書き）', 'Title')) + '</th><th>' + esc(T('Grade（従業員マスター）', 'Grade (staff master)')) + '</th><th>' + esc(T('上司（報告先）', 'Reports to')) + '</th>' + (CR.asg ? '<th>' + esc(T('Q4 の評価表', 'Q4 sheet')) + '</th>' : '') + '</tr>'
+      + mem.map(function(m){ var e = m.e;
+        return '<tr><td><button type="button" class="cr-name" onclick="crSet(\'person\',' + esc(JSON.stringify(String(e.id))) + ')">' + esc(e.name) + '</button>' + m.tags.map(function(tg){ return ' <span class="cr-tag">' + esc(T(ORG_TAG[tg][0], ORG_TAG[tg][1])) + '</span>'; }).join('') + (S.org === HQ && e.store === 'ALL' ? ' <span class="cr-tag">' + esc(T('全店', 'All stores')) + '</span>' : '') + '</td>'
+          + '<td>' + esc(e.title || T('未設定', 'Not set')) + '</td><td>' + esc(empGradeOf(e) || T('未設定', 'Not set')) + '</td><td>' + supCell(e) + (m.tags.indexOf('support') >= 0 && supOf(e).list.length ? ' <span class="cr-note">' + esc(T('（所属店）', '(home store)')) + '</span>' : '') + '</td>' + (CR.asg ? '<td>' + q4Cell(e) + '</td>' : '') + '</tr>'; }).join('') + '</table></div>';
+    h += '</div><div class="cr-note">' + esc(T('上司（報告先）は会社の決まりから自動で出しています（ここでは入力しません）：店舗配属の人はその店の G4（Store Manager）。G4 がいない店と G4 本人は、その店を管轄する G5（店舗マスターの管轄 AM）、いなければ G6。本部の人は決まりが無いので「—」です。', 'Reports-to is derived from the company rule (no entry here): store staff report to the store\'s G4 (Store Manager). In a store without a G4, and for the G4, it is the G5 who covers the store (area manager in the store master), or else the G6. HQ staff have no rule, so "—".')) + '</div>'
+      + '<div class="cr-note">' + esc(CR.asg ? T('Q4 の評価表は、あなたが採点できる人の分だけ出ています（ほかは「—」）。', 'Q4 sheets are shown only for people you can assess (others "—").') : T('Q4 の評価表（Chef の S・経理の S・Prep）は、採点できる人にだけ出ます。', 'Q4 sheets (Chef S, Accounting S, Prep) are shown only to people who can assess.')) + ' ' + esc(T('G と S は別の系統です。数字が同じでも同じ役職・権限ではありません。', 'G and S are different tracks; the same number is not the same role or authority.')) + '</div>';
+    return h;
+  }
+
+  /* ---------------------------------------------------------------- 候補者向け（面接で見せる・同じマスター・社内の名前と記録は出さない） */
   function candView(){
     var h = '<div class="card"><div class="card-title">' + esc(T('Funergy のキャリア（候補者向け）', 'Careers at Funergy (for candidates)')) + '</div>'
       + '<div class="cr-p">' + esc(T('仕事の系統ごとに等級があり、Q4 の Career Score（理念と仕事の項目）で成長を確かめます。等級ごとに基準点と最低条件があり、どれか 1 つだけで昇格はしません。',
         'Each job track has grades, and growth is checked with the Q4 Career Score (philosophy and work items). Each grade has a base score and minimum conditions; no single check leads to promotion.')) + '</div>';
     if (!published()) h += '<div class="cr-note" style="margin-top:6px">' + esc(T('等級ごとの役割の説明は準備中です。', 'Role descriptions for each grade are being prepared.')) + '</div>';
-    h += '</div>';
-    SYS.forEach(function(k){
-      var s = sysR(k); if (!s) return;
-      h += '<div class="card"><div class="card-title">' + esc(isEn() ? s.name.en : s.name.ja) + '</div><div class="cr-scroll"><table class="cr-tbl"><tr><th>' + esc(T('等級', 'Grade')) + '</th>' + (k !== 'PREP' ? '<th>' + esc(T('基準点', 'Base score')) + '</th>' : '') + (published() ? '<th>' + esc(T('役割', 'Role')) + '</th>' : '') + '</tr>'
-        + s.grades.map(function(g){ return '<tr><td>' + esc(g.grade) + '</td>' + (k !== 'PREP' ? '<td>' + esc(baseOf(k, g.grade)) + '</td>' : '') + (published() ? '<td style="text-align:left">' + esc(L(g.position || g.summary)) + '</td>' : '') + '</tr>'; }).join('')
-        + '</table></div></div>';
-    });
-    h += '<div class="cr-warn">' + esc(isEn() ? R.separateRules.en : R.separateRules.ja) + ' ' + esc(T('この画面に個人の評価や記録は出しません。', 'This screen shows no individual evaluations or records.')) + '</div>';
+    h += '</div>' + careerMap(true);
+    h += '<div class="cr-warn">' + esc(isEn() ? R.separateRules.en : R.separateRules.ja) + ' ' + esc(T('この画面に個人の評価や記録、社内の名前・組織は出しません。', 'This screen shows no individual evaluations, records, staff names or organization.')) + '</div>';
     return h;
   }
 
@@ -129640,7 +130030,7 @@ window.FUNERGY_ROLE_GUIDE = {"version":"ROLE_GUIDE_2026_Q4_V1","basedOn":"CAREER
         : GP.err === 'nosql' ? T('サーバーの準備がまだです（育成計画の表）。','The server is not ready yet (plan tables).')
         : GP.err === 'nosess' ? T('ログインを確かめられません。ログインし直してください。','Could not check your sign-in. Please sign in again.') : gpErr({ error:GP.err });
       return '<div class="card"><div class="cr-p">' + esc(m) + '</div><div class="cr-row" style="margin-top:8px"><button type="button" class="btn btn-secondary cr-btn" onclick="crGp(\'reload\')">' + esc(T('読み直す','Reload')) + '</button>'
-        + goBtn('ojt_admin', 'OJT管理（今の画面）', 'OJT Admin (current)') + goBtn('growth_mgr', '成長管理（今の画面）', 'Growth Mgmt (current)') + '</div></div>';
+        + '</div></div>';
     }
     var h = GP.msg ? '<div class="cr-warn">' + esc(GP.msg) + '</div>' : '';
     var rows = (GP.roster && GP.roster.rows) || [], help = (GP.roster && GP.roster.helping) || [];
@@ -129733,6 +130123,8 @@ window.FUNERGY_ROLE_GUIDE = {"version":"ROLE_GUIDE_2026_Q4_V1","basedOn":"CAREER
       + '<div class="cr-p">' + esc(T('旧制度の OJT・成長管理の記録は、全部「旧として保存」しました（11/24 の会社の決定）。当時のまま読むだけで、新しい計画には自動で入りません。新しい計画は一から作ります。','All old OJT and growth records were saved as old (company decision, 11/24). They are read only as they were, and do not flow into new plans automatically. New plans start fresh.')) + '</div>'
       + '<div class="cr-row" style="margin-top:8px">' + (allows('hiring') ? '<button type="button" class="btn btn-secondary cr-btn" onclick="crOpenOld()">' + esc(T('旧制度の説明（読むだけ）','Old system explanations (read only)')) + '</button> ' : '')
       + goBtn('leadership', '前の Career Score（読むだけ）', 'Earlier Career Score (read only)')
+      + (allows('ojt_admin') ? '<button type="button" class="btn btn-secondary cr-btn" onclick="crOpenOldPage(\'ojt_admin\')">' + esc(T('旧 OJT管理（読むだけ）','Old OJT Admin (read only)')) + '</button> ' : '')
+      + (allows('growth_mgr') ? '<button type="button" class="btn btn-secondary cr-btn" onclick="crOpenOldPage(\'growth_mgr\')">' + esc(T('旧 成長管理（読むだけ）','Old Growth Mgmt (read only)')) + '</button> ' : '')
       + (top ? '<button type="button" class="btn btn-secondary cr-btn" onclick="crGpHist(\'*\')">' + esc(T('全部の写しを見る','See all copies')) + '</button><button type="button" class="btn btn-secondary cr-btn" onclick="crGpCopy()"' + (GP.busy ? ' disabled' : '') + '>' + esc(T('旧の記録を写す（何度でも同じ）','Copy old records (same each time)')) + '</button>' : '') + '</div>';
     if (GP.rep) h += GP.rep.err ? '<div class="cr-warn">' + esc(GP.rep.err) + '</div>' : '<div class="cr-note">' + esc(T('写した：足した ','Copied: added ')) + esc(GP.rep.added) + esc(T(' 件・まだ写していない ',' · not copied ')) + esc(GP.rep.missing) + esc(T(' 件・写しの全部 ',' · all copies ')) + esc(GP.rep.legacy_rows) + '</div>';
     h += '</div>';
@@ -129744,69 +130136,138 @@ window.FUNERGY_ROLE_GUIDE = {"version":"ROLE_GUIDE_2026_Q4_V1","basedOn":"CAREER
     else h += gpHistRows(GP.hist.rows || []);
     return h + '</div>';
   }
-  /* ---------------------------------------------------------------- 画面 */
-  var TABS = [['guide', '制度・役割ガイド', 'System and role guide'], ['plan', '育成計画・OJT', 'Plan and OJT'], ['review', '評価・振り返り', 'Evaluation'], ['history', '過去の記録', 'Past records']];
-  var VIEWS = [['grade', '等級の説明', 'Grades'], ['map', '役割と責任マップ', 'Roles map'], ['cand', '候補者向け', 'For candidates']];
-  function guideTab(){
-    var h = '<div class="cr-row">' + VIEWS.map(function(v){ return '<button type="button" class="phase-tab' + (S.view === v[0] ? ' active' : '') + '" onclick="crSet(\'view\',\'' + v[0] + '\')">' + esc(T(v[1], v[2])) + '</button>'; }).join('') + '</div>';
-    if (S.view === 'cand') return h + candView();
-    return h + notice() + (S.view === 'map' ? mapView() : gradeView());
+  /* ---------------------------------------------------------------- 画面（v1222：1 つのタブ。最初の画面＝あなた＋ 3 つ。詳しくは押して開く） */
+  var HOME = [['map', ['キャリアマップ', 'Career map'], ['系統と等級の全体', 'All tracks and grades'], 'ti-route', ['キャリアマップ', 'Careers']],
+    ['matrix', ['役割・責任マトリクス', 'Responsibility matrix'], ['だれが何を担当・確認・承認', 'Who does, checks, approves'], 'ti-table', ['責任マトリクス', 'Matrix']],
+    ['org', ['店舗別の組織マップ', 'Organization map'], ['店ごとのメンバーと Grade', 'People and grades by store'], 'ti-sitemap', ['組織マップ', 'Org map']]];
+  var VIEWS_ALL = ['map', 'matrix', 'org', 'detail', 'plan', 'history', 'review', 'cand', 'cdetail'];
+  function homeTiles(){
+    return '<div class="cr-tiles" role="tablist">' + HOME.map(function(x){
+      return '<button type="button" role="tab" aria-selected="' + (S.view === x[0]) + '" class="cr-tile' + (S.view === x[0] ? ' on' : '') + '" onclick="crSet(\'view\',\'' + x[0] + '\')"><i class="ti ' + x[3] + '"></i><span><b class="cr-tile-l">' + esc(T(x[1][0], x[1][1])) + '</b><b class="cr-tile-s">' + esc(T(x[4][0], x[4][1])) + '</b><span class="cr-tile-d">' + esc(T(x[2][0], x[2][1])) + '</span></span></button>';
+    }).join('') + '</div>';
   }
+  function footLinks(){
+    var b = [];
+    if (!storeLogin()) b.push('<button type="button" class="btn btn-secondary btn-sm cr-btn" onclick="crSet(\'view\',\'history\')"><i class="ti ti-archive"></i> ' + esc(T('過去の記録（旧 OJT・成長管理）', 'Past records (old OJT, growth)')) + '</button>');
+    if (allows('hiring')) b.push('<button type="button" class="btn btn-secondary btn-sm cr-btn" onclick="crSet(\'view\',\'cand\')"><i class="ti ti-eye"></i> ' + esc(T('候補者向けの表示（面接で見せる）', 'Candidate view (for interviews)')) + '</button>');
+    b.push('<button type="button" class="btn btn-secondary btn-sm cr-btn" onclick="crSet(\'view\',\'review\')"><i class="ti ti-trending-up"></i> ' + esc(T('評価（Career Score）', 'Evaluation (Career Score)')) + '</button>');
+    return '<div class="cr-foot">' + b.join('') + '</div>';
+  }
+  function reviewView(){ return backBtn('map', T('キャリア・育成', 'Career & Development')) + reviewTab(); }
   function bodyHtml(){
     fix();
     if (!ok()) return '<div class="card"><div class="cr-p">' + esc(T('制度のマスターを読み込めませんでした。読み込み直してください。', 'Could not load the system master. Please reload.')) + '</div></div>';
-    if (S.embed) { S.view = S.embed === 'cand' ? 'cand' : (S.view === 'cand' ? 'grade' : S.view); return S.embed === 'cand' ? candView() : guideTab(); }
-    var h = '<div class="cr-row">' + TABS.map(function(x){ return '<button type="button" class="phase-tab' + (S.tab === x[0] ? ' active' : '') + '" onclick="crSet(\'tab\',\'' + x[0] + '\')">' + esc(T(x[1], x[2])) + '</button>'; }).join('') + '</div>';
-    if (S.tab === 'plan') return h + planTab();
-    if (S.tab === 'review') return h + reviewTab();
-    if (S.tab === 'history') return h + historyTab();
-    return h + guideTab();
+    if (S.embed === 'cand') { if (S.view !== 'cdetail') S.view = 'cand'; return S.view === 'cdetail' ? detailView(true) : candView(); }
+    if (S.embed === 'guide') { if (S.view !== 'detail' && S.view !== 'matrix') S.view = 'map'; return S.view === 'detail' ? detailView(false) : notice() + careerMap(false); }
+    if (S.view === 'detail') return detailView(false);
+    if (S.view === 'cdetail') return detailView(true);
+    if (S.view === 'cand') return backBtn('map', T('キャリア・育成', 'Career & Development')) + candView();
+    if (S.view === 'plan') return backBtn(S.from === 'detail' ? 'detail' : 'map', S.from === 'detail' ? lab(S.sys, S.grade) : T('キャリア・育成', 'Career & Development')) + '<div class="cr-sec" style="font-size:15px">' + esc(T('育成計画・OJT', 'Development plan and OJT')) + '</div>' + planTab();
+    if (S.view === 'history') return backBtn('map', T('キャリア・育成', 'Career & Development')) + historyTab();
+    if (S.view === 'review') return reviewView();
+    var h = youCard() + homeTiles() + notice();
+    if (S.view === 'matrix') h += matrixView();
+    else if (S.view === 'org') h += orgView();
+    else h += careerMap(false);
+    return h + footLinks();
   }
   function head(){
     return '<div class="section-header"><div><div class="section-title"><i class="ti ti-route" style="color:var(--accent)"></i> ' + esc(T('キャリア・育成', 'Career & Development')) + '</div>'
-      + '<div class="section-sub">' + esc(T('制度の版 ', 'System version ')) + esc(M ? M.version : '') + ' · ' + esc(T('役割の説明 ', 'Role guide ')) + esc(R ? R.version : '') + (R ? (published() ? esc(T('（公開中）', ' (published)')) : esc(T('（案）', ' (draft)'))) : '') + '</div></div></div>';
+      + '<div class="section-sub">' + esc(T('役割・評価・成長の道筋と、育成計画・OJT', 'Roles, evaluation, growth paths, plans and OJT')) + ' · ' + esc(T('制度の版 ', 'System ')) + esc(M ? M.version : '') + ' · ' + esc(T('役割の説明 ', 'Role guide ')) + esc(R ? R.version : '') + (R ? (published() ? esc(T('（公開中）', ' (published)')) : esc(T('（確認中）', ' (under review)'))) : '') + '</div></div></div>';
   }
-  function pageHtml(){ S.embed = ''; return CSS + head() + '<div id="cr-root">' + bodyHtml() + '</div>'; }
-  function embedHtml(kind){ S.embed = kind === 'cand' ? 'cand' : 'guide'; if (S.embed === 'guide' && S.view === 'cand') S.view = 'grade'; return CSS + '<div id="cr-root">' + bodyHtml() + '</div>'; }
+  function pageHtml(){ S.embed = ''; if (S.view === 'cdetail' || S.view === 'cand' && !allows('hiring')) S.view = 'map'; return CSS + head() + '<div id="cr-root">' + bodyHtml() + '</div>'; }
+  function embedHtml(kind){ S.embed = kind === 'cand' ? 'cand' : 'guide'; return CSS + '<div id="cr-root">' + bodyHtml() + '</div>'; }
   function paint(){
     var el = document.getElementById('cr-root');
     if (el) { el.innerHTML = bodyHtml(); return; }
     try{ if (typeof renderPage === 'function') renderPage(typeof curPage !== 'undefined' ? curPage : 'career'); }catch(e){}
   }
+  function toTop(){ try{ var el = document.getElementById('cr-root'); if (el && el.scrollIntoView) el.scrollIntoView({ block:'start' }); }catch(e){} }
+  /* 前の画面・リンクの名前（tab・view）を今の表示へ。知らない名前は変えない */
+  var OLD_TAB = { guide:'map', plan:'plan', review:'review', history:'history' };
+  var OLD_VIEW = { grade:'map', map:'matrix', cand:'cand' };
   function set(k, v){
     v = String(v == null ? '' : v);
-    if (k === 'tab' && TABS.some(function(x){ return x[0] === v; })) S.tab = v;
-    else if (k === 'view' && VIEWS.some(function(x){ return x[0] === v; })) S.view = v;
+    var home = HOME.some(function(x){ return x[0] === S.view; });
+    if (k === 'tab' && OLD_TAB[v]) { S.from = home ? S.view : (S.view === 'detail' ? 'detail' : S.from); S.view = OLD_TAB[v]; }
+    else if (k === 'view' && VIEWS_ALL.indexOf(v) >= 0) {
+      if ((v === 'plan' || v === 'history' || v === 'review') && S.view === 'detail') S.from = 'detail';
+      else if (v === 'plan' || v === 'history' || v === 'review') S.from = home ? S.view : 'map';
+      if (v === 'detail' && S.view === 'plan' && S.from === 'detail') S.from = 'map';
+      if (v === 'cand' && !allows('hiring') && !S.embed) return;
+      S.view = v; if (v !== 'org') S.person = '';
+    }
     else if (k === 'sys' && SYS.indexOf(v) >= 0) { if (S.sys !== v) { S.sys = v; S.grade = ''; S.type = ''; } }
-    else if (k === 'grade' && grades(S.sys).indexOf(v) >= 0) S.grade = v;
+    else if (k === 'grade' && grades(S.sys).indexOf(v) >= 0) { if (S.grade !== v) S.type = ''; S.grade = v; }
     else if (k === 'type' && typesOf(S.grade).indexOf(v) >= 0) S.type = v;
+    else if (k === 'cat' && (v === 'all' || v === 'other' || MX_CATS.some(function(x){ return x[0] === v; }))) { S.cat = v; S.mxsys = ''; }
+    else if (k === 'mxsys' && (v === '' || SYS.indexOf(v) >= 0)) S.mxsys = v;
+    else if (k === 'org' && v) { S.org = v; S.person = ''; }
+    else if (k === 'person') S.person = v;
     else return;
     paint();
+    if (k === 'view' || k === 'tab' || k === 'grade') toTop();
+  }
+  function open(k, g, cand){
+    k = String(k || ''); g = String(g || '');
+    if (SYS.indexOf(k) < 0 || grades(k).indexOf(g) < 0) return;
+    var home = HOME.some(function(x){ return x[0] === S.view; });
+    if (!cand && home) S.from = S.view;
+    S.sys = k; S.grade = g; S.type = ''; S.person = '';
+    S.view = cand || S.embed === 'cand' ? 'cdetail' : 'detail';
+    /* 自分の Q4 評価表の等級なら、担当型も自分の型で開く（表示だけ・割り当ては変えない） */
+    if (S.view === 'detail' && k === 'G' && isMine(k, g)) { var a = myAsg(); if (a && typesOf(g).indexOf(a.type) >= 0) S.type = a.type; }
+    paint(); toTop();
   }
   function openOld(){ try{ W._ceMode = 'old'; if (typeof hiringTab !== 'undefined') hiringTab = 'career'; }catch(e){} try{ go('hiring'); }catch(e){} }
   W.crSet = set;
+  W.crOpen = open;
+  W.crPlanOf = function(emp){ S.from = S.view === 'detail' ? 'detail' : S.from; S.view = 'plan'; paint(); toTop(); return gpOpen(emp); };
   W.crOpenOld = openOld;
   W.crGp = function(k, x){ return gpAct(k, x); };
   W.crGpHist = function(e){ return gpHist(e === '*' ? '' : e); };
   W.crGpCopy = gpCopy;
-  /* v1215（A-3）：マイページ・Handbook・業務ガイドからの入口（どれも読むだけ・個人の記録は出さない） */
+  /* v1215（A-3）：マイページ・Handbook・業務ガイドからの入口（どれも読むだけ・個人の記録は出さない）。v1222：行き先を 1 つのタブの中へ */
   function crBox(icon, msg, btns){ return '<div class="card" style="padding:12px 14px;display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap"><i class="ti ' + icon + '" style="font-size:20px;color:var(--accent)"></i><div style="flex:1;min-width:200px;font-size:12.5px;line-height:1.65">' + msg + '</div><div style="display:flex;gap:6px;flex-wrap:wrap">' + btns + '</div></div>'; }
   function crBtn(tab, ja, en, view){ return '<button type="button" class="btn btn-secondary btn-sm" style="min-height:40px" onclick="crGo(\'' + tab + '\'' + (view ? ',\'' + view + '\'' : '') + ')">' + esc(T(ja, en)) + '</button>'; }
   W.crMyCard = function(){
-    return crBox('ti-route', '<b>' + esc(T('キャリア・育成', 'Career & Development')) + '</b><br>' + esc(T('わたしの育成計画（OJT・希望・記録）と、系統・等級ごとの役割・評価の見方。', 'My development plan (OJT, wishes, notes) and roles and evaluation by track and grade.')),
-      crBtn('plan', 'わたしの育成計画', 'My plan') + crBtn('guide', '制度・役割ガイド', 'System and role guide', 'grade'));
+    return crBox('ti-route', '<b>' + esc(T('キャリア・育成', 'Career & Development')) + '</b><br>' + esc(T('わたしの育成計画（OJT・希望・記録）と、系統・等級ごとの役割・評価・成長の道筋。', 'My development plan (OJT, wishes, notes) and roles, evaluation and growth by track and grade.')),
+      crBtn('plan', 'わたしの育成計画', 'My plan') + crBtn('map', 'キャリアマップ', 'Career map'));
   };
   W.crHbNote = function(){
     return crBox('ti-info-circle', esc(T('2026 年 Q4 からの Grade・役割・評価の説明は「キャリア・育成」が正本です。この章の Grade・昇格の説明には旧制度の内容が含まれます（時給・Tip Rate・賞与・福利厚生は別の決まりのまま）。', 'From 2026 Q4, Career & Development is the source for Grade, roles and evaluation. This chapter\'s Grade and promotion text includes the old system (wage, Tip Rate, bonus and benefits follow their own rules).')),
-      crBtn('guide', '制度・役割ガイドを開く', 'Open the guide'));
+      crBtn('map', 'キャリアマップを開く', 'Open the career map'));
   };
   W.crBizNote = function(){
-    return crBox('ti-info-circle', esc(T('役割と責任（だれが何を担当するか）は「キャリア・育成 › 役割と責任マップ」が正本です。ここは Grade 別のアプリの使い方です。', 'Roles and responsibilities are in Career & Development › Roles map. This page is about using the app by Grade.')),
-      crBtn('guide', '役割と責任マップを開く', 'Open the roles map', 'map'));
+    return crBox('ti-info-circle', esc(T('役割と責任（だれが何を担当するか）は「キャリア・育成 › 役割・責任マトリクス」が正本です。ここは Grade 別のアプリの使い方です。', 'Roles and responsibilities are in Career & Development › Responsibility matrix. This page is about using the app by Grade.')),
+      crBtn('matrix', '役割・責任マトリクスを開く', 'Open the matrix'));
   };
-  W.crGo = function(tab, view){ if (TABS.some(function(x){ return x[0] === tab; })) S.tab = tab; if (view && VIEWS.some(function(x){ return x[0] === view; })) S.view = view; try{ go('career'); }catch(e){} };
+  /* v1216（A-2-3・答え 5 B・Moto さん 11/24「OJTマップは廃止」）：旧の OJT・成長管理の記録（app_state のキー）はこの端末で書かない（読むだけ）。
+     写しは関数の gp_legacy（全部「旧として保存」）。career_cfg（専門職の見る・直す範囲）・career_history・スキル・成長カルテは止めない */
+  var FROZEN = ['ojt_enroll', 'grade_ojt', 'ojt_phase_map', 'ojt_gate_criteria', 'crew_education', 'career_track', 'train_master', 'trainees', 'trainee_checklists',
+    'dev_pipe', 'dev_pipe_start', 'dev_nominations', 'dev_start', 'dev_data'];
+  var frozenAt = {};
+  W.crFrozen = function(key){
+    key = String(key || '');
+    if (FROZEN.indexOf(key) < 0 && key.indexOf('ojt_def_') !== 0) return false;
+    /* v1222：知らせは旧の画面（読むだけ）で押したときだけ。裏の書き込み（同期など）は黙って止める（ログインのたびに出ていた） */
+    var onOld = false; try{ onOld = typeof curPage !== 'undefined' && (curPage === 'ojt_admin' || curPage === 'growth_mgr'); }catch(e){}
+    var n = Date.now(); if (onOld && (!frozenAt.t || n - frozenAt.t > 60000)) { frozenAt.t = n; try{ showToast(T('旧の OJT・成長管理の記録は読むだけです。新しい計画は「キャリア・育成」で作ります','Old OJT and growth records are read only. Make new plans in Career & Development'), 'warning'); }catch(e){} }
+    return true;
+  };
+  /* 前の行き先（タブ・表示の名前）→ 今の表示。v1216：OJTマップ → 育成計画・OJT、OJT管理・成長管理 → 過去の記録。v1222：役割と責任マップ → マトリクス・候補者向け → 候補者向けの表示 */
+  function route(tab, view){
+    tab = String(tab || ''); view = String(view || '');
+    if (tab === 'guide') return view ? (OLD_VIEW[view] || (VIEWS_ALL.indexOf(view) >= 0 ? view : '')) : 'map';
+    if (OLD_TAB[tab]) return OLD_TAB[tab];
+    if (['map', 'matrix', 'org', 'cand'].indexOf(tab) >= 0) return tab;
+    return '';
+  }
+  W.crPrep = function(tab, view){ var v = route(tab, view); if (v) { S.view = v; S.from = 'map'; } };
+  W.crOpenOldPage = function(page){ if (page !== 'ojt_admin' && page !== 'growth_mgr') return; W._crOldView = page; try{ go(page); }catch(e){} };
+  W.crGo = function(tab, view){ var v = route(tab, view); if (v && !(v === 'cand' && !allows('hiring'))) { S.view = v; S.from = 'map'; } try{ go('career'); }catch(e){} };
   /* 旧の OJT管理・成長管理の上の帯（新しい計画はキャリア・育成で。旧の記録は消さない。移行を確かめたら旧の保存を止める＝A-2-3） */
-  W.crOldBanner = function(){ return '<div class="alert alert-warning" style="padding:10px 12px;margin-bottom:10px"><i class="ti ti-route"></i><div style="font-size:12.5px;line-height:1.65">' + esc(T('新しい育成計画・OJT は「キャリア・育成」で作ります（Q4 の評価項目に結ぶ・1 人 1 つの計画）。この画面の記録は「旧として保存」し、消しません。','New development plans and OJT are made in Career & Development (linked to the Q4 items, one plan per person). Records on this screen are saved as old and kept.')) + ' <a href="javascript:void(0)" onclick="crGo(\'plan\')">' + esc(T('開く','Open')) + '</a></div></div>'; };
+  W.crOldBanner = function(){ return '<div class="alert alert-warning" style="padding:10px 12px;margin-bottom:10px"><i class="ti ti-archive"></i><div style="font-size:12.5px;line-height:1.65">' + esc(T('旧の画面です（当時の記録を読むだけ・保存はできません）。新しい育成計画・OJT は「キャリア・育成」で作ります。この画面の記録は「旧として保存」し、消しません。','This is the old screen (read only; saving is off). Make new plans and OJT in Career & Development. Records here are saved as old and kept.')) + ' <a href="javascript:void(0)" onclick="crGo(\'plan\')">' + esc(T('開く','Open')) + '</a></div></div>'; };
   W.FUNERGY_CAREER = { pageHtml:pageHtml, embedHtml:embedHtml, set:set, state:function(){ return JSON.parse(JSON.stringify(S)); }, minimumLines:minimumLines, ok:ok };
 })();
 /* ==== FUNERGY_CAREER end ==== */

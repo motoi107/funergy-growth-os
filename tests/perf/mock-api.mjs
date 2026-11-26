@@ -212,7 +212,7 @@ export function createMock(data) {
         if (u.pathname === '/functions/v1/work-requests') { const me = whoami(JSON.parse(opt.body || '{}').pin_session); r = me ? json(200, { me, live: false, fn: 3 }) : json(401, { error: 'unauthorized' }); }
         else if (u.pathname === '/auth/v1/user') r = json(401, { msg: 'no email login in the mock' });
         // v1208：CSQ4_DB=1 は Career Score 2026 Q4 の表と関数（csq4_*）を本物の SQL（PGlite）で答える（サーバーの鍵だけ）
-        else if (opts.csq4 && /^\/rest\/v1\/(rpc\/)?csq4_/.test(u.pathname) && h['apikey'] === SS_SERVICE) { if (!csq4) csq4 = createCsq4Db(); r = await (await csq4).handle((opt.method || 'GET').toUpperCase(), u, opt.body || ''); }
+        else if (opts.csq4 && (process.env.GP_DB === '1' ? /^\/rest\/v1\/(rpc\/)?(csq4|gp)_/ : /^\/rest\/v1\/(rpc\/)?csq4_/).test(u.pathname) && h['apikey'] === SS_SERVICE) { if (!csq4) csq4 = createCsq4Db(); r = await (await csq4).handle((opt.method || 'GET').toUpperCase(), u, opt.body || ''); }
         else r = handle((opt.method || 'GET').toUpperCase(), u, h, opt.body || '');
         const st = r.status, nob = st === 204 || st === 205 || st === 304 || r.body === '' || r.body == null;
         return new Response(nob ? null : r.body, { status: st === 204 && !nob ? 200 : st, headers: r.headers || {} });

@@ -13,9 +13,12 @@ export async function createCsq4Db() {
     create table public.wr_people(emp_id text primary key, name text not null, role text, grade integer);
     create table public.app_state(key text primary key, value jsonb, updated_at timestamptz not null default now());`);
   await db.exec(fs.readFileSync(new URL('../../supabase/migrations/20261214090000_csq4.sql', import.meta.url), 'utf8'));
+  // v1222：GP_DB=1 のとき、育成計画・OJT（gp_*・A-2-1）の表と関数も（キャリア・育成の本物の Chrome の試し）
+  const gp = process.env.GP_DB === '1';
+  if (gp) await db.exec(fs.readFileSync(new URL('../../supabase/migrations/20261219090000_gp_plan.sql', import.meta.url), 'utf8'));
   const sigs = {};
   const rs = await db.query(`select p.proname n, p.proargnames a, array(select format_type(t, null) from unnest(p.proargtypes::oid[]) t) t
-    from pg_proc p join pg_namespace s on s.oid = p.pronamespace where s.nspname = 'public' and p.proname like 'csq4\\_%'`);
+    from pg_proc p join pg_namespace s on s.oid = p.pronamespace where s.nspname = 'public' and (p.proname like 'csq4\\_%' or p.proname like 'gp\\_%')`);
   for (const r of rs.rows) (sigs[r.n] = sigs[r.n] || []).push((r.a || []).map((a, i) => [a, r.t[i]]));
   let chain = Promise.resolve();
   const lock = fn => { const p = chain.then(fn, fn); chain = p.catch(() => {}); return p; };
@@ -39,9 +42,9 @@ export async function createCsq4Db() {
       }
       if (method !== 'GET') return J({ message: 'method' }, 405);
       const tbl = p.slice('/rest/v1/'.length);
-      if (!/^csq4_[a-z_]+$/.test(tbl)) return J({ code: 'PGRST205', message: 'not found' }, 404);
+      if (!(gp ? /^(csq4|gp)_[a-z_]+$/ : /^csq4_[a-z_]+$/).test(tbl)) return J({ code: 'PGRST205', message: 'not found' }, 404);
       const q = u.searchParams, cols = (q.get('select') || '*').split(','), where = [], params = [];
-      if (!cols.every(c => c === '*' || /^[a-z_]+$/.test(c))) return J({ message: 'select' }, 400);
+      if (!cols.every(c => c === '*' || /^[a-z_][a-z_0-9]*$/.test(c))) return J({ message: 'select' }, 400);   // v1222：gp_plans の csq4_ver（数字の入る列）
       for (const [k, v] of q.entries()) {
         if (['select', 'order', 'limit'].includes(k)) continue;
         if (!/^[a-z_]+$/.test(k)) return J({ message: 'column' }, 400);
