@@ -6,7 +6,7 @@
 - `ops-bot-range-resume` の本番は 07:00 HST から（リポジトリは 08:00 のままだった）。08:00 の勤怠レポートの前に、当月を古い順に取り直すため。リポジトリの `db/ops-bot-range-schedule.sql` を 07:00 に合わせた。
 - ops-bot：本番 v36 にあって main に無かったのは、給与期間の勤怠レポート（`formatPayrollLaborReport`・`collectPayrollLabor`・`labor_payroll_collect`・収集が揃うまで送らない）。`bot/` のモジュールは本番と同じ。main の方が新しいのはアプリの Origin（`capacitor://localhost`。PR #221）。本番のバンドルには無いので残した。
 - SQL：`bot_collection_days`・`bot_labor_payroll_period`・`bot_labor_payroll_snapshot` を追加。`bot_morning_snapshot` の `finance_ok` と `finance_expected` は収集日（`bot_collection_days`。開店日より前を数えない）に合わせた。朝の会計の文は、`finance_expected` があるときその件数と `finance_ok` を比べる（勤怠の expected・ok は変えない）。`bot_reserve_morning_report` と `cash_tip_autofill` は本番と中身が同じなので置き換えていない。
-- 中間レビュー：新しい行の提出期限は `schedule.submit_day`（20 日）。行を作るのは最初の保存（`mr_save`。答えに期限と超過を含め、画面は全面の読み直しをせず見出しへ出す）と、期限の保存・月の入力担当の保存（`mr_review_row`）。店を開いただけでは行を作らない。既存の空の期限は変えない。GM・CEO の上書きはそのまま。期限後の提出は拒否しない。`flags.notify` は false のまま。画面は「まだ提出できます」。アプリは 1216。
+- 中間レビュー：新しい行の提出期限は `schedule.submit_day`（20 日）。行を作るのは最初の保存（`mr_save`。答えに期限と超過を含め、画面は全面の読み直しをせず、保存前からある見出しのノードと提出欄だけを更新する）と、期限の保存・月の入力担当の保存（`mr_review_row`）。店を開いただけでは行を作らない。既存の空の期限は変えない。GM・CEO の上書きはそのまま。期限後の提出は拒否しない。`flags.notify` は false のまま。画面は「まだ提出できます」。アプリは 1216。試験は保存後に `renderPage` を呼ばず、そのノードを直接見る（描き直しを外すと落ちる）。
 - 文書：`docs/BOT_OPERATIONS_JA.md` の先頭が現行。古い「毎朝 09:00」などは【2026-11-25 削除：現行ではない】。案内（休日・キックオフ・棚卸・Q コミット・回収）は案で、未実装。
 - main `589cc01`（#224）を取り込んだ。貼り付け用の空行と bonus-close の許可リストは #224 のまま。ops-bot の貼る 1 ファイルは、このブランチで給与期間レポートと `finance_expected` を含めて作り直している。
 
