@@ -189,13 +189,14 @@ function morningStoreMessages(details,total,stores=[],category=null){
  return sections;
 }
 export function formatMorningSummary(s,{resend=false,category=null}={}){
- const n=k=>Number(s?.counts?.[k]||0),complete=Number(s?.active_stores)>0&&Number(s?.ok)===Number(s?.expected)&&Number(s?.failed)===0&&(category==='labor'||s?.finance_enabled===true&&Number(s?.finance_ok)===Number(s?.expected));
+ const finN=s?.finance_expected==null?Number(s?.expected||0):Number(s.finance_expected);
+ const n=k=>Number(s?.counts?.[k]||0),complete=Number(s?.active_stores)>0&&Number(s?.ok)===Number(s?.expected)&&Number(s?.failed)===0&&(category==='labor'||s?.finance_enabled===true&&Number(s?.finance_ok)===finN);
  const labor=n('labor'),voids=n('void'),unpaid=n('unpaid'),total=labor+voids+unpaid,period=Number(s.expected)===0&&Number(s.active_stores)>0?'当月は対象日なし':s.from+'〜'+s.to,p=s.progress_counts||{};
  const title=category==='labor'?'勤怠管理レポート':category==='finance'?'会計管理レポート':'毎朝 本部確認レポート';
- const lines=['【'+title+(resend?'｜再送':'')+'】',...(category?['管理担当：'+(category==='labor'?'Moto・Yuki':'経理')]:[]),'対象：'+period,category==='labor'?'勤怠取得：'+Number(s.ok||0)+'/'+Number(s.expected||0):'取得：'+Number(s.ok||0)+'/'+Number(s.expected||0)+'　決済確認：'+Number(s.finance_ok||0)+'/'+Number(s.expected||0),'未解決：'+total+'件'+(category==='labor'?'（勤怠）':category==='finance'?'（Payment Void '+voids+'／Unpaid '+unpaid+'）':'（勤怠 '+labor+'／Payment Void '+voids+'／Unpaid '+unpaid+'）')];
+ const lines=['【'+title+(resend?'｜再送':'')+'】',...(category?['管理担当：'+(category==='labor'?'Moto・Yuki':'経理')]:[]),'対象：'+period,category==='labor'?'勤怠取得：'+Number(s.ok||0)+'/'+Number(s.expected||0):'取得：'+Number(s.ok||0)+'/'+Number(s.expected||0)+'　決済確認：'+Number(s.finance_ok||0)+'/'+finN,'未解決：'+total+'件'+(category==='labor'?'（勤怠）':category==='finance'?'（Payment Void '+voids+'／Unpaid '+unpaid+'）':'（勤怠 '+labor+'／Payment Void '+voids+'／Unpaid '+unpaid+'）')];
  if(total>0)lines.push('進捗：未通知 '+Number(p.not_sent||0)+'／通知失敗 '+Number(p.notify_failed||0)+'／対応待ち '+Number(p.waiting||0)+'／再通知失敗 '+Number(p.reminder_failed||0)+'／修正中 '+Number(p.in_progress||0)+'／再確認待ち '+Number(p.recheck||0)+'／本部確認 '+Number(p.review||0)+'／送信確認 '+Number(p.send_check||0));
  if(Number(s?.active_stores)===0)lines.push('⚠️ 有効店舗がありません');
- if(category!=='labor'&&(s?.finance_enabled!==true||Number(s?.finance_ok)!==Number(s?.expected)))lines.push('⚠️ 決済データの取得が未完了です');
+ if(category!=='labor'&&(s?.finance_enabled!==true||Number(s?.finance_ok)!==finN))lines.push('⚠️ 決済データの取得が未完了です');
  if(!complete)lines.push('⚠️ 取得未完了：'+Number(s.ok||0)+'/'+Number(s.expected||0)+'、失敗 '+Number(s.failed||0));
  else if(total===0)lines.push('✅ 現在、未解決の異常はありません');
  else lines.push('✅ データ取得完了　店舗別レポートを確認してください');
@@ -209,6 +210,27 @@ export function formatMorningSummary(s,{resend=false,category=null}={}){
  for(let i=0;i<messages.length;i++)messages[i].text='【'+(category==='labor'?'勤怠管理｜Moto・Yuki':category==='finance'?'会計管理｜経理':'本部レポート')+' '+(i+1)+'/'+messages.length+'】\n'+messages[i].text;
 
  return {text,messages,complete,total,detail_count:detailCount};
+}
+// Labor LINE report for one payroll period (1st–15th or 16th–month end), not the calendar month.
+// Collection counts come from bot_labor_payroll_snapshot. An incomplete period is not sent.
+const PAYROLL_DATE=/^\d{4}-\d{2}-\d{2}$/;
+export function formatPayrollLaborReport(payroll,options={}){
+ const p=payroll?.labor_period,rows=payroll?.details;
+ if(!p||!PAYROLL_DATE.test(p.from||'')||!PAYROLL_DATE.test(p.to||'')||p.from>p.to||p.day!==payroll.day||
+  ['expected','ok','failed'].some(k=>!Number.isInteger(p[k])||p[k]<0)||p.ok>p.expected)throw Error('labor_payroll_period_missing');
+ if(!Array.isArray(rows)||payroll.detail_total!==rows.length)throw Error('labor_payroll_snapshot_invalid');
+ if(rows.some(c=>c.kind!=='labor'||!PAYROLL_DATE.test(c.business_date||'')||c.business_date<p.from||c.business_date>p.to))throw Error('labor_payroll_period_mismatch');
+ const stores=new Map(),progress={},statuses={};
+ for(const c of rows){
+  if(!stores.has(c.store_id))stores.set(c.store_id,{store_id:c.store_id,store_name:c.store_name,labor:0,void:0,unpaid:0});
+  stores.get(c.store_id).labor++;
+  const key=c.status==='hq_review'?'review':c.status==='verify'?'recheck':c.progress||'review';
+  progress[key]=(progress[key]||0)+1;statuses[c.status]=(statuses[c.status]||0)+1;
+ }
+ const scoped={...payroll,from:p.from,to:p.to,expected:p.expected,ok:p.ok,failed:p.failed,
+  counts:{labor:rows.length,void:0,unpaid:0},stores:[...stores.values()],progress_counts:progress,status_counts:statuses};
+ return {category:'labor',period_from:p.from,period_to:p.to,payroll_period_from:p.payroll_from,payroll_period_to:p.payroll_to,period_is_final:p.is_final,
+  ...formatMorningSummary(scoped,{...options,category:'labor'})};
 }
 // Each responsibility gets its own overview, progress, details and numbering.
 export function formatResponsibleMorningReports(s,options={}){
@@ -316,6 +338,25 @@ export function createHandler({env,fetch:fetcher=globalThis.fetch}){
    return {created_or_matched:findings.length,override,entries:entries.length,...(jobError?{job_error:jobError}:{})};
   }catch(e){await db('bot_runs?store_id=eq.'+encodeURIComponent(storeID),'PATCH',{running_until:null,last_error:String(e.message).slice(0,80)}).catch(()=>{});throw e;}
  }
+ // On the 1st (HST), collect one missing labor day for the payroll period that just ended. No LINE send.
+ async function collectPayrollLabor(storeID){
+  const payroll=await rpc('bot_labor_payroll_snapshot',{});
+  if(!payroll?.day||payroll.day.slice(8)!=='01')return {skipped:true,reason:'not_month_close'};
+  const target=(payroll.collection_missing||[]).find(d=>d.store_id===storeID);
+  if(!target)return {skipped:true,reason:'payroll_collection_complete',day:payroll.day};
+  if(target.business_date<payroll.from||target.business_date>payroll.to)throw Error('labor_payroll_period_mismatch');
+  const result=await scan(storeID,target.business_date,null,false);
+  if(result.job_error)throw Error('payroll_job_check_failed');
+  const start=Date.now(),pending=await db('bot_cases?kind=eq.labor&status=not.in.(done,hq_review)&store_id=eq.'+encodeURIComponent(storeID)+'&business_date=eq.'+target.business_date+'&order=last_checked_at.asc.nullsfirst,created_at.asc&limit=20');
+  for(const c of pending){if(Date.now()-start>45000)break;try{await recheck(c,null);}catch{/* Leave the case open. */}}
+  const day=new Date(Date.now()-10*3600000).toISOString().slice(0,10);
+  if(day!==payroll.day)throw Error('daily_date_changed');
+  await db('bot_events?on_conflict=event_key','POST',{
+   event_key:'payroll-labor-scan:'+day+':'+storeID+':'+target.business_date,
+   kind:'payroll_labor_scan',data:{day,store_id:storeID,business_date:target.business_date,state:'ok',collected_at:new Date().toISOString()}
+  },'resolution=merge-duplicates');
+  return {...result,day,business_date:target.business_date,payroll_labor_only:true};
+ }
  async function rangeRun(storeID){
   const job=await rpc('bot_claim_range',{p_store:storeID});
   if(!job)return {skipped:true,range_complete_or_waiting:true};
@@ -416,6 +457,7 @@ export function createHandler({env,fetch:fetcher=globalThis.fetch}){
    if(groups.length!==1||groups[0].all_stores!==true||groups[0].label!==cfg.label)throw Error('group_not_enabled');}
   if(!env('LINE_CHANNEL_ACCESS_TOKEN'))throw Error('line_token_missing');
   const snapshot=await rpc('bot_morning_snapshot',{});
+  const payroll=(!onlyCategory||onlyCategory==='labor')?await rpc('bot_labor_payroll_snapshot',{}):null;
   const labor=(snapshot.details||[]).filter(c=>(!onlyCategory||onlyCategory==='labor')&&c.kind==='labor'&&!Object.hasOwn(c,'shifts')&&/^#[0-9]+$/.test(c.code));
   for(let i=0;i<labor.length;i+=50){
    const batch=labor.slice(i,i+50);
@@ -444,7 +486,7 @@ export function createHandler({env,fetch:fetcher=globalThis.fetch}){
   const formatted=variant==='mention-preview-v1'?{messages:[{type:'text',text:'【表示テスト｜社員メンション通知】\n［登録済み社員へのメンションがここに表示されます］\n\n店舗：サンプル店舗\n対象：スタッフ名\n内容：勤怠エラー\n進捗：🟠 対応待ち\n案件：#123\n\n対応後は「#123 修正済み 修正内容」と返信してください。\n※表示確認用です。対応は不要です。'}],complete:true,total:0,detail_count:0}:formatResponsibleMorningReports(snapshot,{resend:variant!=='daily'});
   if(cfg.routes){
    if(variant==='mention-preview-v1')throw Error('invalid_summary_variant');
-   const reports=formatted.reports.filter(r=>!onlyCategory||r.category===onlyCategory);
+   const reports=formatted.reports.filter(r=>!onlyCategory||r.category===onlyCategory).map(r=>r.category==='labor'?formatPayrollLaborReport(payroll,{resend:variant!=='daily'}):r);
    if(!onlyCategory||onlyCategory==='cash_tip'){
     try{const cash=await cashTipReport(snapshot,cfg,variant);if(cash)reports.push(cash);}catch{reports.push({category:'cash_tip',error:'cash_tip_read_failed'});}
    }
@@ -462,6 +504,7 @@ export function createHandler({env,fetch:fetcher=globalThis.fetch}){
   return deliverMorningReport(snapshot,formatted,cfg,variant);
  }
  async function deliverMorningReport(snapshot,formatted,cfg,variant,category=null){
+  if(category==='labor'&&!formatted.complete)return {state:'skipped',reason:'labor_collection_incomplete',day:snapshot.day};
   if(!formatted.messages.length)return {state:'skipped',reason:'no_findings',day:snapshot.day};
   const reserved=await rpc(category?'bot_reserve_morning_report':'bot_reserve_morning_summary_v3',{p_day:snapshot.day,p_group:cfg.group_id,p_request:crypto.randomUUID(),p_messages:formatted.messages,p_variant:variant,p_snapshot_at:snapshot.snapshot_at||null,...(category?{p_category:category}:{})});
   if(reserved.data?.state==='accepted')return {state:'accepted',already_sent:true,day:snapshot.day};
@@ -645,6 +688,7 @@ export function createHandler({env,fetch:fetcher=globalThis.fetch}){
    if(body.mode==='group_directory')return json(await groupDirectory());
    if(body.mode==='morning_preview')return json(await morningSummary(body.variant||'daily',true));
    if(!cfg.enabled||!(await setting('clock')))return json({skipped:true});
+   if(body.mode==='labor_payroll_collect')return json(await collectPayrollLabor(String(body.store_id)));
    if(body.mode==='morning_summary'&&Object.hasOwn(body,'category')){
     if(!['labor','finance','cash_tip'].includes(body.category))throw Error('invalid_report_category');
     // A requested category-only send must not flush unrelated lifecycle notices.

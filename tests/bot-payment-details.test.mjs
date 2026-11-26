@@ -130,6 +130,7 @@ test('morning finance includes transaction identity and omits completed cases',a
   if(url.includes('key=eq.morning_summary'))return Response.json([{value:{enabled:true,group_id:group,label:'HQ'}}]);
   if(url.includes('/bot_groups?'))return Response.json([{group_id:group,label:'HQ',all_stores:true}]);
   if(url.endsWith('/rpc/bot_morning_snapshot'))return Response.json({day:'2026-08-02',snapshot_at:'2026-08-02T16:00:00Z',details:[detail],detail_total:1,counts:{void:1},stores:[],recent_closed:[{code:'#22',kind:'void',store_id:'TEST',subject:c.subject,closed_at:closed.closed_at,closure:{actor:'Synthetic reviewer',note:'Checked'}}]});
+  if(url.endsWith('/rpc/bot_labor_payroll_snapshot'))return Response.json({});
   if(url.includes('/bot_cases?code=in.'))return Response.json([c,closed]);
   if(url.includes('/store_config?'))return Response.json([store]);
   if(url.endsWith('/authentication/login'))return Response.json({token:{accessToken:'synthetic'}});
@@ -155,6 +156,7 @@ test('snapshots never borrow newer transaction details, including reopened and r
    if(url.includes('key=eq.morning_summary'))return Response.json([{value:{enabled:true,group_id:group,label:'HQ'}}]);
    if(url.includes('/bot_groups?'))return Response.json([{group_id:group,label:'HQ',all_stores:true}]);
    if(url.endsWith('/rpc/bot_morning_snapshot'))return Response.json({day:'2026-08-02',snapshot_at:'2026-08-02T16:00:00Z',details:state.status==='hq_review'?[{...closed,amount:17.5,status:'hq_review'}]:[],detail_total:state.status==='hq_review'?1:0,counts:state.status==='hq_review'?{void:1}:{},stores:[],recent_closed:state.status==='hq_review'?[]:[closed]});
+   if(url.endsWith('/rpc/bot_labor_payroll_snapshot'))return Response.json({});
    if(url.includes('/bot_cases?code=in.'))return Response.json([{...c,...state,payload:{...c.payload,void_date:'2026-08-02T16:00:00Z'}}]);
    if(url.endsWith('/rpc/bot_reserve_morning_summary_v3')){reserved=JSON.parse(init.body);return Response.json({id:1,data:{state:'pending',batches:[{state:'pending',messages:reserved.p_messages,request_id:guid(20)}]}});}
    if(url.endsWith('/rpc/bot_finish_morning_summary_batch'))return Response.json(null);

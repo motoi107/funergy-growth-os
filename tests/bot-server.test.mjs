@@ -201,6 +201,7 @@ test('automatic morning summary is worker-key gated, targets configured headquar
   if(url.includes('key=eq.morning_summary'))return Response.json([{value:{enabled:true,group_id:group,label:'HQ'}}]);
   if(url.includes('/bot_groups?'))return Response.json([{group_id:group,label:'HQ',all_stores:true}]);
   if(url.endsWith('/rpc/bot_morning_snapshot'))return Response.json({day:'2026-09-08',from:'2026-09-01',to:'2026-09-07',expected:56,ok:healthy?56:55,failed:healthy?0:1,active_stores:8,finance_enabled:true,finance_ok:56,counts:{labor:0,void:0,unpaid:0},stores:[]});
+  if(url.endsWith('/rpc/bot_labor_payroll_snapshot'))return Response.json({});
   if(url.endsWith('/rpc/bot_reserve_morning_summary_v3')){const body=JSON.parse(init.body);assert.equal(body.p_variant,'daily');return Response.json(event);}
   if(url.endsWith('/rpc/bot_finish_morning_summary_batch')){finished.push(JSON.parse(init.body));event.data.state=finished.at(-1).p_state;return Response.json(null);}
   if(url==='https://api.line.me/v2/bot/message/push'){pushes++;const body=JSON.parse(init.body);assert.equal(body.to,group);assert.equal(body.messages.length,2);assert.equal(init.headers['X-Line-Retry-Key'],guid(77));return new Response(null,{status:200,headers:{'x-line-request-id':'line-request'}});}

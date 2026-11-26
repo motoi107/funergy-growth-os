@@ -52,6 +52,7 @@ async function server({ on = true, demo = true, verifier = true } = {}) {
       delete from mr_stores where env = 'demo';`);
   }
   await pg.exec(LIVE_SQL);
+  await pg.exec(fs.readFileSync(new URL('../supabase/migrations/20261220100000_mr_schedule_deadlines.sql', import.meta.url), 'utf8'));
   if (!on) await pg.query(`update mr_settings set value = value || '{"private":false}' where key = 'flags'`);
   await pg.exec('set role service_role');
   const db = { async rpc(name, p) { const r = await pg.query(`select public.${name}($1::jsonb) as v`, [JSON.stringify(p ?? {})]); return r.rows[0].v; } };
@@ -272,7 +273,7 @@ test('全店 (the fictional stores, live): status, input person, separate counts
   }
   assert.match(s, /港町（デモ） 担当：Yuki（AM） 提出済み（提出版 1）/);
   assert.match(s, /丘の上（デモ） .* ✓ 確認完了（提出版 1）/);
-  assert.match(s, /川沿い（デモ） 管轄 未設定 下書き（未提出） 入力担当： GM Test まだ提出されていない 提出 10\/15 期限超過 返信 未設定/);
+  assert.match(s, /川沿い（デモ） 管轄 未設定 下書き（未提出） 入力担当： GM Test まだ提出されていない 提出 10\/15 期限超過・提出できます 返信 未設定/);
   assert.match(s, /海岸（デモ） .* 提出 未設定 返信 未設定/);
   assert.match(s, /公園通り（デモ） .* 提出 未設定 返信 10\/17 期限超過/);
   assert.match(h, /担当・閲覧設定/);
@@ -1269,4 +1270,83 @@ test('v1122 the month\'s input people on two screens: the older save is not writ
   await g.run('mrAccMonthSave()'); await g.flush(); await g.show();
   assert.match(g.html, /あなたの変更（入力担当に Chef Oka を足す）は、もう入っています（保存しなくて大丈夫）。/); assert.equal(g.run('mrSetUnsaved()'), false);
   assert.deepEqual(await db(), { input_emps: ['E14', 'E13', 'E10'], input_version: 3 });
+});
+
+// The nodes that are already on the screen. A later full renderPage() would hide a missing in-place update.
+function mountReviewNodes(c) {
+  const spanAt = c.html.indexOf('<span id="mr-deadlines">');
+  assert.ok(spanAt >= 0, 'deadline node');
+  const deadlines = { innerHTML: c.html.slice(spanAt + '<span id="mr-deadlines">'.length, c.html.indexOf('</span>', spanAt)) };
+  const secAt = c.html.indexOf('<section class="card mr-sec" id="mr-sec-5">');
+  assert.ok(secAt >= 0, 'submit section');
+  const sec = { outerHTML: c.html.slice(secAt, c.html.indexOf('</section>', secAt) + '</section>'.length) };
+  const barAt = c.html.indexOf('<div class="mr-subbar" id="mr-subbar">');
+  const bar = { innerHTML: barAt < 0 ? '' : c.html.slice(barAt, c.html.indexOf('</div>', barAt) + '</div>'.length) };
+  c.dom = Object.assign(c.dom || {}, { 'mr-deadlines': deadlines, 'mr-sec-5': sec, 'mr-subbar': bar });
+  const paint = c.renderPage;
+  let full = 0;
+  c.renderPage = () => { full += 1; return paint(); };
+  return { deadlines, sec, bar, full: () => full };
+}
+
+test('first save updates the existing deadline node and keeps text typed while that save is in flight', async () => {
+  const S = await server({ demo: false }); await live(S);
+  const c = app(S, { pin: 'pin-E12' });
+  await openStore(c, 'F01');
+  assert.match(strip(c.html), /提出期限：未設定/);
+  assert.doesNotMatch(c.html, /まだ提出できます/);
+  const liveNodes = mountReviewNodes(c);
+  const pageBefore = c.html;
+  const orig = c.fetch;
+  c.fetch = async (url, init) => {
+    const body = JSON.parse(init.body);
+    if (body.action === 'save' && body.body && body.body.prev && body.body.prev.sales && body.body.prev.sales.comment === '最初') c.run("mrSetVal('prev.sales.comment','最初と続き')");
+    return orig(url, init);
+  };
+  c.run("mrSetVal('prev.sales.comment','最初')");
+  await c.flush();
+  assert.equal(liveNodes.full(), 0);
+  assert.equal(c.html, pageBefore);
+  assert.match(liveNodes.deadlines.innerHTML, /提出期限：10\/20/);
+  assert.match(liveNodes.deadlines.innerHTML, /提出期限を過ぎています（まだ提出できます）/);
+  assert.match(liveNodes.sec.outerHTML, /提出期限は過ぎています。このまま提出できます。/);
+  assert.equal(c.run("_mr.ed.body.prev.sales.comment"), '最初と続き');
+  const row = (await S.q(`select deadlines, version, body->'prev'->'sales'->>'comment' as comment from mr_reviews where store_id='F01' and ym='2026-10'`))[0];
+  assert.equal(row.deadlines.submit, '2026-10-20');
+  assert.equal(row.comment, '最初と続き');
+  assert.equal(row.version, 2);
+
+  const en = app(S, { pin: 'pin-E12', lang: 'en' });
+  await en.show(); en.run("mrSetYm('2026-11')"); await openStore(en, 'F01');
+  assert.match(strip(en.html), /Submit by: not set/);
+  const enNodes = mountReviewNodes(en);
+  const enBefore = en.html;
+  en.run("mrSetVal('consult','none')"); await en.flush();
+  assert.equal(enNodes.full(), 0);
+  assert.equal(en.html, enBefore);
+  assert.match(enNodes.deadlines.innerHTML, /Submit by: 11\/20/);
+  assert.match(enNodes.deadlines.innerHTML, /Submission overdue \(you can still submit\)/);
+  assert.match(enNodes.sec.outerHTML, /The submission date has passed\. You can still submit\./);
+
+  await S.q(`insert into mr_reviews(env, store_id, ym, status, body, deadlines, version) values ('live','F02','2026-10','draft','{"v":2}','{}',1)`);
+  const empty = app(S, { who: 'am1', pin: 'pin-E5' });
+  await openStore(empty, 'F02');
+  assert.match(strip(empty.html), /提出期限：未設定/);
+  const emptyNodes = mountReviewNodes(empty);
+  empty.run("mrSetVal('consult','none')"); await empty.flush();
+  assert.equal(emptyNodes.full(), 0);
+  assert.match(emptyNodes.deadlines.innerHTML, /提出期限：未設定/);
+  assert.doesNotMatch(emptyNodes.deadlines.innerHTML, /まだ提出できます/);
+  assert.doesNotMatch(emptyNodes.sec.outerHTML, /このまま提出できます/);
+
+  await S.api('gm', { action: 'deadline_save', env: 'live', ym: '2026-10', store_id: 'F05', deadlines: { submit: '2026-10-18', reply: '' } });
+  const over = app(S, { pin: 'pin-E14' });
+  await openStore(over, 'F05');
+  assert.match(strip(over.html), /提出期限：10\/18/);
+  const overNodes = mountReviewNodes(over);
+  over.run("mrSetVal('consult','none')"); await over.flush();
+  assert.equal(overNodes.full(), 0);
+  assert.match(overNodes.deadlines.innerHTML, /提出期限：10\/18/);
+  assert.doesNotMatch(overNodes.deadlines.innerHTML, /提出期限：10\/20/);
+  assert.match(overNodes.sec.outerHTML, /提出期限は過ぎています。このまま提出できます。/);
 });

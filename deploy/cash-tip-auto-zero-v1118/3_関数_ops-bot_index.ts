@@ -691,13 +691,14 @@ function morningStoreMessages(details, total, stores = [], category = null) {
   return sections;
 }
 function formatMorningSummary(s, { resend = false, category = null } = {}) {
-  const n = (k) => Number(s?.counts?.[k] || 0), complete = Number(s?.active_stores) > 0 && Number(s?.ok) === Number(s?.expected) && Number(s?.failed) === 0 && (category === "labor" || s?.finance_enabled === true && Number(s?.finance_ok) === Number(s?.expected));
+  const finN = s?.finance_expected == null ? Number(s?.expected || 0) : Number(s.finance_expected);
+  const n = (k) => Number(s?.counts?.[k] || 0), complete = Number(s?.active_stores) > 0 && Number(s?.ok) === Number(s?.expected) && Number(s?.failed) === 0 && (category === "labor" || s?.finance_enabled === true && Number(s?.finance_ok) === finN);
   const labor = n("labor"), voids = n("void"), unpaid = n("unpaid"), total = labor + voids + unpaid, period = Number(s.expected) === 0 && Number(s.active_stores) > 0 ? "\u5F53\u6708\u306F\u5BFE\u8C61\u65E5\u306A\u3057" : s.from + "\u301C" + s.to, p = s.progress_counts || {};
   const title = category === "labor" ? "\u52E4\u6020\u7BA1\u7406\u30EC\u30DD\u30FC\u30C8" : category === "finance" ? "\u4F1A\u8A08\u7BA1\u7406\u30EC\u30DD\u30FC\u30C8" : "\u6BCE\u671D \u672C\u90E8\u78BA\u8A8D\u30EC\u30DD\u30FC\u30C8";
-  const lines = ["\u3010" + title + (resend ? "\uFF5C\u518D\u9001" : "") + "\u3011", ...category ? ["\u7BA1\u7406\u62C5\u5F53\uFF1A" + (category === "labor" ? "Moto\u30FBYuki" : "\u7D4C\u7406")] : [], "\u5BFE\u8C61\uFF1A" + period, category === "labor" ? "\u52E4\u6020\u53D6\u5F97\uFF1A" + Number(s.ok || 0) + "/" + Number(s.expected || 0) : "\u53D6\u5F97\uFF1A" + Number(s.ok || 0) + "/" + Number(s.expected || 0) + "\u3000\u6C7A\u6E08\u78BA\u8A8D\uFF1A" + Number(s.finance_ok || 0) + "/" + Number(s.expected || 0), "\u672A\u89E3\u6C7A\uFF1A" + total + "\u4EF6" + (category === "labor" ? "\uFF08\u52E4\u6020\uFF09" : category === "finance" ? "\uFF08Payment Void " + voids + "\uFF0FUnpaid " + unpaid + "\uFF09" : "\uFF08\u52E4\u6020 " + labor + "\uFF0FPayment Void " + voids + "\uFF0FUnpaid " + unpaid + "\uFF09")];
+  const lines = ["\u3010" + title + (resend ? "\uFF5C\u518D\u9001" : "") + "\u3011", ...category ? ["\u7BA1\u7406\u62C5\u5F53\uFF1A" + (category === "labor" ? "Moto\u30FBYuki" : "\u7D4C\u7406")] : [], "\u5BFE\u8C61\uFF1A" + period, category === "labor" ? "\u52E4\u6020\u53D6\u5F97\uFF1A" + Number(s.ok || 0) + "/" + Number(s.expected || 0) : "\u53D6\u5F97\uFF1A" + Number(s.ok || 0) + "/" + Number(s.expected || 0) + "\u3000\u6C7A\u6E08\u78BA\u8A8D\uFF1A" + Number(s.finance_ok || 0) + "/" + finN, "\u672A\u89E3\u6C7A\uFF1A" + total + "\u4EF6" + (category === "labor" ? "\uFF08\u52E4\u6020\uFF09" : category === "finance" ? "\uFF08Payment Void " + voids + "\uFF0FUnpaid " + unpaid + "\uFF09" : "\uFF08\u52E4\u6020 " + labor + "\uFF0FPayment Void " + voids + "\uFF0FUnpaid " + unpaid + "\uFF09")];
   if (total > 0) lines.push("\u9032\u6357\uFF1A\u672A\u901A\u77E5 " + Number(p.not_sent || 0) + "\uFF0F\u901A\u77E5\u5931\u6557 " + Number(p.notify_failed || 0) + "\uFF0F\u5BFE\u5FDC\u5F85\u3061 " + Number(p.waiting || 0) + "\uFF0F\u518D\u901A\u77E5\u5931\u6557 " + Number(p.reminder_failed || 0) + "\uFF0F\u4FEE\u6B63\u4E2D " + Number(p.in_progress || 0) + "\uFF0F\u518D\u78BA\u8A8D\u5F85\u3061 " + Number(p.recheck || 0) + "\uFF0F\u672C\u90E8\u78BA\u8A8D " + Number(p.review || 0) + "\uFF0F\u9001\u4FE1\u78BA\u8A8D " + Number(p.send_check || 0));
   if (Number(s?.active_stores) === 0) lines.push("\u26A0\uFE0F \u6709\u52B9\u5E97\u8217\u304C\u3042\u308A\u307E\u305B\u3093");
-  if (category !== "labor" && (s?.finance_enabled !== true || Number(s?.finance_ok) !== Number(s?.expected))) lines.push("\u26A0\uFE0F \u6C7A\u6E08\u30C7\u30FC\u30BF\u306E\u53D6\u5F97\u304C\u672A\u5B8C\u4E86\u3067\u3059");
+  if (category !== "labor" && (s?.finance_enabled !== true || Number(s?.finance_ok) !== finN)) lines.push("\u26A0\uFE0F \u6C7A\u6E08\u30C7\u30FC\u30BF\u306E\u53D6\u5F97\u304C\u672A\u5B8C\u4E86\u3067\u3059");
   if (!complete) lines.push("\u26A0\uFE0F \u53D6\u5F97\u672A\u5B8C\u4E86\uFF1A" + Number(s.ok || 0) + "/" + Number(s.expected || 0) + "\u3001\u5931\u6557 " + Number(s.failed || 0));
   else if (total === 0) lines.push("\u2705 \u73FE\u5728\u3001\u672A\u89E3\u6C7A\u306E\u7570\u5E38\u306F\u3042\u308A\u307E\u305B\u3093");
   else lines.push("\u2705 \u30C7\u30FC\u30BF\u53D6\u5F97\u5B8C\u4E86\u3000\u5E97\u8217\u5225\u30EC\u30DD\u30FC\u30C8\u3092\u78BA\u8A8D\u3057\u3066\u304F\u3060\u3055\u3044");
@@ -711,6 +712,42 @@ function formatMorningSummary(s, { resend = false, category = null } = {}) {
   messages[messages.length - 1].text += "\n\n\u3010\u30EC\u30DD\u30FC\u30C8\u7D42\u4E86\u3011\u672A\u89E3\u6C7A " + detailCount + "\u4EF6\u3092\u5168\u4EF6\u63B2\u8F09";
   for (let i = 0; i < messages.length; i++) messages[i].text = "\u3010" + (category === "labor" ? "\u52E4\u6020\u7BA1\u7406\uFF5CMoto\u30FBYuki" : category === "finance" ? "\u4F1A\u8A08\u7BA1\u7406\uFF5C\u7D4C\u7406" : "\u672C\u90E8\u30EC\u30DD\u30FC\u30C8") + " " + (i + 1) + "/" + messages.length + "\u3011\n" + messages[i].text;
   return { text, messages, complete, total, detail_count: detailCount };
+}
+var PAYROLL_DATE = /^\d{4}-\d{2}-\d{2}$/;
+function formatPayrollLaborReport(payroll, options = {}) {
+  const p = payroll?.labor_period, rows = payroll?.details;
+  if (!p || !PAYROLL_DATE.test(p.from || "") || !PAYROLL_DATE.test(p.to || "") || p.from > p.to || p.day !== payroll.day || ["expected", "ok", "failed"].some((k) => !Number.isInteger(p[k]) || p[k] < 0) || p.ok > p.expected) throw Error("labor_payroll_period_missing");
+  if (!Array.isArray(rows) || payroll.detail_total !== rows.length) throw Error("labor_payroll_snapshot_invalid");
+  if (rows.some((c) => c.kind !== "labor" || !PAYROLL_DATE.test(c.business_date || "") || c.business_date < p.from || c.business_date > p.to)) throw Error("labor_payroll_period_mismatch");
+  const stores = /* @__PURE__ */ new Map(), progress = {}, statuses = {};
+  for (const c of rows) {
+    if (!stores.has(c.store_id)) stores.set(c.store_id, { store_id: c.store_id, store_name: c.store_name, labor: 0, void: 0, unpaid: 0 });
+    stores.get(c.store_id).labor++;
+    const key = c.status === "hq_review" ? "review" : c.status === "verify" ? "recheck" : c.progress || "review";
+    progress[key] = (progress[key] || 0) + 1;
+    statuses[c.status] = (statuses[c.status] || 0) + 1;
+  }
+  const scoped = {
+    ...payroll,
+    from: p.from,
+    to: p.to,
+    expected: p.expected,
+    ok: p.ok,
+    failed: p.failed,
+    counts: { labor: rows.length, void: 0, unpaid: 0 },
+    stores: [...stores.values()],
+    progress_counts: progress,
+    status_counts: statuses
+  };
+  return {
+    category: "labor",
+    period_from: p.from,
+    period_to: p.to,
+    payroll_period_from: p.payroll_from,
+    payroll_period_to: p.payroll_to,
+    period_is_final: p.is_final,
+    ...formatMorningSummary(scoped, { ...options, category: "labor" })
+  };
 }
 function formatResponsibleMorningReports(s, options = {}) {
   const details = s.details || [], known = (c) => ["labor", "void", "unpaid"].includes(c.kind);
@@ -873,6 +910,31 @@ function createHandler({ env, fetch: fetcher = globalThis.fetch }) {
       throw e;
     }
   }
+  async function collectPayrollLabor(storeID) {
+    const payroll = await rpc("bot_labor_payroll_snapshot", {});
+    if (!payroll?.day || payroll.day.slice(8) !== "01") return { skipped: true, reason: "not_month_close" };
+    const target = (payroll.collection_missing || []).find((d) => d.store_id === storeID);
+    if (!target) return { skipped: true, reason: "payroll_collection_complete", day: payroll.day };
+    if (target.business_date < payroll.from || target.business_date > payroll.to) throw Error("labor_payroll_period_mismatch");
+    const result = await scan(storeID, target.business_date, null, false);
+    if (result.job_error) throw Error("payroll_job_check_failed");
+    const start = Date.now(), pending = await db("bot_cases?kind=eq.labor&status=not.in.(done,hq_review)&store_id=eq." + encodeURIComponent(storeID) + "&business_date=eq." + target.business_date + "&order=last_checked_at.asc.nullsfirst,created_at.asc&limit=20");
+    for (const c of pending) {
+      if (Date.now() - start > 45e3) break;
+      try {
+        await recheck(c, null);
+      } catch {
+      }
+    }
+    const day = new Date(Date.now() - 10 * 36e5).toISOString().slice(0, 10);
+    if (day !== payroll.day) throw Error("daily_date_changed");
+    await db("bot_events?on_conflict=event_key", "POST", {
+      event_key: "payroll-labor-scan:" + day + ":" + storeID + ":" + target.business_date,
+      kind: "payroll_labor_scan",
+      data: { day, store_id: storeID, business_date: target.business_date, state: "ok", collected_at: (/* @__PURE__ */ new Date()).toISOString() }
+    }, "resolution=merge-duplicates");
+    return { ...result, day, business_date: target.business_date, payroll_labor_only: true };
+  }
   async function rangeRun(storeID) {
     const job = await rpc("bot_claim_range", { p_store: storeID });
     if (!job) return { skipped: true, range_complete_or_waiting: true };
@@ -1011,6 +1073,7 @@ function createHandler({ env, fetch: fetcher = globalThis.fetch }) {
     }
     if (!env("LINE_CHANNEL_ACCESS_TOKEN")) throw Error("line_token_missing");
     const snapshot = await rpc("bot_morning_snapshot", {});
+    const payroll = !onlyCategory || onlyCategory === "labor" ? await rpc("bot_labor_payroll_snapshot", {}) : null;
     const labor = (snapshot.details || []).filter((c) => (!onlyCategory || onlyCategory === "labor") && c.kind === "labor" && !Object.hasOwn(c, "shifts") && /^#[0-9]+$/.test(c.code));
     for (let i = 0; i < labor.length; i += 50) {
       const batch = labor.slice(i, i + 50);
@@ -1046,7 +1109,7 @@ function createHandler({ env, fetch: fetcher = globalThis.fetch }) {
     const formatted = variant === "mention-preview-v1" ? { messages: [{ type: "text", text: "\u3010\u8868\u793A\u30C6\u30B9\u30C8\uFF5C\u793E\u54E1\u30E1\u30F3\u30B7\u30E7\u30F3\u901A\u77E5\u3011\n\uFF3B\u767B\u9332\u6E08\u307F\u793E\u54E1\u3078\u306E\u30E1\u30F3\u30B7\u30E7\u30F3\u304C\u3053\u3053\u306B\u8868\u793A\u3055\u308C\u307E\u3059\uFF3D\n\n\u5E97\u8217\uFF1A\u30B5\u30F3\u30D7\u30EB\u5E97\u8217\n\u5BFE\u8C61\uFF1A\u30B9\u30BF\u30C3\u30D5\u540D\n\u5185\u5BB9\uFF1A\u52E4\u6020\u30A8\u30E9\u30FC\n\u9032\u6357\uFF1A\u{1F7E0} \u5BFE\u5FDC\u5F85\u3061\n\u6848\u4EF6\uFF1A#123\n\n\u5BFE\u5FDC\u5F8C\u306F\u300C#123 \u4FEE\u6B63\u6E08\u307F \u4FEE\u6B63\u5185\u5BB9\u300D\u3068\u8FD4\u4FE1\u3057\u3066\u304F\u3060\u3055\u3044\u3002\n\u203B\u8868\u793A\u78BA\u8A8D\u7528\u3067\u3059\u3002\u5BFE\u5FDC\u306F\u4E0D\u8981\u3067\u3059\u3002" }], complete: true, total: 0, detail_count: 0 } : formatResponsibleMorningReports(snapshot, { resend: variant !== "daily" });
     if (cfg.routes) {
       if (variant === "mention-preview-v1") throw Error("invalid_summary_variant");
-      const reports = formatted.reports.filter((r) => !onlyCategory || r.category === onlyCategory);
+      const reports = formatted.reports.filter((r) => !onlyCategory || r.category === onlyCategory).map((r) => r.category === "labor" ? formatPayrollLaborReport(payroll, { resend: variant !== "daily" }) : r);
       if (!onlyCategory || onlyCategory === "cash_tip") {
         try {
           const cash = await cashTipReport(snapshot, cfg, variant);
@@ -1078,6 +1141,7 @@ function createHandler({ env, fetch: fetcher = globalThis.fetch }) {
     return deliverMorningReport(snapshot, formatted, cfg, variant);
   }
   async function deliverMorningReport(snapshot, formatted, cfg, variant, category = null) {
+    if (category === "labor" && !formatted.complete) return { state: "skipped", reason: "labor_collection_incomplete", day: snapshot.day };
     if (!formatted.messages.length) return { state: "skipped", reason: "no_findings", day: snapshot.day };
     const reserved = await rpc(category ? "bot_reserve_morning_report" : "bot_reserve_morning_summary_v3", { p_day: snapshot.day, p_group: cfg.group_id, p_request: crypto.randomUUID(), p_messages: formatted.messages, p_variant: variant, p_snapshot_at: snapshot.snapshot_at || null, ...category ? { p_category: category } : {} });
     if (reserved.data?.state === "accepted") return { state: "accepted", already_sent: true, day: snapshot.day };
@@ -1306,6 +1370,7 @@ function createHandler({ env, fetch: fetcher = globalThis.fetch }) {
         if (body.mode === "group_directory") return json(await groupDirectory());
         if (body.mode === "morning_preview") return json(await morningSummary(body.variant || "daily", true));
         if (!cfg.enabled || !await setting("clock")) return json({ skipped: true });
+        if (body.mode === "labor_payroll_collect") return json(await collectPayrollLabor(String(body.store_id)));
         if (body.mode === "morning_summary" && Object.hasOwn(body, "category")) {
           if (!["labor", "finance", "cash_tip"].includes(body.category)) throw Error("invalid_report_category");
           return json(await morningSummary(body.variant || "daily", false, body.category));

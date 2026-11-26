@@ -1,5 +1,15 @@
 # Claude / Codex 共通記録
 
+## 2026-11-25 本番（funergy-os）にリポジトリを合わせる（Cursor のエージェント・ブランチ `cursor/prod-ops-align-2e66`・本番は変更していない）
+
+- 読み取り：2026-11-25 の書き出しと、cron の command（朝の勤怠レポート、1 日の収集、`ops-bot-range-resume`、店のワーカー）。デプロイ・cron 変更・LINE 送信はしていない。関数と朝の cron は、この PR の前から本番にある。この PR はそれをリポジトリに写した。
+- `ops-bot-range-resume` の本番は 07:00 HST から（リポジトリは 08:00 のままだった）。08:00 の勤怠レポートの前に、当月を古い順に取り直すため。リポジトリの `db/ops-bot-range-schedule.sql` を 07:00 に合わせた。
+- ops-bot：本番 v36 にあって main に無かったのは、給与期間の勤怠レポート（`formatPayrollLaborReport`・`collectPayrollLabor`・`labor_payroll_collect`・収集が揃うまで送らない）。`bot/` のモジュールは本番と同じ。main の方が新しいのはアプリの Origin（`capacitor://localhost`。PR #221）。本番のバンドルには無いので残した。
+- SQL：`bot_collection_days`・`bot_labor_payroll_period`・`bot_labor_payroll_snapshot` を追加。`bot_morning_snapshot` の `finance_ok` と `finance_expected` は収集日（`bot_collection_days`。開店日より前を数えない）に合わせた。朝の会計の文は、`finance_expected` があるときその件数と `finance_ok` を比べる（勤怠の expected・ok は変えない）。`bot_reserve_morning_report` と `cash_tip_autofill` は本番と中身が同じなので置き換えていない。
+- 中間レビュー：新しい行の提出期限は `schedule.submit_day`（20 日）。行を作るのは最初の保存（`mr_save`。答えに期限と超過を含め、画面は全面の読み直しをせず、保存前からある見出しのノードと提出欄だけを更新する）と、期限の保存・月の入力担当の保存（`mr_review_row`）。店を開いただけでは行を作らない。既存の空の期限は変えない。GM・CEO の上書きはそのまま。期限後の提出は拒否しない。`flags.notify` は false のまま。画面は「まだ提出できます」。試験は保存後に `renderPage` を呼ばず、そのノードを直接見る（描き直しを外すと落ちる）。
+- 文書：`docs/BOT_OPERATIONS_JA.md` の先頭が現行。古い「毎朝 09:00」などは【2026-11-25 削除：現行ではない】。案内（休日・キックオフ・棚卸・Q コミット・回収）は案で、未実装。
+- main `589cc01`（#224）を取り込んだ。貼り付け用の空行と bonus-close の許可リストは #224 のまま。ops-bot の貼る 1 ファイルは、このブランチで給与期間レポートと `finance_expected` を含めて作り直している。
+- main `d239957`（v1221・ログインの画面、審査用デモ、SW、プライバシー）を取り込んだ。ログインの画面と SW の静的ページの扱いは main のまま。APP_VERSION / SW_BUILD は 1223。1222 は開いている #231（キャリア・育成）が使うので、ここでは使わない。
 ## 2026-11-26 v1221 ログインの画面を整える（Claude・ブランチ `claude/login-ui-1221`・main `b9f9b3e`（v1220）の上・アプリだけ・本番未反映）
 
 - 依頼：Moto さん「Grok が更新した内容の UI を検査・ログインの画面を優先して整理」。履歴に Grok と書いた変更は無い。最近の変更（v1217〜v1220）を見た。仕様・見つけたこと・試験：`docs/LOGIN_UI_V1221_JA.md`。
@@ -30,7 +40,7 @@
 
 - google-reviews（`deploy/google-places-v1209/4_関数_google-reviews_index.ts`）：許可リストは handler と同じ（`https://funergy-plus.com` の次に `capacitor://localhost`）。足りなかったのは `Deno.serve` の前の空行 1 つ。正しいのは handler。
 - payroll-expense（v1212）も同じ空行が 1 つ無かった。bonus-close（v1116 の貼る 1 ファイル）だけ許可リストが #221 の前のままだったので、handler の行に合わせた。
-- 今のソースと一致：invoice-intake（v1210 の束）・ops-bot（v1118 の束）・secure-state（`deploy/growth-plan-a2`）。関数の貼るファイルが無い：device-login・work-requests。mid-review の v1069 は渡したときの sha256 のまま（許可リストは古い。新しい貼るファイルは作っていない）。
+- 今のソースと一致：invoice-intake（v1210 の束）・ops-bot（v1118 の束）・secure-state（`deploy/growth-plan-a2`）。関数の貼るファイルが無い：device-login・work-requests。mid-review の v1069 は渡したときの sha256 のまま（許可リストは古い。新しい貼るファイルは作っていない）。ops-bot の束は、そのあとの本番合わせで作り直した（上の節）。
 
 ## 2026-11-24 Moto さんの答え（A-2 の権限・役割の文の確かめ方・OJTマップ）と Excel の照らし合わせ（Claude（Team）・ブランチ `claude/grade-unify-a`）
 
