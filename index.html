@@ -2310,6 +2310,7 @@ th.u11-hbch, td.u11-hbch { text-align:center; width:32px; }
       <p id="ml-forgot-text" style="display:none;font-size:12px;line-height:1.7;background:var(--surface2);border-radius:8px;padding:10px 12px;margin-top:6px"></p>
     </div>
     <div id="login-version" style="text-align:center;font-size:10px;color:var(--muted);margin-top:16px;opacity:.75"></div>
+    <div id="login-legal"></div>   <!-- v1218：プライバシーポリシー・サポート（中身は refreshLoginLabels が言葉に合わせて入れる） -->
   </div>
 </div>
 
@@ -22957,6 +22958,20 @@ function refreshLoginLabels() {
   var pinInput=document.getElementById('login-pin-input'); if(pinInput) pinInput.placeholder='PIN';
   try{ if(window.FUNERGY_ML) FUNERGY_ML.relabel(); }catch(e){}   /* v1185：メールとパスワードの段・PIN の段の「メールとパスワードでログイン」 */
   try{ if(window.FUNERGY_PK) FUNERGY_PK.relabel(); }catch(e){}   /* v1189：パスキーの入口・パスキーとメールのコードの段 */
+  try{ var _lg=document.getElementById('login-legal'); if(_lg) _lg.innerHTML=legalLinksHtml('login'); }catch(e){}   /* v1218：ログインの前にも開ける */
+}
+/* v1218（App Store の審査・ガイドライン 5.1.1(i)：アプリの中から開けるプライバシーポリシー）：
+   ログインの画面の下とマイページの下に、プライバシーポリシーとサポートへのリンク。言葉（日本語・English）に合わせたページへ。
+   iPhone アプリ（Origin capacitor://localhost）では相対の URL がアプリの中を指すので、公開のサイトの URL を書く。 */
+var LEGAL_SITE = 'https://funergy-plus.com';
+function legalLinksHtml(where){
+  var ja = (typeof curLang === 'undefined' || curLang !== 'en');
+  var a = function(path, label){ return '<a href="' + LEGAL_SITE + path + '" target="_blank" rel="noopener" style="color:inherit;text-decoration:underline">' + label + '</a>'; };
+  return '<div class="legal-links" style="text-align:center;font-size:' + (where === 'login' ? '11' : '12') + 'px;color:var(--muted);margin:' + (where === 'login' ? '8px 0 0' : '20px 0 8px') + '">'
+    + a(ja ? '/privacy/ja/' : '/privacy/', ja ? 'プライバシーポリシー' : 'Privacy Policy')
+    + '<span aria-hidden="true" style="margin:0 8px">·</span>'
+    + a(ja ? '/support/ja/' : '/support/', ja ? 'サポート' : 'Support')
+    + '</div>';
 }
 
 /* STEP1: 所属選択（OFFICE or 店舗）→ 名前リスト表示 */
@@ -50225,7 +50240,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1217';
+const APP_VERSION = '1218';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -94582,7 +94597,7 @@ function renderMypage() {
     html += _ms(1,10) + mpTodayHtml({ shifts:_mgSh.today, shiftGo:_mgSh.go, helps:helps.length, punch:_punch });
     html += _ms(4,80) + `<div class="section-header" style="margin-bottom:8px"><div class="section-title" style="font-size:15px"><i class="ti ti-rocket" style="color:var(--accent)"></i> Personal Growth Dashboard</div></div>`;
     html += renderPGD(me, false);
-    return mpSecLayout(html);
+    return mpSecLayout(html) + legalLinksHtml('mypage');   /* v1218 */
   }
 
   /* ===== Crew My Dashboard（優先順位順） ===== */
@@ -94984,11 +94999,11 @@ function renderMypage() {
     var _todayKeys = mpTodayShiftLabels(myShifts);
     var _consult = posts.filter(function(p){ var rs = p.replies || []; return p.author===me && (p.status||'未対応')!=='解決' && rs.length && rs[rs.length-1].byMgr; }).length;
     html += _ms(1,10) + mpTodayHtml({ shifts:_todayKeys, shiftGo:(navGuardAllows('shift_staff')?"go('shift_staff')":''), consult:_consult, helps:helps.length });
-    return mpSecLayout(html);
+    return mpSecLayout(html) + legalLinksHtml('mypage');   /* v1218 */
   }
   html = mpLayout(html);   /* v1177（UI案85-3A） */
 
-  return html;
+  return html + legalLinksHtml('mypage');   /* v1218 */
 }
 
 /* ============================================================
