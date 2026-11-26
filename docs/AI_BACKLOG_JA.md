@@ -6,6 +6,11 @@
 2. 次（Moto さん・承認のあと）：朝の勤怠 cron と `bot_labor_payroll_*` は本番に既にあるので、流し直す必要は無い。`ops-bot-range-resume` の本番は 07:00 HST（リポジトリが 08:00 だったので定義だけ合わせた。本番のジョブは変えていない）。リポジトリの ops-bot を本番に載せるときは、Origin（`capacitor://localhost`）が本番 v36 より新しいので、v36 で上書きしない。
 3. あと：案内（1 日の休日、5〜7 日のキックオフ、月末棚卸、四半期の予算、回収）は承認待ち。ChatGPT の自動化を止め切ったら、Invoice の外部転送を外すかを決める。
 
+## 2026-11-25 貼り付け用と今の関数（#221 の Origin）
+
+1. 済：google-reviews と payroll-expense の貼る 1 ファイルに、`Deno.serve` の前の空行を戻した。bonus-close（v1116）の貼る 1 ファイルの許可リストを handler に合わせた。handler は変えていない。
+2. 残す：mid-review の v1069 は渡したときのまま（許可リストは古い）。device-login と work-requests に貼る関数ファイルは無い。
+
 ## 2026-11-23 統合実装プロンプト（A・B-1・B-2・B-3）
 
 0. 済（Claude（Team）11/24）：push できない（git の proxy が 403）ので、Moto さん 11/24「push しないで進める」＝ブランチごとの引き継ぎ一式を Personal で GitHub に。前の引き継ぎ（Moto さん 11/24 04:39 HST）：次は会社の Team のアカウントの新しいセッションで。最初に `claude/payroll-expense-1212` を取り、共有記録の先頭（11/24 の節・#216 の直しの設計）を読み、push できるかを確かめる。順番：#216 → #217 → #218 → 2b → B-2。

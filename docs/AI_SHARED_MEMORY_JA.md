@@ -8,6 +8,13 @@
 - SQL：`bot_collection_days`・`bot_labor_payroll_period`・`bot_labor_payroll_snapshot` を追加。`bot_morning_snapshot` の `finance_ok` と `finance_expected` は収集日（`bot_collection_days`。開店日より前を数えない）に合わせた。朝の会計の文は、`finance_expected` があるときその件数と `finance_ok` を比べる（勤怠の expected・ok は変えない）。`bot_reserve_morning_report` と `cash_tip_autofill` は本番と中身が同じなので置き換えていない。
 - 中間レビュー：新しい行の提出期限は `schedule.submit_day`（20 日）。行を作るのは最初の保存（`mr_save`。答えに期限と超過を含め、画面は全面の読み直しをせず見出しへ出す）と、期限の保存・月の入力担当の保存（`mr_review_row`）。店を開いただけでは行を作らない。既存の空の期限は変えない。GM・CEO の上書きはそのまま。期限後の提出は拒否しない。`flags.notify` は false のまま。画面は「まだ提出できます」。アプリは 1216。
 - 文書：`docs/BOT_OPERATIONS_JA.md` の先頭が現行。古い「毎朝 09:00」などは【2026-11-25 削除：現行ではない】。案内（休日・キックオフ・棚卸・Q コミット・回収）は案で、未実装。
+- main `589cc01`（#224）を取り込んだ。貼り付け用の空行と bonus-close の許可リストは #224 のまま。ops-bot の貼る 1 ファイルは、このブランチで給与期間レポートと `finance_expected` を含めて作り直している。
+
+## 2026-11-25 貼り付け用を今の関数に合わせる（#221 の Origin・ブランチ `cursor/fix-paste-handler-match-b1f8`・handler は変えていない）
+
+- google-reviews（`deploy/google-places-v1209/4_関数_google-reviews_index.ts`）：許可リストは handler と同じ（`https://funergy-plus.com` の次に `capacitor://localhost`）。足りなかったのは `Deno.serve` の前の空行 1 つ。正しいのは handler。
+- payroll-expense（v1212）も同じ空行が 1 つ無かった。bonus-close（v1116 の貼る 1 ファイル）だけ許可リストが #221 の前のままだったので、handler の行に合わせた。
+- 今のソースと一致：invoice-intake（v1210 の束）・ops-bot（v1118 の束）・secure-state（`deploy/growth-plan-a2`）。関数の貼るファイルが無い：device-login・work-requests。mid-review の v1069 は渡したときの sha256 のまま（許可リストは古い。新しい貼るファイルは作っていない）。ops-bot の束は、そのあとの本番合わせで作り直した（上の節）。
 
 ## 2026-11-24 Moto さんの答え（A-2 の権限・役割の文の確かめ方・OJTマップ）と Excel の照らし合わせ（Claude（Team）・ブランチ `claude/grade-unify-a`）
 
