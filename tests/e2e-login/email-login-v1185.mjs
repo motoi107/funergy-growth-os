@@ -16,7 +16,7 @@ const ROOT = path.resolve(new URL('../..', import.meta.url).pathname);
 const APP_DIR = process.env.APP_DIR || ROOT;
 const VENDOR = process.env.VENDOR_DIR || '/tmp/e2e/vendor', CERT = process.env.CERT_DIR || '/tmp/e2e/cert', SHOTS = process.env.SHOTS || '';
 const { PGlite } = await import(process.env.BOT_PGLITE_MODULE || path.join(ROOT, 'tests/runtime/node_modules/@electric-sql/pglite/dist/index.js'));
-const ANON = ((src => src.match(/var FG_PROD_ANON = '([^']+)'/) || src.match(/const SUPABASE_ANON = '([^']+)'/) || [])[1])(fs.readFileSync(path.join(APP_DIR, 'index.html'), 'utf8'));
+const ANON = (src => (src.match(/var FG_PROD_ANON = '([^']+)'/) || src.match(/const SUPABASE_ANON = '([^']+)'/) || [])[1])(fs.readFileSync(path.join(APP_DIR, 'index.html'), 'utf8'));   // v1221：v1219 の書き方では [1] が関数に付いて、台本が始まる前に落ちていた
 const PORT = 8092, ORIGIN = `http://localhost:${PORT}`;
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const results = [];
@@ -182,7 +182,7 @@ await pickName(G, 'OFFICE', 'Gabe Gm');
 ok('名前の一覧で GM・CEO・経理に盾の印', await G.page.evaluate(() => Array.from(document.querySelectorAll('#login-name-grid .store-btn')).filter(b => b.querySelector('.ti-shield-lock')).map(b => (b.querySelector('div') ? b.querySelector('div').textContent : b.textContent).trim()).sort().join() === 'Cora Ceo,Dee Office,Gabe Gm'));
 ok('GM はメールとパスワードの段（PIN の段は出ない）', await vis(G.page, 'login-step-mail') && !(await vis(G.page, 'login-step-pin')));
 const m1 = await text(G.page, 'login-step-mail');
-ok('名前・メール・パスワード・PIN でログイン（試しのあいだ）', /Gabe Gm/.test(m1) && /メールアドレス/.test(m1) && /パスワード/.test(m1) && /PIN でログイン（試しのあいだ）/.test(m1) && /この端末には覚えません/.test(m1), m1.slice(0, 200));
+ok('名前・メール・パスワード・PIN でログイン', /Gabe Gm/.test(m1) && /メールアドレス/.test(m1) && /パスワード/.test(m1) && /PIN でログイン/.test(m1) && /この端末には覚えません/.test(m1), m1.slice(0, 200));   // v1221：「（試しのあいだ）」は外した（PIN は今も使える）
 ok('パスワード欄は password・current-password', await G.page.evaluate(() => { const p = document.getElementById('ml-pass'); return p.type === 'password' && p.autocomplete === 'current-password' && document.getElementById('ml-email').autocomplete === 'username'; }));
 ok('390px で横にはみ出さない', (await overflowX(G.page)) <= 0);
 await shot(G.page, 'mail-390');
@@ -263,7 +263,7 @@ await O.ctx.close();
 const EN = await device(390, 'en');
 await pickName(EN, 'OFFICE', 'Cora Ceo');
 const me = await text(EN.page, 'login-step-mail');
-ok('英語の画面', /Log in with email and password/.test(me) && /Log in with PIN \(during the trial\)/.test(me), me.slice(0, 160));
+ok('英語の画面', /Email/.test(me) && /Password/.test(me) && /Log in with PIN/.test(me), me.slice(0, 160));   // v1221：段の題は上の見出しだけ（同じ言葉を重ねない）
 W.dlOff = true;
 await mailLogin(EN, 'ceo@test.example', 'pw-ceo');
 ok('関数が無いときは「PIN でログインを」と出す（前の入り方のボタンも）', /not ready on the server yet/.test(await errText(EN.page)) && await EN.page.evaluate(() => document.querySelectorAll('#ml-err button').length === 1));

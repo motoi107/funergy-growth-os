@@ -221,7 +221,7 @@ iPhone の提出ビルドで見られる機能によって決める。今の Web
 Funergy+ is an internal app for the staff of our restaurants. Accounts are created by the company; there is no sign-up.
 The demo accounts below use a demo environment that contains sample data only.
 
-To sign in: tap "[審査用の入口]", then the store, then the name, and enter the PIN.
+To sign in: tap "Review (Demo) / 審査用（デモ）" at the bottom of the login screen (v1221), then the store, then the name, and enter the PIN.
 - Staff account: [店] / [名前] (PIN in the Password field)
 - [ほかの種類のアカウント]
 

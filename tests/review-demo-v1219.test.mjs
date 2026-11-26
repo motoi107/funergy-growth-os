@@ -80,8 +80,10 @@ test('印が無いときは本番の URL と anon', () => {
   assert.equal((html.match(/var FG_PROD_URL = '([^']+)'/) || [])[1], PROD_URL);
   assert.ok(html.includes(PROD_URL));
   assert.match(html, /var LS_DEVICE_LOCAL = \[[^\]]*'fg_env'/);
-  assert.equal((html.match(/const APP_VERSION = '(\d+)';/) || [])[1], '1220');
-  assert.equal((sw.match(/const SW_BUILD = '(\d+)';/) || [])[1], '1220');
+  // v1221 から：この試験の版（1220）以上で、アプリと SW が同じ番号（次の版で直さなくてよい）
+  const _av = (html.match(/const APP_VERSION = '(\d+)';/) || [])[1];
+  assert.ok(Number(_av) >= 1220, _av);
+  assert.equal((sw.match(/const SW_BUILD = '(\d+)';/) || [])[1], _av);
 });
 
 test('fg_env=review のときだけ審査用の URL と anon', () => {
@@ -132,7 +134,10 @@ test('ログインの Office の隣に審査用、デモでは帯と本番に戻
   const office = boot.indexOf('>Office</div>');
   const demo = boot.indexOf('審査用（デモ）');
   assert.ok(office >= 0 && demo > office);
-  assert.ok(boot.includes('officeCard + demoCard + blankCard'));
+  // v1221：入口は店の並び（login-store-grid）から、ログインの画面の下（login-demo-slot）へ。隠さない・デモの中では出さない
+  assert.ok(boot.includes("getElementById('login-demo-slot')") && boot.includes('demoSlot.innerHTML = demoCard'));
+  assert.match(html, /<div id="login-demo-slot"><\/div>/);
+  assert.ok(boot.includes('fgReviewSwitch(true)'));
   assert.match(boot, /function bootLogin\(\) \{[\s\S]{0,2600}FUNERGY_PK\.paintEntry\(\)/);
   assert.match(boot, /function bootLogin\(\) \{[\s\S]{0,2400}FUNERGY_DL\.paintEntry\(\)/);
   const shown = run('review');

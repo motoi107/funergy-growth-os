@@ -125,8 +125,10 @@ function world(flag, extra, idb) {
 test('印が無いときは本番のまま。ログインのカードは英語と日本語', () => {
   const c = world(null, {}, null);
   assert.equal(c.SUPABASE_URL, 'https://tgbhgxzehzeouopklhje.supabase.co');
-  assert.equal((html.match(/const APP_VERSION = '(\d+)';/) || [])[1], '1220');
-  assert.equal((sw.match(/const SW_BUILD = '(\d+)';/) || [])[1], '1220');
+  // v1221 から：この試験の版（1220）以上で、アプリと SW が同じ番号（次の版で直さなくてよい）
+  const _av = (html.match(/const APP_VERSION = '(\d+)';/) || [])[1];
+  assert.ok(Number(_av) >= 1220, _av);
+  assert.equal((sw.match(/const SW_BUILD = '(\d+)';/) || [])[1], _av);
   assert.match(html, /Review \(Demo\) \/ 審査用（デモ）/);
 });
 
