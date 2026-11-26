@@ -1,6 +1,6 @@
 // App Store 審査用の静的ページ（/privacy/・/privacy/ja/・/support/・/support/ja/）。仕様：docs/APPSTORE_REVIEW_JA.md。
 // ログインせずに開ける・スクリプトを持たない・外のファイルを読まない・英語版と日本語版の節がそろっていることを確かめる。
-// 印（[要確認]＝事実を確かめる・[案]＝会社が決める）の数は英語と日本語でそろえる。中身の文は確かめない。
+// 未確定の印は残さない。公開日はハワイ時間の 2026年11月25日。
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, existsSync } from 'node:fs';
@@ -54,26 +54,16 @@ test('英語版と日本語版の節がそろい、互いに行き来できる',
     assert.deepEqual(ids(h), ids(read(p.pair)), `${p.url} と ${p.pair}`);
     assert.ok(attrs(h, 'href').includes(p.pair), `${p.url} → ${p.pair}`);
     assert.ok(attrs(h, 'href').includes(p.other), `${p.url} → ${p.other}`);
-    for (const m of [/\[要確認/g, /\[案/g, /class="todo"/g, /class="plan"/g]) assert.equal((h.match(m) || []).length, (read(p.pair).match(m) || []).length, `${p.url} と ${p.pair} の ${m} の数`);
+    for (const m of [/\[要確認/g, /\[案\]/g, /class="todo"/g, /class="plan"/g, /\[Publication date\]/g, /\[公開日\]/g, /TODO/, /FIXME/]) assert.equal((h.match(m) || []).length, 0, `${p.url} に ${m} が残っている`);
+    assert.doesNotMatch(h, /<!--/, `${p.url} に作業メモのコメントが残っている`);
   }
   assert.deepEqual(ids(read('/privacy/')), ['scope', 'collect', 'use', 'access', 'services', 'retention', 'choices', 'security', 'contact']);
   assert.ok(ids(read('/support/')).includes('contact'));
 });
 
-test('公開日の印は英語と日本語に 1 つずつ。main へ出すときは残っていない', () => {
-  const en = read('/privacy/');
-  const ja = read('/privacy/ja/');
-  const enTok = (en.match(/\[Publication date\]/g) || []).length;
-  const jaTok = (ja.match(/\[公開日\]/g) || []).length;
-  assert.equal(enTok, jaTok, '英語と日本語の公開日の印の数');
-  const publishing = process.env.GITHUB_EVENT_NAME === 'push' && process.env.GITHUB_REF === 'refs/heads/main';
-  if (publishing) {
-    assert.equal(enTok, 0, 'replace [Publication date] with the Hawaii publication date before merging');
-    assert.equal(jaTok, 0, 'マージの前に [公開日] をハワイ時間の公開日に置き換える');
-  } else {
-    assert.equal(enTok, 1, '[Publication date]');
-    assert.equal(jaTok, 1, '[公開日]');
-  }
+test('公開日はハワイ時間の 2026年11月25日', () => {
+  assert.match(read('/privacy/'), /Effective date: November 25, 2026/);
+  assert.match(read('/privacy/ja/'), /施行日：2026年11月25日/);
 });
 
 test('鍵・トークン・本物のアドレスを書いていない', () => {
