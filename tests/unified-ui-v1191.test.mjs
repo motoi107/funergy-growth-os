@@ -61,7 +61,8 @@ test('G1 (personal sign-in): accounting, store master, approval rules, settings,
     assert.equal(run(c, `navResolvePage(${JSON.stringify(p)})`), 'mypage', p);
   }
   assert.ok(c.TOASTS.length >= 1, 'a short notice (once per 2 s) says the screen is not available');
-  for (const p of ['mypage', 'discount', 'crew_handbook', 'shift_staff', 'skill', 'ojtmap', 'tiprate', 'store_cmd', 'chat', 'vacation', 'expense', 'mileage', 'lost_receipt', 'goals', 'onboarding', 'notifications']) {
+  assert.equal(run(c, `navResolvePage('ojtmap')`), 'career', 'v1216（A-2-3）：OJTマップは廃止 → キャリア・育成');
+  for (const p of ['mypage', 'discount', 'crew_handbook', 'shift_staff', 'skill', 'career', 'tiprate', 'store_cmd', 'chat', 'vacation', 'expense', 'mileage', 'lost_receipt', 'goals', 'onboarding', 'notifications']) {
     assert.equal(run(c, `navResolvePage(${JSON.stringify(p)})`), p, p + ' (nav or a button on a G1 screen) still opens');
   }
   // every page in the G1 nav opens

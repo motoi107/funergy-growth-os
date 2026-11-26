@@ -1,5 +1,17 @@
 # Claude / Codex 共通記録
 
+## 2026-11-26 v1222 キャリア・育成を 1 つのタブに（Claude・ブランチ `claude/career-hub-1222`・main `d239957`（v1221）の上・a23（v1216）を含む・本番未反映）
+
+- 依頼：Moto さん「育成計画・OJT タブ・役割と責任マップ・候補者向けと Q4 のキャリア・評価の説明を 1 つのタブに」。答え（11/26）：役割の文は今までどおり GM・CEO だけ（案）／a23 を取り込んで止める／組織マップは全員・Q4 の評価表の列は採点者だけ。仕様・旧の機能の移り先の表・足りない情報：`docs/CAREER_HUB_V1222_JA.md`。
+- 画面：あなたが見るところ → キャリアマップ（G・Chef の S・経理の S・Prep を色とアイコンで 1 列ずつ）→ カード 1〜5。役割・責任マトリクス（分類 7 つ・凡例・業務の注と項目 ID）・店舗別の組織マップ（従業員マスター・店舗マスターから。上司は作らない・兼務・未設定）。候補者向けは同じマスターで 1〜3 だけ。古い行き先（`crGo('guide',…)`・`crSet('tab',…)`・ojtmap・ojt_admin・growth_mgr）は今の表示へ。
+- 変えていない：評価基準・配点・基準点・昇格条件・グレード・ログイン・保存・関数・SQL・ページの権限。旧の記録のキーの知らせは旧の画面だけにした（ログインのたびに出ていた）。
+- 試験：e2e `tests/e2e-career/career-hub-v1222.mjs` 67/67（v1221 は 9 件目で止まる）・career-guide-v1213 10/10・gp-app-a2 4/4・一式は main と同じ失敗だけ（9 ファイル・29 件・mutation の 2 つは除く）・static pass/1222。
+- UI案102（https://claude.ai/artifact/8Pr935SNbWRJ4kQPKVsvNF ・Design・10 枚・名前は架空）：決めてほしいこと 8（どれも A をおすすめ・A で作ってある）。カードの役職名は語の途中で切らない（「、」で切る）。
+- Moto さん 11/26（UI案102 を見て）：職名 G1 Crew・G4 Store Manager・G5 Area Manager（複数店舗・管轄責任）・G6 General Manager（全社運営責任）。配属のラベル 店舗配属＝G1〜G4・Chef S1〜S2・Prep／本部配属＝G5・G6・Chef S3〜S6・経理 S。決まった名前なので全員・候補者に出す（G2・G3・S の職名は公開まで GM・CEO だけ）。
+- UI案102 の答え（11/26）：1・2・4〜8 は A。3＝上司は決まりから（店舗配属＝店の G4・G4 のいない店と G4 本人＝管轄 AM（G5）・いなければ G6・本部は「—」）。テーマカラーと順＝G オレンジ → Prep 深緑 → Chef 黄色 → 経理 紫。
+- マージの前：本番で gp_* の育成計画と過去の記録を確かめる。`claude/grade-unify-a23` は別にマージしない。
+- Moto さん（選択肢 A・11/26）：今も開ける画面から書く記録は v1221 と同じく書く。外したキーは育成指名・Leaderを目指す・教材マスター（`dev_nominations`・`dev_pipe`・`dev_pipe_start`・`train_master`）と Career Score の詳しい画面の昇格 OJT（`grade_ojt`）。残すキーは旧の OJT管理・成長管理・廃止した OJTマップだけが書くもの（`ojt_enroll`・`ojt_phase_map`・`ojt_gate_criteria`・`crew_education`・`career_track`・`trainees`・`trainee_checklists`・`ojt_def_`）と、書く所が無い `dev_start`・`dev_data`。遅れた `cs4_me` / `cs4_roster` は、別の表示・別の画面・入力中の欄があるときは `#cr-root` を作り直さない。
+
 ## 2026-11-26 v1221 ログインの画面を整える（Claude・ブランチ `claude/login-ui-1221`・main `b9f9b3e`（v1220）の上・アプリだけ・本番未反映）
 
 - 依頼：Moto さん「Grok が更新した内容の UI を検査・ログインの画面を優先して整理」。履歴に Grok と書いた変更は無い。最近の変更（v1217〜v1220）を見た。仕様・見つけたこと・試験：`docs/LOGIN_UI_V1221_JA.md`。
