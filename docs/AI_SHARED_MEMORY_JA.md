@@ -1,5 +1,11 @@
 # Claude / Codex 共通記録
 
+## 2026-11-25 審査用デモの入口（ブランチ `claude/review-demo-entry`・下書き・マージしない）
+
+- 公開のアプリに、印 `localStorage fg_env==='review'` のときだけ審査用 Supabase（`wjujeonfmjwvliunotuc`）へ向く入口を足した。印が無いときは本番の URL と anon のまま。`fg_env` は `LS_DEVICE_LOCAL`（端末だけ。大容量の整理で消さない。雲へ送らない）。APP_VERSION / SW_BUILD は `1219`。
+- 架空のデータは `review-demo/seed/01_demo_data.sql`。PIN・`credentials.txt`・スキーマ・Edge Function のコードはこのリポジトリに置かない。
+- #222・#225・#226 は触っていない。このブランチは main（#224 のマージ `589cc013`）から。
+
 ## 2026-11-25 貼り付け用を今の関数に合わせる（#221 の Origin・ブランチ `cursor/fix-paste-handler-match-b1f8`・handler は変えていない）
 
 - google-reviews（`deploy/google-places-v1209/4_関数_google-reviews_index.ts`）：許可リストは handler と同じ（`https://funergy-plus.com` の次に `capacitor://localhost`）。足りなかったのは `Deno.serve` の前の空行 1 つ。正しいのは handler。
