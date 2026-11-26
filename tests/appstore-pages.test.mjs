@@ -60,6 +60,22 @@ test('英語版と日本語版の節がそろい、互いに行き来できる',
   assert.ok(ids(read('/support/')).includes('contact'));
 });
 
+test('公開日の印は英語と日本語に 1 つずつ。main へ出すときは残っていない', () => {
+  const en = read('/privacy/');
+  const ja = read('/privacy/ja/');
+  const enTok = (en.match(/\[Publication date\]/g) || []).length;
+  const jaTok = (ja.match(/\[公開日\]/g) || []).length;
+  assert.equal(enTok, jaTok, '英語と日本語の公開日の印の数');
+  const publishing = process.env.GITHUB_EVENT_NAME === 'push' && process.env.GITHUB_REF === 'refs/heads/main';
+  if (publishing) {
+    assert.equal(enTok, 0, 'replace [Publication date] with the Hawaii publication date before merging');
+    assert.equal(jaTok, 0, 'マージの前に [公開日] をハワイ時間の公開日に置き換える');
+  } else {
+    assert.equal(enTok, 1, '[Publication date]');
+    assert.equal(jaTok, 1, '[公開日]');
+  }
+});
+
 test('鍵・トークン・本物のアドレスを書いていない', () => {
   for (const p of PAGES) {
     const h = read(p.url);

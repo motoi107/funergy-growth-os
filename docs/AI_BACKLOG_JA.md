@@ -3,7 +3,7 @@
 ## App Store 審査の準備（ブランチ `claude/appstore-review-pages`・`claude/sw-static-nav`・`claude/app-privacy-link`）
 
 1. 済（Claude（Team））：4 ページ・仕様（`docs/APPSTORE_REVIEW_JA.md`）・Moto さんの答えの反映・v1217（SW）・v1218（アプリの中のリンク）。push できないので引き継ぎ一式で Personal がドラフト PR に。
-2. 次（Moto さん・会社）：`docs/APPSTORE_REVIEW_JA.md` の 11-1（施行日・部屋番号・窓口の受付・保存の方針・第三者・同等の保護・デモの形とアカウントの種類・マージの順）。
+2. 済（Moto さん・11-1 の 1〜7）：公開した日・STE 203・office@funergygroup.com・5 年・提供先はコードどおり（販売しない・法令か同意）・同等の保護・削除後も残す記録。次：11-1 の 8・9（デモ）と 10（マージの順）。公開の直前に `[Publication date]`／`[公開日]` をハワイ時間の日付へ。
 3. 次（Moto さん・確かめる）：11-2（funergy-native の SDK と Web の取り込み・Info.plist・リポジトリに無い関数・本番の SQL・実機のログインとリンク・初期 PIN）。
 4. 次（Claude・決まったら）：デモの形が A（審査用の環境）なら、`index.html` の入口と接続先の切り替え・架空のデータ・環境を作る手順。
 

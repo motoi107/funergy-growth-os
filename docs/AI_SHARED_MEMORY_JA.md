@@ -3,7 +3,7 @@
 ## App Store 審査の準備（Claude（Team・Claude Code）・ブランチ 3 つ・`main` e0e20ce の上）
 
 - 依頼：iPhone 版（App Store Connect app 6831074913・Unlisted）の審査用に、プライバシーポリシーとサポートのページ（英語・日本語）と、審査用デモアカウントの要件（作らない）。続けて Moto さんの答え（10 項目・決める 5 項目・追加の 2 点）。仕様と残りの一覧：`docs/APPSTORE_REVIEW_JA.md`（11 の節）。
-- `claude/appstore-review-pages`：4 ページ（ログイン不要・noindex のまま）・仕様・試験。印は [要確認]（事実）と [案]（会社が決める）。会社名 Funergy Group Inc.・窓口 office@funergygroup.com（案）・GitHub Pages・Toast Payroll（自動の連携はリポジトリに無い）・QuickBooks（請求書をメールで転送）を反映。
+- `claude/appstore-review-pages`：4 ページ（ログイン不要・noindex のまま）・仕様・試験。Moto さん 11-1 の 1〜7：施行日は公開した日（`[Publication date]`／`[公開日]`・マージ直前にハワイ時間の日付・`main` への push で印が残ると試験が失敗）・STE 203・窓口 office@funergygroup.com・業務／雇用／給与／税／会計は 5 年・提供先はコードに出るものだけ（販売しない・法令か同意のときだけ開示・同等の保護）・削除の依頼があっても残す記録がある。デモ（11-1 の 8・9）は未定。
 - `claude/sw-static-nav`（v1217）：SW が静的ページを index.html の控えにしていた（再現した）のを直す。`claude/app-privacy-link`（v1218・v1217 の上）：ログインの画面の下とマイページの下にプライバシーポリシー・サポートへのリンク。1216 は a23 が使う。
 - 調べてわかったこと：REST はだれでも公開の鍵で読むので、G1 の審査アカウントでも全店の `app_state`（秘密のキー以外）と全員の従業員の行が端末に届く。店を止めると G1 が自分の店を開けない・動かすと集計に入る。申請は CEO・GM・経理・事務Crew に見える。→ 本番の共有の DB では審査の要件を満たせない。案は別の審査用の環境（A）。決めるのは Moto さん。
 - iPhone の `motoi107/funergy-native` はこのセッションからは読めない（SDK・Web の直しが提出ビルドに入るか・Info.plist は要確認）。
