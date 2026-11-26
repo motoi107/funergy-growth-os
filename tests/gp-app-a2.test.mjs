@@ -130,22 +130,40 @@ test('v1216（A-2-3）：旧の OJT・成長管理を止める — メニュー�
   assert.doesNotMatch(html, /myOjtCard\(\) \+ renderMypage\(\)/, 'the old OJT card is not on My page');
   const S = await setup();
   const gm = screen(S, 'gm', 'gm');
-  for (const k of ['ojt_enroll', 'grade_ojt', 'ojt_phase_map', 'ojt_gate_criteria', 'ojt_def_g3', 'trainees', 'dev_start', 'dev_data']) assert.equal(gm.crFrozen(k), true, k);
-  // v1222（Moto さん・選択肢 A）：育成指名・Leaderを目指す・教材マスターは v1221 と同じく書く
-  for (const k of ['career_cfg', 'career_history', 'skills', 'growth_karte', 'grade_hist', 'tip_history', 'ojtx', 'dev_nominations', 'dev_pipe', 'dev_pipe_start', 'train_master']) assert.equal(gm.crFrozen(k), false, k);
+  // 旧の OJT管理・成長管理・廃止した OJTマップだけが書くキーと、書く所が無いキーは止めたまま
+  for (const k of ['ojt_enroll', 'ojt_phase_map', 'ojt_gate_criteria', 'ojt_def_g2', 'ojt_def_g3', 'crew_education', 'career_track', 'trainees', 'trainee_checklists', 'dev_start', 'dev_data']) assert.equal(gm.crFrozen(k), true, k);
+  // v1222：今も開ける画面から書く記録は v1221 と同じく書く
+  for (const k of ['career_cfg', 'career_history', 'skills', 'growth_karte', 'grade_hist', 'tip_history', 'ojtx', 'dev_nominations', 'dev_pipe', 'dev_pipe_start', 'train_master', 'grade_ojt']) assert.equal(gm.crFrozen(k), false, k);
   const saved = {};
   const lsSetLike = (key, val) => { if (gm.crFrozen(key)) return false; saved[key] = val; return true; };
   assert.equal(lsSetLike('dev_nominations', [{ id: 'n1' }]), true);
   assert.equal(lsSetLike('dev_pipe', { Kai: { stage: 1 } }), true);
   assert.equal(lsSetLike('dev_pipe_start', { Kai: { d: '2026-11-01' } }), true);
   assert.equal(lsSetLike('train_master', { benefits: 'meal' }), true);
+  assert.equal(lsSetLike('grade_ojt', { Kai: { ojt_g2: { done: true } } }), true);
   assert.equal(lsSetLike('ojt_enroll', { x: 1 }), false);
-  assert.deepEqual(saved.dev_nominations, [{ id: 'n1' }]);
+  assert.equal(lsSetLike('career_track', { Kai: 'Server Leader' }), false);
+  assert.deepEqual(saved.grade_ojt, { Kai: { ojt_g2: { done: true } } });
   assert.equal(saved.ojt_enroll, undefined);
+  // Career Score の詳しい画面（旧方式を見る・修了登録）は grade_ojt を書く。lsSet が止めなければ記録が残る
+  assert.match(html, /onclick="openLssDetail\(/);
+  assert.match(html, /onclick="toggleOjtDone\(/);
+  const fn = (name) => { const i = html.indexOf('function ' + name + '('); assert.ok(i >= 0, name); let d = 0, j = html.indexOf('{', i); for (; j < html.length; j++) { if (html[j] === '{') d++; else if (html[j] === '}' && --d === 0) break; } return html.slice(i, j + 1); };
+  const box = { curRole: 'gm', curUserName: 'Gabe', curPage: 'leadership', ROLE_CONFIG: { gm: { name: 'GM' } }, saved: {}, toasts: [],
+    t: a => a, todayJP: () => '2026-11-26', showToast: (m) => box.toasts.push(m), openLssDetail: () => {} };
+  box.ls = (k, d) => (box.saved[k] == null ? d : box.saved[k]);
+  box.lsSet = (k, v) => { if (gm.crFrozen(k)) return false; box.saved[k] = v; return true; };
+  box.window = box;
+  vm.createContext(box);
+  vm.runInContext(fn('getGradeOjt') + '\n' + fn('setOjtDone') + '\n' + fn('toggleOjtDone'), box);
+  box.toggleOjtDone('Kai', 'ojt_g4', true);
+  assert.equal(box.saved.grade_ojt.Kai.ojt_g4.done, true);
+  assert.match(box.toasts.at(-1), /OJT修了を登録しました/);
   // v1222：裏の書き込み（同期など）は黙って止める（ログインのたびに知らせが出ていた）。知らせは旧の画面で押したときだけ・1 分に 1 回
   assert.equal(gm.toasts.length, 0, 'no notice for background writes outside the old pages');
   gm.curPage = 'ojt_admin';
-  for (const k of ['ojt_enroll', 'grade_ojt', 'trainees']) assert.equal(gm.crFrozen(k), true, k);
+  for (const k of ['ojt_enroll', 'trainees']) assert.equal(gm.crFrozen(k), true, k);
+  assert.equal(gm.crFrozen('grade_ojt'), false, 'Career Score still writes grade_ojt');
   assert.equal(gm.toasts.length, 1, 'one notice a minute on the old page (not a wall of toasts)');
   gm.curPage = 'career';
   gm.page(); gm.crSet('tab', 'history'); await gm.idle();
