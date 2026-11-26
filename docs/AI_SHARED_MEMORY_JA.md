@@ -1,10 +1,18 @@
 # Claude / Codex 共通記録
 
-## 2026-11-25 審査用デモの入口（ブランチ `claude/review-demo-entry`・下書き・マージしない）
+## 2026-11-25 審査用デモの入口（ブランチ `claude/review-demo-entry`・v1219・#226 のあと）
 
-- 公開のアプリに、印 `localStorage fg_env==='review'` のときだけ審査用 Supabase（`wjujeonfmjwvliunotuc`）へ向く入口を足した。印が無いときは本番の URL と anon のまま。`fg_env` は `LS_DEVICE_LOCAL`（端末だけ。大容量の整理で消さない。雲へ送らない）。APP_VERSION / SW_BUILD は `1219`。
+- 公開のアプリに、印 `localStorage fg_env==='review'` のときだけ審査用 Supabase（`wjujeonfmjwvliunotuc`）へ向く入口を足した。印が無いときは本番の URL と anon のまま。`fg_env` は `LS_DEVICE_LOCAL`（端末だけ。大容量の整理で消さない。雲へ送らない）。APP_VERSION / SW_BUILD は `1219`（v1217・v1218 の次）。
 - 架空のデータは `review-demo/seed/01_demo_data.sql`。PIN・`credentials.txt`・スキーマ・Edge Function のコードはこのリポジトリに置かない。
-- #222・#225・#226 は触っていない。このブランチは main（#224 のマージ `589cc013`）から。
+- `claude/grade-unify-a23` は v1216 のまま。このマージでは触らない。
+
+## App Store 審査の準備（Claude（Team・Claude Code）・ブランチ 3 つ・`main` e0e20ce の上）
+
+- 依頼：iPhone 版（App Store Connect app 6831074913・Unlisted）の審査用に、プライバシーポリシーとサポートのページ（英語・日本語）と、審査用デモアカウントの要件（作らない）。続けて Moto さんの答え（10 項目・決める 5 項目・追加の 2 点）。仕様と残りの一覧：`docs/APPSTORE_REVIEW_JA.md`（11 の節）。
+- `claude/appstore-review-pages`：4 ページ（ログイン不要・noindex のまま）・仕様・試験。Moto さん 11-1 の 1〜7：施行日はハワイ時間の 2026年11月25日・STE 203・窓口 office@funergygroup.com・業務／雇用／給与／税／会計は 5 年・提供先はコードに出るものだけ（販売しない・法令か同意のときだけ開示・同等の保護）・削除の依頼があっても残す記録がある。画面の `[要確認]` は外した（広告・解析の SDK は無い、Toast Payroll は手入力、外部は Toast・Anthropic・Google ドライブに書いた範囲、退職の守りは入っている、自動削除は操作のとき、そのほかに決まった期間は無い）。デモ（11-1 の 8・9）は未定。
+- `claude/sw-static-nav`（v1217）：SW が静的ページを index.html の控えにしていた（再現した）のを直す。`claude/app-privacy-link`（v1218・v1217 の上）：ログインの画面の下とマイページの下にプライバシーポリシー・サポートへのリンク。1216 は a23 が使う。
+- 調べてわかったこと：REST はだれでも公開の鍵で読むので、G1 の審査アカウントでも全店の `app_state`（秘密のキー以外）と全員の従業員の行が端末に届く。店を止めると G1 が自分の店を開けない・動かすと集計に入る。申請は CEO・GM・経理・事務Crew に見える。→ 本番の共有の DB では審査の要件を満たせない。案は別の審査用の環境（A）。決めるのは Moto さん。
+- iPhone の `motoi107/funergy-native` はこのセッションからは読めない（SDK・Web の直しが提出ビルドに入るか・Info.plist は要確認）。
 
 ## 2026-11-25 貼り付け用を今の関数に合わせる（#221 の Origin・ブランチ `cursor/fix-paste-handler-match-b1f8`・handler は変えていない）
 

@@ -42,6 +42,13 @@ self.addEventListener('message', (e) => {
   if (e.data && e.data.type === 'SKIP_WAITING') self.skipWaiting();
 });
 
+// アプリ本体の URL か（同じオリジンで、この SW の範囲の先頭か index.html。?onboard= などの問い合わせ・# はどれでもよい）
+function isAppShell(url) {
+  if (url.origin !== location.origin) return false;
+  const scope = new URL((self.registration && self.registration.scope) || './', location.href).pathname;
+  return url.pathname === scope || url.pathname === scope + 'index.html';
+}
+
 self.addEventListener('fetch', (e) => {
   const req = e.request;
   if (req.method !== 'GET') return;
@@ -53,6 +60,14 @@ self.addEventListener('fetch', (e) => {
     (url.origin === location.origin && /\/(index\.html)?$/.test(url.pathname));
 
   if (isNav) {
+    // v1217：index.html の控えにするのはアプリ本体（この SW の範囲の先頭か index.html）だけ。
+    //   /privacy/・/support/ などの静的ページを開いても、オフラインのときに出すアプリの控えを置き換えない
+    //   （前は開いたページを index.html として保存し、オフラインでアプリを開くとそのページが出た）。
+    //   静的ページはネットワークだけ（控えは作らない）。オフラインならブラウザーの「つながらない」表示。
+    if (!isAppShell(url)) {
+      e.respondWith(fetch(req).catch(() => caches.match(req).then((r) => r || Response.error())));
+      return;
+    }
     // ネットワーク優先（最新のアプリを表示）。失敗したらキャッシュ。
     e.respondWith(
       fetch(req)

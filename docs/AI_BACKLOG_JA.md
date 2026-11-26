@@ -2,8 +2,14 @@
 
 ## 2026-11-25 審査用デモの入口（`claude/review-demo-entry`）
 
-1. 済（このブランチ・下書き）：ログイン画面の「審査用（デモ）」、帯と「本番に戻る」、送信待ちがあるときは切り替えない、デモでは組み込みの店・業者・名前を空、デモに無い関数の画面を隠す。v1219。
-2. 残す：iPhone 側の接続先、会議の中の Google 口コミなど画面に隠していないボタン、PIN は箱の `credentials.txt` のまま。マージしない。
+1. 済：ログイン画面の「審査用（デモ）」、帯と「本番に戻る」、送信待ちがあるときは切り替えない、デモでは組み込みの店・業者・名前を空、デモに無い関数の画面を隠す。v1219（v1218 の次）。
+2. 残す：iPhone 側の接続先、会議の中の Google 口コミなど画面に隠していないボタン、PIN は箱の `credentials.txt` のまま。
+
+## App Store 審査の準備（ブランチ `claude/appstore-review-pages`・`claude/sw-static-nav`・`claude/app-privacy-link`）
+
+1. 済（Claude（Team））：4 ページ・仕様（`docs/APPSTORE_REVIEW_JA.md`）・Moto さんの答えの反映・v1217（SW）・v1218（アプリの中のリンク）。
+2. 済：施行日はハワイ時間の 2026年11月25日。画面の `[要確認]` は外した。STE 203・office@funergygroup.com・5 年・提供先はコードどおり。
+3. 次（Moto さん・確かめる）：11-2（funergy-native の SDK と Web の取り込み・Info.plist・リポジトリに無い関数・本番の SQL・実機のログインとリンク・初期 PIN）。
 
 ## 2026-11-25 貼り付け用と今の関数（#221 の Origin）
 
