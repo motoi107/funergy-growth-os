@@ -1,5 +1,11 @@
 # Claude / Codex 共通記録
 
+## 2026-11-25 貼り付け用を今の関数に合わせる（#221 の Origin・ブランチ `cursor/fix-paste-handler-match-b1f8`・handler は変えていない）
+
+- google-reviews（`deploy/google-places-v1209/4_関数_google-reviews_index.ts`）：許可リストは handler と同じ（`https://funergy-plus.com` の次に `capacitor://localhost`）。足りなかったのは `Deno.serve` の前の空行 1 つ。正しいのは handler。
+- payroll-expense（v1212）も同じ空行が 1 つ無かった。bonus-close（v1116 の貼る 1 ファイル）だけ許可リストが #221 の前のままだったので、handler の行に合わせた。
+- 今のソースと一致：invoice-intake（v1210 の束）・ops-bot（v1118 の束）・secure-state（`deploy/growth-plan-a2`）。関数の貼るファイルが無い：device-login・work-requests。mid-review の v1069 は渡したときの sha256 のまま（許可リストは古い。新しい貼るファイルは作っていない）。
+
 ## 2026-11-24 Moto さんの答え（A-2 の権限・役割の文の確かめ方・OJTマップ）と Excel の照らし合わせ（Claude（Team）・ブランチ `claude/grade-unify-a`）
 
 - 権限の 5 つ（育成計画・OJT）：「この内容で問題ありません」＝確定。役割の文は GM・CEO がアプリ（キャリア・育成 › 役割と責任マップ・等級の説明）で確かめる（CEO も）。確認用のドキュメント https://claude.ai/artifact/D5ec4qG4c5ivx937zj7ak9 。OJTマップは廃止（A-2-3 に入れた）。
