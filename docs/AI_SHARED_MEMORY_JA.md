@@ -1,5 +1,10 @@
 # Claude / Codex 共通記録
 
+## 2026-11-26 審査用デモの切り替え（v1220・下書き・マージは Moto さん）
+
+- 切り替えは、`funergy_os_kv`・`funergy_pending_images`・`funergy_bulk_invoices`・`funergy-dl` を開いて消し、取引と deleteDatabase が終わってから再読み込みする。失敗したら印を立てず、再読み込みしない。
+- 売上・予算の復旧、`_hr_unsent`・`_ss_unsent`、未送信の伝票画像とまとめて取り込みの写真があるときは切り替えない。印が無いときは本番の URL と anon のまま。
+
 ## 2026-11-25 審査用デモの入口（ブランチ `claude/review-demo-entry`・v1219・#226 のあと）
 
 - 公開のアプリに、印 `localStorage fg_env==='review'` のときだけ審査用 Supabase（`wjujeonfmjwvliunotuc`）へ向く入口を足した。印が無いときは本番の URL と anon のまま。`fg_env` は `LS_DEVICE_LOCAL`（端末だけ。大容量の整理で消さない。雲へ送らない）。APP_VERSION / SW_BUILD は `1219`（v1217・v1218 の次）。

@@ -3525,6 +3525,16 @@ const SUPABASE_ANON = fgReviewDemo() ? FG_REVIEW_ANON : FG_PROD_ANON;
 /* デモのプロジェクトに無い Edge Function を使う画面。auth-pin・secure-state・device-login・work-requests 以外。 */
 var FG_REVIEW_HIDDEN = { dashboard:1, labor:1, attendance:1, invoice:1, acct_review:1, acct_center:1, office_mgr:1, office_export:1, monthly:1, purchase_detail:1, mid_review:1, discount:1, hiring:1, onboarding:1 };
 function fgReviewHidden(pid){ return fgReviewDemo() && !!FG_REVIEW_HIDDEN[pid]; }
+function fgReviewFilled(raw){
+  if (raw == null || raw === '' || raw === 'null' || raw === '[]' || raw === '{}') return false;
+  try {
+    var o = JSON.parse(raw);
+    if (o == null) return false;
+    if (Array.isArray(o)) return o.length > 0;
+    if (typeof o === 'object') return Object.keys(o).length > 0;
+    return !!o;
+  } catch(e) { return true; }
+}
 function fgReviewPending(){
   try { if (typeof _outboxGet === 'function' && _outboxGet().length) return true; } catch(e) { return true; }
   try { if (typeof empDirtyCount === 'function' && empDirtyCount()) return true; } catch(e) { return true; }
@@ -3537,39 +3547,189 @@ function fgReviewPending(){
     var inf = localStorage.getItem('_ux_inflight');
     if (inf && inf !== 'null' && inf !== '{}') return true;
   } catch(e) { return true; }
+  try {
+    for (var i = 0; i < localStorage.length; i++) {
+      var k = localStorage.key(i);
+      if (!k) continue;
+      if (k.indexOf('financial_save_recovery_v2/') === 0 || k === '_financial_save_recovery_v1' || k === '_hr_unsent' || k === '_ss_unsent') {
+        if (fgReviewFilled(localStorage.getItem(k))) return true;
+      }
+    }
+  } catch(e) { return true; }
   return false;
 }
 function fgReviewSay(msg){
   try { if (typeof showToast === 'function') showToast(msg, 'warning'); } catch(e) {}
   try { var m = document.getElementById('fg-review-msg'); if (m) { m.textContent = msg; m.style.display = 'block'; } } catch(e) {}
 }
+function fgReviewUnsent(){
+  return typeof t === 'function'
+    ? t('送っていない保存があるので、切り替えません。送り終わってからもう一度押してください。','Unsent changes are still on this device. Wait until they are sent, then try again.')
+    : 'Unsent changes are still on this device. Wait until they are sent, then try again.';
+}
+function fgReviewClearFail(){
+  return typeof t === 'function'
+    ? t('この端末の保存を消せなかったので、切り替えません。','Could not clear this device’s saved data, so the switch was cancelled.')
+    : 'Could not clear this device’s saved data, so the switch was cancelled.';
+}
+var FG_REVIEW_DBS = ['funergy_os_kv','funergy_pending_images','funergy_bulk_invoices','funergy-dl'];
+function fgReviewIdb(){
+  try { return (typeof indexedDB !== 'undefined' && indexedDB) ? indexedDB : null; } catch(e) { return null; }
+}
+function fgReviewCloseKnown(){
+  try { if (typeof _idbDB !== 'undefined' && _idbDB && _idbDB.close) { _idbDB.close(); _idbDB = null; } } catch(e) {}
+  try { if (typeof _pimgDB !== 'undefined' && _pimgDB && _pimgDB.close) { _pimgDB.close(); _pimgDB = null; } } catch(e) {}
+  try { if (typeof _bulkDB !== 'undefined' && _bulkDB && _bulkDB.close) { _bulkDB.close(); _bulkDB = null; } } catch(e) {}
+}
+function fgReviewOpen(name){
+  var idb = fgReviewIdb();
+  if (!idb) return Promise.resolve(null);
+  return new Promise(function(resolve){
+    var done = false, req;
+    function finish(v){ if (done) return; done = true; resolve(v); }
+    try { req = idb.open(name); } catch(e) { return finish(false); }
+    req.onsuccess = function(){ finish(req.result || false); };
+    req.onerror = function(){ finish(false); };
+    req.onblocked = function(){ finish(false); };
+    setTimeout(function(){ finish(false); }, 8000);
+  });
+}
+function fgReviewDelete(name){
+  var idb = fgReviewIdb();
+  if (!idb) return Promise.resolve(true);
+  return new Promise(function(resolve){
+    var done = false, req;
+    function finish(ok){ if (done) return; done = true; resolve(!!ok); }
+    try { req = idb.deleteDatabase(name); } catch(e) { return finish(false); }
+    req.onsuccess = function(){ finish(true); };
+    req.onerror = function(){ finish(false); };
+    req.onblocked = function(){ finish(false); };
+    setTimeout(function(){ finish(false); }, 8000);
+  });
+}
+function fgReviewStoreNames(db){
+  var names = [], list = db.objectStoreNames, i;
+  for (i = 0; i < list.length; i++) names.push(list[i]);
+  return names;
+}
+function fgReviewCountDb(name){
+  return fgReviewOpen(name).then(function(db){
+    if (db === null) return 0;
+    if (!db) return -1;
+    var names = fgReviewStoreNames(db);
+    if (!names.length) { try { db.close(); } catch(e) {} return 0; }
+    return new Promise(function(resolve){
+      var left = names.length, total = 0, bad = false;
+      function fin(){ if (bad) resolve(-1); else resolve(total); try { db.close(); } catch(e) {} }
+      names.forEach(function(store){
+        var req;
+        try { req = db.transaction(store, 'readonly').objectStore(store).count(); }
+        catch(e) { bad = true; if (--left === 0) fin(); return; }
+        req.onsuccess = function(){ total += Number(req.result) || 0; if (--left === 0) fin(); };
+        req.onerror = function(){ bad = true; if (--left === 0) fin(); };
+      });
+    });
+  });
+}
+function fgReviewKvRecovery(){
+  return fgReviewOpen('funergy_os_kv').then(function(db){
+    if (db === null) return 'miss';
+    if (!db) return 'error';
+    if (!db.objectStoreNames.contains('kv')) { try { db.close(); } catch(e) {} return 'miss'; }
+    return new Promise(function(resolve){
+      var req;
+      try { req = db.transaction('kv', 'readonly').objectStore('kv').openCursor(); }
+      catch(e) { try { db.close(); } catch(_) {} return resolve(true); }
+      req.onsuccess = function(){
+        var cur = req.result;
+        if (!cur) { try { db.close(); } catch(e) {} return resolve('miss'); }
+        var k = String(cur.key);
+        if (k.indexOf('financial_save_recovery_v2/') === 0 || k === '_financial_save_recovery_v1') {
+          try { db.close(); } catch(e) {}
+          return resolve('hit');
+        }
+        try { cur.continue(); } catch(e) { try { db.close(); } catch(_) {} resolve('error'); }
+      };
+      req.onerror = function(){ try { db.close(); } catch(e) {} resolve('error'); };
+    });
+  });
+}
+function fgReviewHold(){
+  return Promise.all([
+    fgReviewKvRecovery(),
+    fgReviewCountDb('funergy_pending_images'),
+    fgReviewCountDb('funergy_bulk_invoices')
+  ]).then(function(xs){
+    if (xs[0] === 'error' || xs[1] < 0 || xs[2] < 0) return 'error';
+    if (xs[0] === 'hit' || xs[1] > 0 || xs[2] > 0) return 'pending';
+    return '';
+  }).catch(function(){ return 'error'; });
+}
+function fgReviewClearOne(name){
+  return fgReviewOpen(name).then(function(db){
+    if (db === null) return true;
+    if (!db) return false;
+    var names = fgReviewStoreNames(db);
+    var cleared = Promise.resolve(true);
+    if (names.length) {
+      cleared = new Promise(function(resolve){
+        var tx, bad = false;
+        try { tx = db.transaction(names, 'readwrite'); }
+        catch(e) { try { db.close(); } catch(_) {} return resolve(false); }
+        names.forEach(function(store){
+          try {
+            var req = tx.objectStore(store).clear();
+            if (req) req.onerror = function(){ bad = true; };
+          } catch(e) { bad = true; }
+        });
+        tx.oncomplete = function(){ resolve(!bad); };
+        tx.onerror = function(){ resolve(false); };
+        tx.onabort = function(){ resolve(false); };
+      });
+    }
+    return cleared.then(function(ok){
+      try { db.close(); } catch(e) {}
+      if (!ok) return false;
+      return fgReviewDelete(name);
+    });
+  });
+}
+function fgReviewWipe(){
+  fgReviewCloseKnown();
+  var chain = Promise.resolve(true);
+  FG_REVIEW_DBS.forEach(function(name){
+    chain = chain.then(function(ok){ return ok ? fgReviewClearOne(name) : false; });
+  });
+  return chain;
+}
 function fgReviewClearLocal(){
   try {
     var keys = [];
     for (var i = 0; i < localStorage.length; i++) keys.push(localStorage.key(i));
     keys.forEach(function(k){ if (k) localStorage.removeItem(k); });
-  } catch(e) {}
-  try { if (typeof _idbClearAll === 'function') _idbClearAll(); } catch(e) {}
+  } catch(e) { return false; }
   try { sessionStorage.clear(); } catch(e) {}
   try { window._authSession = null; curRole = null; curUserName = null; curStore = null; } catch(e) {}
+  return true;
 }
 function fgReviewSwitch(on){
   on = !!on;
   if (on === fgReviewDemo()) return true;
-  if (fgReviewPending()) {
-    fgReviewSay(typeof t === 'function'
-      ? t('送っていない保存があるので、切り替えません。送り終わってからもう一度押してください。','Unsent changes are still on this device. Wait until they are sent, then try again.')
-      : 'Unsent changes are still on this device. Wait until they are sent, then try again.');
-    return false;
-  }
-  var ask = on
-    ? '審査用（デモ）に切り替えます。この端末の控えを消します。架空のデータだけです。'
-    : '本番に戻します。この端末の控えを消します。';
-  try { if (typeof confirm === 'function' && !confirm(ask)) return false; } catch(e) {}
-  fgReviewClearLocal();
-  try { if (on) localStorage.setItem('fg_env', 'review'); } catch(e) {}
-  try { setTimeout(function(){ location.reload(); }, 400); } catch(e) {}
-  return true;
+  if (fgReviewPending()) { fgReviewSay(fgReviewUnsent()); return false; }
+  return fgReviewHold().then(function(held){
+    if (held === 'pending') { fgReviewSay(fgReviewUnsent()); return false; }
+    if (held) { fgReviewSay(fgReviewClearFail()); return false; }
+    var ask = on
+      ? '審査用（デモ）に切り替えます。この端末の控えを消します。架空のデータだけです。'
+      : '本番に戻します。この端末の控えを消します。';
+    try { if (typeof confirm === 'function' && !confirm(ask)) return false; } catch(e) {}
+    return fgReviewWipe().then(function(ok){
+      if (!ok || !fgReviewClearLocal()) { fgReviewSay(fgReviewClearFail()); return false; }
+      try { if (on) localStorage.setItem('fg_env', 'review'); } catch(e) { fgReviewSay(fgReviewClearFail()); return false; }
+      try { location.reload(); } catch(e) {}
+      return true;
+    });
+  }).catch(function(){ fgReviewSay(fgReviewClearFail()); return false; });
 }
 function fgReviewPaint(){
   try {
@@ -22984,7 +23144,7 @@ function bootLogin() {
   if (!grid) return;
   // Officeを店舗と同列・同サイズで先頭に表示
   var officeCard = `<div class="store-btn" style="border-left:3px solid var(--accent)" onclick="loginPickLocation('OFFICE',this)"><i class="ti ti-building-skyscraper" style="font-size:13px;margin-right:3px"></i>Office</div>`;   /* v776: 従業員登録の選択肢と表記を揃える */
-  var demoCard = (typeof fgReviewDemo === 'function' && fgReviewDemo()) ? '' : '<div class="store-btn" id="fg-review-entry" style="border-left:3px solid #123a66" onclick="fgReviewSwitch(true)">審査用（デモ）</div>';   /* v1219：Office の隣。デモの中では出さない */
+  var demoCard = (typeof fgReviewDemo === 'function' && fgReviewDemo()) ? '' : '<div class="store-btn" id="fg-review-entry" style="border-left:3px solid #123a66" onclick="fgReviewSwitch(true)">Review (Demo) / 審査用（デモ）</div>';   /* v1220：Office の隣。英語と日本語。デモの中では出さない */
   // ②に空欄（レイアウト用の非表示セル）
   var blankCard = `<div class="store-btn" style="visibility:hidden;pointer-events:none"></div>`;
   // ログイン画面の並び順（共通の sortByLoginOrder を使用）。ログインは誰もロックアウトしないよう全店表示。
@@ -50324,7 +50484,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1219';
+const APP_VERSION = '1220';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。

@@ -80,8 +80,8 @@ test('印が無いときは本番の URL と anon', () => {
   assert.equal((html.match(/var FG_PROD_URL = '([^']+)'/) || [])[1], PROD_URL);
   assert.ok(html.includes(PROD_URL));
   assert.match(html, /var LS_DEVICE_LOCAL = \[[^\]]*'fg_env'/);
-  assert.equal((html.match(/const APP_VERSION = '(\d+)';/) || [])[1], '1219');
-  assert.equal((sw.match(/const SW_BUILD = '(\d+)';/) || [])[1], '1219');
+  assert.equal((html.match(/const APP_VERSION = '(\d+)';/) || [])[1], '1220');
+  assert.equal((sw.match(/const SW_BUILD = '(\d+)';/) || [])[1], '1220');
 });
 
 test('fg_env=review のときだけ審査用の URL と anon', () => {
@@ -143,7 +143,7 @@ test('ログインの Office の隣に審査用、デモでは帯と本番に戻
   assert.equal(hidden.banner.style.display, 'none');
 });
 
-test('送っていない保存があると切り替えない', () => {
+test('送っていない保存があると切り替えない', async () => {
   const blocked = run(null, { _outboxGet: () => [{ key: 'x' }], confirm() { throw new Error('confirm'); } });
   blocked.localStorage.setItem('m_stores', '[{"id":"F01"}]');
   assert.equal(blocked.fgReviewSwitch(true), false);
@@ -164,19 +164,19 @@ test('送っていない保存があると切り替えない', () => {
   const clean = run(null, { _outboxGet: () => [], empDirtyCount: () => 0, shiftPlanPendingList: () => [], confirm: () => true });
   clean.localStorage.setItem('m_employees', '[{"name":"kept"}]');
   clean.localStorage.setItem('cur_lang', 'ja');
-  assert.equal(clean.fgReviewSwitch(true), true);
+  assert.equal(await clean.fgReviewSwitch(true), true);
   assert.equal(clean.store.get('fg_env'), 'review');
   assert.equal(clean.store.has('m_employees'), false);
   assert.equal(clean.store.has('cur_lang'), false);
   assert.equal(clean.reloaded, true);
 
   const back = run('review', { confirm: () => false });
-  assert.equal(back.fgReviewSwitch(false), false);
+  assert.equal(await back.fgReviewSwitch(false), false);
   assert.equal(back.store.get('fg_env'), 'review');
 
   const returned = run('review', { confirm: () => true });
   returned.localStorage.setItem('m_stores', '[{"id":"D01"}]');
-  assert.equal(returned.fgReviewSwitch(false), true);
+  assert.equal(await returned.fgReviewSwitch(false), true);
   assert.equal(returned.store.has('fg_env'), false);
   assert.equal(returned.store.has('m_stores'), false);
   assert.equal(returned.reloaded, true);

@@ -15,9 +15,9 @@ URL：`https://wjujeonfmjwvliunotuc.supabase.co`
 | `migrations/20261125160100_review_demo_02_functions.sql`・`..._03_functions.sql` | DB 関数 358 本（本番の `pg_get_functiondef` のまま） |
 | `migrations/20261125160300_review_demo_04_security.sql` | トリガー 43 本・RLS（75 表すべて ON）・ポリシー 24・表と関数の権限（本番と同じ）・realtime（app_state・sync_signal・chat_sig） |
 | `functions/auth-pin`・`secure-state`・`device-login`・`work-requests` | Edge Function 4 本（本番で今動いている版。verify_jwt はすべて OFF＝本番と同じ） |
-| `seed/01_demo_data.sql` | 架空のデータ（PIN なし） |
-| `seed/02_pins.template.sql` | PIN の入れ方（値は `<PIN>`） |
-| `verify.sh` | curl の確かめ（PIN・鍵・印は表示しない） |
+| `seed/01_demo_data.sql` | 架空のデータ（PIN なし）。このリポジトリにある |
+| （このリポジトリの外）PIN の入れ方 | `seed/02_pins.template.sql` は置かない。値のひな形は箱の外に残す |
+| （このリポジトリの外）curl の確かめ | `verify.sh` は置かない。PIN・鍵・印は表示しない手順も外に残す |
 | `work/` | 範囲を決めた材料（`in_scope_*`・`out_of_scope_*`・`closure.py`・`graph.json`） |
 | `credentials.txt`（chmod 600） | デモの PIN。**リポジトリに入れない**（`.gitignore` 済み）。App Store Connect の審査メモ欄にだけ書く |
 
@@ -61,7 +61,7 @@ URL：`https://wjujeonfmjwvliunotuc.supabase.co`
 - PIN：全員 0000 以外の乱数（`credentials.txt`）。店の共有端末の PIN も同じ。
 - サンプル：シフトの希望（11/29・12/6 の週・空の枠とメモ）・お気に入り（`fav_Alex Demo`）
 
-やり直すとき：`seed/01_demo_data.sql` をデモのプロジェクトで流し、PIN は `02_pins.template.sql` に `credentials.txt` の値を入れて流す。
+やり直すとき：このリポジトリの `seed/01_demo_data.sql` をデモのプロジェクトで流す。PIN の入れ方（`02_pins.template.sql`）と確かめ（`verify.sh`）はリポジトリの外に置き、`credentials.txt` の値はそこへだけ入れる。
 
 ## 6. アプリをこの環境につなぐのに要る変更（v1219 で 1〜5 を入れた。6 は未）
 
@@ -76,7 +76,7 @@ URL：`https://wjujeonfmjwvliunotuc.supabase.co`
 
 このブランチ（`claude/review-demo-entry`・v1219）で 1〜5 を入れた。印は `fg_env==='review'`。帯の文言は `Demo / 審査用 — fake data`、戻るボタンは `Return to production / 本番に戻る`。送信待ち（outbox・従業員の未送信・シフトの未送信・業者の未送信・送信中）があると切り替えない。デモでは `DEFAULT_STORES`・`DEFAULT_VENDORS`・`DEFAULT_EMPLOYEES` を空にする。隠す画面はダッシュボード・人件費・勤怠・請求・経理・仕入明細・中間レビュー・従業員割引・採用（デモに無い Edge Function の入口）。会議の中の Google 口コミなど、画面ごとには隠していないボタンは 404 のまま。6 の iPhone 側は変えていない。anon 鍵は `index.html` だけ（この README には書かない）。スキーマ・関数のコード・PIN はこのリポジトリに置かない。
 
-## 7. 確かめたこと（2026-11-25 16:23 HST・`verify.sh`）
+## 7. 確かめたこと（2026-11-25 16:23 HST。確かめの手順 `verify.sh` はこのリポジトリの外）
 
 - OPTIONS：secure-state・device-login・work-requests は `capacitor://localhost` と `https://funergy-plus.com` をそのまま返す。関係のないサイトには secure-state・work-requests は何も返さない。device-login は `https://funergy-plus.com` を返す（本番と同じ作り・ブラウザーは通さない）。auth-pin は `*`（本番と同じ）。
 - ログインの前：stores 1 行・employees 4 行（架空だけ）。`auth_pins` は公開の鍵で 0 行（読めない）。
