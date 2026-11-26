@@ -58,7 +58,7 @@ export function createHandler(deps) {
   const fetch = deps.fetch || globalThis.fetch.bind(globalThis);
   const url = env('SUPABASE_URL'), service = env('SUPABASE_SERVICE_ROLE_KEY'), anon = env('SUPABASE_ANON_KEY');
   const db = deps.db || postgrestDb({ fetch, url, key: service });
-  const origins = ['https://funergy-plus.com', ...String(env('BC_ALLOWED_ORIGINS') || '').split(',').map(s => s.trim()).filter(Boolean)];
+  const origins = [...new Set(['https://funergy-plus.com', 'capacitor://localhost', ...String(env('BC_ALLOWED_ORIGINS') || '').split(',').map(s => s.trim()).filter(Boolean)])];
   const timeout = () => (typeof AbortSignal !== 'undefined' && AbortSignal.timeout ? AbortSignal.timeout(8000) : undefined);
 
   // The email sign-in only (an Auth bearer that is not the anon key). The PIN sign-in is not accepted for bonus amounts.

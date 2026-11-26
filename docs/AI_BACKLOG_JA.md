@@ -1,5 +1,10 @@
 # 改修・自動化の作業記録
 
+## 2026-11-25 貼り付け用と今の関数（#221 の Origin）
+
+1. 済：google-reviews と payroll-expense の貼る 1 ファイルに、`Deno.serve` の前の空行を戻した。bonus-close（v1116）の貼る 1 ファイルの許可リストを handler に合わせた。handler は変えていない。
+2. 残す：mid-review の v1069 は渡したときのまま（許可リストは古い）。device-login と work-requests に貼る関数ファイルは無い。
+
 ## 2026-11-23 統合実装プロンプト（A・B-1・B-2・B-3）
 
 0. 済（Claude（Team）11/24）：push できない（git の proxy が 403）ので、Moto さん 11/24「push しないで進める」＝ブランチごとの引き継ぎ一式を Personal で GitHub に。前の引き継ぎ（Moto さん 11/24 04:39 HST）：次は会社の Team のアカウントの新しいセッションで。最初に `claude/payroll-expense-1212` を取り、共有記録の先頭（11/24 の節・#216 の直しの設計）を読み、push できるかを確かめる。順番：#216 → #217 → #218 → 2b → B-2。
