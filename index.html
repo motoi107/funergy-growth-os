@@ -8152,7 +8152,7 @@ function navGuardPage(page){
   return to;
 }
 function navChildAllowed(pid){
-  if (fgReviewHidden(pid)) return false;   /* v1219：デモに無い関数の画面は出さない */
+  if (typeof fgReviewHidden === 'function' && fgReviewHidden(pid)) return false;   /* v1219：デモに無い関数の画面は出さない。切り出した試験では関数が無いので今までどおり */
   if (pid==='approval') return false;
   /* v1193（UI案95）：「画面の表示」で決めた画面は、その決め方（今の役割の決まりより広げた画面は見るだけ：FUNERGY_PV.ro） */
   try { if (window.FUNERGY_PV && FUNERGY_PV.on()) { var _pd = FUNERGY_PV.decide(pid); if (_pd) return _pd.show; } } catch(e){}
@@ -8175,7 +8175,7 @@ function firstAllowedChild(group) {
   if (!group || !group.children || !group.children.length) return 'mypage';
   var allowed = group.children.filter(navChildAllowed);
   if (allowed[0]) return allowed[0];
-  if (fgReviewDemo()) return 'mypage';   /* v1219：隠した画面へ落ちない */
+  if (typeof fgReviewDemo === 'function' && fgReviewDemo()) return 'mypage';   /* v1219：隠した画面へ落ちない。切り出した試験では関数が無いので今までどおり */
   return group.children[0];
 }
 /* v1084: そのページが今の役職のナビにあって開けるか（廃止した画面の行き先を決めるときに使う） */
@@ -22983,7 +22983,7 @@ function bootLogin() {
   if (!grid) return;
   // Officeを店舗と同列・同サイズで先頭に表示
   var officeCard = `<div class="store-btn" style="border-left:3px solid var(--accent)" onclick="loginPickLocation('OFFICE',this)"><i class="ti ti-building-skyscraper" style="font-size:13px;margin-right:3px"></i>Office</div>`;   /* v776: 従業員登録の選択肢と表記を揃える */
-  var demoCard = fgReviewDemo() ? '' : '<div class="store-btn" id="fg-review-entry" style="border-left:3px solid #123a66" onclick="fgReviewSwitch(true)">審査用（デモ）</div>';   /* v1219：Office の隣。デモの中では出さない */
+  var demoCard = (typeof fgReviewDemo === 'function' && fgReviewDemo()) ? '' : '<div class="store-btn" id="fg-review-entry" style="border-left:3px solid #123a66" onclick="fgReviewSwitch(true)">審査用（デモ）</div>';   /* v1219：Office の隣。デモの中では出さない */
   // ②に空欄（レイアウト用の非表示セル）
   var blankCard = `<div class="store-btn" style="visibility:hidden;pointer-events:none"></div>`;
   // ログイン画面の並び順（共通の sortByLoginOrder を使用）。ログインは誰もロックアウトしないよう全店表示。
@@ -25823,11 +25823,7 @@ function mrScopeSave(){
 /* ===== v1066 中間レビュー ここまで ===== */
 
 function renderPage(page) {
-  if (fgReviewHidden(page)) {   /* v1219 */
-    var _fgDemoEl = document.getElementById('main-content');
-    if (_fgDemoEl) _fgDemoEl.innerHTML = '<div class="card" style="padding:14px">Demo / 審査用 — this screen is not in the demo.</div>';
-    return;
-  }
+  if (typeof fgReviewHidden === 'function' && fgReviewHidden(page)) { var _fgDemoEl = document.getElementById('main-content'); if (_fgDemoEl) _fgDemoEl.innerHTML = '<div class="card" style="padding:14px">Demo / 審査用 — this screen is not in the demo.</div>'; return; }   /* v1219 */
 /* FUNERGY_WEB_OFFICE_SOURCE_V1 renderPage */
 if(typeof window.FUNERGY_WEB_OFFICE_RENDER==='function')return window.FUNERGY_WEB_OFFICE_RENDER(page,()=>(function renderPage(page) {
   try{ mdCacheClear(); }catch(e){}   /* v859: 描画のたびに集計キャッシュを捨てる */
