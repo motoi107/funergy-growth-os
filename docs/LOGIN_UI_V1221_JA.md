@@ -54,6 +54,7 @@
 - 本物の Chrome：`tests/e2e-login/login-ui-v1221.mjs`（新しい・74/74）。スマホ 390・360・PC 1280・日本語と英語・最初の画面・「困ったとき」・所属 → 名前 → PIN・違う PIN・確認中・サーバーにつながらない・止まっている（続けて間違えた）・退職・キーボードの高さ（390×500）・正しい PIN・Enter・ログアウト → もう一度・店の PIN・GM のメールとパスワード（違うパスワード・入る・タブ）・GM の PIN・メール＋パスキー（招待 → コード → 自分の端末にパスキー → 開き直すと入ったまま → ログアウト → 上のパスキー → つながらないときの「続ける」→ 名前からコード・違うコード）・共有の端末（PC・英語：パスキーを保存しない）・審査用デモ（入口 → 確かめ → 帯 → GM → デモに無い画面 → 本番に戻る）・横のはみ出し・文字のはみ出し・押す場所 40px・pageerror 0。同じ台本で v1220 は 52/53（キーボードの高さで NG）。
 - 前からの本物の Chrome の台本：passkey 38/38・pin-off 19/19・email-login 35/36（1 つはマイページの文で、main の v1220 でも同じく NG）・device-login（v1189 でやめた段なので SKIP）。
 - 切り出した試験：passkey-login-app・email-login-app・device-login-app・ux-core・review-demo（v1219・v1220）・app-privacy-link・pin-admin-email ほか。直した試験：review-demo の版（1220 以上・アプリと SW が同じ）と入口の場所、app-privacy-link の版の置き場、e2e の 4 つ（`ANON` の 1 行・「試しのあいだ」・段の題）。
+- 全体（invoice-mutations を除く 314 ファイル）：3925 のうち 3886 pass・39 fail。fail はどれも main（`b9f9b3e`）でも同じく落ちる（meeting-budget・meeting-sales・employee-resign-mutations・cooking-sake・cs-*・specialist-career・bot-database・perf-v1098 ⑨）か、重いときだけ落ちる approvals-v1087（単独で 40/40）。
 - `python3 scripts/check-static-release.py`：pass（1221）。
 
 ## 確かめていないこと
