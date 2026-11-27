@@ -1,5 +1,13 @@
 # Claude / Codex 共通記録
 
+## 2026-11-27 Google 接続の実確認（Codex・v1231）
+
+- 本人が安全な入力画面からログインし、Web の通常画面で稼働中7店舗すべての Places 評価・件数・口コミ本文を実取得できた。認証回避なし。Google の応答本文・認証情報はリポジトリへ保存しない。
+- 未確認だった Totoya 3店舗は名前・住所一致で結び直した。LaLa は照合用住所が Piikoi 店のものだった。公式 https://funergygroup.com/izakayalala と Google 候補の一致を確認し、F06 の gr_place_hint を 1236 Waimanu St #203 に訂正。unsure=true と手動確認を維持し、通常画面で LaLa 自身の店舗ページを確認した。候補検索の画面側住所も同じ住所に訂正。
+- 2026-11-27 18:53:27 UTC の安全な診断ログは `google-reviews-bp accounts 403 SERVICE_DISABLED`。月別口コミの次の障害は My Business Account Management API の無効化。審査待ち・割り当てゼロとは断定しない。Google Cloud 管理画面は確認環境から開けず、有効化は未実施。
+- 取得上限は変更なし。当日の1店1回を7店舗で使用したため、次回取得は太平洋時間の翌日0時（11/27 22:00 HST）以降。Business Profile の店舗紐付け・月別取得は未完了。
+- この版の追加変更は LaLa の候補検索住所、APP_VERSION / SW_BUILD と記録だけ。SQL・権限・認証・料金上限・保存方針を変更するコードは追加しない。検証結果・公開SHAは変更PRへ記録。
+
 ## 2026-11-27 Google 接続修正の再開（Codex・v1230）
 
 - 引き継いだ修正 `8b84c1900a6422bdf4b2ea60e53230b0e2a5c621` を Codex の別担当 `google_code_audit` が独立レビューし、新たな公開阻害の指摘なし。Claude レビューは未実施。
