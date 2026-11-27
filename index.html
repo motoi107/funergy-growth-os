@@ -50919,7 +50919,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1227';
+const APP_VERSION = '1228';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -59782,6 +59782,27 @@ async function invInReconcile(result){
 }
 
 /* ===================================================================== ④ 取込状況 */
+function invInStageBand(H){
+  var e = escapeHtml, qb = H.qb || {}, stores = H.stores || [];
+  var folders = stores.filter(function(x){ return x && x.upload_folder_id; }).length;
+  var readN = (Number(H.pending)||0) + (Number(H.processing)||0);
+  var judgeN = Number(H.review)||0;
+  var qbN = Number(qb.pending)||0;
+  var reconN = (_invIn.recon && _invIn.recon.total != null) ? Number(_invIn.recon.total) : null;
+  var step = function(id, label, n){
+    var num = (n == null) ? '—' : String(n);
+    return '<button type="button" class="btn btn-secondary btn-sm ac-stage-btn" onclick="acSetSub(\'' + id + '\')"><div style="font-size:10px;color:var(--muted)">' + e(label) + '</div><div style="font-size:16px;font-weight:800">' + e(num) + '</div></button>';
+  };
+  var phase = _invIn.retryPhase === 'run' ? t('処理中…','Working…') : (_invIn.retryPhase === 'done' ? t('やり直しを予約しました（次の取込で動きます）','Queued; it runs on the next intake run') : '');
+  return '<div class="ac-stage" data-ac-stage="1">'
+    + step('dlist', t('提出フォルダ','Upload folder'), folders)
+    + step('dlist', t('取り込み・読み取り','Intake and reading'), readN)
+    + step('dreview', t('判定','Decision'), judgeN)
+    + step('dhealth', t('QuickBooks','QuickBooks'), qbN)
+    + step('drecon', t('照合','Reconcile'), reconN)
+    + (phase ? '<div class="ac-stage-phase" style="flex:1 1 100%;font-size:12px;font-weight:700">' + e(phase) + '</div>' : '')
+    + '</div>';
+}
 function invInHealth(){
   var g = invInGate(); if (g) return g;
   invInLoadBase();
@@ -59791,6 +59812,7 @@ function invInHealth(){
   var H = _invIn.health, P = _invIn.problems, e = escapeHtml;
   var h = invInHead();
   if (!H) return h + invInLoadingCard();
+  h += invInStageBand(H);
   var kpi = function(label, val, sub, col){ return '<div class="kpi-card" style="border-top:2px solid '+col+'"><div style="font-size:10px;color:var(--muted);font-weight:700">'+label+'</div><div style="font-size:20px;font-weight:800;margin-top:2px;color:'+col+'">'+val+'</div><div style="font-size:10px;color:var(--muted)">'+sub+'</div></div>'; };
   var errN = (Number(H.errors)||0) + (Number(H.unsupported)||0);
   var drive = H.drive || {};
@@ -60257,7 +60279,10 @@ function invInGmailReturn(){
   } catch(e){}
 }
 async function invInRetry(fileId){
-  try { await invInDo(function(){ return invInAPI({ action:'retry', file_id:fileId }); }, t('やり直しを予約しました（次の取込で動きます）','Queued; it runs on the next intake run')); } catch(e) { return; }
+  _invIn.retryPhase = 'run'; _invIn.retryId = fileId;
+  try { invInRerender(); } catch(e) {}
+  try { await invInDo(function(){ return invInAPI({ action:'retry', file_id:fileId }); }, t('やり直しを予約しました（次の取込で動きます）','Queued; it runs on the next intake run')); } catch(e) { _invIn.retryPhase = 'err'; return; }
+  _invIn.retryPhase = 'done';
   delete _invIn.loaded.problems; delete _invIn.loaded.health; invInRerender();
 }
 function invInQbResolve(id, state){
@@ -61678,7 +61703,7 @@ function acPageInCenter(page){
    ・紛失届は 8B（サーバーの申請）までは今の一覧（8A）：件数とそこへの入口だけ
    ・Invoice取込（Drive）の写しは出さない（v1095 の Q8 と同じ。③ インボイス取り込みで見る） */
 var ACR_PAGE = 100;
-var _acr = { st:'ck', kind:'', store:'', old:false, limit:100, map:{} };
+var _acr = { st:'ck', kind:'', store:'', ym:'', old:false, limit:100, map:{} };
 function acrOnPage(){ return typeof curPage !== 'undefined' && curPage === 'acct_center' && typeof _acCat !== 'undefined' && _acCat === 'review' && _acSub === 'all'; }
 function acrDocSt(rs){ return (rs === '差し戻し') ? 'ret' : (rs === '確認済み') ? 'done' : 'ck'; }
 var ACR_OLD = { old_gas:['ガソリン代','Mileage','gas'], old_exp:['事前経費','Pre-approval','exp'], old_vac:['休暇申請','Time off','vac'], old_rb:['建て替え経費','Reimbursement','reimb'] };
@@ -61741,7 +61766,10 @@ function acrBody(){
   var kinds = {}, stores = {}, oldN = 0;
   A.rows.forEach(function(r){ if (r.src === 'old' && !showOld) { oldN++; return; } kinds[r.kind] = r.kindL; if (r.store) stores[r.store] = r.storeL; });
   if (_acr.kind && !kinds[_acr.kind]) _acr.kind = '';
-  var base = A.rows.filter(function(r){ return (r.src !== 'old' || showOld) && (!_acr.kind || r.kind === _acr.kind) && (!_acr.store || r.store === _acr.store); });
+  var pre = A.rows.filter(function(r){ return (r.src !== 'old' || showOld) && (!_acr.kind || r.kind === _acr.kind) && (!_acr.store || r.store === _acr.store); });
+  var months = {};
+  pre.forEach(function(r){ var ym = String(r.date || '').replace(/\//g, '-').slice(0, 7); if (/^\d{4}-\d{2}$/.test(ym)) months[ym] = 1; });
+  var base = pre.filter(function(r){ if (!_acr.ym) return true; return String(r.date || '').replace(/\//g, '-').slice(0, 7) === _acr.ym; });
   var cnt = { ck:0, pay:0, ret:0, all:base.length };
   base.forEach(function(r){ if (cnt[r.st] != null) cnt[r.st]++; });
   var st = ['ck','pay','ret','all'].indexOf(_acr.st) >= 0 ? _acr.st : 'ck';
@@ -61775,6 +61803,8 @@ function acrBody(){
     + kOpts.map(function(k){ return '<option value="' + e(k) + '"' + (_acr.kind === k ? ' selected' : '') + '>' + e(kinds[k]) + (k.indexOf('old_') === 0 ? t('（前の画面）',' (earlier screen)') : k.indexOf('req:') === 0 ? t('（申請）',' (request)') : '') + '</option>'; }).join('') + '</select>'
     + '<select class="form-select" style="flex:1;min-width:120px;font-size:12px" onchange="acrSet(\'store\', this.value)"><option value="">' + t('店（すべて）','Store (all)') + '</option>'
     + sOpts.map(function(k){ return '<option value="' + e(k) + '"' + (_acr.store === k ? ' selected' : '') + '>' + e(stores[k]) + '</option>'; }).join('') + '</select>'
+    + '<select class="form-select acr-ym" style="flex:1;min-width:120px;font-size:12px" onchange="acrSet(\'ym\', this.value)"><option value="">' + t('月（すべて）','Month (all)') + '</option>'
+    + Object.keys(months).sort().map(function(k){ return '<option value="' + e(k) + '"' + (_acr.ym === k ? ' selected' : '') + '>' + e(k) + '</option>'; }).join('') + '</select>'
     + '<label class="acr-old" style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;white-space:nowrap"><input type="checkbox"' + (showOld ? ' checked' : '') + (forceOld ? ' disabled' : '') + ' onchange="acrSet(\'old\', this.checked)"> ' + t('前の画面の記録も出す','Show earlier-screen records') + '</label></div>';
   if (A.lost) h += '<div class="acr-lost" onclick="acOpenSub(\'lost\')" style="cursor:pointer;display:flex;align-items:center;gap:8px;font-size:12px;padding:8px 11px;margin-bottom:8px;border:1px dashed var(--border);border-radius:10px"><i class="ti ti-receipt-off" style="color:var(--accent)"></i><div style="flex:1">'
     + t('紛失届（今の一覧）：承認待ち ','Lost receipts (current list): waiting ') + '<b>' + A.lost + '</b>' + t(' 件',' ') + '</div><span style="color:var(--muted)">' + t('開く','Open') + ' <i class="ti ti-chevron-right"></i></span></div>';
@@ -61825,7 +61855,7 @@ function renderAcctCenter(){
   var _subs = acSubsOf(cat);
   var sub = _subs.find(function(x){ return x.id===_acSub; }) || _subs[0];
   /* v883: 帯を上に貼るので、見出しは高さを取らないよう1行にする。 */
-  var h = '';
+  var h = '<style id="ui103-ac">.ac-home{display:grid;grid-template-columns:minmax(0,1fr) 280px;gap:12px;align-items:start}.ac-home-main{grid-column:1;grid-row:1}.ac-home-side{grid-column:2;grid-row:1}.ac-home-h{font-size:12px;font-weight:800;margin:0 0 6px}.ac-home-side .card{font-size:12px}.ac-rev{display:grid;grid-template-columns:200px minmax(0,1fr);gap:10px;align-items:start}.ac-rev-3{grid-template-columns:200px minmax(0,1fr) minmax(240px,320px)}.ac-rev-l .mm-tab{display:block;width:100%;text-align:left;margin:0 0 4px}.ac-rev-h{font-size:11px;font-weight:800;color:var(--muted);margin:10px 0 4px}.ac-rev-note,.ac-rev-hint{font-size:11px;color:var(--muted);line-height:1.6;margin-top:8px}.ac-stage{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 10px}.ac-stage button{flex:1;min-width:120px;text-align:left}@media(max-width:900px){.ac-home,.ac-rev,.ac-rev-3{display:block}}</style>';
   /* v883: 大タブと中タブを1つの帯にまとめ、トップバーの直下に固定する。
      どこにいて、どこへ行けるかが常に見えるようにするため。
      大タブには未処理の件数を出し、押す前に残件が分かるようにする。 */
@@ -61842,20 +61872,37 @@ function renderAcctCenter(){
           + '<i class="ti '+c.icon+'"></i>' + escapeHtml(c.labelEn ? t(c.label,c.labelEn) : c.label)
           + (cn ? '<span class="ac-n">'+cn+'</span>' : '') + '</button>';
       }).join('') + '</div>';
+  var reviewLay = (cat.id==='review');
+  var subsBar = '';
   if(_subs.length > 1){
-    h += '<div class="mm-tabs ac-subs">'
-      + _subs.map(function(s){
-          var sn = _pendBy[s.id]||0;
-          return '<button class="mm-tab'+(s.id===sub.id?' active':'')+'" onclick="acSetSub(\''+s.id+'\')">'
-            + escapeHtml(s.labelEn ? t(s.label, s.labelEn) : s.label)   /* v1199：英語の画面では英語 */
-            + (sn ? ' <span style="color:var(--red);font-weight:800">'+sn+'</span>' : '')
-            + '</button>';
-        }).join('') + '</div>';
+    var acBtn = function(s){
+      var sn = _pendBy[s.id]||0;
+      return '<button class="mm-tab'+(s.id===sub.id?' active':'')+'" onclick="acSetSub(\''+s.id+'\')">'
+        + escapeHtml(s.labelEn ? t(s.label, s.labelEn) : s.label)   /* v1199：英語の画面では英語 */
+        + (sn ? ' <span style="color:var(--red);font-weight:800">'+sn+'</span>' : '')
+        + '</button>';
+    };
+    if (reviewLay) {
+      var past = { acctrev:1, appr:1 };
+      subsBar = '<aside class="ac-rev-l"><div class="ac-rev-h">' + t('種類','Kind') + '</div>'
+        + _subs.filter(function(s){ return !past[s.id]; }).map(acBtn).join('')
+        + '<div class="ac-rev-h">' + t('過去の記録','Earlier records') + '</div>'
+        + _subs.filter(function(s){ return !!past[s.id]; }).map(acBtn).join('')
+        + '<div class="ac-rev-note">' + t('状態・店・月は、確認する一覧で読み込んだ分を絞ります。','Status, store and month filter the loaded to-check list.') + '</div></aside>';
+    } else {
+      subsBar = '<div class="mm-tabs ac-subs">' + _subs.map(acBtn).join('') + '</div>';
+    }
   }
-  h += '</div>';
-  if (sub.note) h += '<div class="ac-note" style="font-size:11.5px;color:var(--muted);line-height:1.7;margin:0 2px 8px"><i class="ti ti-info-circle"></i> ' + escapeHtml(t(sub.note[0], sub.note[1])) + '</div>';   /* v1201 */
+  h += reviewLay ? '</div>' : (subsBar + '</div>');
+  function acOut(inner){
+    if (!reviewLay) return h + inner;
+    var side = (sub && sub.id==='all') ? '<aside class="ac-rev-r" id="ac-rev-side"><div id="wr-side"></div><div class="ac-rev-hint">' + t('行を押すと、証憑・段階・操作がここに出ます（申請）。書類とチェックは今の確認の画面です。','Press a row: the receipt, stages and actions open here for a request. Documents and checks use the same check screen as before.') + '</div></aside>' : '';
+    return h + '<div class="ac-rev' + (side ? ' ac-rev-3' : '') + '">' + subsBar + '<div class="ac-rev-c">' + inner + '</div>' + side + '</div>';
+  }
+  var chunk = '';
+  if (sub.note) chunk += '<div class="ac-note" style="font-size:11.5px;color:var(--muted);line-height:1.7;margin:0 2px 8px"><i class="ti ti-info-circle"></i> ' + escapeHtml(t(sub.note[0], sub.note[1])) + '</div>';   /* v1201 */
   /* v881: 未処理の一覧は帯の下に置く（押せばその中タブへ飛ぶ）。 */
-  if(cat.id==='review' && sub.id!=='all'){ try{ h += _acPendHtml(); }catch(e){} }   /* v1200：確認する（1 つの一覧）は一覧そのものが未処理 */
+  if(cat.id==='review' && sub.id!=='all'){ try{ chunk += _acPendHtml(); }catch(e){} }   /* v1200：確認する（1 つの一覧）は一覧そのものが未処理 */
   /* v875: 絞り込み一覧。従来の画面は下に畳んで残す（登録・承認はそちらで行う）。 */
   if(sub.list){
     var lst='';
@@ -61864,18 +61911,18 @@ function renderAcctCenter(){
       + '<i class="ti ti-alert-triangle"></i><div style="font-size:12.5px">'
       + t('一覧の読み込みに失敗しました','Failed to load list') + '：'
       + escapeHtml(String(e && e.message || e)) + '</div></div>'; }
-    h += lst;
+    chunk += lst;
     if(sub.more){
       var body2='';
       try{ body2 = (typeof window[sub.more]==='function') ? window[sub.more]() : ''; }catch(e){ body2=''; }
       if(body2){
-        h += '<details style="margin-top:12px"><summary style="cursor:pointer;font-size:12.5px;'
+        chunk += '<details style="margin-top:12px"><summary style="cursor:pointer;font-size:12.5px;'
           + 'font-weight:800;padding:9px 11px;background:var(--surface2);border-radius:9px">'
           + '<i class="ti ti-plus"></i> ' + t('登録・承認の画面を開く','Open the entry / approval view')
           + '</summary><div style="margin-top:10px">' + body2 + '</div></details>';
       }
     }
-    return h;
+    return acOut(chunk);
   }
   /* 中身：既存画面をそのまま差し込む */
   /* v877: 本部勤怠は既存のタイムカード（renderOfficeAttend）をそのまま使う。
@@ -61884,7 +61931,7 @@ function renderAcctCenter(){
      勤怠や給与から静かに外れるので作らない。 */
   if(_acCat==='attend' && sub.fn==='renderOfficeAttend'){
     var _hq=[]; try{ _hq=(typeof hqStaffMembers==='function')?hqStaffMembers():[]; }catch(e){}
-    h += '<div style="font-size:11px;color:var(--muted);margin:0 2px 8px;line-height:1.7">'
+    chunk += '<div style="font-size:11px;color:var(--muted);margin:0 2px 8px;line-height:1.7">'
       + '<i class="ti ti-users"></i> ' + t('対象','Members') + '：'
       + (_hq.length ? _hq.map(function(e){ return escapeHtml(e.name); }).join('、')
                     : t('（本部所属の登録がありません）','(none registered)'))
@@ -61893,8 +61940,8 @@ function renderAcctCenter(){
       + '</div>';
   }
   if(!sub.fn){
-    return h + '<div class="alert alert-warning" style="padding:10px 12px;margin-bottom:10px">'
-      + '<i class="ti ti-tool"></i><div style="font-size:12.5px"><b>' + t('整備中','Under construction') + '</b></div></div>';
+    return acOut(chunk + '<div class="alert alert-warning" style="padding:10px 12px;margin-bottom:10px">'
+      + '<i class="ti ti-tool"></i><div style="font-size:12.5px"><b>' + t('整備中','Under construction') + '</b></div></div>');
   }
   var body = '';
   try {
@@ -61908,8 +61955,10 @@ function renderAcctCenter(){
     body = '<div class="card" style="text-align:center;color:var(--muted);padding:24px">'
       + t('表示できる内容がありません','Nothing to show') + '</div>';
   }
-  return h + body;
+  if (reviewLay && (sub.id==='acctrev' || sub.id==='appr')) return h + '<div class="ac-rev ac-rev-past">' + subsBar + '</div>' + chunk + body;
+  return acOut(chunk + body);
 }
+
 function renderMileage(){
   var all=getMileageRequests(); var me=mileMyName();
   /* v846: 精算の一覧は「見られる人」で出す。設定・月末処理は従来どおり管理権限で出す。 */
@@ -69378,13 +69427,28 @@ function renderOfficeDash(inCenter){
       +'<div style="font-size:24px;font-weight:800;color:'+(col||'var(--tm)')+'">'+val+'</div>'
       +(sub?'<div style="font-size:11px;color:var(--muted);margin-top:4px">'+sub+'</div>':'')+'</div>';
   }
+  if (inCenter) {
+    var work = '<div class="card ac-work"><div class="card-title"><i class="ti ti-list-check" style="color:var(--accent)"></i> ' + t('あなたの作業','Your work') + '</div>'
+      + '<div onclick="setOfficeMgrTab(\'report\')" style="display:flex;align-items:center;gap:8px;padding:8px 0;border-top:1px solid var(--border);cursor:pointer"><div style="flex:1"><b>' + t('承認待ち','Waiting') + '</b><div style="font-size:11px;color:var(--muted)">' + t('経理レビュー','Accounting review') + '</div></div><b style="color:' + (appr>0?'var(--yellow)':'var(--muted)') + '">' + appr + '</b></div>'
+      + '<div onclick="setOfficeMgrTab(\'attend\')" style="display:flex;align-items:center;gap:8px;padding:8px 0;border-top:1px solid var(--border);cursor:pointer"><div style="flex:1"><b>' + t('出勤中','On duty') + '</b><div style="font-size:11px;color:var(--muted)">Office</div></div><b>' + onduty + ' / ' + mem.length + '</b></div></div>';
+    try { if (typeof acWorkLinksHtml === 'function') work += acWorkLinksHtml(); } catch(e){}
+    var grp = '<div class="ac-home-grp"><div class="ac-home-h">' + t('締め・出力・取り込み','Close, export, intake') + ' · ' + ym + '</div>';
+    try { grp += renderOfficeCloseCard(); } catch(e){}
+    grp += '<div class="card"><div class="card-title"><i class="ti ti-bolt" style="color:var(--accent)"></i> ' + t('出力・取り込み','Export and intake') + '</div><div style="display:flex;gap:8px;flex-wrap:wrap">'
+      + '<button class="btn btn-secondary btn-sm" onclick="invInGoIntake()">' + t('請求書（取り込み）','Invoices (intake)') + '</button>'
+      + '<button class="btn btn-secondary btn-sm" onclick="setOfficeMgrTab(\'export\')">' + t('出力センター','Export') + '</button>'
+      + '<button class="btn btn-secondary btn-sm" onclick="acSetCat(\'review\')">' + t('経理レビュー','Accounting review') + '</button></div></div>';
+    try { grp += renderOfficeObStatus(); } catch(e){}
+    grp += '</div>';
+    var side = '<aside class="ac-home-side"><div class="ac-home-h">' + t('本日の勤怠','Today\'s attendance') + '</div>' + officeClockCard() + officeTodayBoard() + '</aside>';
+    return '<div class="ac-home">' + side + '<div class="ac-home-main">' + work + grp + '</div></div>';
+  }
   var html=officeClockCard();
   html+='<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px">'
     + tile('出勤中','<span style="font-size:18px">'+onduty+'</span> / '+mem.length+'名', 'Officeメンバー', onduty>0?'var(--green)':'var(--muted)', "setOfficeMgrTab('attend')")
     + tile('承認待ち', appr, '経理レビュー', appr>0?'var(--yellow)':'var(--muted)', "setOfficeMgrTab('report')")
     + tile('今月', ym, '締め・出力の対象月', 'var(--accent2)', "setOfficeMgrTab('export')")
     + '</div>';
-  if (inCenter && typeof acWorkLinksHtml === 'function') { try { html += acWorkLinksHtml(); } catch(e){} }   /* v1199（5）：外した入口の件数と行き先 */
   // 本日の出勤状況（Office全員）
   html+=officeTodayBoard();
   // クイックアクション
@@ -116203,7 +116267,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   };
   /* ---------------------------------------------------------------- 1 件 */
   W.wrSideClose = function(){
-    try { var side = document.getElementById('wr-side'); if (side) side.innerHTML = ''; var shell = document.getElementById('wr-3'); if (shell) shell.classList.remove('wr-3-open'); } catch(e) {}
+    try { var side = document.getElementById('wr-side'); if (side) side.innerHTML = ''; var shell = document.getElementById('wr-3'); if (shell) shell.classList.remove('wr-3-open'); var rev = document.querySelector('.ac-rev'); if (rev) rev.classList.remove('ac-rev-open'); } catch(e) {}
     S.d = null; S.ask = null;
   };
   W.wrOpen = function(id){
@@ -116213,7 +116277,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     var side = null; try { side = document.getElementById('wr-side'); } catch(e) {}
     var wide = !!(side && (W.innerWidth || 1024) >= 1024);
     if (wide) {
-      try { var shell = document.getElementById('wr-3'); if (shell) shell.classList.add('wr-3-open'); } catch(e2) {}
+      try { var shell = document.getElementById('wr-3'); if (shell) shell.classList.add('wr-3-open'); var rev = document.querySelector('.ac-rev'); if (rev) rev.classList.add('ac-rev-open'); } catch(e2) {}
       side.innerHTML = '<div style="display:flex;justify-content:flex-end;margin-bottom:6px"><button class="btn btn-secondary btn-sm" onclick="wrSideClose()">' + T('閉じる','Close') + '</button></div><div id="wr-detail" style="width:100%">' + T('読み込み中…','Loading…') + '</div>';
     } else {
       openModal('<div id="wr-detail" style="width:100%">' + T('読み込み中…','Loading…') + '</div>');
