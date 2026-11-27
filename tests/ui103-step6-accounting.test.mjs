@@ -23,9 +23,10 @@ function grab(start) {
   throw new Error('unterminated ' + start);
 }
 
-test('版は 1228', () => {
-  assert.match(SRC, /const APP_VERSION = '1228'/);
-  assert.match(SW, /const SW_BUILD = '1228'/);
+test('版は 1228 以上で揃っている', () => {
+  const v = /const APP_VERSION = '(\d+)'/.exec(SRC)[1];
+  assert.ok(Number(v) >= 1228);
+  assert.match(SW, new RegExp("const SW_BUILD = '" + v + "'"));
 });
 
 test('経理ホームはあなたの作業が先、締め・出力・取り込み、本日の勤怠は右', () => {

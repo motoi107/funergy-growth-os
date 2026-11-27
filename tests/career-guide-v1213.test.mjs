@@ -4,6 +4,8 @@
 // v1222（docs/CAREER_HUB_V1222_JA.md）：制度・役割ガイド／役割と責任マップ／候補者向け／育成計画を 1 つの画面に。
 //   最初の画面＝キャリアマップ（カード）→ カードを押すと 1〜5。業務の分担はマトリクス、候補者向けは同じマスターから。
 //   試験の意図（案のあいだは出さない・公開したら出す・評価の数は Q4 のマスターから）は v1213 のまま、見る場所だけ新しい画面に合わせた。
+// v1223（UI案104・docs/UI104_CAREER_JA.md）：詳細は右のパネル（タブ：役割・評価・次の段階…）。評価のタブは crSet('ptab','eval') で開いてから見る。
+//   G1 は Career Score の対象外（スキルレベル）・G のメインの責任は全員に出す・給与の仕組みは G4 以上だけ（tests/career-ui104-v1223.test.mjs）。
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -19,6 +21,7 @@ const CSQ4 = cut('/* ==== FUNERGY_CSQ4 gen begin ==== */', '/* ==== FUNERGY_CSQ4
 const RG = cut('/* ==== FUNERGY_ROLE_GUIDE gen begin ==== */', '/* ==== FUNERGY_ROLE_GUIDE gen end ==== */');
 const MOD = cut('/* ==== FUNERGY_CAREER begin ==== */', '/* ==== FUNERGY_CAREER end ==== */');
 const clone = v => JSON.parse(JSON.stringify(v));
+const sum = (k, i) => guide.systems.find(x => x.key === k).grades[i].summary.ja;   // 役割の文（案）の要約
 
 function world({ role = 'crew', lang = 'ja', status, enStatus, allow = () => true } = {}) {
   const els = {};
@@ -92,22 +95,24 @@ test('案のあいだ：スタッフ・候補者には役割の文を出さな�
   let h = crew.mount();
   assert.match(h, /キャリア・育成/); assert.match(h, /役割の説明は会社が確認中です/);
   assert.doesNotMatch(h, /Opening・Closing を手順どおりに終え/);
-  assert.match(h, /基準点 55 点/, 'キャリアマップのカードは Q4 のマスターの基準点（役割の文の代わり）');
+  assert.match(h, /基準点 65/, 'キャリアマップの段は Q4 のマスターの基準点（役割の文の代わり）'); assert.match(h, /スキルレベル（CS 対象外）/, 'G1 は Career Score の対象外');
+  assert.match(h, /自分のポジションを責任持ってやり切る/, 'G のメインの責任（Moto さんの文）は案のあいだも全員に'); assert.doesNotMatch(h, new RegExp(sum('S_CHEF', 0)));
   for (const g of ['G1', 'G2', 'G3', 'G4', 'G5', 'G6']) assert.match(h, new RegExp("crOpen\\('G','" + g + "'\\)"));
   assert.doesNotMatch(h, /G7（|'G7'/);
-  crew.crOpen('G', 'G1'); assert.match(crew.root(), /<span>基準点<\/span><b>55<\/b>/, '評価の見方（Q4 のマスター）は出す');
-  assert.match(crew.root(), /役割の説明は会社が確認中です/); assert.doesNotMatch(crew.root(), /Opening・Closing を手順どおりに終え/);
+  crew.crOpen('G', 'G1'); assert.match(crew.root(), /役割の説明は会社が確認中です/); assert.doesNotMatch(crew.root(), /Opening・Closing を手順どおりに終え/);
+  crew.crSet('ptab', 'eval'); assert.match(crew.root(), /G1 は Career Score の対象外です/);
+  crew.crOpen('G', 'G2'); assert.match(crew.root(), /<span>基準点<\/span><b>65<\/b>/, '評価の見方（Q4 のマスター）は出す（開いたパネルのタブのまま）');
   crew.crSet('view', 'matrix'); assert.match(crew.root(), /業務の分担（責任マトリクス）は会社が確認中です/); assert.doesNotMatch(crew.root(), /Opening・Closing と各種リスト/);
   crew.crSet('view', 'cand'); assert.match(crew.root(), /等級ごとの役割の説明は準備中です/); assert.doesNotMatch(crew.root(), /手順とルールを守って基本の仕事/);
   for (const r of ['gm', 'ceo']) {
     const m = world({ role: r }); h = m.mount();
-    assert.match(h, /文は案・会社の確認待ち/); assert.match(h, /GM・CEO だけに見えています/); assert.match(h, /手順とルールを守って基本の仕事/, 'カードに要約（案）');
+    assert.match(h, /文は案・会社の確認待ち/); assert.match(h, /GM・CEO だけに見えています/); assert.match(h, new RegExp(sum('S_CHEF', 0)), '段に要約（案）');
     m.crOpen('G', 'G1'); const d = m.root();
     assert.match(d, /Opening・Closing を手順どおりに終え/);
     assert.match(d, /一般スタッフ：担当作業を学び[^<]* <span class="cr-note">\(Excel「配点・基準点案 52 行」\)<\/span>/, 'Excel の位置付けと出どころ');
-    assert.match(d, /評価と昇格の考え方/); assert.match(d, /配点・基準点案 87 行/);
+    m.crSet('ptab', 'eval'); assert.match(m.root(), /評価と昇格の考え方/); assert.match(m.root(), /配点・基準点案 87 行/);
     m.crSet('view', 'matrix'); m.crSet('cat', 'all'); assert.match(m.root(), /Opening・Closing と各種リスト/); assert.match(m.root(), /◎/);
-    m.crSet('view', 'cand'); assert.doesNotMatch(m.root(), /手順とルールを守って基本の仕事/, '候補者向けは公開まで GM・CEO の画面でも出さない');
+    m.crSet('view', 'cand'); assert.doesNotMatch(m.root(), new RegExp(sum('S_CHEF', 0) + '|' + sum('G', 0)), '候補者向けは公開まで GM・CEO の画面でも出さない');
     m.crOpen('G', 'G1', 1); assert.doesNotMatch(m.root(), /Opening・Closing を手順どおりに終え|担当作業を学び/, '候補者向けのカードも公開まで出さない');
   }
   const store = world({ role: 'gm' }); store.curStoreLogin = { store: 'S1' }; h = store.mount();
@@ -118,7 +123,7 @@ test('案のあいだ：スタッフ・候補者には役割の文を出さな�
 test('公開したら全員に出す・候補者向けにも要約・英語は確かめるまで日本語＋英訳確認中', () => {
   const p = world({ role: 'crew', status: 'published' });
   let h = p.mount();
-  assert.match(h, /手順とルールを守って基本の仕事/); assert.doesNotMatch(h, /文は案/); assert.doesNotMatch(h, /会社が確認中/);
+  assert.match(h, new RegExp(sum('S_CHEF', 0))); assert.doesNotMatch(h, /文は案/); assert.doesNotMatch(h, /会社が確認中/);
   p.crOpen('G', 'G1'); assert.match(p.root(), /Opening・Closing を手順どおりに終え/); assert.doesNotMatch(p.root(), /文は案|会社が確認中/);
   p.crSet('view', 'cand'); assert.match(p.root(), /部門Leader/, '候補者向けのカードは公開したら Excel の等級の位置付けの名前（G2・G3 など）');
   p.crOpen('G', 'G1', 1); assert.match(p.root(), /担当作業を学び、手順・品質・スピードの基準へ近づく/, '候補者向けは Excel の等級の位置付け');
@@ -134,22 +139,26 @@ test('公開したら全員に出す・候補者向けにも要約・英語は�
 
 test('評価の見方は Q4 のマスターから（基準点・配点・最低条件・Prep の段）', () => {
   const w = world({ role: 'gm' }); w.mount();
-  w.crOpen('G', 'G4');
+  w.crOpen('G', 'G4'); w.crSet('ptab', 'eval');
   let h = w.root();
   assert.match(h, /<span>基準点<\/span><b>85<\/b>/);
   for (const [k, v] of Object.entries(master.systems.G.weights.G4['店長'].weights)) if (v > 0) assert.match(h, new RegExp('<b>' + v + '</b>'), k);
   assert.match(h, /理念 5 分類のそれぞれの平均 2\.25 以上/); assert.match(h, /サービスとKitchenのそれぞれの平均 2\.00 以上/);
   assert.match(h, /指定項目（01-13・01-14・01-09・01-16）がそれぞれ 2 点以上/);
-  w.crSet('grade', 'G1'); w.crSet('type', 'Kitchen中心'); h = w.root();
-  assert.equal(w.FUNERGY_CAREER.state().view, 'detail', '前後の等級はカードの中で動く');
-  assert.match(h, /主担当（Kitchen）の平均 1\.50 以上/); assert.match(h, /他部門（サービス）の平均 1\.00 以上/); assert.doesNotMatch(h, /指定項目/, 'G1 に指定項目は無い');
+  w.crSet('grade', 'G2'); w.crSet('type', 'Kitchen中心'); h = w.root();
+  assert.equal(w.FUNERGY_CAREER.state().view, 'detail', '前後の等級はパネルの中で動く');
+  for (const x of w.FUNERGY_CAREER.minimumLines('G', 'G2', 'Kitchen中心')) assert.ok(h.includes(x), x);
+  assert.match(h, /主担当（Kitchen）の平均 [\d.]+ 以上/); assert.match(h, /他部門（サービス）の平均 [\d.]+ 以上/); assert.match(h, /指定項目（01-13・01-14・01-09・01-16）がそれぞれ 2 点以上/, 'G2 から指定項目（Q4 のマスターの fromGrade）');
+  w.crSet('grade', 'G1'); h = w.root(); assert.match(h, /G1 は Career Score の対象外です（G2 から対象）/); assert.doesNotMatch(h, /<span>基準点<\/span>/, 'G1 に基準点は出さない（スキルレベル）');
   w.crOpen('S_CHEF', 'S3'); h = w.root();
   assert.match(h, /<span>基準点<\/span><b>75<\/b>/); assert.match(h, /衛生安全の平均 2\.00 以上/); assert.match(h, /品質管理の平均 2\.00 以上/);
   assert.doesNotMatch(h, /未担当（G だけ）/, 'S に未担当は無い');
   w.crOpen('PREP', 'P3'); h = w.root();
-  assert.match(h, /1\.00 以上/); assert.match(h, /70% 以上/); assert.match(h, /Q1 分量・数量/);
-  assert.doesNotMatch(h, /\$|wageUsd|1[7-9] ?ドル|時給 \d/, 'Prep の時給はガイドに出さない（別の決まり）');
+  assert.match(h, /1\.00 以上/); assert.match(h, /70% 以上/); assert.match(h, /<b>Q1<\/b> 分量・数量/);
   assert.match(h, /時給・Tip Rate・賞与・福利厚生は別の決まりです/);
+  // v1223（UI案104 の 3「G4 以上のみ」）：Prep の時給の段は GM・CEO と G4 以上だけ。スタッフ・候補者には出さない（tests/career-ui104-v1223.test.mjs）
+  const cw = world({ role: 'crew' }); cw.mount(); cw.crOpen('PREP', 'P3'); cw.crSet('ptab', 'eval');
+  assert.doesNotMatch(cw.root(), /\$|wageUsd|1[7-9] ?ドル|時給 \d/, 'スタッフには Prep の時給を出さない');
   // 選べないものは選ばない（G7・知らない系統・型）
   const before = w.FUNERGY_CAREER.state();
   w.crSet('sys', 'G7'); w.crSet('grade', 'G7'); w.crSet('type', 'CEO'); w.crOpen('G', 'G7'); w.crOpen('X', 'G1'); w.crSet('view', 'nope');
@@ -211,20 +220,22 @@ test('v1222（Moto さん 11/26）：キャリアマップの職名（G1 Crew・
     assert.doesNotMatch(card(h, 'G1'), /一般スタッフ/); assert.doesNotMatch(card(h, 'G4'), /cr-card-t">店長/);
     const store = ['G1', 'G2', 'G3', 'G4', 'Chef S1', 'Chef S2', 'P1', 'P2', 'P3', 'P4', 'P5', 'P6'];
     const hq = ['G5', 'G6', 'Chef S3', 'Chef S4', 'Chef S5', 'Chef S6', '経理 S1', '経理 S2', '経理 S3', '経理 S4', '経理 S5', '経理 S6'];
-    for (const g of store) { assert.match(card(h, g), /cr-asg-store[^<]*<i[^>]*><\/i> 店舗配属/, g); assert.doesNotMatch(card(h, g), /本部配属/, g); }
-    for (const g of hq) { assert.match(card(h, g), /cr-asg-hq[^<]*<i[^>]*><\/i> 本部配属/, g); assert.doesNotMatch(card(h, g), /店舗配属/, g); }
+    // v1223：配属は段の上の帯・列の地の色（cr-col-store／cr-col-hq）と、カードの読み上げの文
+    const col = g => { const i = h.indexOf('<span class="cr-card-g">' + g); return h.slice(h.lastIndexOf('<div class="cr-col', i), i); };
+    for (const g of store) { assert.match(card(h, g), /<span class="cr-sr">店舗配属・/, g); assert.doesNotMatch(card(h, g), /本部配属/, g); assert.match(col(g), /cr-col-store/, g); }
+    for (const g of hq) { assert.match(card(h, g), /<span class="cr-sr">本部配属・/, g); assert.doesNotMatch(card(h, g), /店舗配属/, g); assert.match(col(g), /cr-col-hq/, g); }
     if (role === 'crew' && !opts.status) { assert.doesNotMatch(card(h, 'G2'), /cr-card-t/, 'ほかの職名（案）は公開まで出さない'); assert.doesNotMatch(card(h, 'Chef S3'), /Head Chef/); }
   }
   const c = world({ role: 'crew' }); c.mount(); c.crSet('view', 'cand'); const ch = c.root();
   assert.match(card(ch, 'G5'), /Area Manager/); assert.match(card(ch, 'G5'), /本部配属/, '候補者向けにも職名と配属');
-  c.crOpen('G', 'G6'); assert.match(c.root(), /General Manager · 全社運営責任/); assert.match(c.root(), /本部配属/);
+  c.crOpen('G', 'G6'); assert.match(c.root(), /<b>General Manager<\/b><span class="cr-card-s"[^>]*>全社運営責任<\/span>/); assert.match(c.root(), /cr-tag-hq[^>]*><i[^>]*><\/i> 本部配属/);
   const e = world({ role: 'crew', lang: 'en' }); const eh = e.mount();
   assert.match(card(eh, 'G5'), /Multi-store, area responsibility/); assert.match(card(eh, 'G5'), /HQ-based/); assert.match(card(eh, 'P1'), /Store-based/);
 });
 
 test('v1222（Moto さん 11/26・UI案102 の答え）：順は G → Prep → Chef → 経理・テーマカラー・組織マップの上司は決まりから（入力しない）', () => {
   const w = world({ role: 'gm' }); const h = w.mount();
-  const lanes = [...h.matchAll(/<section class="cr-lane">[\s\S]*?<b>([^<]+)<\/b>/g)].map(m => m[1]);
+  const lanes = [...h.matchAll(/<section class="cr-ln"[^>]*>[\s\S]*?<b>([^<]+)<\/b>/g)].map(m => m[1]);
   assert.deepEqual(lanes.map(x => x.split('（')[0].trim()), ['G', 'Prep', 'Chef の S', '経理の S']);
   const style = g => (h.match(new RegExp('style="([^"]*)" onclick="crOpen\\(\\\'[A-Z_]+\\\',\\\'' + g + '\\\'\\)"')) || [])[1] || '';
   assert.match(style('G1'), /--l:#F0661F/, 'G はアプリと同じオレンジ'); assert.match(style('P1'), /--c:#166534;--l:#15803D/, 'Prep は深緑');
@@ -241,7 +252,7 @@ test('v1222（Moto さん 11/26・UI案102 の答え）：順は G → Prep → 
   o.getEmployees = () => P; o.getStoresAll = () => [{ id: 'F01', name: 'Store A', am: 'Ann Area' }, { id: 'F02', name: 'Store B', am: 'Ann Area' }, { id: 'F03', name: 'Store C', am: '' }];
   vm.runInContext(gt + ';function empGrade(e){var g=gradeOf(e&&e.title);if(g)return g;var r=e&&e.role;if(r===\'gm\')return \'G6\';if(r===\'am\')return \'G5\';if(r===\'g4\'||r===\'chef\')return \'G4\';if(r===\'sl\')return \'G3\';if(r===\'g2\')return \'G2\';if(r===\'crew\'||r===\'office_crew\')return \'G1\';return \'\';}'
     + 'function gradeOf(t){if(!t)return \'\';var k=Object.keys(GRADE_TITLES);for(var i=0;i<k.length;i++){if(GRADE_TITLES[k[i]].indexOf(t)>=0)return k[i];}return \'\';}', o);
-  o.mount();
+  o.mount(); o.crSet('view', 'org'); o.crSet('orgmode', 'list');   // v1223：組織図は図が最初・一覧に切り替えて表で確かめる
   const rows = sid => { o.crSet('view', 'org'); o.crSet('org', sid); return Object.fromEntries([...o.root().matchAll(/<tr><td>([\s\S]*?)<\/tr>/g)].map(m => { const td = m[1].split('</td><td>').map(x => x.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim()); return [td[0].split(' ')[0] + ' ' + td[0].split(' ')[1], td[3]]; })); };
   const a = rows('F01');
   assert.equal(a['Sam Lead'], 'Mia Manager （店の G4）'); assert.equal(a['Pia Prep'], 'Mia Manager （店の G4）');
