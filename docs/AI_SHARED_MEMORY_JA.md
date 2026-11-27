@@ -1,6 +1,14 @@
 # Claude / Codex 共通記録
 
-## 2026-11-27 UI案103 step ② Daily/Monthly（Grok・ブランチ `grok/ui103-step2-daily`・v1224・main `196dd29` の上・本番未反映）
+## 2026-11-27 UI案103 step ③ Quarterly（Grok・ブランチ `grok/ui103-step3-quarterly`・v1225・main `dcc0f00` の上・本番未反映）
+
+- 依頼：Moto さん「全部終わるまで進めてください」。この step は Quarterly の 4 つの欄だけ。
+- 順：約束（Qコミット）→ 行動（重点項目のメモ）→ 結果（前の四半期と比べた数字）→ 残り（「Q目標まで あと」と「客数だけで埋めるなら1日N人（今の客単価）」）。
+- 行動と結果は別。記録が無いときは「記録なし」（未実施とは書かない）。期限・次にやること・できた／まだ・上司の確認は足していない。メモは今の `saveQcNote` / `focusNotes`、約束は今の `saveQBudget` / `q_budgets`。
+- 変えていない：`qcFillWays`、進みの 100% / 95%、1 営業日あたりの比較（仮ルールなので入れない）。
+- 次：④ Annual の帯。
+
+## 2026-11-27 UI案103 step ② Daily/Monthly（Grok・ブランチ `grok/ui103-step2-daily`・v1224・main `196dd29` の上）
 
 - 依頼：Moto さん「全部終わるまで進めてください」。この step は Daily/Monthly だけ。
 - 客数（正式）：前日までの実績を、月の客数の計画 ×（前日までの売上予算 ÷ 月の売上予算）と比べる。定休（売上予算 0）は割合に入らない。月が終わったあとは月の計画。色の幅は 100 / 90 のまま。`keyKpiStats` の月の客数の計画そのものは変えていない。

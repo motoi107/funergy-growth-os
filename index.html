@@ -718,6 +718,9 @@ body.shift-wide .main { max-width:1900px; }
 .bud-st.warn{color:#A16207;background:#FEF8D7;border-color:#FDE047}
 .bud-st.danger{color:#B91C1C;background:#FDECEA;border-color:#FCA5A5}
 .bud-st.none{color:var(--muted);background:var(--surface2);border-color:var(--border)}
+/* UI案103 step ③：Quarterly は 約束 → 行動 → 結果 → 残り */
+.qb-sec{margin:0 0 14px}
+.qb-sec-h{font-size:13px;font-weight:800;margin:0 0 6px;letter-spacing:.01em}
 /* UI案103 step ②：日次の確かめること・日の詳細・ランチ／ディナーをたたむ */
 .bud-checks{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:0 0 10px}
 .bud-ck{display:inline-flex;align-items:center;gap:4px;border-radius:999px;padding:3px 8px;font-size:11px;font-weight:700;border:1px solid var(--border);background:var(--surface)}
@@ -36844,12 +36847,16 @@ function renderQcSummary(scope, y, q, R){
       +'</div>';
   }
 
-  /* ★埋め方をここに畳む（別カードにしない） */
+  return h+'</div>';
+}
+/* ★埋め方をここに畳む（別カードにしない） */
+function renderQcRemain(R){
+  var h='<div class="card"><div class="card-title" style="font-size:13px"><i class="ti ti-hourglass"></i> '+t('残り','What is left')+'</div>';
   var w=qcFillWays(R);
   if(w.ok){
     var g=function(v){ return (v==null)?'—':('+'+Math.ceil(v)+t('人/日','/d')); };
     var p=function(v){ return (v==null)?'—':('+$'+(Math.round(v*100)/100)); };
-    h+='<div style="background:var(--surface2);border-radius:9px;padding:8px 10px;margin-top:6px">'
+    h+='<div style="background:var(--surface2);border-radius:9px;padding:8px 10px">'
       +'<div style="font-size:11px;color:var(--muted);margin-bottom:3px">'
       +t('Q目標まで あと','To Q target')+' <b style="font-size:13px;color:var(--tm)">'+fmtK(w.need)+'</b>'
       +' · '+t('残り','left')+' '+w.days+t('日','d')+'</div>'
@@ -37479,16 +37486,20 @@ function renderQcFocus(storeId, y, q, opts){
   opts=opts||{};
   var qb=getQBudget(storeId,y,q)||{};
   var rows=qcFocusRows(storeId,y,q);
+  var part=opts.part||'all';
+  if(part==='memo') rows=rows.filter(function(r){ return r.mode!=='auto'; });
+  else if(part==='result') rows=rows.filter(function(r){ return r.mode==='auto'; });
   var h='<div class="card"><div class="card-title" style="font-size:13px">'
     +'<i class="ti ti-flag" style="color:var(--accent2)"></i> '+y+' Q'+q+' '+t('の重点項目','focus items')
     +(qb.status==='committed'
       ?' <span class="tag tag-green" style="font-size:9px">'+t('コミット済','Committed')+'</span>'
       :' <span class="tag tag-yellow" style="font-size:9px">'+t('未コミット','Not committed')+'</span>')+'</div>';
   if(!rows.length){
-    return h+'<div style="font-size:11.5px;color:var(--muted)">'
-      +t('この四半期の重点項目がまだ選ばれていません。','No focus items selected for this quarter.')
-      +(opts.link!==false?' <a onclick="setBudgetTab(\'quarter\')" style="color:var(--accent);cursor:pointer">'+t('Qコミットで設定','Set in Q-commit')+'</a>':'')
-      +'</div></div>';
+    var emptyMsg=(part==='memo'||part==='result')
+      ? t('記録なし','No record')
+      : (t('この四半期の重点項目がまだ選ばれていません。','No focus items selected for this quarter.')
+         +(opts.link!==false?' <a onclick="setBudgetTab(\'quarter\')" style="color:var(--accent);cursor:pointer">'+t('Qコミットで設定','Set in Q-commit')+'</a>':''));
+    return h+'<div style="font-size:11.5px;color:var(--muted)">'+emptyMsg+'</div></div>';
   }
   rows.forEach(function(r, idx){
     h+='<div style="padding:7px 0'+(idx?';border-top:1px solid var(--border)':'')+'">';
@@ -37530,7 +37541,7 @@ function renderQcFocus(storeId, y, q, opts){
           +'<div style="font-size:9.5px;color:var(--muted);margin-top:1px">'+escapeHtml(r.last.by||'')+' '+escapeHtml(r.last.at||'')
           +(r.notes.length>1?('　'+t('他','+')+(r.notes.length-1)+t('件','')):'')+'</div>';
       } else {
-        h+='<div style="font-size:10.5px;color:var(--muted);margin-top:2px">'+t('まだ記録がありません','No record yet')+'</div>';
+        h+='<div style="font-size:10.5px;color:var(--muted);margin-top:2px">'+t('記録なし','No record')+'</div>';
       }
       if(opts.canWrite){
         h+='<div style="display:flex;gap:5px;margin-top:5px">'
@@ -37540,7 +37551,7 @@ function renderQcFocus(storeId, y, q, opts){
     }
     h+='</div>';
   });
-  if(qb.basis) h+='<div style="margin-top:7px;padding-top:6px;border-top:1px dashed var(--border);font-size:10.5px;line-height:1.6">'
+  if(part==='all' && qb.basis) h+='<div style="margin-top:7px;padding-top:6px;border-top:1px dashed var(--border);font-size:10.5px;line-height:1.6">'
     +'<b>'+t('達成の軸','Axis')+'</b>: '+escapeHtml(qb.basis)+'</div>';
   return h+'</div>';
 }
@@ -37681,11 +37692,11 @@ function renderQuarterBudget(){
   /* ★v968: 横バーのサマリーをカード一覧に置き換える（Motoさん 2026-08-20）。
      ①判定と過不足 ②あと$Xを何で埋めるか ③KPI別カード の順に置く。
      ②を②の位置に置くのは、不足額を見た直後に打ち手の単位を読ませるため。 */
+  var _charts='';
   try{
     var _R=qcCompute(_qbStore, y, q);
     if(_R.tSales || _R.aSales){
-      /* ★v972: 判定・埋め方・着地見込みを1枚に統合（Motoさん「全体をまとめて」）。 */
-      html+=renderQcSummary(_qbStore, y, q, _R);
+      /* ★v972: 判定は「結果」、埋め方は「残り」（step ③）。ここでは日次と KPI だけ貯める。 */
       /* ★v970: トグルを廃止。日次累計がQ累計そのものなので二重にしない。
          率のKPIはヒートマップ（3ヶ月×6KPI）で読む。 */
       var _ser=null; try{ _ser=qcSeries(_qbStore, y, q); }catch(e){ console.warn('qcSeries', e); }
@@ -37694,28 +37705,31 @@ function renderQuarterBudget(){
       /* ★v976: ここから1列目の対（日次の推移 ｜ KPI別）。
          全店・単店のどちらでもこの try の中で開いて閉じるので、
          この後の早期 return に巻き込まれない。 */
-      html+='<div class="qb-pair">';
+      _charts+='<div class="qb-pair">';
       var _raw=null;
       try{ _raw=qcDayRaw(_qbStore, y, q); }catch(e){ console.warn('qcDayRaw', e); }
-      if(_raw){ try{ html+=renderQcDayCard(_qbStore, y, q, _R, _raw); }catch(e){ console.warn('renderQcDayCard', e); } }
+      if(_raw){ try{ _charts+=renderQcDayCard(_qbStore, y, q, _R, _raw); }catch(e){ console.warn('renderQcDayCard', e); } }
       /* ★v972: 売上の累計カードは削除。日次の推移カードの売上タブと中身が重なり、
          着地見込みはサマリーのバー上の印に移したため。 */
       /* ★v975: KPI別テーブルを主列へ戻す。行タップで上の日次グラフのタブが
          切り替わるので、上下に隣り合っているほうが関係が見える。
          v974 では左右に離れていた。 */
-      html+=renderQcKpiTable(_qbStore, y, q, _R, _ser);
-      html+='</div>';   /* 日次｜KPI別 の対をここで閉じる */
+      _charts+=renderQcKpiTable(_qbStore, y, q, _R, _ser);
+      _charts+='</div>';   /* 日次｜KPI別 の対をここで閉じる */
       if(_R.unreg.length){
-        html+='<div class="card" style="padding:8px 11px;margin-bottom:10px;font-size:10.5px;color:var(--yellow)">'
+        _charts+='<div class="card" style="padding:8px 11px;margin-bottom:10px;font-size:10.5px;color:var(--yellow)">'
           +'<i class="ti ti-alert-triangle"></i> '+t('予算未登録の月があります（目標が過小に出ます）','Some months have no budget (target understated)')+'：'
           +_R.unreg.slice(0,4).map(function(u){ return escapeHtml(u.store+' '+u.ym); }).join('、')
           +(_R.unreg.length>4?' 他':'')+'</div>';
       }
     } else {
-      html+='<div class="card" style="margin-bottom:10px"><div style="font-size:12px;color:var(--muted)">'
+      _charts+='<div class="card" style="margin-bottom:10px"><div style="font-size:12px;color:var(--muted)">'
         +t('この四半期の予算が登録されていません。予算設定から各月を登録してください。','No budget registered for this quarter.')+'</div></div>';
     }
   }catch(e){ console.warn('qcCards', e); }
+
+  html += qbQuarterSections(y, q, (typeof _R==='undefined')?null:_R);
+  html += _charts;
 
   if(_qbStore==='ALL'){
     // 集計（全店合計の項目別）
@@ -37766,7 +37780,6 @@ function renderQuarterBudget(){
   var mds=months.map(function(ym){ return _qbMonthData(st.id, ym); });
   /* ★v976: ここから2列目の対（月別 ｜ 重点項目＋達成方針）。
      この行だけで開閉が完結するので、上の全店経路が return しても影響しない。 */
-  html+='<div class="qb-pair">';
   /* v747: 「合計進捗」カードは上部のQ達成サマリーと重複するため削除 */
   /* v747: 「月別 進捗」と「月ごとの考え方」を1枚に統合。
      進捗と、その月に何を狙っていたか（考え方）を並べて見比べられるようにする。 */
@@ -37810,36 +37823,57 @@ function renderQuarterBudget(){
       +'</div>';
   });
   html+='<div style="font-size:9px;color:var(--muted);margin-top:2px">'+t('原価率＝棚卸法COGS（期首＋仕入＋食材移動−期末）／人件費率＝実勤怠×時給＋固定給＋有給。考え方は単月予算の提出時メモ。','FC = inventory COGS / Labor = actual hours×wage + salary + PTO. Rationale is from the monthly budget submission.')+'</div></div>';
-  /* ★v976: 重点項目と達成方針は右の1マスに縦に積む（月別と高さが揃う）。
-     携帯では display:contents で包みが消えるので、順番はそのまま。 */
-  html+='<div class="qb-stack">';
-  /* ★v969: Qコミットに重点項目カードを出す。v968 では会議タブとダッシュボードに
-     しか繋いでおらず、重点項目を設定する画面に進捗が出ていなかった（漏れ）。 */
-  try{ html+=renderQcFocus(st.id, y, q, { canWrite:qbCanEdit(), link:false, ser:_qcFocusSer(st.id,y,q) }); }
-  catch(e){ console.warn('renderQcFocus(qcommit)', e); }
-  /* ★v974: 全幅をやめて重点項目と横に並べる。日次を全幅にしたので、
-     残りは 月別｜KPI別 と 重点項目｜達成方針 でちょうど2行に収まる。
-     全幅のままだと重点項目が1つだけ残って右半分が空く。 */
-  // 四半期の達成方針（重点項目チェック＋補足）
-  html+='<div class="card"><div class="card-title" style="font-size:13px"><i class="ti ti-flag" style="color:var(--accent2)"></i> '+t('四半期の達成方針','Quarter plan')+(qb.status==='committed'?' <span class="tag tag-green" style="font-size:9px">'+t('コミット済','Committed')+'</span>':'')+'</div>';
-  if(qbCanEdit()){
-    html+='<div style="font-size:11px;color:var(--muted);margin-bottom:6px">'+t('重点項目（この四半期で力を入れること・複数可）','Focus items (what to prioritize this quarter · multiple)')+'</div><div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px">';
-    QB_FOCUS_ITEMS.forEach(function(fi){ var on=(qb.focusItems||[]).indexOf(fi.key)>=0;
-      html+='<label style="display:inline-flex;align-items:center;gap:5px;font-size:11px;padding:5px 10px;border-radius:16px;border:1.5px solid '+(on?'var(--accent)':'var(--border)')+';background:var(--surface2);cursor:pointer"><input type="checkbox" id="qbf-'+st.id+'-'+fi.key+'" '+(on?'checked':'')+' onchange="this.parentNode.style.borderColor=this.checked?\'var(--accent)\':\'var(--border)\'" style="margin:0;width:14px;height:14px"> '+fi.label+'</label>';
-    });
-    html+='</div>';
-    html+='<div class="form-group"><label class="form-label" style="font-size:11px">'+t('達成の軸・根拠（コミットに必須）','Axis & basis (required to commit)')+'</label><textarea class="form-input" id="qb-'+st.id+'-basis" rows="3" placeholder="'+t('上の重点項目を、何を軸にどう達成するか（例：ディナー客数と客単価を軸に、リピート施策で…）','How you\'ll achieve the focus items above (e.g. driven by dinner guests & avg check, with repeat tactics…)')+'">'+escapeHtml(qb.basis||'')+'</textarea></div>'
-      +'<div class="form-group"><label class="form-label" style="font-size:11px">'+t('具体施策','Actions')+'</label><textarea class="form-input" id="qb-'+st.id+'-focus" rows="2" placeholder="'+t('具体的に取り組むこと','Concrete actions')+'">'+escapeHtml(qb.focus||'')+'</textarea></div>'
-      +'<div class="btn-row"><button class="btn btn-secondary btn-sm" onclick="saveQBudget(\''+st.id+'\',false)">'+t('下書き保存','Save draft')+'</button><button class="btn btn-primary btn-sm" onclick="saveQBudget(\''+st.id+'\',true)"><i class="ti ti-check"></i> '+t('コミット','Commit')+'</button></div>';
-    if(qb.committedAt) html+='<div style="font-size:10px;color:var(--muted);margin-top:4px">'+t('コミット: ','Committed: ')+escapeHtml(qb.committedBy||'')+' '+escapeHtml(qb.committedAt||'')+'</div>';
-  } else {
-    var chips=(qb.focusItems||[]).map(function(k){ var fi=QB_FOCUS_ITEMS.find(function(x){return x.key===k;}); return fi?('<span class="tag" style="font-size:10px;background:var(--accent);color:#fff;margin:2px">'+fi.label+'</span>'):''; }).join('');
-    html+=(chips?('<div style="margin-bottom:6px">'+chips+'</div>'):'')+(qb.basis?('<div style="font-size:11px;color:var(--tm);line-height:1.7"><b>'+t('達成の軸','Axis')+':</b> '+escapeHtml(qb.basis)+(qb.focus?('<br><b>'+t('具体施策','Actions')+':</b> '+escapeHtml(qb.focus)):'')+'</div>'):'<div style="font-size:11px;color:var(--muted)">'+t('まだ設定されていません。','Not set yet.')+'</div>');
-  }
-  html+='</div>';
-  html+='</div></div>';   /* ★v976: 積みと対を閉じる */
   return html;
 }
+function renderQcPromise(st, y, q){
+  var qb=getQBudget(st.id,y,q)||{};
+  var h='';
+  // 四半期の達成方針（重点項目チェック＋補足）
+  h+='<div class="card"><div class="card-title" style="font-size:13px"><i class="ti ti-flag" style="color:var(--accent2)"></i> '+t('四半期の達成方針','Quarter plan')+(qb.status==='committed'?' <span class="tag tag-green" style="font-size:9px">'+t('コミット済','Committed')+'</span>':'')+'</div>';
+  if(qbCanEdit()){
+    h+='<div style="font-size:11px;color:var(--muted);margin-bottom:6px">'+t('重点項目（この四半期で力を入れること・複数可）','Focus items (what to prioritize this quarter · multiple)')+'</div><div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px">';
+    QB_FOCUS_ITEMS.forEach(function(fi){ var on=(qb.focusItems||[]).indexOf(fi.key)>=0;
+      h+='<label style="display:inline-flex;align-items:center;gap:5px;font-size:11px;padding:5px 10px;border-radius:16px;border:1.5px solid '+(on?'var(--accent)':'var(--border)')+';background:var(--surface2);cursor:pointer"><input type="checkbox" id="qbf-'+st.id+'-'+fi.key+'" '+(on?'checked':'')+' onchange="this.parentNode.style.borderColor=this.checked?\'var(--accent)\':\'var(--border)\'" style="margin:0;width:14px;height:14px"> '+fi.label+'</label>';
+    });
+    h+='</div>';
+    h+='<div class="form-group"><label class="form-label" style="font-size:11px">'+t('達成の軸・根拠（コミットに必須）','Axis & basis (required to commit)')+'</label><textarea class="form-input" id="qb-'+st.id+'-basis" rows="3" placeholder="'+t('上の重点項目を、何を軸にどう達成するか（例：ディナー客数と客単価を軸に、リピート施策で…）','How you\'ll achieve the focus items above (e.g. driven by dinner guests & avg check, with repeat tactics…)')+'">'+escapeHtml(qb.basis||'')+'</textarea></div>'
+      +'<div class="form-group"><label class="form-label" style="font-size:11px">'+t('具体施策','Actions')+'</label><textarea class="form-input" id="qb-'+st.id+'-focus" rows="2" placeholder="'+t('具体的に取り組むこと','Concrete actions')+'">'+escapeHtml(qb.focus||'')+'</textarea></div>'
+      +'<div class="btn-row"><button class="btn btn-secondary btn-sm" onclick="saveQBudget(\''+st.id+'\',false)">'+t('下書き保存','Save draft')+'</button><button class="btn btn-primary btn-sm" onclick="saveQBudget(\''+st.id+'\',true)"><i class="ti ti-check"></i> '+t('コミット','Commit')+'</button></div>';
+    if(qb.committedAt) h+='<div style="font-size:10px;color:var(--muted);margin-top:4px">'+t('コミット: ','Committed: ')+escapeHtml(qb.committedBy||'')+' '+escapeHtml(qb.committedAt||'')+'</div>';
+  } else {
+    var chips=(qb.focusItems||[]).map(function(k){ var fi=QB_FOCUS_ITEMS.find(function(x){return x.key===k;}); return fi?('<span class="tag" style="font-size:10px;background:var(--accent);color:#fff;margin:2px">'+fi.label+'</span>'):''; }).join('');
+    h+=(chips?('<div style="margin-bottom:6px">'+chips+'</div>'):'')+(qb.basis?('<div style="font-size:11px;color:var(--tm);line-height:1.7"><b>'+t('達成の軸','Axis')+':</b> '+escapeHtml(qb.basis)+(qb.focus?('<br><b>'+t('具体施策','Actions')+':</b> '+escapeHtml(qb.focus)):'')+'</div>'):'<div style="font-size:11px;color:var(--muted)">'+t('まだ設定されていません。','Not set yet.')+'</div>');
+  }
+  h+='</div>';
+  return h;
+}
+function qbSec(title, body){
+  return '<section class="qb-sec"><h3 class="qb-sec-h">'+title+'</h3>'+(body||'')+'</section>';
+}
+function qbQuarterSections(y, q, R){
+  var all=(_qbStore==='ALL');
+  var stores=(typeof getVisibleStores==='function')?getVisibleStores():(typeof STORES!=='undefined'?STORES:[]);
+  var st=all?null:(stores.find(function(x){return x.id===_qbStore;})||stores[0]||null);
+  var promise, action, result, remain;
+  if(!st){
+    promise='<div class="card" style="font-size:12px;color:var(--muted)">'+t('店を選ぶと、この四半期の約束（達成方針）を書けます。','Pick a store to write this quarter\'s promise.')+'</div>';
+    action='<div class="card" style="font-size:12px;color:var(--muted)">'+t('記録なし','No record')+'</div>';
+  } else {
+    promise=renderQcPromise(st, y, q);
+    try{ action=renderQcFocus(st.id, y, q, { canWrite:qbCanEdit(), link:false, part:'memo' }); }
+    catch(e){ action='<div class="card" style="font-size:12px;color:var(--muted)">'+t('記録なし','No record')+'</div>'; }
+  }
+  var sum=(R && (R.tSales||R.aSales)) ? renderQcSummary(_qbStore, y, q, R) : '';
+  var auto='';
+  if(st){ try{ auto=renderQcFocus(st.id, y, q, { canWrite:false, link:false, part:'result', ser:_qcFocusSer(st.id,y,q) }); }catch(e){ auto=''; } }
+  result=sum+auto;
+  remain=(R && (R.tSales||R.aSales)) ? renderQcRemain(R) : ('<div class="card" style="font-size:12px;color:var(--muted)">'+t('記録なし','No record')+'</div>');
+  return qbSec(t('約束（Qコミット）','Promise (Q commit)'), promise)
+    +qbSec(t('行動（重点項目のメモ）','Actions (focus memo)'), action)
+    +qbSec(t('結果（前の四半期と比べた数字）','Results (vs the previous quarter)'), result)
+    +qbSec(t('残り','What is left'), remain);
+}
+
 
 function renderMeetingMinutes(){
   if(!MINUTES_SEED.length) return '<div class="card">'+t('議事録データがありません。','No minutes data.')+'</div>';
@@ -50803,7 +50837,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1224';
+const APP_VERSION = '1225';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
