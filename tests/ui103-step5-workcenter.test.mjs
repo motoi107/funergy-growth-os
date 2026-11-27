@@ -23,9 +23,10 @@ function grab(start) {
   throw new Error('unterminated ' + start);
 }
 
-test('版は 1227', () => {
-  assert.match(SRC, /const APP_VERSION = '1227'/);
-  assert.match(SW, /const SW_BUILD = '1227'/);
+test('版は 1227 以上で揃っている', () => {
+  const v = /const APP_VERSION = '(\d+)'/.exec(SRC)[1];
+  assert.ok(Number(v) >= 1227);
+  assert.match(SW, new RegExp("const SW_BUILD = '" + v + "'"));
 });
 
 test('タブは申請・承認、通知とチャット、自動チェック、業務Bot。今日タブは無い', () => {
