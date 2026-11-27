@@ -76,6 +76,7 @@
 
 - e2e（本物の Chrome・合成の店と人）：`tests/e2e-career/career-map-v1223.mjs` 95/95（GM 1440・1024、G4 1280、Crew 390、Chef 390、候補者向け）。v1222 の `career-hub-v1222.mjs` はこのファイルに書き直した（同じ確かめ＋ v1223）。
 - 単体：`tests/career-guide-v1213.test.mjs`（新しい画面に合わせて見る場所を直した）・`tests/career-ui104-v1223.test.mjs`（新規 7 件）。
+- 単体の一式（mutation の 2 つは除く）：main と同じ失敗だけ（9 ファイル・29 件。同じファイルを main でも動かして同じ結果）。
 - 静的チェック pass（版 1223）。保存の通信は足していない（読むのは cs4_me・cs4_roster・gp_me・gp_roster だけ）。
 
 ### 確かめてほしいこと
