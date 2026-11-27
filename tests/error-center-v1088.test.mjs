@@ -566,10 +566,10 @@ test('tasks are retired: no task screens or entry points; the data and its merge
   assert.ok(keys.includes('tasks_all') && keys.includes('ec_resolutions'));
   assert.match(SRC, /ec_resolutions: \{ merge: mergeEcRes, covers: _coversEcRes \}/);
   assert.match(SRC.match(/var LS_NEVER_FREE = \[[^;]*;/)[0], /'ec_resolutions'/);
-  // Work center: no タスク tab, an old saved tab goes to 今日; accounting review and the office pages have no task tab.
+  // Work center: no タスク tab. An old saved tab goes to 申請・承認 (v1227). Accounting review and the office pages have no task tab.
   const wc = bodyOf('renderWorkCenter');
   assert.doesNotMatch(wc, /setWorkTab\('tasks'\)|renderTasks|期限内タスク|今日までのタスク/);
-  assert.match(wc, /workTab==='tasks'\) workTab='today'/);
+  assert.match(wc, /workTab==='tasks'\) workTab='wr'/);
   assert.match(wc, /ecOpenIssues\(\)/);
   assert.doesNotMatch(SRC, /\{ id:'task',\s+label:'タスク'/);
   assert.doesNotMatch(bodyOf('renderOfficeMgr'), /\['tasks','タスク'/);
@@ -590,7 +590,7 @@ test('tasks are retired: no task screens or entry points; the data and its merge
   assert.doesNotMatch(bodyOf('setCashTips') + bodyOf('saveCashTipSides') + bodyOf('ghAssignMe'), /tasks_all|getTasks/);
   // Old links: workTab tasks → today, office_mgr tasks → dash; favourites of the task tab are hidden.
   const nav = bodyOf('navResolvePage');
-  assert.match(nav, /workTab === 'tasks'\)\) workTab = 'today'/);
+  assert.match(nav, /workTab === 'tasks' \|\| workTab === 'today'\)\) workTab = 'wr'/);
   assert.match(nav, /officeMgrTab === 'tasks'\) officeMgrTab = 'dash'/);
   assert.match(bodyOf('_favRetired'), /st\.workTab === 'tasks'/);
   // The error center page is open to office crew (8A).

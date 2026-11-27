@@ -70,7 +70,7 @@ await login(GM, 'OFFICE', 'Gabe Gm');
 await GM.page.evaluate(() => { workTab = 'wr'; go('tasks'); }); await sleep(2500);
 await GM.page.waitForFunction(() => /要対応/.test(document.body.innerText) && document.querySelectorAll('table.tbl thead th').length > 5, null, { timeout: 20000 }).catch(() => {});
 const tabs = await GM.page.evaluate(() => Array.from(document.querySelectorAll('.phase-tab')).map(e => e.innerText.trim().replace(/\s+\d+$/, '')));
-ok('ワークセンターのタブは「申請/承認」1 つ（「承認」タブは無い）', tabs.some(x => /^申請\/承認/.test(x)) && !tabs.some(x => /^承認\s*$|^承認\s*\d/.test(x)), tabs);
+ok('ワークセンターのタブは「申請・承認」1 つ（「承認」タブは無い）', tabs.some(x => /^申請[\/・]承認/.test(x)) && !tabs.some(x => /^承認\s*$|^承認\s*\d/.test(x)), tabs);
 await shot(GM, '1_GM_要対応_PC');
 const heads = await GM.page.evaluate(() => Array.from(document.querySelectorAll('table.tbl thead th')).map(e => e.innerText.trim()));
 const fit = await GM.page.evaluate(() => { const t = document.querySelector('table.tbl'); const c = t && t.parentElement; return t ? { table: Math.round(t.scrollWidth), box: Math.round(c.clientWidth), cols: Array.from(t.querySelectorAll('thead th')).map(th => Math.round(th.getBoundingClientRect().width)) } : null; });
