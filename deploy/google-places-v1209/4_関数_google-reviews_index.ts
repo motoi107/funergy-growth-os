@@ -340,11 +340,20 @@ export function createHandler(deps) {
       body: new URLSearchParams({ access_token: token }).toString() }, 15000);
     return r.ok && r.j && typeof r.j.email === 'string' ? r.j.email.slice(0, 200) : '';
   }
+  // v1230: Google error messages/metadata may contain account or project information.
+  // Log only fixed stages, HTTP status and known reason enums for the failed BP request.
+  function logBpFailure(stage, r) {
+    const reasons = ['SERVICE_DISABLED', 'BILLING_DISABLED', 'RATE_LIMIT_EXCEEDED', 'QUOTA_EXCEEDED',
+      'ACCESS_TOKEN_SCOPE_INSUFFICIENT', 'IAM_PERMISSION_DENIED', 'API_KEY_SERVICE_BLOCKED'];
+    const details = obj(r.j && r.j.error) && Array.isArray(r.j.error.details) ? r.j.error.details : [];
+    const reason = details.map(x => obj(x) && x.reason).find(x => reasons.includes(x)) || 'UNCLASSIFIED';
+    console.warn('google-reviews-bp', stage, Number.isInteger(r.status) ? r.status : 0, reason);
+  }
   // Google の審査が通っていないと、Business Profile の API は 403（使えない）か 429（割り当て 0）を返す
   const pendingStatus = s => s === 403 || s === 429;
   async function accounts(token) {
     const r = await timed(BP_ACCT + '?pageSize=20', { headers: { authorization: 'Bearer ' + token } }, 20000);
-    if (!r.ok) return { ok: false, status: r.status };
+    if (!r.ok) { logBpFailure('accounts', r); return { ok: false, status: r.status }; }
     return { ok: true, items: (Array.isArray(r.j && r.j.accounts) ? r.j.accounts : []).map(x => x && x.name).filter(n => typeof n === 'string' && /^accounts\/[0-9]{1,30}$/.test(n)).slice(0, 20) };
   }
   async function bpConnect(a) {
@@ -394,6 +403,7 @@ export function createHandler(deps) {
         const r = await timed(BP_INFO + acct + '/locations?' + new URLSearchParams({ readMask: 'name,title,storefrontAddress', pageSize: '100', ...(token ? { pageToken: token } : {}) }).toString(),
           { headers: { authorization: 'Bearer ' + t.token } }, 20000);
         if (!r.ok) {
+          logBpFailure('locations', r);
           await db.rpc('gr_bp_mark', { status: pendingStatus(r.status) ? 'pending' : 'error', error: 'locations_' + r.status });
           throw E(pendingStatus(r.status) ? 'bp_pending' : 'bp_failed', 502);
         }
@@ -427,6 +437,14 @@ export function createHandler(deps) {
   //   それより後に入った・確かめた口コミ（重なったほかの取り込みが入れたもの）は消さない。1 回目は印だけ、次の回にも無ければ消す。
   //   消すときの since は 99 日より前にしない（長くつながっていなかったあとでも prune_bad_value にしない・Claude の P3）。
   async function syncAll(kind) {
+    // v1230: an empty setup is not a successful read. Keep any Google error/pending state
+    // intact and do not refresh a token or contact Google until a store has been linked.
+    const locs = await db.rpc('gr_locs', {});
+    if (!Array.isArray(locs) || locs.length === 0) {
+      const r = { ok: false, error: 'bp_no_locations', stores: [] };
+      await db.rpc('gr_run_log', { kind, ok: false, info: { error: r.error } });
+      return r;
+    }
     const t = await access();
     if (!t.ok) {
       if (t.expired) await db.rpc('gr_bp_mark', { status: 'expired', error: t.error });
@@ -434,7 +452,6 @@ export function createHandler(deps) {
       if (t.error !== 'bp_not_connected') await db.rpc('gr_run_log', { kind, ok: false, info: { error: t.error } });
       return r;
     }
-    const locs = await db.rpc('gr_locs', {});
     const out = [];
     let pending = false;
     for (const l of (Array.isArray(locs) ? locs : [])) {

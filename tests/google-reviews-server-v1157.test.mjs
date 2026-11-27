@@ -70,11 +70,11 @@ function fakeGoogle() {
       return m2 && PEOPLE[m2[1]] ? J({ me: meOf(m2[1]) }) : J({ error: 'unauthorized' }, 401);
     }
     if (url.startsWith('https://mybusinessaccountmanagement.googleapis.com/v1/accounts')) {
-      if (g.accountsStatus !== 200) return J({ error: {} }, g.accountsStatus);
+      if (g.accountsStatus !== 200) return J({ error: g.accountsError || {} }, g.accountsStatus);
       return J({ accounts: [{ name: ACC }, { name: 'bad' }] });
     }
     if (url.startsWith('https://mybusinessbusinessinformation.googleapis.com/v1/' + ACC + '/locations')) {
-      if (g.accountsStatus !== 200) return J({ error: {} }, g.accountsStatus);
+      if (g.accountsStatus !== 200) return J({ error: g.accountsError || {} }, g.accountsStatus);
       return J({ locations: [{ name: LOC1, title: 'Fake Ramen One', storefrontAddress: { addressLines: ['1 Fake St'], locality: 'Honolulu' } }, { name: LOC2, title: 'Fake Two' }] });
     }
     const m = /^https:\/\/mybusiness\.googleapis\.com\/v4\/(accounts\/\d+)\/(locations\/\d+)\/reviews\?(.*)$/.exec(url);
@@ -750,4 +750,49 @@ test('#151 P3 same update time: an older read that saves last does not take back
   assert.equal((await row()).replied, true, 'an old function without started writes as before');
   m = await s.ok('E8', { action: 'month', store: 'S1', ym: '2026-11' });
   assert.deepEqual(m.items.map(x => x.replied), [true]);
+});
+
+
+test('v1230: empty BP setup never reports success or clears a previous Google failure; no token or Google request', async () => {
+  const s = await setup();
+  await s.connect();
+  const key = await s.key();
+  for (const status of ['pending', 'error', 'expired', 'ok']) {
+    const error = status === 'ok' ? null : 'accounts_403';
+    await s.db.rpc('gr_bp_mark', { status, error });
+    const before = (await s.ok('E2', { action: 'status' })).bp;
+    s.g.calls.length = 0;
+    const manual = await s.ok('E2', { action: 'sync_now' });
+    assert.deepEqual(manual, { ok: false, error: 'bp_no_locations', stores: [] });
+    const daily = await s.worker(key);
+    assert.deepEqual(daily.body, manual);
+    assert.deepEqual(s.g.calls, [], 'no token refresh or other Google request for empty setup');
+    const after = await s.ok('E2', { action: 'status' });
+    assert.deepEqual(after.bp, before, 'status, error and last success remain unchanged: ' + status);
+    assert.equal(after.run.ok, false);
+    assert.deepEqual(after.run.info, { error: 'bp_no_locations' });
+    assert.equal((await s.ok('E8', { action: 'status' })).run.ok, false, 'crew does not see an empty success either');
+  }
+});
+
+test('v1230: failed BP discovery logs only fixed stage, status and an allowlisted reason', async () => {
+  const s = await setup();
+  await s.connect();
+  const logs = [], previous = console.warn;
+  console.warn = (...args) => logs.push(args);
+  try {
+    s.g.accountsStatus = 403;
+    s.g.accountsError = { message: 'PRIVATE_TOKEN_123', details: [
+      { reason: 'PRIVATE_TOKEN_123', metadata: { consumer: 'PRIVATE_PROJECT' } },
+      { reason: 'SERVICE_DISABLED', metadata: { token: 'PRIVATE_TOKEN_123' } }
+    ] };
+    const r = await s.call('E2', { action: 'bp_locations' });
+    assert.equal(r.status, 502); assert.equal(r.body.error, 'bp_pending');
+    assert.deepEqual(logs, [['google-reviews-bp', 'accounts', 403, 'SERVICE_DISABLED']]);
+    assert.doesNotMatch(JSON.stringify(logs), /PRIVATE_/);
+    assert.doesNotMatch(r.text, /PRIVATE_/);
+    logs.length = 0; s.g.accountsError = { details: [{ reason: 'PRIVATE_TOKEN_123' }] };
+    await s.call('E2', { action: 'bp_locations' });
+    assert.deepEqual(logs, [['google-reviews-bp', 'accounts', 403, 'UNCLASSIFIED']]);
+  } finally { console.warn = previous; }
 });

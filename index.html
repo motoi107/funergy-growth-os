@@ -50923,7 +50923,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1229';
+const APP_VERSION = '1230';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -123893,7 +123893,9 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     places_failed:['Google から読めませんでした','Could not read from Google'],
     not_configured:['Google のログインの設定（OAuth のクライアント）がサーバーに入っていません（Moto さんに知らせてください）','The Google sign-in (OAuth client) is not set on the server (tell Moto)'],
     bp_not_connected:['Business Profile をつないでいません','Business Profile is not connected'],
-    bp_pending:['Google の審査待ちです（Business Profile の API がまだ使えません）','Waiting for Google approval (the Business Profile API is not available yet)'],
+    bp_no_locations:['Business Profile の店舗が未設定です。下の表の「Business Profile の店」で店舗を結んでください。Places の評価と口コミは別に利用できます','No Business Profile locations are linked. Link a location in the table below. Places ratings and reviews work separately'],
+    timeout:['Google 連携サーバーの応答が30秒以内に届きませんでした。画面を更新して状態を確認してください','The Google integration server did not respond within 30 seconds. Refresh to check the current state'],
+    bp_pending:['Google が Business Profile の店舗取得を許可していません。API の有効化・利用審査・割り当てを確認してください（Places とは別の設定です）','Google has not allowed this Business Profile request. Check API enablement, access approval and quota (separate from Places)'],
     bp_failed:['Business Profile から読めませんでした','Could not read from Business Profile'],
     bp_auth_revoked:['Google で許可が取り消されました。つなぎ直してください','Access was revoked in Google. Connect again'],
     gr_missing:['Google の口コミのサーバー（SQL）がまだ入っていません（Moto さんに知らせてください）','The Google reviews database is not set up yet (tell Moto)'],
@@ -123987,11 +123989,21 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     var tok = pinTok();
     if (!tok) throw mk('signin');
     var g = G.gen;
-    var r, j = null;
-    try { r = await fetch(SUPABASE_URL + FN, { method:'POST', headers:{ apikey:SUPABASE_ANON, Authorization:'Bearer ' + SUPABASE_ANON, 'Content-Type':'application/json' },
-      body:JSON.stringify(Object.assign({}, payload, { pin_session:tok })) }); }
-    catch(e) { throw mk('network'); }
-    try { j = await r.json(); } catch(e) { j = null; }
+    var r, j = null, timer = null, expired = false;
+    var bounded = payload.action !== 'sync_now' && payload.action !== 'bp_locations';
+    var controller = typeof AbortController === 'function' ? new AbortController() : null;
+    var request = (async function(){
+      r = await fetch(SUPABASE_URL + FN, { method:'POST', headers:{ apikey:SUPABASE_ANON, Authorization:'Bearer ' + SUPABASE_ANON, 'Content-Type':'application/json' },
+        body:JSON.stringify(Object.assign({}, payload, { pin_session:tok })), ...(controller ? { signal:controller.signal } : {}) });
+      try { j = await r.json(); } catch(e) { if (expired) throw e; j = null; }
+    })();
+    try {
+      if (bounded) await Promise.race([request, new Promise(function(resolve, reject){ timer = setTimeout(function(){ expired = true; if (controller) controller.abort(); reject(mk('timeout')); }, 30000); })]);
+      else await request;
+    } catch(e) {
+      if (g !== G.gen || pinTok() !== tok) throw mk('signin_changed');
+      throw mk(expired ? 'timeout' : 'network');
+    } finally { if (timer != null) clearTimeout(timer); }
     if (g !== G.gen || pinTok() !== tok) throw mk('signin_changed');
     if (r.status === 404 && !(j && j.error)) { G.st = 'missing'; throw mk('fn_missing', 404); }
     if (!r.ok) { var code = (j && typeof j.error === 'string') ? j.error : ''; if (code === 'gr_missing') G.st = 'sql'; throw mk(code, r.status, j); }
@@ -124398,13 +124410,15 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       G.statusSt = G.status ? 'stale' : 'err'; G.statusErr = err.code || 'error'; G.statusFail = nowMs();
     }).then(function(){ if (g === G.gen) { G.statusP = null; patchCards('-'); } });
   }
-  function bpLine(bp){
+  function bpLine(bp, linked){
     var s = bp && bp.status;
     if (!bp || !bp.connected || s === 'none') return ['var(--muted)', T('つないでいません（会議の月の平均は手入力）','Not connected (the meeting month average is entered by hand)')];
-    if (s === 'pending') return ['var(--amber, #b7791f)', T('つなぎました・Google の審査待ち（口コミはまだ取れません・それまでは手入力）','Connected · waiting for Google approval (reviews cannot be read yet; enter them by hand until then)')];
+    if (s === 'pending') return ['var(--amber, #b7791f)', errText('bp_pending')];
     /* #151 のレビュー：取り消されても、取り終えた店は自動のまま（手入力は使わない）。つなぎ直すと止まったところから取る */
     if (s === 'expired') return ['var(--red)', T('Google で許可が取り消されました。つなぎ直してください（それまで新しい口コミは入りません・つなぎ直すと止まったところから取ります）','Access was revoked in Google. Connect again (no new reviews until then; it continues from where it stopped)')];
     if (s === 'error') return ['var(--red)', T('読めませんでした','Could not read') + (bp.error ? '（' + esc(bp.error) + '）' : '')];
+    if (!linked) return ['var(--amber, #b7791f)', T('Google アカウント認証済み・店舗が未設定（取り込み対象がありません）','Google account authorized · no locations linked (no import targets)')];
+    if (!bp.last_ok_at) return ['var(--amber, #b7791f)', T('店舗は設定済み・口コミの初回取り込みは未完了','Locations linked · first review import not completed')];
     return ['var(--green)', T('つながっています','Connected')];
   }
   /* v1209 の更新（11/23 14:36 HST の依頼）：GM・CEO はサーバーの店ごとの一覧（未設定・確かめ待ち・確かめ済み・住所の目安）で表を出す */
@@ -124450,25 +124464,31 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     if (G.st === 'missing' || G.st === 'sql') return h + '<div class="card" style="color:var(--red);font-size:13px">' + esc(errText(G.st === 'sql' ? 'gr_missing' : 'fn_missing')) + '</div></div>';
     if (!S) return h + '<div class="card" style="font-size:13px;color:' + (G.statusSt === 'err' ? 'var(--red)' : 'var(--muted)') + '">'
       + (G.statusSt === 'err' ? esc(errText(G.statusErr)) + ' <button class="btn btn-secondary btn-sm" onclick="grReloadTab()">' + T('もう一度','Retry') + '</button>' : T('読み込み中…','Loading…')) + '</div></div>';
-    var bp = S.bp || {}, bl = bpLine(bp), stores = {}; try{ stores = S.stores || {}; }catch(e){}
-    var run = S.run;
+    var bp = S.bp || {}, stores = {}; try{ stores = S.stores || {}; }catch(e){}
+    var bpLinked = Object.keys(stores).filter(function(id){ return stores[id] && stores[id].loc; }).length;
+    var bl = bpLine(bp, bpLinked), run = S.run;
+    var runEmpty = !!(run && run.info && Array.isArray(run.info.stores) && !run.info.stores.length);
+    var runText = !bpLinked || runEmpty ? errText('bp_no_locations') : (run && run.ok ? T('取れました','OK') : T('取れなかった店があります','Some stores failed'));
     /* #151 のレビュー：読み直せなかったときは前に読めた値のまま、そう書く（2 分は読み直さない） */
     if (G.statusSt === 'stale') h += '<div class="card" style="font-size:12px;color:var(--red)">' + T('最新を読めませんでした（前に読めた内容を出しています）','Could not read the latest (showing what was read before)') + '・' + esc(errText(G.statusErr))
       + ' <button class="btn btn-secondary btn-sm" onclick="grReloadTab()">' + T('もう一度','Retry') + '</button></div>';
+    var readyPlaces = []; try { readyPlaces = ((typeof kpiSettableStores === 'function' ? kpiSettableStores() : activeStores()) || []).filter(function(s){ return s && sidOk(s.id) && confOf(s.id, stores[s.id], admMap(S)); }); } catch(e){}
     /* つなぎ方 */
     h += '<div class="card"><div class="card-title"><i class="ti ti-plug-connected" style="color:var(--accent)"></i>' + T('つなぎ方','Connections') + '</div>'
       + '<div class="gr-conn"><div><b>' + T('① 総合評価（Places API）','① Overall rating (Places API)') + '</b><div class="k2-note">' + T('店ごとに Google マップの店を選ぶと、会議と下の表で「評価と口コミを見る」を押したときに、Google の評価・口コミの件数・Google が関連性の高い順に選んだ口コミ（最大 5 件・新しい順ではありません）を取って出します。押したときだけ取り、残しません（Google の決まり）。見られるのは自分が見られる店だけです。','Pick the Google Maps place for each store. When someone presses “See rating and reviews” in the meeting or below, the Google rating, the number of reviews and up to 5 reviews Google selects by relevance (not newest first) are read and shown. Read only when pressed and not stored (Google’s terms). Each person sees only the stores they can see.') + '</div>'
         + '<div class="k2-note" style="color:' + (who.places === false ? 'var(--red)' : 'var(--green)') + '">' + (who.places === false ? esc(errText('places_not_configured')) : T('サーバーに鍵が入っています','The server has the key')) + '</div>'
         + (mgr && who.fn != null && Number(who.fn) < 3 ? '<div class="k2-note" style="color:var(--red)">' + T('関数 google-reviews が前の版です（v1209 の更新を入れると、住所で確かめた店だけ・AM は担当の店・G4 以下は配属の店・店の数からの上限が効きます）','The google-reviews function is an older version (install the v1209 update for address-checked stores, AM/G4 store scoping and limits from the number of stores)') + '</div>' : '')
         + (mgr && who.fn != null && Number(who.fn) >= 3 && !Array.isArray(S.places_admin) ? '<div class="k2-note" style="color:var(--red)">' + T('サーバーの SQL（20261215100000）がまだです。入れるまで店を結べません（Moto さんに知らせてください）','The server SQL (20261215100000) is not installed yet; places cannot be linked until it is (tell Moto)') + '</div>' : '')
+        + '<div class="k2-note">' + T('Places は下の Business Profile のログイン・利用審査とは別です。設定済みの店舗はここから評価と口コミを開けます。','Places works separately from the Business Profile sign-in and approval below. Open ratings and reviews for configured stores here.') + '</div>'
+        + readyPlaces.map(function(s){ return '<button class="btn btn-secondary btn-sm" onclick="grPlacesOpen(\'' + esc(s.id) + '\')">' + esc(s.name || s.id) + ' · ' + T('評価と口コミを見る','See rating and reviews') + '</button>'; }).join(' ')
         + (mgr ? usageLine(S.usage) : '') + '</div>'
       + '<div><b>' + T('② その月の口コミ（Business Profile API）','② Reviews by month (Business Profile API)') + '</b><div class="k2-note">' + T('自分の店の口コミを毎日 4:30（ハワイ）に取って残し、結んだ店は会議の月の平均・件数が自動になります（手入力は使いません）。Google の審査が要ります。','Reads your own reviews every day at 4:30 (Hawaii) and keeps them; linked stores get the meeting month average and count automatically (no manual entry). Needs Google approval.') + '</div>'
         + '<div class="k2-note" style="color:' + bl[0] + '">' + bl[1] + (bp.connected && bp.account ? '・' + esc(bp.account) : '') + '</div>'
         + (bp.last_ok_at ? '<div class="k2-note">' + T('最後に取れた時刻 ','Last read ') + esc(hstTime(bp.last_ok_at)) + T('（ハワイ）',' (Hawaii)') + '</div>' : '')
-        + (run ? '<div class="k2-note">' + T('最後の取り込み ','Last run ') + esc(hstTime(run.at)) + '・' + (run.ok ? T('取れました','OK') : T('取れなかった店があります','Some stores failed')) + '</div>' : '')
+        + (run ? '<div class="k2-note">' + T('最後の取り込み ','Last run ') + esc(hstTime(run.at)) + '・' + runText + '</div>' : '')
         + (mgr ? '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">'
           + (!bp.connected || bp.status === 'expired' ? '<button class="btn btn-primary btn-sm" ' + (G.busy ? 'disabled' : '') + ' onclick="grConnect()"><i class="ti ti-brand-google"></i> ' + T('Google でログインしてつなぐ','Sign in with Google to connect') + '</button>' : '')
-          + (bp.connected && bp.status !== 'expired' ? '<button class="btn btn-secondary btn-sm" ' + (G.busy ? 'disabled' : '') + ' onclick="grSyncNow()"><i class="ti ti-refresh"></i> ' + T('今すぐ取る','Read now') + '</button>' : '')
+          + (bp.connected && bp.status !== 'expired' ? '<button class="btn btn-secondary btn-sm" ' + (G.busy || !bpLinked ? 'disabled' : '') + ' onclick="grSyncNow()"><i class="ti ti-refresh"></i> ' + T('今すぐ取る','Read now') + '</button>' : '')
           + (bp.connected ? '<button class="btn btn-secondary btn-sm" ' + (G.busy ? 'disabled' : '') + ' onclick="grDisconnect()">' + T('切る','Disconnect') + '</button>' : '')
           + '</div>' : '<div class="k2-note">' + T('つなぐ・店を選ぶのは GM・CEO です','GM and CEO connect and pick the places') + '</div>')
         + '</div></div></div>';
@@ -124705,11 +124725,12 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     });
   };
   W.grSyncNow = function(){
+    if (G.status && !Object.keys(G.status.stores || {}).some(function(id){ return G.status.stores[id] && G.status.stores[id].loc; })) { toast(errText('bp_no_locations'), 'info'); return; }
     act('sync', async function(){
       var j = await api({ action:'sync_now' });
       var bad = (j && Array.isArray(j.stores)) ? j.stores.filter(function(x){ return !x.ok; }) : [];
-      if (j && j.ok) toast(T('取りました（' + ((j.stores || []).length) + ' 店）','Read (' + ((j.stores || []).length) + ' stores)'), 'success');
-      else toast(errText(j && j.error ? j.error : (bad[0] && bad[0].error && /^reviews_(403|429)$/.test(bad[0].error) ? 'bp_pending' : 'bp_failed')), 'error');
+      if (j && j.ok && Array.isArray(j.stores) && j.stores.length) toast(T('取りました（' + ((j.stores || []).length) + ' 店）','Read (' + ((j.stores || []).length) + ' stores)'), 'success');
+      else toast(errText(j && Array.isArray(j.stores) && !j.stores.length && j.ok ? 'bp_no_locations' : (j && j.error ? j.error : (bad[0] && bad[0].error && /^reviews_(403|429)$/.test(bad[0].error) ? 'bp_pending' : 'bp_failed'))), 'error');
       G.month = {};
     });
   };
