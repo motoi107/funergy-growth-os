@@ -111,7 +111,7 @@ function device(mut = W => W, opts = {}) {
     function segmentsFcBudget(){ return 0; } function segmentsLaborBudget(){ return 0; }
     function k2Actuals(sid, ym){ var r=W.rates[sid+'|'+ym]; return {rows: r?[{key:'foodCost', act:r.fc},{key:'laborPct', act:r.lb}]:[]}; }
     function ensureMonthDataLoaded(ym){ LOADS.push(ym); (W.onLoad||function(){})(ym, STORE); return Promise.resolve({}); }
-  ` + MOD);
+  ` + [fnSrc('statusFromPct'), fnSrc('budStatusMark'), fnSrc('budEndedMark')].join('\n') + MOD);
   for (const [k, v] of Object.entries(W.pl)) c.STORE.set(k, JSON.stringify(v));
   return c;
 }
@@ -146,11 +146,11 @@ test('依頼書の例：7月・8月（単月・達成率・前年差・増減率
   const y8 = c.apYoY('sales', aug); assert.equal(c.apSign('sales', y8.diff), '＋$5,000'); assert.equal(c.apSignPct(y8.rate), '＋5.0%');
   assert.equal(Math.round(val(c, 'sales', aug.cum.A, 'b')), 220000); assert.equal(Math.round(val(c, 'sales', aug.cum.A, 'a')), 215000);
   assert.equal(c.apSign('sales', c.apDiff('sales', aug.cum.A)), '−$5,000');
-  // 表（PC）にもそのとおり出る・色は青（良い）と橙（悪い）
+  // 表（PC）にもそのとおり出る・差の色は緑（良い）と赤（悪い）。終わった月の達成率に状態の言葉が付く
   const html = render(c, { store: 'F01' }), r7 = pcRow(html, '2026-07'), r8 = pcRow(html, '2026-08');
-  assert.deepEqual([r7[COL.bud], r7[COL.diff], r7[COL.rate], r7[COL.py], r7[COL.pyd], r7[COL.pyr], r7[COL.cum]], ['$100,000', '＋$10,000', '110.0%', '$100,000', '＋$10,000', '＋10.0%', '＋$10,000']);
+  assert.deepEqual([r7[COL.bud], r7[COL.diff], r7[COL.rate], r7[COL.py], r7[COL.pyd], r7[COL.pyr], r7[COL.cum]], ['$100,000', '＋$10,000', '110.0% ✓ 達成', '$100,000', '＋$10,000', '＋10.0%', '＋$10,000']);
   assert.match(r7[COL.act], /^\$110,000 アプリ$/);
-  assert.deepEqual([r8[COL.bud], r8[COL.diff], r8[COL.rate], r8[COL.pyd], r8[COL.pyr], r8[COL.cum]], ['$120,000', '−$15,000', '87.5%', '＋$5,000', '＋5.0%', '−$5,000']);
+  assert.deepEqual([r8[COL.bud], r8[COL.diff], r8[COL.rate], r8[COL.pyd], r8[COL.pyr], r8[COL.cum]], ['$120,000', '−$15,000', '87.5% ▼ 未達', '＋$5,000', '＋5.0%', '−$5,000']);
   const tr8 = html.slice(html.indexOf('data-ym="2026-08"'), html.indexOf('</tr>', html.indexOf('data-ym="2026-08"')));
   assert.match(tr8, /class="ap-neg">−\$15,000/); assert.match(tr8, /class="ap-pos">＋\$5,000/);
 });
@@ -321,7 +321,7 @@ test('進行中の月は会計PL があっても使わない・前年は 2025 �
 test('四半期の小計：確定した月の合計から（達成率・前年比も合計から）・Q4 は確定は 10月・Q 予算', () => {
   const c = device(), html = render(c, { store: 'F01' });
   const qrow = q => { const i = html.indexOf('planGoQuarter(2026,' + q + ')'); const tr = html.slice(i, html.indexOf('</tr>', i)); return [...tr.matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)].map(m => strip(m[1])); };
-  assert.deepEqual(qrow(3), ['Q3 小計（7〜9月）', '$330,000', '$327,000', '−$3,000', '99.1%', '$304,000', '＋$23,000', '＋7.6%', '累計は月の行で見る']);
+  assert.deepEqual(qrow(3), ['Q3 小計（7〜9月）', '$330,000', '$327,000', '−$3,000', '99.1% ▼ 未達', '$304,000', '＋$23,000', '＋7.6%', '累計は月の行で見る']);
   assert.deepEqual(qrow(4), ['Q4 小計（確定は 10月）', '$115,000', '$119,500', '＋$4,500', '103.9%', '$110,000', '＋$9,500', '＋8.6%', 'Q4 予算 $370,000']);
   assert.ok(!/planGoQuarter\(2026,[12]\)/.test(html), 'Q1・Q2 は予算開始前');
 });
@@ -332,13 +332,13 @@ test('iPhone：1 行は 月・実績・単月差・累計差。押すと 月間�
   const sm = det.slice(det.indexOf('<summary'), det.indexOf('</summary>'));
   assert.equal(strip(sm), '8月 $105,000 −$15,000 −$5,000');
   const body = strip(det.slice(det.indexOf('</summary>')));
-  assert.match(body, /月間予算 \$120,000 達成率 87\.5% 前年同月 \$100,000 前年差・増減率 ＋\$5,000 ・ ＋5\.0% 累計予算（7〜8月） \$220,000 累計実績（7〜8月） \$215,000/);
+  assert.match(body, /月間予算 \$120,000 達成率 87\.5% ▼ 未達 前年同月 \$100,000 前年差・増減率 ＋\$5,000 ・ ＋5\.0% 累計予算（7〜8月） \$220,000 累計実績（7〜8月） \$215,000/);
   // 進行中の 11 月：計画との差・月間予算の到達・前年の同じ日まで・参考の累計
   const j = ph.indexOf('<b>11月</b>'); const d11 = strip(ph.slice(ph.lastIndexOf('<details', j), ph.indexOf('</details>', j)));
   assert.match(d11, /^11月 \$52,000 月末確定時 確定 ＋\$1,500 進行中・ハワイ 11\/13 まで取込/);
   assert.match(d11, /11\/13 までの計画 \$50,000 計画との差 ＋\$2,000 月間予算・到達 \$120,000・43\.3% 前年 11\/13 まで \$48,000 前年差・増減率 ＋\$4,000 ・ ＋8\.3% 累計（参考） ＋\$3,500/);
   assert.match(strip(ph), /12月は予定：予算 \$135,000（累計に入れない）/);
-  assert.match(strip(ph), /Q3 \$327,000 −\$3,000 99\.1%/); assert.match(strip(ph), /Q4 \$119,500 ＋\$4,500 10月まで/);
+  assert.match(strip(ph), /Q3 \$327,000 −\$3,000 99\.1% ▼ 未達/); assert.match(strip(ph), /Q4 \$119,500 ＋\$4,500 10月まで/);
   assert.match(all, /<select class="form-select ap-sel" aria-label="店舗" onchange="setBudgetStore\(this\.value\)">/);
   assert.match(strip(ph), /累計予算（7月） \$100,000 累計実績（7月） \$110,000/);   // 1 か月だけのときは「7〜7月」としない
 });
