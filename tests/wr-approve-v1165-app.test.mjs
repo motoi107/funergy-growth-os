@@ -232,9 +232,9 @@ test('2A: no 承認 tab; the old waiting approvals are opened from 申請/承認
   assert.doesNotMatch(ha, /前の承認の画面に残っている|前の承認の画面を開く|setWorkTab\('approval'\)/, 'after step 3 the old screen is gone');
   // メインの画面：タブは「申請/承認」1 つ。古い行き先（承認センター）は申請/承認の中の前の承認の画面へ
   const wc = fnSrc('renderWorkCenter');
-  assert.match(wc, /t\('申請\/承認','Requests \/ Approvals'\)/);
+  assert.match(wc, /t\('申請・承認','Requests \/ Approvals'\)/);
   assert.doesNotMatch(wc, /setWorkTab\('approval'\)"><i class="ti ti-checklist"/, 'no 承認 tab');
-  assert.match(wc, /if \(workTab==='approval'\) return bar \+ [^\n]*申請\/承認に戻る[^\n]*renderApproval\(\);/);
+  assert.match(wc, /if \(workTab==='approval'\) return bar \+ [^\n]*申請・承認に戻る[^\n]*renderApproval\(\);/);
   const ctx = { workTab: 'wr', NAV_RETIRED: {}, _apClosed: () => false };
   vm.createContext(ctx);
   vm.runInContext(fnSrc('navResolvePage') + '\nfunction navGuardPage(p){ return p; }', ctx);   /* v1191：行き先の守りは tests/unified-ui-v1191 で確かめる */

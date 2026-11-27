@@ -8096,7 +8096,7 @@ const MENU_GROUPS = [
     /* v1196（UI案96 の 5B・Moto 11/18）：月間行動計画（cc_plan）は予実の中タブ。開ける人は今のまま（NAV_ITEMS の roles＝CEO・GM・Head Chef） */
     children:['budget','mid_review','meeting','labor','purchase','kpi_master','cc_plan']},
   {id:'g_tasks', label:'ワークセンター', icon:'ti-layout-kanban', roles:['ceo','gm','office','am','sl'],
-    children:['tasks','chat','lala']},   /* v1156 */
+    children:['tasks','lala']},   /* v1227：DM はワークセンターの「通知とチャット」 */
   {id:'g_hr', label:'人材管理', icon:'ti-users', roles:['ceo','gm','office','am','sl'],
     /* v891: mileage を追加。NAV_ITEMS の roles には全役職が書いてあったのに、
       children に載せているのが ACCT_GROUPS だけだったため、経理以外の誰の画面にも
@@ -8134,8 +8134,6 @@ const OFFICE_GROUPS = [
     children:['mid_review']},   /* v1066 */
   {id:'go_meeting', label:'会議', icon:'ti-presentation', roles:['ceo','gm'],
     children:['meeting']},   /* v1084: 中間レビューの右隣（中間レビューと同じ階層） */
-  {id:'go_chat', label:'チャット', icon:'ti-messages', roles:['ceo','gm','office'],
-    children:['chat']},   /* v1156 */
   {id:'go_set', label:'設定', icon:'ti-settings', roles:['ceo','gm','office'],
     children:['settings','diag_center','ar_settings']},   /* v1137 / v1191：「profile」は中身が無かった（準備中）ので外す */
 ]
@@ -8143,7 +8141,7 @@ const OFFICE_GROUPS = [
 const ACCT_GROUPS = [
   /* v1191：Office管理（office_mgr）は前から経理センターを開いていた → 名前のとおり経理センター（acct_center）を置く。
      経理レビュー（acct_review）は経理センターの中へ（決めてほしいこと 5B） */
-  {id:'ga_home', label:'本部', icon:'ti-building-skyscraper', children:['acct_center','notifications','tasks','chat','biz_guide','career']},   /* v1213：キャリア・育成（S Office・経理・人事の説明） */   /* v1156: chat */
+  {id:'ga_home', label:'本部', icon:'ti-building-skyscraper', children:['acct_center','notifications','tasks','biz_guide','career']},   /* v1213：キャリア・育成（S Office・経理・人事の説明） */   /* v1156: chat */
   {id:'ga_acct', label:'経理 請求・仕訳', icon:'ti-calculator', children:['invoice','acct_export','monthly','purchase_detail','vendor_master','ingredient_master']},
   /* v1084: 会議は予実管理の中にあったので予実管理の右隣（経理は中間レビューを見ない）・仕入れは原価率(FC)の位置 */
   {id:'ga_budget', label:'経理 予実・労務', icon:'ti-chart-bar', children:['budget','meeting','labor','purchase','kpi_master','tip']},
@@ -8173,7 +8171,7 @@ const CHEF_GROUPS = [
   {id:'gc_budget', label:'予実', icon:'ti-chart-bar',
     children:['budget','mid_review','meeting','labor','purchase','kpi_master']},   /* v1072: 中間レビュー（Head Chef・Corporate Chef） / v1084: 会議・仕入れ */
   {id:'gc_tasks', label:'ワークセンター', icon:'ti-layout-kanban',
-    children:['tasks','chat','lala']},   /* v1156 */
+    children:['tasks','lala']},   /* v1227：DM はワークセンターの「通知とチャット」 */
   {id:'gc_food', label:'食材管理', icon:'ti-tools-kitchen-2',
     children:['menu','recipe','ingredient_master','ing_transfer','vendor_master',
               'inventory','purchase_detail','invoice']},   /* v1084: 日次食材差異・備品発注は廃止 / v1087: 発注も廃止 */
@@ -8490,7 +8488,9 @@ function navResolvePage(page){
     if (budgetTab === 'meeting' || budgetTab === 'purchase') { page = budgetTab; budgetTab = 'daily'; }
     else if (budgetTab === 'analysis') budgetTab = 'daily';
   }
-  if (page === 'tasks' && typeof workTab !== 'undefined' && (workTab === 'mgmt' || workTab === 'requests' || workTab === 'tasks')) workTab = 'today';   /* v1088: タスク */
+  if (page === 'tasks' && typeof workTab !== 'undefined' && (workTab === 'mgmt' || workTab === 'requests' || workTab === 'tasks' || workTab === 'today')) workTab = 'wr';   /* v1227: 今日・廃止タブは申請・承認 */
+  if (page === 'tasks' && typeof workTab !== 'undefined' && workTab === 'announce') workTab = 'chat';   /* v1227: アナウンスは通知とチャット */
+  if (page === 'chat' && navPageAllowed('tasks')) { page = 'tasks'; if (typeof workTab !== 'undefined') workTab = 'chat'; }   /* v1227: 開ける人の DM はワークセンター（G1 は今のチャットのまま） */
   /* v1159：前の承認タブを閉じたあとの古い行き先（通知・ボタン・お気に入り）はワークセンターの申請へ */
   if ((page === 'approval' || (page === 'tasks' && typeof workTab !== 'undefined' && workTab === 'approval')) && typeof _apClosed === 'function' && _apClosed()) { page = 'tasks'; workTab = 'wr'; }
   else if (page === 'approval') { page = 'tasks'; workTab = 'approval'; }   /* v1165（2A）：前の承認の画面はワークセンター › 申請/承認の中で開く（承認センターのページは出さない） */
@@ -50919,7 +50919,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1226';
+const APP_VERSION = '1227';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -103724,71 +103724,46 @@ function renderRespMatrix(){
    ワークセンター（作業ハブ）: 承認・エラー・アナウンスを1箇所に統合（v1088: タスクは廃止）
    表示: G3以上＋事務（sl/am/gm/ceo/office）
 ============================================================ */
-var workTab = 'today';
+(function(){ try{ if (document.getElementById('ui103-wc')) return; var st=document.createElement('style'); st.id='ui103-wc'; st.textContent='.wr-3{display:grid;grid-template-columns:200px minmax(0,1fr);gap:10px;align-items:start}.wr-3.wr-3-open{grid-template-columns:200px minmax(0,1fr) minmax(260px,340px)}.wr-3-l .phase-tabs{flex-direction:column;align-items:stretch}.wr-3-r{position:sticky;top:8px;max-height:calc(100vh - 24px);overflow:auto;border:1px solid var(--border);border-radius:12px;padding:10px;background:var(--surface,#fff)}.wr-3-r:empty{display:none}.nc-kind{font-size:12px;font-weight:800;margin:4px 0 8px;color:var(--accent)}.nc-sec{margin-bottom:14px}.wr-rej{margin-left:auto}@media (max-width:1023px){.wr-3{display:block}.wr-3-r{position:static;max-height:none}}'; (document.head||document.documentElement).appendChild(st); }catch(e){} })();
+var workTab = 'wr';
 function setWorkTab(t){ workTab = t; renderPage('tasks'); }
+/* v1227（UI案103 ⑤）：今日タブは出さない。中身は申請・承認・通知とチャット・自動チェックに残す。
+   通知とチャットは 1 つのタブ。通知（知らせ・アナウンス）とチャットは見出しで分ける。既読は今の自分の既読のまま。 */
+function renderNoticeChat(){
+  var note = (typeof renderNotifications==='function') ? renderNotifications() : '';
+  var ann = (typeof renderAnnounce==='function') ? renderAnnounce() : '';
+  var chat = (typeof chatWorkTab==='function') ? chatWorkTab() : '';
+  return '<div class="nc-list">'
+    + '<section class="nc-sec" data-nc="notice"><div class="nc-kind">' + t('通知','Notices') + '</div>' + note + ann + '</section>'
+    + '<section class="nc-sec" data-nc="chat"><div class="nc-kind">' + t('チャット','Chat') + '</div>' + chat + '</section>'
+    + '</div>';
+}
 function renderWorkCenter(){
   try{ checkCashTipNotify(); }catch(e){}
-  var canErr = true;  // G3以上（＋事務）はワークセンターの全項目を閲覧可（エラーセンターの中身は CEO・GM・経理・事務Crew）
-  var canAnn = true;
-  var apOff = typeof _apClosed==='function' && _apClosed();   /* v1159：前の承認タブを閉じた（ワークセンターの申請へ） */
+  var canErr = true;
+  var apOff = typeof _apClosed==='function' && _apClosed();
   if (apOff && workTab==='approval') workTab='wr';
-  var pend = apOldPend();   /* v1165（2A）：前の承認待ち（まだ写していないもの）。タブは出さず、申請/承認から前の承認の画面を開く */
-  /* v1088: 件数は解除していない不備だけ */
-  var issues = []; if (canErr){ try{ issues = ecOpenIssues(); }catch(e){} }
+  if (workTab==='today' || workTab==='mgmt' || workTab==='requests' || workTab==='tasks') workTab='wr';
+  if (workTab==='announce') workTab='chat';
+  if (workTab==='bot' && !botCanView()) workTab='wr';
+  if (workTab==='error' && !canErr) workTab='wr';
+  var issues = []; try{ issues = ecOpenIssues(); }catch(e){}
   var hi = issues.filter(function(x){return x.sev==='high';}).length;
-  if (workTab==='bot' && !botCanView()) workTab='today';
-  if (workTab==='announce' && !canAnn) workTab='today';
-  if (workTab==='error' && !canErr) workTab='today';
-  if (workTab==='mgmt' || workTab==='requests' || workTab==='tasks') workTab='today';   /* v1084: 管理統括・対応依頼は廃止 / v1088: タスクも廃止（UI案52 5A） */
-  var bar = `<div class="section-header"><div><div class="section-title"><i class="ti ti-layout-dashboard" style="color:var(--accent)"></i> ワークセンター</div><div class="section-sub">申請・承認・チャット・エラー・アナウンスの作業ハブ</div></div></div>
+  var bar = `<div class="section-header"><div><div class="section-title"><i class="ti ti-layout-dashboard" style="color:var(--accent)"></i> ワークセンター</div><div class="section-sub">申請・承認、通知とチャット、自動チェック、業務Bot</div></div></div>
   <div class="phase-tabs" style="margin-bottom:10px">
-    <div class="phase-tab${workTab==='today'?' active':''}" onclick="setWorkTab('today')"><i class="ti ti-sun" style="font-size:12px"></i> 今日</div>
-    <div class="phase-tab${(workTab==='wr'||workTab==='approval')?' active':''}" onclick="setWorkTab('wr')"><i class="ti ti-clipboard-list" style="font-size:12px"></i> ${t('申請/承認','Requests / Approvals')}${(typeof wrTabBadge==='function')?wrTabBadge():''}</div>
-    <div class="phase-tab${workTab==='chat'?' active':''}" onclick="setWorkTab('chat')"><i class="ti ti-messages" style="font-size:12px"></i> ${t('DM・チャット','Chat')}${(typeof chatTabBadge==='function')?chatTabBadge():''}</div>
-    ${canErr?`<div class="phase-tab${workTab==='error'?' active':''}" onclick="setWorkTab('error')"><i class="ti ti-alert-hexagon" style="font-size:12px"></i> エラー${issues.length?' <span class="tag '+(hi?'tag-red':'tag-yellow')+'" style="font-size:8px">'+issues.length+'</span>':''}</div>`:''}
+    <div class="phase-tab${(workTab==='wr'||workTab==='approval')?' active':''}" onclick="setWorkTab('wr')"><i class="ti ti-clipboard-list" style="font-size:12px"></i> ${t('申請・承認','Requests / Approvals')}${(typeof wrTabBadge==='function')?wrTabBadge():''}</div>
+    <div class="phase-tab${workTab==='chat'?' active':''}" onclick="setWorkTab('chat')"><i class="ti ti-messages" style="font-size:12px"></i> ${t('通知とチャット','Notices and chat')}${(typeof chatTabBadge==='function')?chatTabBadge():''}</div>
+    <div class="phase-tab${workTab==='error'?' active':''}" onclick="setWorkTab('error')"><i class="ti ti-alert-hexagon" style="font-size:12px"></i> ${t('自動チェック','Automatic checks')}${issues.length?' <span class="tag '+(hi?'tag-red':'tag-yellow')+'" style="font-size:8px">'+issues.length+'</span>':''}</div>
     ${botCanView()?`<div class="phase-tab${workTab==='bot'?' active':''}" onclick="setWorkTab('bot')"><i class="ti ti-robot"></i> ${t('業務Bot','Operations Bot')}</div>`:''}
-    ${canAnn?`<div class="phase-tab${workTab==='announce'?' active':''}" onclick="setWorkTab('announce')"><i class="ti ti-speakerphone" style="font-size:12px"></i> アナウンス</div>`:''}
   </div>`;
   if (workTab==='bot' && botCanView()) return bar + renderBotCenter();
-  if (workTab==='wr') return bar + ((typeof renderWrTab==='function') ? renderWrTab() : '');   /* v1131：申請（UI案68） */
-  if (workTab==='chat') return bar + ((typeof chatWorkTab==='function') ? chatWorkTab() : '');   /* v1156：DM・チャット（UI案69） */
-  if (workTab==='approval') return bar + `<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px"><button class="btn btn-secondary btn-sm" onclick="setWorkTab('wr')"><i class="ti ti-arrow-left"></i> ${t('申請/承認に戻る','Back to Requests / Approvals')}</button><span style="font-size:11px;color:var(--muted)">${t('前の承認の画面（段階 3 でワークセンターに写すまで）','Earlier approvals screen (until step 3 copies them to the Work Center)')}</span></div>` + renderApproval();   /* v1165（2A）：タブは出さない */
-  if (workTab==='error')    return bar + renderErrorCenter(true);
-  if (workTab==='announce') return bar + renderAnnounce();
-  // ===== 今日タブ =====
-  var h = bar;
-  h += `<div class="kpi-grid" style="margin-bottom:12px">
-    ${(typeof wrTodayTile==='function')?wrTodayTile():''}
-    ${(typeof chatTodayTile==='function')?chatTodayTile():''}
-    ${pend.length?`<div style="cursor:pointer" onclick="setWorkTab('approval')">${kpi(t('前の承認待ち','Earlier approvals'), pend.length+'件', t('タップで前の承認の画面へ','tap to open the earlier screen'), 'var(--red)')}</div>`:''}
-    ${canErr?`<div style="cursor:pointer" onclick="setWorkTab('error')">${kpi('エラー検知', issues.length+'件', hi?('重要 '+hi+'件'):'重要なし', hi?'var(--red)':issues.length?'var(--yellow)':'var(--green)')}</div>`:''}
-  </div>`;
-  // 承認クイックリスト
-  if (pend.length){
-    h += `<div class="card"><div class="card-title"><i class="ti ti-checklist" style="color:var(--red)"></i>承認待ち <span class="tag tag-red" style="margin-left:auto">${pend.length}</span></div>`;
-    pend.slice(0,5).forEach(function(a){
-      h += `<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border);font-size:12px">
-        <div style="flex:1;min-width:0"><b>${escapeHtml(a.title||'')}</b><div style="font-size:10px;color:var(--muted)">${escapeHtml(a.type||'')} · ${escapeHtml(a.from||'')} · ${escapeHtml(a.date||'')}</div></div>
-        <button class="btn btn-primary btn-sm" style="padding:3px 10px" onclick="setWorkTab('approval')">処理</button></div>`;
-    });
-    if (pend.length>5) h += `<div style="font-size:11px;color:var(--muted);margin-top:6px">他 ${pend.length-5} 件 — 申請/承認 › 前の承認の画面へ</div>`;
-    h += `</div>`;
-  }
-  // エラー クイックリスト（重要のみ）
-  if (canErr && hi){
-    h += `<div class="card"><div class="card-title"><i class="ti ti-alert-hexagon" style="color:var(--red)"></i>重要エラー <span class="tag tag-red" style="margin-left:auto">${hi}</span></div>`;
-    issues.filter(function(x){return x.sev==='high';}).slice(0,4).forEach(function(x){
-      h += `<div style="padding:6px 0;border-bottom:1px solid var(--border);font-size:12px"><b>${escapeHtml(x.title||x.text||'')}</b>${x.store?`<span style="font-size:10px;color:var(--muted)"> · ${escapeHtml(_ecStoreName(x.store))}</span>`:''}</div>`;
-    });
-    h += `<button class="btn btn-secondary btn-sm" style="margin-top:8px" onclick="setWorkTab('error')">エラーセンターで対応</button></div>`;
-  }
-  if (!pend.length && !(canErr&&hi)){
-    h += `<div class="card" style="text-align:center;padding:28px"><i class="ti ti-confetti" style="font-size:30px;color:var(--green)"></i><div style="font-weight:700;margin-top:8px;color:var(--green)">今処理すべきものはありません</div><div style="font-size:11px;color:var(--muted);margin-top:4px">承認・重要エラーはすべてクリアです</div></div>`;
-  }
-  return h;
+  if (workTab==='wr') return bar + ((typeof renderWrTab==='function') ? renderWrTab() : '');
+  if (workTab==='chat' || workTab==='announce') return bar + renderNoticeChat();
+  if (workTab==='approval') return bar + `<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px"><button class="btn btn-secondary btn-sm" onclick="setWorkTab('wr')"><i class="ti ti-arrow-left"></i> ${t('申請・承認に戻る','Back to Requests / Approvals')}</button><span style="font-size:11px;color:var(--muted)">${t('前の承認の画面（段階 3 でワークセンターに写すまで）','Earlier approvals screen (until step 3 copies them to the Work Center)')}</span></div>` + renderApproval();
+  if (workTab==='error') return bar + renderErrorCenter(true);
+  workTab='wr';
+  return bar + ((typeof renderWrTab==='function') ? renderWrTab() : '');
 }
-/* v1088 の「前日のキャッシュチップ未入力」の通知は v1118 でやめた（未登録は 0 として補完・Moto さん 10/30）。
-   前に出した通知（refId 'ctip_…'）は消さずに、一覧と未読の数から外す（notifRetired）。呼ぶ所のために関数は残す */
 function checkCashTipNotify(){ return; }
 function notifRetired(n){ return !!(n && typeof n.refId==='string' && n.refId.indexOf('ctip_')===0); }
 
@@ -115807,6 +115782,17 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   }
 
   function kindsAll(){ return S.s2 ? KINDS.concat(S2_KINDS) : KINDS; }
+  /* v1227：PC は左にビューと絞り込み、中央に一覧、右に明細。目印は返す前に外す */
+  function wrPack(h){
+    var mv = '<!--wr-v-->', mf = '<!--wr-f-->', ml = '<!--wr-l-->';
+    var a = h.indexOf(mv), b = h.indexOf(mf), c = h.indexOf(ml);
+    if (a < 0 || b < 0 || c < 0) return h;
+    var head = h.slice(0, a), left = h.slice(a + mv.length, b) + h.slice(b + mf.length, c), mid = h.slice(c + ml.length);
+    if ((W.innerWidth || 1024) >= 1024 && S.rows) {
+      return head + '<div class="wr-3" id="wr-3"><aside class="wr-3-l">' + left + '</aside><div class="wr-3-c">' + mid + '</div><aside class="wr-3-r" id="wr-side"></aside></div>';
+    }
+    return head + left + mid;
+  }
   W.renderWrTab = function(){
     checkAuth();
     if (!pinTok()) return '<div class="card">' + esc(errText('signin')) + '</div>';
@@ -115839,13 +115825,14 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       + tile(T('7 日以上止まっている','Stuck 7+ days'), c.stuck7, T('だれの対応待ちかは一覧で','see who in the list'), c.stuck7 ? 'var(--red)' : 'var(--green)', "wrSetView('team')")
       + '</div>';
     var tabs = [['todo', T('要対応','To do') + (c.todo ? ' ' + c.todo : '')], ['mine', T('自分の申請','My requests') + (c.mine_open ? ' ' + c.mine_open : '')], ['team', T('チーム／全件','Team / all')], ['history', T('履歴','History')]];
-    h2 += '<div class="phase-tabs" style="margin-bottom:8px">' + tabs.map(function(tb){ return '<div class="phase-tab' + (S.view === tb[0] ? ' active' : '') + '" onclick="wrSetView(\'' + tb[0] + '\')">' + esc(tb[1]) + '</div>'; }).join('') + '</div>';
-    h2 += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px;font-size:11px">'
+    h2 += '<!--wr-v--><div class="phase-tabs" style="margin-bottom:8px">' + tabs.map(function(tb){ return '<div class="phase-tab' + (S.view === tb[0] ? ' active' : '') + '" onclick="wrSetView(\'' + tb[0] + '\')">' + esc(tb[1]) + '</div>'; }).join('') + '</div>';
+    h2 += '<!--wr-f--><div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px;font-size:11px">'
       + '<select onchange="wrSetFilter(\'kind\',this.value)"><option value="">' + T('種別：すべて','Kind: all') + '</option>' + kindsAll().map(function(k){ return '<option value="' + k + '"' + (S.flt.kind === k ? ' selected' : '') + '>' + esc(kindL(k)) + '</option>'; }).join('') + '</select>'
       + '<select onchange="wrSetFilter(\'store\',this.value)"><option value="">' + T('店舗：すべて','Store: all') + '</option>' + storeOpts().map(function(s){ return '<option value="' + esc(s) + '"' + (S.flt.store === s ? ' selected' : '') + '>' + esc(storeName(s)) + '</option>'; }).join('') + '</select>'
       + whoSelect() + (S.view === 'history' && S.s3 ? '<label style="display:flex;align-items:center;gap:4px"><input type="checkbox"' + (S.flt.old ? ' checked' : '') + ' onchange="wrSetFilter(\'old\',this.checked?\'1\':\'\')">' + T('前の承認タブから','From the old Approvals tab') + '</label>' : '') + '</div>';
+    h2 += '<!--wr-l-->';
     if (S.load === 'err') h2 += '<div class="alert alert-danger" style="font-size:12px">' + esc(S.err) + '</div>';
-    if (!S.rows) return h2 + '<div class="card" style="color:var(--muted);font-size:12px">' + T('読み込み中…','Loading…') + '</div>';
+    if (!S.rows) return wrPack(h2 + '<div class="card" style="color:var(--muted);font-size:12px">' + T('読み込み中…','Loading…') + '</div>');
     var rows = byWho(S.rows);
     var bulkOn = S.view === 'todo' && rows.some(bulkOk);
     if (S.view === 'todo') { pruneSel(rows); if (bulkOn) h2 += bulkHead(rows); }
@@ -115894,7 +115881,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       ? T('休暇・シフト変更・採用・退職・予算・月間行動計画・Leadership・Tip Rate・スキル・プレップ認定もここで承認・反映します（段階 2）。使い始める前に前の承認の画面に入った申請はそこで処理します（段階 3 で移します）。','Leave, shift changes, hiring, offboarding, budgets, monthly plans, Leadership, Tip Rate, skills and prep certification are approved and applied here too (step 2). Requests that reached the earlier approvals screen before step 2 stay there (moved in step 3).')
       : T('休暇・シフト変更・採用・退職・予算・月間行動計画・プレップ認定・スキル・Tip Rate は、今までどおり前の承認の画面で処理します（段階 2 で移します）。','Leave, shift changes, hiring, offboarding, budgets, monthly plans, prep certification, skills and Tip Rate stay in the earlier approvals screen for now (moved in step 2).'))
       + ((typeof W._apClosed === 'function' && W._apClosed()) ? '' : ' <a href="#" onclick="setWorkTab(\'approval\');return false">' + T('前の承認の画面','Earlier approvals screen') + '</a>') + '</div>';
-    return h2;
+    return wrPack(h2);
   };
   function roleL(me){ var m = { ceo:'CEO', gm:'GM', office:T('経理','Accounting'), office_crew:T('事務Crew','Office crew'), am:'AM' }; return m[me.role] || ('G' + me.grade); }
   /* 承認・閲覧の権限（AM・G4 以上と担当の店）：GM・CEO が確かめた写しだけが効く（#123 のレビュー P1）。
@@ -116214,10 +116201,22 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       function(e){ S.busy = ''; showToast(String(e.message || e), 'error'); rerender(); });
   };
   /* ---------------------------------------------------------------- 1 件 */
+  W.wrSideClose = function(){
+    try { var side = document.getElementById('wr-side'); if (side) side.innerHTML = ''; var shell = document.getElementById('wr-3'); if (shell) shell.classList.remove('wr-3-open'); } catch(e) {}
+    S.d = null; S.ask = null;
+  };
   W.wrOpen = function(id){
     checkAuth();
     S.d = null; S.dErr = ''; S.ask = null;
-    openModal('<div id="wr-detail" style="width:100%">' + T('読み込み中…','Loading…') + '</div>');
+    /* v1227：PC（1024px 以上）で右の欄があるときは、今の明細をそこへ。スマホは今のモーダル。中身は同じ drawDetail */
+    var side = null; try { side = document.getElementById('wr-side'); } catch(e) {}
+    var wide = !!(side && (W.innerWidth || 1024) >= 1024);
+    if (wide) {
+      try { var shell = document.getElementById('wr-3'); if (shell) shell.classList.add('wr-3-open'); } catch(e2) {}
+      side.innerHTML = '<div style="display:flex;justify-content:flex-end;margin-bottom:6px"><button class="btn btn-secondary btn-sm" onclick="wrSideClose()">' + T('閉じる','Close') + '</button></div><div id="wr-detail" style="width:100%">' + T('読み込み中…','Loading…') + '</div>';
+    } else {
+      openModal('<div id="wr-detail" style="width:100%">' + T('読み込み中…','Loading…') + '</div>');
+    }
     var tok = S.openTok = (S.openTok || 0) + 1, g = S.gen;   /* 続けて押したとき、前の答えを後から出さない */
     api({ action:'get', id:id }).then(function(j){ if (tok !== S.openTok || g !== S.gen) return; S.d = j; drawDetail(); }, function(e){ if (tok !== S.openTok || g !== S.gen) return; S.dErr = String(e.message || e); drawDetail(); });
   };
@@ -116357,10 +116356,16 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     var lead = pick ? '<button class="btn btn-secondary btn-sm"' + bs + ' onclick="wrBackToList()">' + T('選択に戻る','Back to the selection') + '</button>'
       + '<button class="btn btn-secondary btn-sm" style="border-color:var(--accent);color:var(--accent);font-weight:700' + (mob ? ';min-height:44px;flex:1 1 auto' : '') + '" ' + (S.busy ? 'disabled' : '') + ' data-a="' + esc(r.id) + '" onclick="wrPickNext(this.dataset.a)">'
       + (S.sel[r.id] ? T('選択済み・次へ','Selected · next') : T('選んで次へ','Select and next')) + '</button>' : '';
-    return '<div id="wr-btns" style="display:flex;gap:6px;flex-wrap:wrap;' + box + '">' + lead + order.filter(function(a){ return can.indexOf(a) >= 0; }).map(function(a){
-      var b = btnOf(r, a); return '<button class="btn ' + b[2] + ' btn-sm"' + bs + ' ' + (S.busy ? 'disabled' : '') + ' onclick="' + (a === 's2stop' ? 'wrS2Stop()' : 'wrAsk(\'' + a + '\')') + '">' + (pick && a === 'approve' ? esc(T('この 1 件を承認','Approve this one')) : esc(T(b[0], b[1]))) + (a === 'approve' && r.version > 1 ? '（' + T('版 ','v') + r.version + '）' : '') + '</button>'; }).join('') + '</div>';
+    /* v1227：却下は承認から離す。理由が空なら今の wrAskGo が止める（NEEDS_NOTE）。呼ぶ関数は wrAsk のまま */
+    function oneBtn(a){
+      var b = btnOf(r, a); return '<button class="btn ' + b[2] + ' btn-sm"' + bs + ' ' + (S.busy ? 'disabled' : '') + ' onclick="' + (a === 's2stop' ? 'wrS2Stop()' : 'wrAsk(\'' + a + '\')') + '">' + (pick && a === 'approve' ? esc(T('この 1 件を承認','Approve this one')) : esc(T(b[0], b[1]))) + (a === 'approve' && r.version > 1 ? '（' + T('版 ','v') + r.version + '）' : '') + '</button>';
+    }
+    var acts = order.filter(function(a){ return can.indexOf(a) >= 0; });
+    var mainBt = acts.filter(function(a){ return a !== 'reject'; }).map(oneBtn).join('');
+    var rejBt = acts.filter(function(a){ return a === 'reject'; }).map(oneBtn).join('');
+    return '<div id="wr-btns" style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;' + box + '">' + lead + mainBt + (rejBt ? '<span class="wr-rej" style="margin-left:auto;display:flex;gap:6px">' + rejBt + '</span>' : '') + '</div>';
   }
-  W.wrBackToList = function(){ try { closeModalDirect(); } catch(e) {} rerender(); };
+  W.wrBackToList = function(){ try { closeModalDirect(); } catch(e) {} try { W.wrSideClose(); } catch(e2) {} rerender(); };
   /* 選んで次へ：この申請を選択に入れ、要対応の同じ順で次の「まとめて承認できる」申請を開く。最後なら一覧に戻って帯から承認 */
   W.wrPickNext = function(id){
     var r = S.d; if (!r || r.id !== id || S.busy) return;
