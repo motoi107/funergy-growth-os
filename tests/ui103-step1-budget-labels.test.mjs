@@ -22,9 +22,10 @@ function fnSrc(name) {
   throw new Error('unterminated: ' + name);
 }
 
-test('版は 1223 で、アプリとサービスワーカーが一致する', () => {
-  assert.match(SRC, /const APP_VERSION = '1223'/);
-  assert.match(SW, /const SW_BUILD = '1223'/);
+test('アプリとサービスワーカーの版が一致する（1223 以上）', () => {
+  const app = SRC.match(/const APP_VERSION = '(\d+)'/);
+  const sw = SW.match(/const SW_BUILD = '(\d+)'/);
+  assert.ok(app && sw && app[1] === sw[1] && Number(app[1]) >= 1223);
 });
 
 test('予実のタブは Daily/Monthly・Quarterly・Annual・予算設定・施策分析で、各タブに一行の目的がある', () => {
@@ -75,6 +76,7 @@ test('Quarterly の客数の言葉だけ変わり、計算は need/ppa/days の�
   assert.match(SRC, /R\.pacePct>=0\.95/);
 });
 
-test('客数 KPI は月全体の計画との比較のまま（前日までの計画は step ②）', () => {
-  assert.match(SRC, /k\.guests>=k\.guestBudget\?'var\(--green\)':k\.guests>=k\.guestBudget\*0\.9\?'var\(--yellow\)':'var\(--red\)'/);
+test('客数の月全体の計画は keyKpiStats に残る（前日までの割合は Daily の比較だけ）', () => {
+  assert.match(SRC, /guestBudget: hasGuestBud&&guestBud>0\?guestBud:null/);
+  assert.match(SRC, /function budGuestPacePlan\(/);
 });

@@ -718,6 +718,35 @@ body.shift-wide .main { max-width:1900px; }
 .bud-st.warn{color:#A16207;background:#FEF8D7;border-color:#FDE047}
 .bud-st.danger{color:#B91C1C;background:#FDECEA;border-color:#FCA5A5}
 .bud-st.none{color:var(--muted);background:var(--surface2);border-color:var(--border)}
+/* UI案103 step ②：日次の確かめること・日の詳細・ランチ／ディナーをたたむ */
+.bud-checks{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:0 0 10px}
+.bud-ck{display:inline-flex;align-items:center;gap:4px;border-radius:999px;padding:3px 8px;font-size:11px;font-weight:700;border:1px solid var(--border);background:var(--surface)}
+.bud-ck b{font-variant-numeric:tabular-nums}
+.bud-ck.miss{color:#B91C1C;border-color:#FCA5A5}
+.bud-ck.watch{color:#A16207;border-color:#FDE047}
+.bud-ck.gap,.bud-ck.blank{color:var(--muted)}
+.bud-ck.fail{color:#9D174D;background:#FCE7F3;border-color:#F9A8D4}
+.bud-ck.odd{color:#6D28D9;background:#F5F3FF;border-color:#DDD6FE}
+.bud-ck.off{color:var(--muted);font-weight:500}
+.bud-dk{display:inline-block;margin-left:4px;font-size:10px;font-weight:700;border-radius:7px;padding:0 5px;border:1px solid var(--border)}
+.bud-dk.off{color:var(--muted)}
+.bud-dk.fail{color:#9D174D;background:#FCE7F3;border-color:#F9A8D4}
+.bud-dk.odd{color:#6D28D9;background:#F5F3FF;border-color:#DDD6FE}
+.bud-dk.gap,.bud-dk.blank{color:#4B5563;border-style:dashed}
+.bud-dk.miss{color:#B91C1C}
+.bud-dk.watch{color:#A16207}
+.bud-day-split{display:flex;gap:12px;align-items:flex-start}
+.bud-day-main{flex:1;min-width:0}
+.bud-day-side{width:280px;flex-shrink:0;position:sticky;top:64px}
+.bud-day-on td{outline:2px solid var(--accent);outline-offset:-2px}
+.bud-dl-sum{margin:0 0 8px;border:1px solid var(--border);border-radius:12px;overflow:auto}
+.card.bud-dl:not([data-ld]) .bud-ld{display:none}
+.bud-ld-box{margin-top:10px}
+.bud-ld-box>summary{cursor:pointer;font-weight:700;font-size:13px;padding:8px 2px}
+@media (max-width:900px){ .bud-day-split{flex-direction:column} .bud-day-side{width:100%;position:static} }
+.card.bud-dl > table > thead > tr > th:first-child,
+.card.bud-dl > table > tbody > tr > td:first-child{position:sticky;left:0;z-index:2;background:var(--surface)}
+.card.bud-dl > table > thead > tr > th:first-child{z-index:4}
 /* v1072 中間レビュー v2（UI案44 B案）。PC は 1180px 以上で広げる。色だけで伝えない（判定は文字と記号も出す）。スマホ（390px）は 1 列・横にはみ出さない・押すところは 44px 以上 */
 @media (min-width:1180px) { body.mr-wide .main { max-width:1500px; } }
 /* v1126（UI案65）：メニュー（出数）の画面。PC は 1500px まで広げる（1179px 以下は今までどおり 900px） */
@@ -39247,7 +39276,11 @@ function budKpiCard(stores, days, agg, isCur, wow){
   var lbTgt = k.laborBudgetRate!=null?k.laborBudgetRate:30;
   var lbCol = k.laborRate>0?(k.laborRate<=lbTgt?'var(--green)':k.laborRate<=lbTgt+3?'var(--yellow)':'var(--red)'):'var(--muted)';
   var ppaCol = (k.ppaBudget!=null&&k.ppa>0)?(k.ppa>=k.ppaBudget?'var(--green)':k.ppa>=k.ppaBudget*0.95?'var(--yellow)':'var(--red)'):'var(--tm)';
-  var gCol = (k.guestBudget!=null&&k.guests>0)?(k.guests>=k.guestBudget?'var(--green)':k.guests>=k.guestBudget*0.9?'var(--yellow)':'var(--red)'):'var(--tm)';
+  var _gPace = budGuestPaceFor(stores, days, k.guestBudget);
+  var _gPlan = _gPace.plan;
+  var _gPct = (_gPlan>0) ? (k.guests/_gPlan*100) : null;
+  var _gKind = _gPct==null ? 'none' : statusFromPct(_gPct);
+  var gCol = _gKind==='good'?'var(--green)':_gKind==='warn'?'var(--yellow)':_gKind==='danger'?'var(--red)':'var(--tm)';
   var rCol = k.repeatRate==null?'var(--muted)':(k.repeatTgt!=null?(k.repeatRate>=k.repeatTgt?'var(--green)':k.repeatRate>=k.repeatTgt*0.9?'var(--yellow)':'var(--red)'):(k.repeatRate>=50?'var(--green)':k.repeatRate>=30?'var(--yellow)':'var(--red)'));
   var rateCol = function(v,tgt){ return tgt!=null?(v>=tgt?'var(--green)':v>=tgt*0.9?'var(--yellow)':'var(--red)'):'var(--tm)'; };
   // 売上進捗（実績÷予算・前日まで／過去月は確定値）
@@ -39264,7 +39297,10 @@ function budKpiCard(stores, days, agg, isCur, wow){
   /* v1130（11/02 の依頼 0・UI案67）：リピート率は FUNERGY_VT の状態つきのタイル（対象データなし・未取込も出す・押すと内訳）。数は repeatStats と同じ */
   if (window.FUNERGY_VT) { try { html += FUNERGY_VT.kpiTile(stores, days, k.repeatTgt, function(){ return repeatTrendSub(stores,days); }); } catch(e) { } }
   else if (k.repeatHas) html += kpiTile('ti-repeat',t('リピート率','Repeat rate'), k.repeatRate.toFixed(1)+'%', (k.repeatTgt!=null?k.repeatTgt+'%':''), rCol, '', t('リピート','Repeat')+' '+(k.repeat||0).toLocaleString()+' / '+t('対象','of')+' '+(k.rTotal||0).toLocaleString(), {title:t('リピート率','Repeat rate'), body:_kpiDetailWrap(t('前々月・前月・当月のリピート率と、初回／リピートの実数の推移。','Repeat rate and first/repeat counts: 2 mo ago / last mo / this mo.'), repeatTrendSub(stores,days))});
-  html += kpiTile('ti-friends', k.unit==='丼'?t('丼数','Bowls'):t('客数','Guests'), k.guests>0?Math.round(k.guests).toLocaleString():'—', k.guestBudget!=null?Math.round(k.guestBudget).toLocaleString():'', gCol, wowBadge(wow.guests,true,false,''), null, {title:(k.unit==='丼'?t('丼数','Bowls'):t('客数','Guests')), body:_kpiDetailWrap(t('区分別（ランチ／ディナー／テイクアウト）の1日あたり実績／予算、曜日ごとの平均、前々月からの推移。','Per-day by segment (L/D/TO), by weekday, and the 3-month trend.'), (guestAvgSub(k)||'')+guestDowTriSub(stores,days,k.unit==='丼'?t('丼','bowls'):t('人','guests')))});
+  var _gWhen = _gPace.mid ? t('前日まで','through yesterday') : (_gPace.full ? t('月の計画','full-month plan') : '');
+  var _gSub = (_gKind==='none' ? '' : budStatusMark(_gKind, !!_gPace.full)) + (_gWhen?(' '+_gWhen):'');
+  var _gRule = t('決まり：前日までの客数の計画＝月の客数の計画 ×（前日までの売上予算 ÷ 月の売上予算）。定休で売上予算が 0 の日は割合に入りません。月が終わったあとは月の計画そのものと比べます。色の幅は 100% 以上が緑、90% 以上が黄、それ未満が赤のままです。','Rule: the guest plan through yesterday = the month guest plan × (sales budget through yesterday ÷ the month sales budget). A closed day with a 0 sales budget is left out of the share. After the month ends, compare with the full-month plan. The bands stay green at 100% or more, yellow from 90%, red below.');
+  html += kpiTile('ti-friends', k.unit==='丼'?t('丼数','Bowls'):t('客数','Guests'), k.guests>0?Math.round(k.guests).toLocaleString():'—', _gPlan!=null?Math.round(_gPlan).toLocaleString():'', gCol, wowBadge(wow.guests,true,false,''), _gSub, {title:(k.unit==='丼'?t('丼数','Bowls'):t('客数','Guests')), body:_kpiDetailWrap(_gRule+' '+t('区分別（ランチ／ディナー／テイクアウト）の1日あたり実績／予算、曜日ごとの平均、前々月からの推移。','Per-day by segment (L/D/TO), by weekday, and the 3-month trend.'), (guestAvgSub(k)||'')+guestDowTriSub(stores,days,k.unit==='丼'?t('丼','bowls'):t('人','guests')))});
   html += kpiTile('ti-coin',t('客単価（全体）','Avg check (all)'), k.ppa>0?'$'+k.ppa.toFixed(2):'—', k.ppaBudget!=null?'$'+k.ppaBudget.toFixed(2):'', ppaCol, wowBadge(wow.ppa,true,false,''), 'L '+(k.ppaLunch!=null?'$'+k.ppaLunch.toFixed(2):'—')+' ／ D '+(k.ppaDinner!=null?'$'+k.ppaDinner.toFixed(2):'—')+(k.ppaTO!=null?' ／ TO $'+k.ppaTO.toFixed(2):''), {title:t('客単価','Avg check'), body:_kpiDetailWrap(t('区分別の客単価、実績のある日の最低〜最高、曜日ごとの平均、前々月からの推移。','Check by segment, daily range, by weekday, and the 3-month trend.'), 'L '+(k.ppaLunch!=null?'$'+k.ppaLunch.toFixed(2):'—')+' ／ D '+(k.ppaDinner!=null?'$'+k.ppaDinner.toFixed(2):'—')+(k.ppaTO!=null?' ／ TO $'+k.ppaTO.toFixed(2):'')+checkRangeSub(stores,days)+checkDowTriSub(stores,days))});
   html += kpiTile('ti-percentage',t('原価率','Food cost %'), k.fcRate>0?k.fcRate.toFixed(1)+'%':'—', fcTgt+'%', fcCol, wowBadge(wow.fcPt,false,true,''), t('低いほど良い','Lower is better'), {title:t('原価率','Food cost %'), body:_kpiDetailWrap(t('原価の内訳：前月棚(期首)＋当月仕入＋食材移動(純)−当月棚(期末)。期末は入力まで0。あわせて業者別の仕入を前々月・前月と比較。','COGS breakdown, plus purchases by vendor vs the prior two months.'), (fcBreakdownSub(stores,days)||'')+fcVendorTriSub(stores,days))});
   html += kpiTile('ti-users-group',t('人件費率','Labor %'), k.laborRate>0?k.laborRate.toFixed(1)+'%':'—', lbTgt+'%', lbCol, '', t('低いほど良い（月累計）','Lower is better (MTD)'), {title:t('人件費率','Labor %'), body:_kpiDetailWrap(t('人件費(賃金)の内訳：G2以上／G1。税・保険等は含みません。あわせて1日あたりの総労働時間と人件費額の推移。','Payroll split G2+/G1, plus hours-per-day and payroll trend.'), (laborGradeSub(stores,days)||'')+laborTrendSub(stores,days))});
@@ -40305,7 +40341,7 @@ function ldSummaryCard(store, days, opt){
 function ldLDLines(lv, dv){
   var row=function(k, col, v){ return (v==null || v==='')?'':'<div style="white-space:nowrap"><span style="display:inline-block;width:12px;color:'+col+';font-weight:700">'+k+'</span>'+v+'</div>'; };
   var h=row('L', 'var(--accent)', lv)+row('D', 'var(--accent2)', dv);
-  return h?'<div style="font-size:9px;color:var(--tm);line-height:1.35;margin-top:2px">'+h+'</div>':'';
+  return h?'<div class="bud-ld" style="font-size:9px;color:var(--tm);line-height:1.35;margin-top:2px">'+h+'</div>':'';
 }
 /* 日次一覧の「合計」「1日平均」の行（UI案32-2） */
 function ldFootInit(){ return {n:0, bud:0, budAll:0, act:0, ev:0, ls:0, ds:0, ld:0, dd:0, g:0, gl:0, gd:0, to:0, toHas:false, f:0, r:0, lf:0, lr:0, df:0, dr:0, rld:false,
@@ -40335,8 +40371,8 @@ function ldFootHtml(F, o){
     c+='<td style="color:var(--muted)">'+fmtUSD2(avg?dv(F.bud, n):F.bud)+(!avg && F.budAll>F.bud+0.005?'<div style="font-size:9px">'+t('月間 ','month ')+fmtUSD2(F.budAll)+'</div>':'')+'</td>';
     c+='<td style="font-weight:700">'+fmtUSD2(avg?dv(F.act, n):F.act)+'</td>';
     c+='<td style="font-size:11px">'+(F.ev>0?'<span style="font-weight:700;color:var(--accent2)">'+fmtUSD2(avg?dv(F.ev, n):F.ev)+'</span>':'<span style="color:var(--muted)">—</span>')+'</td>';
-    c+='<td style="font-size:11px;font-weight:700">'+(F.ld?fmtUSD2(avg?dv(F.ls, F.ld):F.ls):'—')+((!avg && F.ls>0 && F.gl>0)?'<div style="font-size:9px;color:var(--tm);font-weight:400">@$'+(F.ls/F.gl).toFixed(2)+'</div>':'')+'</td>';
-    c+='<td style="font-size:11px;font-weight:700">'+(F.dd?fmtUSD2(avg?dv(F.ds, F.dd):F.ds):'—')+((!avg && F.ds>0 && F.gd>0)?'<div style="font-size:9px;color:var(--tm);font-weight:400">@$'+(F.ds/F.gd).toFixed(2)+'</div>':'')+'</td>';
+    c+='<td class="bud-ld" style="font-size:11px;font-weight:700">'+(F.ld?fmtUSD2(avg?dv(F.ls, F.ld):F.ls):'—')+((!avg && F.ls>0 && F.gl>0)?'<div style="font-size:9px;color:var(--tm);font-weight:400">@$'+(F.ls/F.gl).toFixed(2)+'</div>':'')+'</td>';
+    c+='<td class="bud-ld" style="font-size:11px;font-weight:700">'+(F.dd?fmtUSD2(avg?dv(F.ds, F.dd):F.ds):'—')+((!avg && F.ds>0 && F.gd>0)?'<div style="font-size:9px;color:var(--tm);font-weight:400">@$'+(F.ds/F.gd).toFixed(2)+'</div>':'')+'</td>';
     c+='<td style="font-size:11px"><b>'+(avg?_ldN1(dv(F.g, n)):Math.round(F.g).toLocaleString())+'</b><span style="color:var(--muted);font-size:9px"> (L'+(avg?_ldN1(dv(F.gl, F.ld)):F.gl)+'/D'+(avg?_ldN1(dv(F.gd, F.dd)):F.gd)+')</span>'
       +(F.toHas?'<span style="color:var(--accent2);font-size:9px"> TO:'+(avg?_ldN1(dv(F.to, n)):F.to)+'</span>':'')+'</td>';
     if(o.showRR) c+=avg?avgTd():('<td style="text-align:center;font-size:11px">'+((F.f+F.r)>0?'<span style="font-weight:700;color:var(--accent2)">'+_ldPs(_ldPct(F.r, F.f+F.r))+'</span>':'—')
@@ -40489,6 +40525,140 @@ function yoyAllCard(stores, ym){
        '* Pick a store for lunch/dinner and weekly YoY. Totoya counts bowls. Total covers stores with last-year data, on compared days only.')+'</div>';
   return h+'</div>';
 }
+
+/* UI案103 step ②：客数は前日までの売上予算の割合。他の計算・しきい値は変えない。失敗した日は保存しない。 */
+var _budNeedOnly = false, _budLdOpen = false, _budDayPick = '';
+function budNeedToggle(){ _budNeedOnly=!_budNeedOnly; renderPage('budget'); }
+function budLdToggle(){ _budLdOpen=!_budLdOpen; renderPage('budget'); }
+function budPickDay(iso){ _budDayPick = (_budDayPick===iso)?'':iso; renderPage('budget'); }
+function budGuestPacePlan(monthGuests, dayBudgets, today){
+  if(monthGuests==null || !(Number(monthGuests)>0)) return { plan:null, share:null, mid:false, full:false };
+  var all=0, to=0, monthOver=true;
+  (dayBudgets||[]).forEach(function(d){
+    var b=Number(d.bud)||0; all+=b;
+    if(d.date<today) to+=b;
+    if(d.date>=today) monthOver=false;
+  });
+  if(!(all>0)) return { plan:null, share:null, mid:!monthOver, full:!!monthOver };
+  return { plan:Number(monthGuests)*(to/all), share:to/all, mid:!monthOver, full:!!monthOver };
+}
+function budGuestPaceFor(stores, days, monthGuests){
+  var today=(typeof bizToday==='function')?bizToday():'';
+  var rows=[];
+  (days||[]).forEach(function(d){
+    var bud=0;
+    (stores||[]).forEach(function(s){
+      var ym=String(d.date||'').slice(0,7);
+      var b=(typeof getBudgetForMonth==='function')?getBudgetForMonth(s.id, ym):null;
+      var ov={};
+      try{ ov=((_daRO(s.id)||{})[d.date])||{}; }catch(e){}
+      bud += (ov.budget!=null && ov.budget!=='') ? (Number(ov.budget)||0) : ((b&&typeof dayBudgetFor==='function')?dayBudgetFor(b, d.date, d.dow):0);
+    });
+    rows.push({date:d.date, bud:bud});
+  });
+  return budGuestPacePlan(monthGuests, rows, today);
+}
+function budIsCheck(kind){ return kind==='miss'||kind==='gap'||kind==='fail'||kind==='odd'||kind==='blank'||kind==='watch'; }
+function budDayKind(p){
+  p=p||{};
+  if(p.date>p.today) return 'future';
+  if(p.date===p.today) return 'today';
+  if(p.closed==='closed') return 'off';
+  if(p.fail) return 'fail';
+  if(p.odd) return 'odd';
+  if(!p.hasAct) return p.toastGuid ? 'gap' : 'blank';
+  if(!(p.bud>0)) return 'ok';
+  var rate=(Number(p.act)||0)/p.bud*100;
+  if(rate>=100) return 'ok';
+  if(rate>=90) return 'watch';
+  return 'miss';
+}
+function budImportFlags(storeId){
+  var fail={}, odd={}, rec=(typeof _rgLastFailed!=='undefined')?_rgLastFailed:null;
+  if(rec && rec.stores){
+    rec.stores.forEach(function(x){
+      if(!x || x.id!==storeId) return;
+      (x.fails||[]).forEach(function(f){ if(f && f.date) fail[f.date]=1; });
+      (x.ld||[]).forEach(function(d){ if(d) odd[d]=1; });
+      (x.dbw||[]).forEach(function(w){ if(w && w.date) odd[w.date]=1; });
+    });
+  }
+  return {fail:fail, odd:odd};
+}
+function budScanDays(store, days){
+  var today=(typeof bizToday==='function')?bizToday():'';
+  var flags=budImportFlags(store && store.id);
+  var guid=!!(store && store.toastGuid);
+  var counts={miss:0,gap:0,fail:0,odd:0,blank:0,watch:0}, kinds={};
+  (days||[]).forEach(function(d){
+    var ym=String(d.date||'').slice(0,7);
+    var b=(typeof getBudgetForMonth==='function')?getBudgetForMonth(store.id, ym):null;
+    var ov={};
+    try{ ov=((_daRO(store.id)||{})[d.date])||{}; }catch(e){}
+    var bud=(ov.budget!=null && ov.budget!=='')?(Number(ov.budget)||0):((b&&typeof dayBudgetFor==='function')?dayBudgetFor(b, d.date, d.dow):0);
+    var closed=null;
+    try{ closed=(typeof dayClosureMode==='function')?dayClosureMode(store.id, d.date, d.dow):null; }catch(e){}
+    var kind=budDayKind({date:d.date, today:today, closed:closed, hasAct:ov.actual!=null, bud:bud, act:Number(ov.actual)||0, toastGuid:guid, fail:!!flags.fail[d.date], odd:!!flags.odd[d.date]});
+    kinds[d.date]=kind;
+    if(counts[kind]!=null) counts[kind]++;
+  });
+  return {kinds:kinds, counts:counts};
+}
+function budDayMark(kind){
+  if(kind==='off') return '<span class="bud-dk off">'+t('定休','Closed')+'</span>';
+  if(kind==='fail') return '<span class="bud-dk fail">⚠︎ '+t('取り込み失敗','Import failed')+'</span>';
+  if(kind==='odd') return '<span class="bud-dk odd">? '+t('不整合の疑い','Possible mismatch')+'</span>';
+  if(kind==='gap') return '<span class="bud-dk gap">☁︎ '+t('未取り込み','Not imported')+'</span>';
+  if(kind==='blank') return '<span class="bud-dk blank">✎ '+t('未入力','Not entered')+'</span>';
+  if(kind==='miss') return '<span class="bud-dk miss">▼ '+t('未達','Missed')+'</span>';
+  if(kind==='watch') return '<span class="bud-dk watch">! '+t('注意','Watch')+'</span>';
+  return '';
+}
+function budDayWhy(kind){
+  if(kind==='off') return {why:t('定休です。0 は正常です。','Closed. Zero is normal.'), check:t('確かめることはありません。','Nothing to check.')};
+  if(kind==='fail') return {why:t('この画面で Toast の範囲取り込みが失敗した日です。開き直すと未取り込みに戻ります。','Toast range import failed while this screen is open. Reopening shows not imported.'), check:t('失敗した日だけ取り込み直す。','Retry only the failed days.')};
+  if(kind==='odd') return {why:t('取り込みの注意（L/D または保存）が、この画面を開いているあいだだけ残っています。','An import note (lunch/dinner or save) remains only while this screen stays open.'), check:t('数字の食い違いを確かめる。原因が分かるまでエラーと言いません。','Check the mismatch. Do not call it an error until the cause is known.')};
+  if(kind==='gap') return {why:t('営業日なのに実績がありません。','An open day has no actuals.'), check:t('Toast から取り込む。','Import from Toast.')};
+  if(kind==='blank') return {why:t('営業日なのに実績がありません。','An open day has no actuals.'), check:t('手で入力する。','Enter it by hand.')};
+  if(kind==='miss') return {why:t('その日の実績が、その日の予算の 90% 未満です。','That day’s actuals are under 90% of that day’s budget.'), check:t('その日の売上と客数を見る。','Look at that day’s sales and guests.')};
+  if(kind==='watch') return {why:t('その日の実績が、その日の予算の 90〜99% です。','That day’s actuals are 90–99% of that day’s budget.'), check:t('その日の売上を見る。','Look at that day’s sales.')};
+  if(kind==='today') return {why:t('今日は前日までの現在地に入れません。','Today is not part of the through-yesterday position.'), check:t('前日までの日を見る。','Look at days through yesterday.')};
+  if(kind==='future') return {why:t('まだ来ていない日です。','This day has not come yet.'), check:t('確かめる対象ではありません。','Not something to check.')};
+  return {why:t('この日に確かめることはありません。','Nothing to check on this day.'), check:'—'};
+}
+function budMissingNote(scan){
+  if(!scan) return '';
+  var c=scan.counts||{}, n=(c.gap||0)+(c.blank||0)+(c.fail||0);
+  var body=n
+    ? t('実績の無い日 '+n+'日（未取り込み '+(c.gap||0)+'・未入力 '+(c.blank||0)+'・取り込み失敗 '+(c.fail||0)+'）。定休は含みません。',
+        n+' day(s) with no actuals (not imported '+(c.gap||0)+', not entered '+(c.blank||0)+', import failed '+(c.fail||0)+'). Closed days are not included.')
+    : t('実績の無い日はありません（定休は除く）。','No days are missing actuals (closed days excluded).');
+  return '<div style="font-size:11px;color:var(--muted);margin-top:6px">'+t('時点は前日まで。','Timepoint: through yesterday. ')+body+'</div>';
+}
+function budCheckBar(c){
+  c=c||{};
+  var chip=function(k,n,lab){ return '<span class="bud-ck '+k+'">'+lab+' <b>'+n+'</b></span>'; };
+  return '<div class="bud-checks">'
+    +chip('miss', c.miss||0, '▼ '+t('未達','Missed'))
+    +chip('gap', c.gap||0, '☁︎ '+t('未取り込み','Not imported'))
+    +chip('fail', c.fail||0, '⚠︎ '+t('取り込み失敗','Import failed'))
+    +chip('odd', c.odd||0, '? '+t('不整合の疑い','Possible mismatch'))
+    +chip('blank', c.blank||0, '✎ '+t('未入力','Not entered'))
+    +chip('watch', c.watch||0, '! '+t('注意','Watch'))
+    +'<button type="button" class="btn btn-sm '+(_budNeedOnly?'btn-primary':'btn-secondary')+'" onclick="budNeedToggle()">'+t('要確認の日だけ','Only days to check')+'</button>'
+    +'<span class="bud-ck off">'+t('定休は数えません','Closed days are not counted')+'</span></div>';
+}
+function budDayPanel(scan){
+  var iso=_budDayPick, kind=(scan&&iso&&scan.kinds)?(scan.kinds[iso]||''):'';
+  var w=kind?budDayWhy(kind):null;
+  var h='<aside class="bud-day-side"><div class="card"><div class="card-title">'+t('日の詳細','Day detail')+'</div>';
+  if(!w) h+='<div style="font-size:12px;color:var(--muted);line-height:1.6">'+t('日を押すと、理由と確かめることを出します。','Tap a day for the reason and what to check.')+'</div>';
+  else h+='<div style="font-weight:800;margin-bottom:6px">'+escapeHtml(iso)+' '+budDayMark(kind)+'</div>'
+    +'<div style="font-size:12px;line-height:1.6"><b>'+t('理由','Reason')+'</b><br>'+w.why+'</div>'
+    +'<div style="font-size:12px;line-height:1.6;margin-top:8px"><b>'+t('確かめること','What to check')+'</b><br>'+w.check+'</div>';
+  return h+'</div></aside>';
+}
+
 function renderBudgetDaily() {
   var vis = getVisibleStores();
   var multiStore = vis.length > 1;
@@ -40591,6 +40761,7 @@ function renderBudgetDaily() {
      0% は「未達」に見えるが、実際は「まだ判定できない」。 */
   var paceRate = sumBudgetToToday>0 ? Math.round(sumActual/sumBudgetToToday*1000)/10 : null;
   var monthRate = sumBudget ? Math.round(sumActual/sumBudget*1000)/10 : 0;
+  var _budScan = (!isAgg && scopeStores[0]) ? budScanDays(scopeStores[0], days) : null;
 
   var _dOff = (typeof dailyMonthOffset!=='undefined'?(dailyMonthOffset||0):0);
   var _dLbl = (typeof dailyMonthLabel==='function')?dailyMonthLabel():getPeriod();
@@ -40607,6 +40778,7 @@ function renderBudgetDaily() {
     <div style="margin:10px 0 6px">${progBar(paceRate==null?0:paceRate,{h:12,color:_dpCol,pace:100})}</div>
     <div style="font-size:11.5px;color:${_dpCol};font-weight:700">${t('対予算ペース（前日まで）','vs-budget pace (through yesterday)')} ${paceRate==null?t('まだ判定できません（前日までの予算がありません）','No budget elapsed yet'):paceRate+'%'}<span style="color:var(--muted);font-weight:400"> ${t('・ 累計売上 ÷ 累計予算（本日まで）','· Cum. sales ÷ cum. budget (through today)')}</span></div>
     <div style="font-size:11px;color:var(--muted);margin-top:6px;padding-top:6px;border-top:1px solid var(--border)">${t('月間で見た現在地：売上実績','Month view · Actual sales')} <b style="color:var(--tm)">${fmtUSD2(sumActual)}</b> ${t('／ 総予算','/ Total budget')} ${fmtUSD2(sumBudget)}（${t('月間達成率','Month achievement')} <b>${monthRate}%</b>）</div>
+    ${budMissingNote(_budScan)}
   </div>`;
 
   /* ★v982: 旧月次進捗のKPIカードをここへ移設（目標列・前週比・タップで内訳）。
@@ -40651,15 +40823,19 @@ function renderBudgetDaily() {
       + tile(t('合計（店舗＋イベント）','Total (store + pop-up)'), _stAct+_evT.sales, t('参考値（予算・PLには含めていません）','Reference only (not in budget or P&L)'))
       + '</div>';
   })();
+  html += '<div class="bud-day-split"><div class="bud-day-main">';
+  if (_budScan) html += budCheckBar(_budScan.counts);
   setTimeout(budDlFit, 0);   /* v1177：表がカードに入るなら見出しを止める（budDlFit） */
-  html += `<div class="card bud-dl" style="overflow-x:auto"><div class="card-title"><i class="ti ti-calendar"></i>${t('日次一覧','Daily list')}<span class="tag" style="margin-left:8px;font-size:10px;background:rgba(124,58,237,0.08);color:var(--accent);font-weight:700" title="${t('1日＝Toast の営業日（締め時刻で区切ります）','One day = Toast business day (split at the closeout time)')}">${t('営業日で集計','By business day')}</span>
+  html += `<div class="card bud-dl"${_budLdOpen?' data-ld="1"':''} style="overflow-x:auto"><div class="card-title"><i class="ti ti-calendar"></i>${t('日次一覧','Daily list')}<span class="tag" style="margin-left:8px;font-size:10px;background:rgba(124,58,237,0.08);color:var(--accent);font-weight:700" title="${t('1日＝Toast の営業日（締め時刻で区切ります）','One day = Toast business day (split at the closeout time)')}">${t('営業日で集計','By business day')}</span>
     <div style="margin-left:auto;display:flex;align-items:center;gap:8px">
       <button class="btn btn-secondary btn-sm" onclick="shiftDailyMonth(-1)"><i class="ti ti-chevron-left"></i></button>
       <span style="font-size:13px;font-weight:600">${dailyMonthLabel()}</span>
       <button class="btn btn-secondary btn-sm" onclick="shiftDailyMonth(1)"><i class="ti ti-chevron-right"></i></button>
+      <button type="button" class="btn btn-sm ${_budLdOpen?'btn-primary':'btn-secondary'}" onclick="budLdToggle()">${t('ランチ・ディナー','Lunch / dinner')}</button>
     </div></div>
+    <!--@@BUD_SUM@@-->
     <table class="inv-table" style="min-width:${isAgg?'620':'1080'}px;font-size:12px"><thead><tr>
-      <th>${t('日','Day')}</th>${isAgg?'':'<th class="d-wx">'+t('天気','Wx')+'</th><th class="d-wx">'+t('イベント','Event')+'</th>'}<th>${t('予算','Budget')}</th><th>${t('実績','Actual')}</th>${isAgg?'':'<th style="color:var(--accent2)">'+t('イベント出店','Pop-up')+'</th>'}${isAgg?'':'<th>'+t('L売上','L Sales')+'</th><th>'+t('D売上','D Sales')+'</th><th>'+guestLabel+'</th>'}${showRR?'<th>'+t('リピート率','Repeat %')+'<div style="font-size:9px;color:var(--tm);font-weight:500">'+t('1日／L・D','Day / L·D')+'</div></th>':''}<th>${t('達成','Ach.')}</th><th>${t('累計達成','Cum. Ach.')}</th>${isAgg?'':'<th>'+t('チップ率','Tip %')+'<div style="font-size:9px;color:var(--tm);font-weight:500">'+t('1日／L・D','Day / L·D')+'</div></th>'}<th>${t('労働h','Labor h')}<div style="font-size:9px;color:var(--tm);font-weight:500">${t('1日／L・D','Day / L·D')}</div></th><th>${t('人件費','Labor $')}</th><th>${t('人件費率*','Labor %*')}<div style="font-size:9px;color:var(--tm);font-weight:500">${t('1日／L・D','Day / L·D')}</div></th>${(!isAgg&&canEdit)?'<th></th>':''}
+      <th>${t('日','Day')}</th>${isAgg?'':'<th class="d-wx">'+t('天気','Wx')+'</th><th class="d-wx">'+t('イベント','Event')+'</th>'}<th>${t('予算','Budget')}</th><th>${t('実績','Actual')}</th>${isAgg?'':'<th style="color:var(--accent2)">'+t('イベント出店','Pop-up')+'</th>'}${isAgg?'':'<th class="bud-ld">'+t('L売上','L Sales')+'</th><th class="bud-ld">'+t('D売上','D Sales')+'</th><th>'+guestLabel+'</th>'}${showRR?'<th>'+t('リピート率','Repeat %')+'<div style="font-size:9px;color:var(--tm);font-weight:500">'+t('1日／L・D','Day / L·D')+'</div></th>':''}<th>${t('達成','Ach.')}</th><th>${t('累計達成','Cum. Ach.')}</th>${isAgg?'':'<th>'+t('チップ率','Tip %')+'<div style="font-size:9px;color:var(--tm);font-weight:500">'+t('1日／L・D','Day / L·D')+'</div></th>'}<th>${t('労働h','Labor h')}<div style="font-size:9px;color:var(--tm);font-weight:500">${t('1日／L・D','Day / L·D')}</div></th><th>${t('人件費','Labor $')}</th><th>${t('人件費率*','Labor %*')}<div style="font-size:9px;color:var(--tm);font-weight:500">${t('1日／L・D','Day / L·D')}</div></th>${(!isAgg&&canEdit)?'<th></th>':''}
     </tr></thead><tbody>`;
 
   var cumB=0, cumA=0;
@@ -40732,13 +40908,15 @@ function renderBudgetDaily() {
     var isWeekend = d.dow==='土'||d.dow==='日';
     var rowBg = isToday?'background:#fdeee4':isWeekend?'background:rgba(255,255,255,0.02)':'';
     var _isFut = _futFold && d.date>todayStr;   /* v1177（UI案85-1A）：今月のまだ来ていない日（明日から先・ハワイ時間） */
-    var _rowH = `<tr style="${rowBg}"${_isFut?(' class="bud-fut"'+(_futOpen?'':' hidden')):''}>
-      <td style="white-space:nowrap">${d.day}<span style="color:${isWeekend?'var(--red)':'var(--muted)'};font-size:10px">(${d.dow})</span></td>
+    var _kind = (_budScan && _budScan.kinds[d.date]) || '';
+    var _skipRow = _budNeedOnly && !budIsCheck(_kind);
+    var _rowH = `<tr style="${rowBg}" class="${(_isFut?'bud-fut ':'')+(_budDayPick===d.date?'bud-day-on':'')}"${_isFut&&!_futOpen?' hidden':''}>
+      <td style="white-space:nowrap;cursor:pointer" onclick="budPickDay('${d.date}')">${d.day}<span style="color:${isWeekend?'var(--red)':'var(--muted)'};font-size:10px">(${d.dow})</span>${budDayMark(_kind)}</td>
       ${isAgg?'':`<td class="d-wx" style="font-size:14px">${weatherIcon(weather)}</td><td class="d-wx" style="font-size:10px;color:var(--muted);min-width:92px;max-width:140px;cursor:${canEdit?'pointer':'default'}"${canEdit?` onclick="openDayMemo('${scopeStores[0].id}','${d.date}','${d.dow}')" title="${t('タップでメモ編集','Tap to edit memo')}"`:''}>${dayHol?`<span style="color:var(--accent);font-weight:600">${dayHol}</span>`:''}${(dayHol&&dayMemo)?'<br>':''}${dayMemo?escapeHtml(dayMemo):''}${(!dayHol&&!dayMemo)?(canEdit?'<span style="opacity:.4">'+t('＋メモ','+Memo')+'</span>':'-'):''}</td>`}
       <td style="color:var(--muted)">${fmtUSD2(dayBud)}</td>
       <td style="font-weight:600">${hasAct?fmtUSD2(dayAct):'—'}${(!isAgg&&isToast)?' <i class="ti ti-plug-connected" style="font-size:10px;color:var(--accent2)" title="'+t('Toast実績','Toast actual')+'"></i>':''}${(!isAgg&&_manBy)?` <i class="ti ti-pencil" style="font-size:10px;color:var(--yellow)" title="${t('手入力','Manual')}: ${escapeHtml(_manBy)}"></i>`:''}</td>
       ${isAgg?'':`<td style="font-size:11px">${dayEv.count?`<span style="font-weight:700;color:var(--accent2)">${fmtUSD2(dayEv.sum.sales)}</span><div style="font-size:9.5px;color:var(--muted)">${escapeHtml(dayEv.label)}</div>`:'<span style="color:var(--muted)">—</span>'}</td>`}
-      ${isAgg?'':`<td style="color:var(--muted);font-size:11px">${hasLD&&dayLunch?fmtUSD2(dayLunch):'—'}${(hasLD&&dayLunch&&gv.lunch>0)?`<div style="font-size:9px;color:var(--tm)">@$${(dayLunch/gv.lunch).toFixed(2)}</div>`:''}</td><td style="color:var(--muted);font-size:11px">${hasLD&&dayDinner?fmtUSD2(dayDinner):'—'}${(hasLD&&dayDinner&&gv.dinner>0)?`<div style="font-size:9px;color:var(--tm)">@$${(dayDinner/gv.dinner).toFixed(2)}</div>`:''}</td><td style="font-size:11px">${gv.total!=null?gv.total+(gv.lunch!=null?`<span style="color:var(--muted);font-size:9px"> (L${gv.lunch}/D${gv.dinner})</span>`:'')+(gv.toTotal!=null?`<span style="color:var(--accent2);font-size:9px" title="${t('テイクアウト丼数','Takeout bowls')}"> TO:${gv.toTotal}${gv.toLunch!=null?`(L${gv.toLunch||0}/D${gv.toDinner||0})`:''}</span>`:(gv.takeout!=null?`<span style="color:var(--accent2);font-size:9px"> T/O:${gv.takeout}</span>`:'')):'—'}</td>`}
+      ${isAgg?'':`<td class="bud-ld" style="color:var(--muted);font-size:11px">${hasLD&&dayLunch?fmtUSD2(dayLunch):'—'}${(hasLD&&dayLunch&&gv.lunch>0)?`<div style="font-size:9px;color:var(--tm)">@$${(dayLunch/gv.lunch).toFixed(2)}</div>`:''}</td><td class="bud-ld" style="color:var(--muted);font-size:11px">${hasLD&&dayDinner?fmtUSD2(dayDinner):'—'}${(hasLD&&dayDinner&&gv.dinner>0)?`<div style="font-size:9px;color:var(--tm)">@$${(dayDinner/gv.dinner).toFixed(2)}</div>`:''}</td><td style="font-size:11px">${gv.total!=null?gv.total+(gv.lunch!=null?`<span style="color:var(--muted);font-size:9px"> (L${gv.lunch}/D${gv.dinner})</span>`:'')+(gv.toTotal!=null?`<span style="color:var(--accent2);font-size:9px" title="${t('テイクアウト丼数','Takeout bowls')}"> TO:${gv.toTotal}${gv.toLunch!=null?`(L${gv.toLunch||0}/D${gv.toDinner||0})`:''}</span>`:(gv.takeout!=null?`<span style="color:var(--accent2);font-size:9px"> T/O:${gv.takeout}</span>`:'')):'—'}</td>`}
       ${rtCellTd}
       <td>${rate!=null?`<span class="tag ${rate>=100?'tag-green':rate>=90?'tag-yellow':'tag-red'}" style="font-size:9px">${rate}%</span>`:'-'}</td>
       <td><span style="color:${pctColor(cumRate)};font-size:11px">${cumRate}%</span></td>
@@ -40748,7 +40926,8 @@ function renderBudgetDaily() {
       <td style="font-size:11px">${dayLaborRate!=null?`<span title="${fmtUSD2(dayLaborCost)} ÷ ${fmtUSD2(dayAct)}">${dayLaborRate.toFixed(1)}%</span>${_ldRLines}`:'—'}</td>
       ${(!isAgg&&canEdit)?`<td><button class="btn btn-secondary btn-sm" style="padding:2px 6px" onclick="openDailyActualModal('${scopeStores[0].id}','${d.date}','${d.dow}')"><i class="ti ti-edit" style="font-size:11px"></i></button></td>`:''}
     </tr>`;
-    if (_isFut) { _futRows += _rowH; _futBud += dayBud; _futN++; if (_futFrom==null) _futFrom = d.day; _futTo = d.day; }
+    if (_skipRow) { /* 要確認以外は行だけ隠す。合計の数は変えない */ }
+    else if (_isFut) { _futRows += _rowH; _futBud += dayBud; _futN++; if (_futFrom==null) _futFrom = d.day; _futTo = d.day; }
     else html += _rowH;
   });
   /* v1177（UI案85-1A）：まだ来ていない日は 1 行にたたむ（予算の合計）。押すと 1 日ずつ開く。開いたままの印はこの端末だけ（_bud_fut_open） */
@@ -40762,23 +40941,24 @@ function renderBudgetDaily() {
       + '<span class="bud-fold-mu bud-fold-act">'+(_futOpen?t('押すと閉じる','Tap to close'):t('押すと 1 日ずつ開く','Tap to open each day'))+'</span></span></td></tr>'
       + _futRows;
   }
-  html += '</tbody>' + (isAgg ? '' : ldFootHtml(_ft, {showRR:showRR, canEdit:canEdit})) + '</table>';   /* v1046: 合計・1日平均の行（UI案32-2） */
+  html += '</tbody></table>';
+  html = html.replace('<!--@@BUD_SUM@@-->', (isAgg ? '' : ('<div class="bud-dl-sum"><table class="inv-table">'+ldFootHtml(_ft, {showRR:showRR, canEdit:canEdit}).replace(/tfoot/g,'tbody')+'</table></div>')));   /* v1046: 合計・1日平均の行（UI案32-2） */
   /* v901: 月次KPIとの差の理由。ここを消すと日別と月次のズレが説明されないまま残る。 */
   html += `<p style="font-size:11px;color:var(--muted);margin-top:6px">${t('* 人件費率＝人件費 ÷ 実績。日別は週40時間超の残業割増を含まないため、上部の月次KPIの人件費率とは一致しません。','* Labor % = Labor $ ÷ Actual. Daily values exclude the weekly overtime premium, so they do not match the monthly Labor % KPI above.')}</p>`;
   /* v1046: 合計・1日平均の行と L/D の読み方 */
-  if (!isAgg) html += `<p style="font-size:11px;color:var(--muted);margin-top:4px">${t('* いちばん下の「合計」「1日平均」は実績のある日だけ。率（リピート・チップ・人件費）は合計から計算します。1日平均は、その時間帯に売上のあった日数で割ります。労働h・人件費率・リピート率の L・D：人件費は、その日の人件費を時給×時間の比で分けます。','* Total / Avg rows cover days with actuals; rates come from totals. Labor L/D splits each day\'s labor $ by hourly-wage share.')}</p>`;
+  if (!isAgg) html += `<p style="font-size:11px;color:var(--muted);margin-top:4px">${t('* 上の「合計」「1日平均」は実績のある日だけ。率（リピート・チップ・人件費）は合計から計算します。1日平均は、その時間帯に売上のあった日数で割ります。労働h・人件費率・リピート率の L・D：人件費は、その日の人件費を時給×時間の比で分けます。','* The Total / Avg rows above cover days with actuals; rates come from totals. Labor L/D splits each day\'s labor $ by hourly-wage share.')}</p>`;
   /* v1031: チップ率の内訳の読み方。1日の率と同じ数え方であることを書いておく（お客様が付けた率より少し低く出るため）。 */
   if (!isAgg) html += `<p style="font-size:11px;color:var(--muted);margin-top:4px">${t('* チップ率：上＝1日、L＝ランチの Tip ÷ ランチ売上、D＝ディナーの Tip ÷ ディナー売上。Tip はカード Tip から手数料'+(TIP_CC_FEE*100).toFixed(1)+'%を引いた額＋現金 Tip（Waikiki はカードのみ）。テイクアウトは時間帯でランチ・ディナーに含みます。ランチ休みの日は D だけ出します。','* Tip %: top = whole day, L = lunch tips ÷ lunch sales, D = dinner tips ÷ dinner sales. Tips = card tips minus the '+(TIP_CC_FEE*100).toFixed(1)+'% card fee + cash tips (Waikiki: card only). Takeout is counted in lunch or dinner by time. On lunch-off days only D is shown.')}</p>`;
   /* v1032: 1日の区切り。LaLa（営業は 2:00 AM まで・Toast の締め 4:00 AM）の0時以降の会計の扱い。
      L/D の振り分けは hyper-worker v1032 が行う（0時を過ぎた会計＝その営業日のディナー）。 */
   html += `<p style="font-size:11px;color:var(--muted);margin-top:4px">${t('* 1日＝Toast の営業日（締め時刻で区切ります）。0時を過ぎた会計は、前の日の営業日のディナーに入ります。','* One day = Toast business day (split at the closeout time). Checks after midnight count toward the previous business day, as dinner.')}</p>`;
   if (isAgg) html += `<p style="font-size:11px;color:var(--muted);margin-top:6px">${t('集計ビューでは天気・イベントは各店ビューで確認・入力できます','In aggregate view, weather/events are viewed and entered per store')}</p>`;
-  html += '</div>';
+  html += '</div></div>'+budDayPanel(_budScan)+'</div>';
   /* v1023: イベント出店（明細）。店舗売上とは別枠。 */
   html += eventListCard(scopeStores, days, canEdit, isAgg);
   /* v1046→v1047: ランチ・ディナーのまとめ（UI案32-1）。ページのいちばん下（Motoさんの依頼 10/5「日次進捗のランチディナーまとめはページ下部に」）。
      1店のときだけ（全店は上で店舗カードだけにして返している） */
-  if (scopeStores.length===1) html += ldSummaryCard(scopeStores[0], days);
+  if (scopeStores.length===1) html += '<details class="bud-ld-box"'+(_budLdOpen?' open':'')+'><summary>'+t('ランチ・ディナー','Lunch / dinner')+'</summary>'+ldSummaryCard(scopeStores[0], days)+'</details>';
   return html;
 }
 /* v1177（UI案85-1A）：まだ来ていない日のたたみ。開いたままの印はこの端末だけ（_ で始まる小さな印・送らない）。
@@ -50623,7 +50803,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1223';
+const APP_VERSION = '1224';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
