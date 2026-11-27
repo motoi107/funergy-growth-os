@@ -1548,6 +1548,17 @@ body.mr-wide .btn:disabled { opacity:.45; cursor:not-allowed; }
 .ap-chips button.on{background:#1B1F24;color:#fff;border-color:#1B1F24;font-weight:700}
 .ap-cards{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px}
 .ap-cards>.card{margin:0}
+/* UI案103 step ④：12 か月の帯（四半期ごと） */
+.ap-band{display:flex;flex-direction:column;gap:8px;margin:0 0 12px}
+.ap-band-q{display:flex;gap:6px;align-items:stretch}
+.ap-band-ql{width:28px;flex:0 0 auto;font-weight:800;font-size:12px;align-self:center}
+.ap-band-m{flex:1;min-width:0;border:1px solid var(--border);border-radius:10px;padding:6px 6px;background:var(--surface);text-align:left;cursor:pointer;font:inherit;color:inherit}
+.ap-band-m b{display:block;font-size:13px}
+.ap-band-m span{display:block;font-size:10px;font-weight:700;color:var(--muted);line-height:1.3}
+.ap-band-m.big{border-color:#B91C1C;background:#FDECEA}
+.ap-band-m.big span{color:#B91C1C}
+.ap-band-m.on{outline:2px solid var(--accent)}
+.ap-band-d{margin-top:4px}
 .ap-sum{flex:2 1 320px}
 .ap-curc{flex:1 1 240px;background:#FFF6EA!important;border:1px solid #F0D3A8!important;font-size:12.5px;display:flex;flex-direction:column;gap:4px;line-height:1.55}
 .ap-st{font-size:12.5px;color:var(--muted)}
@@ -35711,6 +35722,7 @@ var AP_BUDGET_START = { 2026: 7 };   /* 3A：年ごとの予算の開始月（20
 var AP_METRICS = ['sales', 'guests', 'ppa', 'fc', 'labor'];
 var _apMetric = 'sales';
 var _apPreOpen = false;
+var _apBandYm = '';
 var _apLoadTried = {};   /* ym → 'busy'（読んでいる）・'done'（読めた）・'fail'（読めなかった＝v1169） */
 var _apLoadFail = {};    /* v1169（Codex #162 の P2）：読めなかった月と時刻。60 秒たったら描き直しのときにもう一度読む（描くたびには読まない）・「もう一度読む」ですぐ */
 var AP_RETRY_MS = 60000, _apRetryT = null;
@@ -36294,6 +36306,75 @@ function _apSummaryHtml(md, stores){
   h+='</div>';
   return h;
 }
+
+/* UI案103 step ④：12 か月の帯。状態は今の月の種類。差が大きい月は今のしきい値（達成率 90% 未満、率は今の悪い向き）だけ。見込みは出さない。 */
+function apBandWord(M){
+  if(M.kind==='pre') return t('予算開始前','Pre-budget');
+  if(M.kind==='future') return t('予定','Planned');
+  if(M.kind==='current') return t('進行中','In progress');
+  if(M.failed) return t('読めませんでした','Could not load');
+  if(M.loading) return t('読み込み中','Loading');
+  if(!M.relevant) return t('実績なし','No data');
+  if(M.gap && M.gap.length) return t('欠損あり','Gaps');
+  if(M.unset && M.unset.length) return t('予算未設定','No budget');
+  return t('確定','Final');
+}
+function apBandLarge(metric, M){
+  if(!M || M.kind!=='past') return false;
+  if(M.loading || M.failed || !M.relevant) return false;
+  if(M.gap && M.gap.length) return false;
+  if(M.unset && M.unset.length) return false;
+  if(_apIsRate(metric)){
+    var d=apDiff(metric, M.A);
+    return d!=null && apTone(metric, d)==='ap-neg';
+  }
+  var r=apRate(metric, M.A);
+  return r!=null && (typeof statusFromPct==='function') && statusFromPct(r)==='danger';
+}
+function apBandMark(metric, M){
+  var word=apBandWord(M);
+  if(M.kind==='pre' || M.kind==='future') return '— '+word;
+  if(M.kind==='current') return word;
+  if(apBandLarge(metric, M)) return '▼ '+word;
+  if(word===t('確定','Final')) return '✓ '+word;
+  return word;
+}
+function apBandPick(ym){ _apBandYm=(_apBandYm===ym)?'':ym; renderPage('budget'); }
+function apGoDaily(ym){
+  try{ dailyMonthOffset=_ymToOffset(ym); }catch(e){}
+  if(typeof setBudgetTab==='function') setBudgetTab('daily');
+}
+function apBandDetail(md, M){
+  var metric=md.metric, q=Math.floor((M.m-1)/3)+1;
+  var d=(M.kind==='past' && !(M.unset&&M.unset.length) && !M.loading && M.relevant) ? apDiff(metric, M.A) : null;
+  var h='<div class="card ap-band-d"><div class="card-title">'+M.m+t('月','')+' · '+apBandWord(M)+'</div>';
+  if(d!=null) h+='<div style="font-size:13px;margin-bottom:8px">'+t('単月予算差','Vs budget')+' '+apDiffHtml(metric, d, !!(M.gap&&M.gap.length))+'</div>';
+  h+='<div class="btn-row">'
+    +'<button type="button" class="btn btn-secondary btn-sm" onclick="apGoDaily(\''+M.ym+'\')">Daily/Monthly</button>'
+    +'<button type="button" class="btn btn-secondary btn-sm" onclick="planGoQuarter('+md.y+','+q+')">Quarterly</button>'
+    +'</div></div>';
+  return h;
+}
+function apBandHtml(md){
+  var metric=md.metric, h='<div class="ap-band">';
+  for(var q=1;q<=4;q++){
+    h+='<div class="ap-band-q"><div class="ap-band-ql">Q'+q+'</div>';
+    for(var m=(q-1)*3+1;m<=q*3;m++){
+      var M=md.months[m-1];
+      var big=apBandLarge(metric, M);
+      h+='<button type="button" class="ap-band-m'+(big?' big':'')+((_apBandYm===M.ym)?' on':'')+'" onclick="apBandPick(\''+M.ym+'\')">'
+        +'<b>'+M.m+t('月','')+'</b><span>'+apBandMark(metric, M)
+        +(big?(' '+apSign(metric, apDiff(metric, M.A))):'')
+        +'</span></button>';
+    }
+    h+='</div>';
+  }
+  var sel=null;
+  md.months.forEach(function(M){ if(M.ym===_apBandYm) sel=M; });
+  if(sel) h+=apBandDetail(md, sel);
+  return h+'</div>';
+}
+
 function renderAnnualPlan(){
   var y=_apEnsureY(), stores=budgetScopeStores(), metric=(AP_METRICS.indexOf(_apMetric)>=0)?_apMetric:'sales';
   var vis=(typeof getVisibleStores==='function')?getVisibleStores():stores, yMax=_apYearMax();
@@ -36327,6 +36408,7 @@ function renderAnnualPlan(){
   if(md.failed.length) notes.push('<span class="ap-neg">'+escapeHtml(_apMonthsTx(md.failed))+t('の日次をこの端末に読めませんでした。確定・累計に入れていません',': daily data could not be loaded on this device; not counted as final or in the cumulative')+'</span> <button class="btn btn-secondary btn-sm" onclick="apRetryLoad()">'+t('もう一度読む','Load again')+'</button>');
   if(metric==='guests' || metric==='ppa') notes.push(t('客数・客単価の前年は、会計PL に客数が無いので出しません（5A：前年は確定 PL の暦月）','Prior year is not shown for guests / avg check (the accounting PL has no guest counts)'));
   if(notes.length) html+='<div class="ap-note">'+notes.map(function(x){ return '<div><i class="ti ti-info-circle"></i> '+x+'</div>'; }).join('')+'</div>';
+  html+=apBandHtml(md);
   /* ---- PC：月の表 ---- */
   var rate=_apIsRate(metric), cumLab=t('累計予算差','Cum. diff')+(md.start.m!=null?'（'+md.start.m+t('月〜','–')+'）':'');
   var th=['<th class="l">'+t('月','Month')+'</th>', '<th class="l">'+t('状態','State')+'</th>',
@@ -50837,7 +50919,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1225';
+const APP_VERSION = '1226';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。

@@ -22,9 +22,10 @@ function fnSrc(name) {
   throw new Error('unterminated: ' + name);
 }
 
-test('版は 1225', () => {
-  assert.match(SRC, /const APP_VERSION = '1225'/);
-  assert.match(SW, /const SW_BUILD = '1225'/);
+test('アプリとサービスワーカーの版が一致する（1225 以上）', () => {
+  const app = SRC.match(/const APP_VERSION = '(\d+)'/);
+  const sw = SW.match(/const SW_BUILD = '(\d+)'/);
+  assert.ok(app && sw && app[1] === sw[1] && Number(app[1]) >= 1225);
 });
 
 test('Quarterly の欄は 約束 → 行動 → 結果 → 残り', () => {
