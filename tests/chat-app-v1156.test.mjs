@@ -490,12 +490,13 @@ test('the app keeps chat off the device and is wired into the navigation, logout
   assert.deepEqual([...code.matchAll(/uiSave\(\{ (\w+):/g)].map(m => m[1]).sort(), ['geo', 'geo', 'pinned'], 'only the panel place and the pin');
   assert.match(html, /\{id:'chat',\s+label:'DM・チャット', icon:'ti-messages',\s+roles:\['ceo','gm','office','am','sl','crew','office_crew','chef'\]\}/);
   assert.match(html, /\{id:'g_chat', label:'チャット', icon:'ti-messages', children:\['chat'\]\}/, 'G1 (crew) menu');
-  assert.match(html, /children:\['tasks','chat','lala'\]\},   \/\* v1156 \*\//);
+  assert.match(html, /children:\['tasks','lala'\]\},   \/\* v1227：DM はワークセンターの「通知とチャット」 \*\//);
   assert.equal(html.split("case 'chat':         el.innerHTML = (typeof renderChatPage==='function') ? renderChatPage() : ''; break;").length - 1, 2, 'both renderPage copies');
   assert.equal(html.split("if(typeof chatReset==='function') chatReset();").length - 1, 2, 'both logout copies');
   assert.match(html, /if\(typeof chatStart==='function'\) chatStart\(\); \}, 3000\)/);
   assert.match(html, /'acct_center','lost_receipt','expense','diag_center','chat'(,'ar_settings')?\]/);   // v1190：承認・閲覧設定が後ろに足された
-  assert.match(html, /if \(workTab==='chat'\) return bar \+ \(\(typeof chatWorkTab==='function'\) \? chatWorkTab\(\) : ''\);/);
+  assert.match(html, /if \(workTab==='chat' \|\| workTab==='announce'\) return bar \+ renderNoticeChat\(\);/);
+  assert.match(html, /function renderNoticeChat\(\)\{[\s\S]*chatWorkTab\(\)/);
   assert.match(html, /if \(typeof W\.chatCaseButton === 'function'\) h \+= W\.chatCaseButton\(r\);/);
   assert.match(html, /if \(pid==='chat'\) return \(typeof chatUnread==='function'\) \? chatUnread\(\) : 0;/);
   const sw = fs.readFileSync(new URL('../sw.js', import.meta.url), 'utf8');

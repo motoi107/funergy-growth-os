@@ -23,9 +23,10 @@ function fnSrc(name) {
   throw new Error('unterminated: ' + name);
 }
 
-test('版は 1226', () => {
-  assert.match(SRC, /const APP_VERSION = '1226'/);
-  assert.match(SW, /const SW_BUILD = '1226'/);
+test('版は 1226 以上で揃っている', () => {
+  const v = /const APP_VERSION = '(\d+)'/.exec(SRC)[1];
+  assert.ok(Number(v) >= 1226);
+  assert.match(SW, new RegExp("const SW_BUILD = '" + v + "'"));
 });
 
 test('12 か月を四半期ごとに並べ、月の状態は今の種類', () => {
