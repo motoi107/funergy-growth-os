@@ -175,7 +175,7 @@ for (const [k, g, name] of [['S_CHEF', 'S3', '05-gm-panel-chefS3-eval-1440'], ['
   await shot(G.page, name);
 }
 p = await tab(G.page, 'pay');
-ok('Prep の給与の仕組み：この段（P3）は $19・時給の段 P1〜P6（Q4 のマスター）', /この段（P3）は \$19（Q4 のマスター）/.test(p) && /P1\s*\$17/.test(p) && /P6\s*\$22/.test(p));
+ok('Prep の給与の仕組み：この段（P3）は $19・時給の段 P1〜P6（Q4 のマスター）・賞与は対象外（Moto さん 11/27）', /この段（P3）は \$19（Q4 のマスター）/.test(p) && /P1\s*\$17/.test(p) && /P6\s*\$22/.test(p) && /Prep は賞与の対象外です/.test(p) && !/賞与 ①/.test(p));
 await shot(G.page, '08-gm-panel-prepP3-pay-1440');
 await G.page.keyboard.press('Escape'); await sleep(300);
 ok('Esc でパネルを閉じる（キャリアマップに戻る）', await G.page.evaluate(() => FUNERGY_CAREER.state().view === 'map' && !document.querySelector('#cr-root .cr-panel')));
@@ -282,7 +282,7 @@ ok('G4（Mia Manager）で入る', await login(M, 'F01', 'Mia Manager'));
 await openCareer(M); await sleep(1200);
 t = await root(M.page);
 ok('G4：あなたの Q4 の評価表（G4 · 店長）', /G4/.test(t) && /店長/.test(t), t.slice(0, 200));
-ok('G4 以上：給与の仕組みの帯と Prep の時給の段が見える', /G の給与の仕組み/.test(t) && /P1 \$17 〜 P6 \$22/.test(t) && /時給の段/.test(t));
+ok('G4 以上：給与の仕組みの帯と Prep の時給の段が見える・Prep の賞与は対象外', /G の給与の仕組み/.test(t) && /P1 \$17 〜 P6 \$22/.test(t) && /時給の段/.test(t) && /賞与\s*対象外/.test(t));
 ok('G4：役割の文（案）は出さない（GM・CEO だけ）', !/ここから下は案|文は案・会社の確認待ち/.test(t) && /役割の説明は会社が確認中/.test(t));
 await M.page.click('#cr-root .cr-you2 .btn-primary'); await sleep(500);
 ok('「自分のキャリアを見る」→ G4 のパネル（あなた・給与の仕組みのタブ）', await M.page.evaluate(() => FUNERGY_CAREER.state().view === 'detail' && FUNERGY_CAREER.state().grade === 'G4') && /あなた/.test(await root(M.page)) && (await tabs(M.page)).includes('給与の仕組み'));

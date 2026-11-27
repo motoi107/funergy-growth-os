@@ -5,6 +5,7 @@
 //   ・Career Score の対象は G2〜G6（G1 はスキルレベル）、Chef の S・経理の S は S1〜S6 すべて、Prep は Prep の評価表
 //   ・境目：G1｜G2＝Career Score（点線）、G3｜G4＝マネージャー職（破線）、店舗｜本部＝G4｜G5・Chef S2｜S3（細い線）
 //   ・給与の仕組み（Prep の時給の段を含む）は G4 以上（従業員マスターの G4〜G6）と GM・CEO だけ。スタッフ・店の共有ログイン・候補者向けには出さない
+//     （Head Chef・Accountant など肩書きで G4 の人にも見せる・Moto さん 11/27「はい」）。Prep は賞与の対象外（11/27）
 //   ・詳細はパネル（タブ）で開き、閉じると元の表示へ。マトリクスの業務の詳細・組織図の人の詳細も同じパネル
 //   ・数は Q4 のマスター（基準点・最低条件・時給の段）。上司の決まりは v1222 のまま
 import test from 'node:test';
@@ -96,11 +97,14 @@ test('v1223：Career Score の対象（G2〜G6・S1〜S6）・Prep は Prep の�
 test('v1223：給与の仕組みは G4 以上（従業員マスター）と GM・CEO だけ・数は Q4 のマスターから・個人の額は出さない', () => {
   const pay = master.systems.PREP.pay;
   const sees = (w, label) => { const h = w.mount(); assert.match(h, /G の給与の仕組み/, label); assert.match(h, /時給の段/, label); for (const p of pay) assert.ok(h.includes('$' + p.wageUsd), label + p.step);
+    assert.match(h, /<span class="cr-pay cr-pay-d"><b>賞与<\/b>対象外<\/span>/, label + '：Prep は賞与の対象外（Moto さん 11/27）');
     w.crOpen('PREP', 'P3'); w.crSet('ptab', 'pay'); assert.equal(w.st().ptab, 'pay', label); assert.match(w.root(), /この段（P3）は \$19（Q4 のマスター）/);
+    assert.match(w.root(), /<b>賞与<\/b><span>Prep は賞与の対象外です。<\/span>/, label); assert.doesNotMatch(w.root().slice(w.root().indexOf('<aside class="cr-panel"')), /賞与 ①/, label + '：Prep のパネルに賞与 ① の行は出さない');
     w.crOpen('G', 'G4'); assert.match(w.root(), /G4 は 85 点（次の G5 は 90 点）/); assert.match(w.root(), /「Career Score」→「今期の評価」で確定・公開した評価で決めます/);
     w.crOpen('G', 'G1'); assert.match(w.root(), /Career Score を使う賞与 ① は G2 から（G1 は Career Score の対象外）/); };
   sees(world({ role: 'gm' }), 'gm'); sees(world({ role: 'ceo' }), 'ceo');
   sees(world({ role: 'g4', me: 'Mia Manager' }), 'G4（Store Manager）'); sees(world({ role: 'am', me: 'Ann Area' }), 'G5（Area Manager）');
+  sees(world({ role: 'chef', me: 'Cal Chef' }), 'Head Chef（従業員マスター G4）'); sees(world({ role: 'office', me: 'Oki Office' }), 'Accountant（従業員マスター G4）');
   const notSee = (w, label) => { const h = w.mount(); assert.doesNotMatch(h, /給与の仕組み|時給の段|\$1\d|\$2\d/, label);
     w.crOpen('PREP', 'P3'); const before = w.st().ptab; w.crSet('ptab', 'pay'); assert.equal(w.st().ptab, before, label + '：給与の仕組みのタブは選べない');
     assert.doesNotMatch(w.root(), /給与の仕組み<\/button>|\$1\d/, label); };

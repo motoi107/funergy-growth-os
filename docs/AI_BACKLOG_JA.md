@@ -5,7 +5,8 @@
 1. 済（`claude/ui104-career`・記録だけ）：現状確認と UI 提案（https://claude.ai/artifact/MYErdhtuzcH2HzwoemDPEj ）。答え 1〜7 は `docs/UI104_CAREER_JA.md`。
 2. 済（Moto さん 11/26）：8＝A をベースに C の説明。全体の承認。
 3. 済（v1223・`claude/ui104-career`・下書き PR）：共通の枠 → マップと詳細パネル → マトリクス → 組織図 → スマホ → 動作確認（e2e 95/95・単体・static）。
-4. 確かめる（Moto さん）：Prep の賞与 ① の出し方・境目のことば・給与の仕組みを Head Chef・Accountant（従業員マスター G4）にも見せてよいか。マージと本番公開は確かめてから。
+4. 済（Moto さん 11/27）：Prep は賞与の対象外（帯とタブに「対象外」）・境目のことばはそのまま・給与の仕組みは Head Chef・Accountant（従業員マスター G4）にも見せる。
+5. 残す：マージと本番公開は Moto さんが確かめてから。
 
 ## 2026-11-26 キャリア・育成を 1 つのタブに（v1222・下書き）
 
