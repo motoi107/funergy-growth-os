@@ -1,5 +1,11 @@
 # 改修・自動化の作業記録
 
+## 2026-11-27 UI案103 step ③ Quarterly（v1225）
+
+1. 済（`grok/ui103-step3-quarterly`）：約束 → 行動 → 結果 → 残り。行動と結果は別。記録なしは未実施と書かない。
+2. 保存は今の `saveQBudget`（`q_budgets`）と `saveQcNote`（`focusNotes`）。計算としきい値は変えていない。
+3. 次：④ Annual の帯。マージは Moto さんの確認のあと（本番に出る）。
+
 ## 2026-11-27 UI案103 step ② Daily/Monthly（v1224）
 
 1. 済（`grok/ui103-step2-daily`）：客数は前日までの売上予算の割合（正式）。現在地、KPI の決まり、確かめること、「要確認の日だけ」、合計を上、日の詳細、ランチ・ディナーをたたむ。

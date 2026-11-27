@@ -24,9 +24,10 @@ function fnSrc(name) {
 const pace = new Function('return ' + fnSrc('budGuestPacePlan'))();
 const kind = new Function('return ' + fnSrc('budDayKind'))();
 
-test('版は 1224', () => {
-  assert.match(SRC, /const APP_VERSION = '1224'/);
-  assert.match(SW, /const SW_BUILD = '1224'/);
+test('アプリとサービスワーカーの版が一致する（1224 以上）', () => {
+  const app = SRC.match(/const APP_VERSION = '(\d+)'/);
+  const sw = SW.match(/const SW_BUILD = '(\d+)'/);
+  assert.ok(app && sw && app[1] === sw[1] && Number(app[1]) >= 1224);
 });
 
 test('月の途中：客数の計画＝月の計画 × 前日までの売上予算の割合', () => {
