@@ -708,6 +708,16 @@ body.shift-wide .main { max-width:1900px; }
   transition: all .15s;
 }
 .phase-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+/* UI案103 step ①：予実のタブ・期間の帯・状態（緑・黄・赤＋記号と言葉） */
+.bud-tabs .phase-tab{display:flex;flex-direction:column;align-items:flex-start;line-height:1.25;border-radius:14px;padding:6px 12px;min-height:44px}
+.bud-tabs .bud-tab-s{font-size:10px;font-weight:500;opacity:.85}
+.bud-band{font-size:13px;font-weight:700;margin:-2px 0 12px}
+.bud-band span{font-weight:500;color:var(--muted)}
+.bud-st{display:inline-block;border-radius:8px;padding:1px 7px;font-size:11px;font-weight:700;white-space:nowrap;border:1px solid transparent;margin-right:4px}
+.bud-st.good{color:#15803D;background:#E7F4EC;border-color:#86EFAC}
+.bud-st.warn{color:#A16207;background:#FEF8D7;border-color:#FDE047}
+.bud-st.danger{color:#B91C1C;background:#FDECEA;border-color:#FCA5A5}
+.bud-st.none{color:var(--muted);background:var(--surface2);border-color:var(--border)}
 /* v1072 中間レビュー v2（UI案44 B案）。PC は 1180px 以上で広げる。色だけで伝えない（判定は文字と記号も出す）。スマホ（390px）は 1 列・横にはみ出さない・押すところは 44px 以上 */
 @media (min-width:1180px) { body.mr-wide .main { max-width:1500px; } }
 /* v1126（UI案65）：メニュー（出数）の画面。PC は 1500px まで広げる（1179px 以下は今までどおり 900px） */
@@ -1530,8 +1540,8 @@ body.mr-wide .btn:disabled { opacity:.45; cursor:not-allowed; }
 .ap-sub{display:block;font-size:10.5px;color:var(--muted);font-weight:400;white-space:normal}
 .ap-tbl td .ap-sub{white-space:nowrap;font-size:10px}
 .ap-tbl td .ap-sub.ap-w{white-space:normal;max-width:150px;margin-left:auto}
-.ap-pos{color:#1F5FBF}
-.ap-neg{color:#B34700}
+.ap-pos{color:var(--green)}
+.ap-neg{color:var(--red)}
 .ap-gray{color:var(--muted)}
 .ap-chip{display:inline-block;border-radius:10px;padding:2px 8px;font-size:11px;font-weight:700;white-space:nowrap}
 .ap-chip.fin{background:#E6F2EA;color:#1E6B40}
@@ -26430,6 +26440,57 @@ function statusColor(s){ return (STATUS[s]||STATUS.idle).col; }
 function statusTag(s){ return (STATUS[s]||STATUS.idle).tag; }
 /* 数値→ステータス（高い方が良い指標: 達成率など） */
 function statusFromPct(p, goodAt, warnAt){ goodAt=goodAt||100; warnAt=warnAt||90; return p>=goodAt?'good':p>=warnAt?'warn':'danger'; }
+/* UI案103 step ①：予実の状態の言葉。statusFromPct のしきい値（100 / 90）は変えない。期間の途中は「未達」と言わない。 */
+function budStatusMark(kind, ended){
+  var k=kind||'none', sym, word;
+  if(k==='none') return '<span class="bud-st none">'+t('— 判定なし','— No judgement')+'</span>';
+  if(ended){
+    if(k==='good'){ sym='✓'; word=t('達成','Met'); }
+    else { sym='▼'; word=t('未達','Missed'); }
+  } else {
+    if(k==='good'){ sym='✓'; word=t('順調','On pace'); }
+    else if(k==='warn'){ sym='!'; word=t('ペース不足','Short of pace'); }
+    else { sym='!'; word=t('遅れ','Behind'); }
+  }
+  var cls=(k==='good'||k==='warn'||k==='danger')?k:'danger';
+  return '<span class="bud-st '+cls+'">'+sym+' '+word+'</span>';
+}
+function budEndedMark(pct){
+  if(pct==null || isNaN(pct)) return '';
+  return ' '+budStatusMark(statusFromPct(pct), true);
+}
+function budTabStoreLabel(){
+  var vis=(typeof getVisibleStores==='function')?getVisibleStores():[];
+  var id='ALL';
+  if(budgetTab==='daily'){
+    if(vis.length<=1) id=vis[0]?vis[0].id:'ALL';
+    else if(typeof dailyStoreScope==='undefined' || dailyStoreScope==='current') id=(!curStore||curStore==='ALL'||curStore==='OFFICE')?'ALL':curStore;
+    else id=dailyStoreScope;
+  } else if(budgetTab==='quarter'){
+    id=(typeof _qbStore!=='undefined' && _qbStore)?_qbStore:'ALL';
+  } else if(budgetTab==='setup'){
+    id=(_budgetStore && _budgetStore!=='ALL')?_budgetStore:((typeof soloStoreId==='function')?soloStoreId('budget_setup'):'ALL');
+  } else if(budgetTab==='initiative'){
+    id=_initStore||'';
+    if(!id || !vis.some(function(x){ return x.id===id; })) id=(vis[0]&&vis[0].id)||'';
+  } else {
+    id=_budgetStore||'ALL';
+  }
+  if(!id || id==='ALL') return t('全店','All stores');
+  var st=(typeof STORES!=='undefined' && STORES)?STORES.find(function(x){ return x.id===id; }):null;
+  return (st&&st.name)?st.name:id;
+}
+function budPeriodBand(){
+  var now=(typeof bizNow==='function')?bizNow():new Date();
+  var off=(typeof dailyMonthOffset!=='undefined')?(dailyMonthOffset||0):0;
+  var ref=new Date(now.getFullYear(), now.getMonth()+off, 1);
+  var y=ref.getFullYear(), m=ref.getMonth()+1, q=Math.floor((m-1)/3)+1;
+  return '<div class="bud-band">'+y+t('年','')+' › Q'+q+' › '+m+t('月','')+' <span>· '+escapeHtml(budTabStoreLabel())+'</span></div>';
+}
+function budTabBtn(id, labelJa, labelEn, subJa, subEn){
+  return '<div class="phase-tab'+(budgetTab===id?' active':'')+'" onclick="setBudgetTab(\''+id+'\')">'
+    +'<span>'+t(labelJa, labelEn)+'</span><span class="bud-tab-s">'+t(subJa, subEn)+'</span></div>';
+}
 /* 進捗率→色（全画面共通。null/NaNはグレー・100緑・90黄・それ未満赤） */
 function pctColor(p){ if(p==null||isNaN(p)) return 'var(--muted)'; return statusColor(statusFromPct(p)); }
 /* 進捗バー共通部品（全画面で太さ・色・ペース線を統一）。opts:{h,color,pace} */
@@ -30849,30 +30910,22 @@ async function _freshRefresh(){
 
 function renderBudget() {
   normalizeBudgetsDemo();
+  /* ★v982: 月次進捗(summary)を日次に統合。古いタブ名のまま開いている端末を空画面にしない。
+     v940: 議事録タブは外した。minutesMonthlySales() は残す（消すと年間計画の数字が欠ける）。
+     v1084: 知らない値も日次へ。会議・仕入れは go が先に独立ページへ寄せる。 */
+  if (budgetTab==='summary' || budgetTab==='monthly' || budgetTab==='minutes') budgetTab='daily';
+  if (['daily','quarter','annual','setup','initiative'].indexOf(budgetTab) < 0) budgetTab='daily';
   var html = `<div class="section-header">
     <div><div class="section-title">${t('予実管理','Budget vs Actual')}</div><div class="section-sub">${t('対象月を選択（前月実績の確認・来月の予算設定）',"Select a month (review last month, set next month's budget)")}</div></div>
     <select class="form-select" style="width:auto;min-width:150px;font-size:13px" onchange="setBudgetMonthSel(this.value)">${budgetMonthOptions()}</select>
   </div>
-  <div class="phase-tabs">
-    <div class="phase-tab${budgetTab==='daily'?' active':''}" onclick="setBudgetTab('daily')">${t('日次進捗','Daily')}</div>
-    <div class="phase-tab${budgetTab==='quarter'?' active':''}" onclick="setBudgetTab('quarter')">${t('Qコミットビュー','Q Commit')}</div>
-    <div class="phase-tab${budgetTab==='annual'?' active':''}" onclick="setBudgetTab('annual')">${t('年間計画','Annual Plan')}</div>
-    <div class="phase-tab${budgetTab==='setup'?' active':''}" onclick="setBudgetTab('setup')">${t('予算設定','Budget Setup')}</div>
-    <div class="phase-tab${budgetTab==='initiative'?' active':''}" onclick="setBudgetTab('initiative')">${t('施策分析','Initiatives')}</div>
-  </div>`;
-  /* ★v982: 月次進捗(summary)を日次進捗に統合した。
-     budgetTab はセッションに保存されるので、'summary' のまま開いている端末が必ずいる。
-     ここで寄せないと空画面になる。 */
-  if (budgetTab==='summary') budgetTab='daily';
-  if (budgetTab==='monthly') budgetTab='daily'; // 月次サマリータブは廃止（独立ページ'monthly'＝ワークセンター等からの遷移に集約）
-  /* v940: 議事録タブを外した。開いたままの端末が空画面にならないよう月次へ寄せる。
-     ★関数(renderMeetingMinutes)とシード(MINUTES_SEED)は残す。
-       minutesMonthlySales() が年間計画の未登録月の補完に使っており、
-       消すと年間計画の数字が静かに欠ける（21216行）。 */
-  if (budgetTab==='minutes') budgetTab='daily';
-  /* v1084: 経営分析タブは廃止。会議・仕入れは独立したページ（go・renderPage が先に寄せる。ここは念のため）。
-     ほかに知らない値（古いお気に入りなど）も日次へ。空の画面にしない。 */
-  if (['daily','quarter','annual','setup','initiative'].indexOf(budgetTab) < 0) budgetTab='daily';
+  <div class="phase-tabs bud-tabs">
+    ${budTabBtn('daily','Daily/Monthly','Daily/Monthly','月の累計と日別','Month to date and each day')}
+    ${budTabBtn('quarter','Quarterly','Quarterly','四半期の約束と残り','The quarter promise and what is left')}
+    ${budTabBtn('annual','Annual','Annual','12か月の予算と実績','Twelve months of budget and actuals')}
+    ${budTabBtn('setup','予算設定','Budget Setup','日別の予算を入れる','Enter the daily budget')}
+    ${budTabBtn('initiative','施策分析','Initiatives','施策の前後を見る','Before and after an initiative')}
+  </div>`+budPeriodBand();
   if (budgetTab==='initiative') return html + renderInitiative(); // v956: 施策分析。独自の店舗スコープあり
   if (budgetTab==='daily') return html + renderBudgetDaily();   // 日次は独自の店舗スコープあり
   if (budgetTab==='quarter') return html + renderQuarterBudget(); // 四半期は独自の店舗スコープあり
@@ -36083,7 +36136,7 @@ function _apRowPc(md, M, stores){
   if(M.gap.length && !M.loading) actC2+='<span class="ap-sub ap-neg ap-w">'+escapeHtml(apGapText(M))+'</span>';
   var dd=(M.kind==='pre' || unset || M.loading || !M.relevant) ? null : apDiff(metric, M.A);
   var rr=(M.kind==='pre' || unset || M.loading || !M.relevant) ? null : apRate(metric, M.A);
-  var rC2=rate ? ((dd==null)?'—':(Math.round(dd*10)/10>0?t('予算超過','Over'):t('予算内','Within'))) : apPct(rr);
+  var rC2=rate ? ((dd==null)?'—':(Math.round(dd*10)/10>0?t('予算超過','Over'):t('予算内','Within'))) : (apPct(rr)+budEndedMark(rr));
   h+='<td>'+budTxt+'</td><td>'+actC2+'</td><td><b>'+((dd==null)?'—':apDiffHtml(metric, dd, gray))+'</b></td><td'+(gray?' class="ap-gray"':'')+'>'+rC2+'</td>';
   if(yy && !M.loading && M.relevant){
     var pyZero=(metric==='sales' && yy.py===0);
@@ -36107,7 +36160,7 @@ function _apQRowPc(md, Q){
   } else {
     var d=apDiff(metric, Q.A), r=apRate(metric, Q.A);
     var yy=(Q.py && (metric==='sales' || rate)) ? (rate ? { py:_apW(metric==='fc'?Q.pyA.fcA:Q.pyA.lbA), l:_apW(metric==='fc'?Q.lflA.fcA:Q.lflA.lbA) } : { py:Q.pyA.as, l:Q.lflA.as }) : null;
-    h+='<td>'+apFmt(metric, apVal(metric, Q.A, 'b'))+'</td><td><b>'+apFmt(metric, apVal(metric, Q.A, 'a'))+'</b></td><td>'+apDiffHtml(metric, d)+'</td><td>'+(rate?((d==null)?'—':(Math.round(d*10)/10>0?t('予算超過','Over'):t('予算内','Within'))):apPct(r))+'</td>';
+    h+='<td>'+apFmt(metric, apVal(metric, Q.A, 'b'))+'</td><td><b>'+apFmt(metric, apVal(metric, Q.A, 'a'))+'</b></td><td>'+apDiffHtml(metric, d)+'</td><td>'+(rate?((d==null)?'—':(Math.round(d*10)/10>0?t('予算超過','Over'):t('予算内','Within'))):(apPct(r)+(Q.fin.length===Q.months.length?budEndedMark(r):'')))+'</td>';
     if(yy && yy.py!=null && yy.l!=null){ h+='<td class="bl">'+apFmt(metric, yy.py)+'</td><td>'+apDiffHtml(metric, yy.l-yy.py)+'</td><td>'+((!rate && yy.py>0)?'<span class="'+apTone(metric, yy.l-yy.py)+'">'+apSignPct((yy.l/yy.py-1)*100)+'</span>':'—')+'</td>'; }
     else h+='<td class="bl">—</td><td>—</td><td>—</td>';
   }
@@ -36146,7 +36199,7 @@ function _apRowPh(md, M, stores){
   var actC=M.loading ? '<span class="ap-gray">'+apLoadWord(M)+'</span>' : (!M.relevant ? '—' : (M.zero ? apFmt(metric, 0)+'<span class="ap-gray" style="font-size:10px">'+t('確認済み','conf.')+'</span>' : '<span'+(gray?' class="ap-gray"':'')+'>'+apFmt(metric, act)+'</span>'));
   var body2='';
   body2+=kv(t('月間予算','Month budget'), !M.relevant ? '—' : (unset ? '<span class="ap-neg">'+apUnsetText(M, stores)+'</span>' : apFmt(metric, bud)));
-  body2+=kv(rate?t('判定','Result'):t('達成率','Achievement'), rate ? ((dd==null)?'—':(Math.round(dd*10)/10>0?t('予算超過','Over'):t('予算内','Within'))) : apPct(rr));
+  body2+=kv(rate?t('判定','Result'):t('達成率','Achievement'), rate ? ((dd==null)?'—':(Math.round(dd*10)/10>0?t('予算超過','Over'):t('予算内','Within'))) : (apPct(rr)+budEndedMark(rr)));
   if(metric==='sales' || rate){
     if(yy){ body2+=kv(t('前年同月','Prior year'), apFmt(metric, yy.py)); body2+=kv(t('前年差・増減率','Vs PY'), apDiffHtml(metric, yy.diff, gray)+((yy.rate!=null && !(metric==='sales' && yy.py===0))?'・<span class="'+(gray?'ap-gray':apTone(metric, yy.diff))+'">'+apSignPct(yy.rate)+'</span>':'')); }
     else if(M.relevant) body2+=kv(t('前年同月','Prior year'), t('前年実績なし','No prior year'));
@@ -36164,7 +36217,7 @@ function _apQRowPh(md, Q){
   if(!Q.fin.length) return '<div class="ap-pq"><b>Q'+Q.q+'</b><span>—</span><span>—</span><span>'+t('予算 ','Budget ')+apFmt(metric, apVal(metric, Q.all, 'b'))+'</span></div>';
   var d=apDiff(metric, Q.A), r=apRate(metric, Q.A);
   return '<div class="ap-pq" onclick="planGoQuarter('+md.y+','+Q.q+')"><b>Q'+Q.q+'</b><span>'+apFmt(metric, apVal(metric, Q.A, 'a'))+'</span><span>'+apDiffHtml(metric, d)+'</span><span>'
-    +((Q.fin.length===Q.months.length) ? (rate?((Math.round(d*10)/10>0)?t('予算超過','Over'):t('予算内','Within')):apPct(r)) : Q.fin[Q.fin.length-1]+t('月まで',' so far'))+'</span></div>';
+    +((Q.fin.length===Q.months.length) ? (rate?((Math.round(d*10)/10>0)?t('予算超過','Over'):t('予算内','Within')):(apPct(r)+budEndedMark(r))) : Q.fin[Q.fin.length-1]+t('月まで',' so far'))+'</span></div>';
 }
 /* 上のまとめ（確定した月までの累計）と、進行中の月のカード */
 function _apSummaryHtml(md, stores){
@@ -36276,7 +36329,7 @@ function renderAnnualPlan(){
   ph+='<div class="ap-pn">'+t('行を押すと予算・達成率・前年を広げる。もう一度押すとたたむ','Tap a row for budget, achievement and prior year; tap again to close')+'</div></div>';
   html+=ph;
   html+='<div class="ap-foot"><div>'+t('・単月予算差はその月だけ、累計予算差は予算の開始月からその月までの合計（四半期が変わってもリセットしない）。先の月・進行中の月は確定の累計に入れない。','• Vs budget is that month only; the cumulative diff runs from the budget start month (no reset at quarter changes). Future and in-progress months are not in the final cumulative.')
-    +'<br>'+t('・符号と色の両方で出す（青＝良い向き・橙＝悪い向き）。原価率・人件費率は差をポイントで、プラスは「予算超過」。','• Shown with both sign and colour (blue = good, orange = bad). Cost rates differ in points; a plus is “over budget”.')+'</div>'
+    +'<br>'+t('・符号と色の両方で出す（緑＝良い向き・赤＝悪い向き）。原価率・人件費率は差をポイントで、プラスは「予算超過」。','• Shown with both sign and colour (green = good, red = bad). Cost rates differ in points; a plus is “over budget”.')+'</div>'
     +'<div>'+t('・月間予算＝予算設定の日別予算の合計。実績＝会計PL を取り込んだ月は PL、まだの月はアプリの日次（月ごとに出どころの印）。確定＝月が終わって日次がそろった月。','• Month budget = sum of daily budgets in Budget Setup. Actual = accounting PL when imported, otherwise app daily (marked per month). Final = month ended with all daily data in.')
     +'<br>'+t('・前年＝前年の同じ月の確定 PL（進行中の月は前年の同じ日まで）。月を押すと予算設定、Q の小計を押すと Qコミットビューへ。','• Prior year = same month’s final PL (the in-progress month uses the same days last year). Tap a month for Budget Setup, a quarter subtotal for Q Commit.')+'</div></div>';
   /* 過去の月の日次がこの端末に無ければ読む（読み終わったら描き直す） */
@@ -36453,7 +36506,7 @@ function qcFillWays(R){
   var need=R.short||0, days=R.daysLeft||0;
   if(!(need>0) || !(days>0)) return { ok:false, need:need, days:days };
   var ppa=R.aPpa||0, gPerDay=R.daysDone?(R.aGuests/R.daysDone):0;
-  var byGuest = ppa>0 ? (need/ppa/days) : null;              /* 1日あたり必要な追加客数 */
+  var byGuest = ppa>0 ? (need/ppa/days) : null;              /* 客数だけで埋めるときの1日の客数（今の客単価）。計算は need/ppa/days のまま */
   var byPpa   = R.aGuests>0 && gPerDay>0 ? (need/(gPerDay*days)) : null;  /* 必要な客単価増 */
   return { ok:true, need:need, days:days,
            byGuest:byGuest, byPpa:byPpa,
@@ -36717,9 +36770,8 @@ function _qcBarMark(pct, color, w){
 /* ★A: 四半期サマリー。判定・過不足・着地見込み・埋め方を1枚に。 */
 function renderQcSummary(scope, y, q, R){
   var col=(R.level==='good')?'var(--green)':(R.level==='watch')?'var(--yellow)':'var(--red)';
-  var badge=(R.level==='good')?t('達成ペース','On pace')
-          :(R.level==='watch')?t('やや遅れ','Slightly behind')
-          :(R.level==='behind')?t('要挽回','Behind'):'—';
+  var _qk=(R.level==='good')?'good':(R.level==='watch')?'warn':(R.level==='behind')?'danger':'none';
+  var badge=budStatusMark(_qk, R.daysLeft===0);
   var name=(scope==='ALL')?t('全店舗','All stores')
           :((STORES.find(function(s){return s.id===scope;})||{}).name||scope);
   var gapCol=(R.paceGap>=0)?'var(--green)':'var(--red)';
@@ -36734,8 +36786,7 @@ function renderQcSummary(scope, y, q, R){
     +'<div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:8px">'
     +'<span style="font-size:13.5px;font-weight:800">'+y+' Q'+q
     +' <span style="color:var(--muted);font-weight:400;font-size:11.5px">'+escapeHtml(name)+'</span></span>'
-    +'<span style="font-size:11px;font-weight:800;color:'+col+';background:var(--surface2);'
-    +'padding:2px 10px;border-radius:999px">'+badge+'</span></div>';
+    +badge+'</div>';
 
   /* ★判断の数字を大きく1つだけ置く。ここが「経過分に対してどうか」。 */
   h+='<div style="display:flex;align-items:baseline;gap:8px">'
@@ -36774,7 +36825,7 @@ function renderQcSummary(scope, y, q, R){
       +t('Q目標まで あと','To Q target')+' <b style="font-size:13px;color:var(--tm)">'+fmtK(w.need)+'</b>'
       +' · '+t('残り','left')+' '+w.days+t('日','d')+'</div>'
       +'<div style="display:flex;flex-wrap:wrap;gap:12px;font-size:12px">'
-      +'<span style="color:var(--muted)">'+t('客数','Guests')+' <b style="color:var(--tm)">'+g(w.byGuest)+'</b></span>'
+      +'<span style="color:var(--muted)">'+((w.byGuest==null)?t('客数だけで埋めるなら —（今の客単価）','If guests alone: — (current check)'):(t('客数だけで埋めるなら1日','If guests alone, ')+'<b style="color:var(--tm)">'+Math.ceil(w.byGuest)+'</b>'+t('人（今の客単価）',' a day (current check)')))+'</span>'
       +'<span style="color:var(--muted)">'+t('客単価','Avg')+' <b style="color:var(--tm)">'+p(w.byPpa)+'</b></span>'
       +'<span style="color:var(--muted)">'+t('半々','Half')+' <b style="color:var(--tm)">'
       +g(w.halfGuest)+' '+p(w.halfPpa)+'</b></span></div></div>';
@@ -37514,9 +37565,8 @@ function renderQCommitSummary(scope, y, q){
       +t('この四半期の予算が登録されていません。予算設定から各月を登録してください。','No budget registered for this quarter.')+'</div></div>';
   }
   var col = (R.level==='good')?'var(--green)':(R.level==='watch')?'var(--yellow)':'var(--red)';
-  var badge = (R.level==='good')?t('達成ペース','On pace')
-            : (R.level==='watch')?t('やや遅れ','Slightly behind')
-            : (R.level==='behind')?t('要挽回','Behind') : '—';
+  var _qk2=(R.level==='good')?'good':(R.level==='watch')?'warn':(R.level==='behind')?'danger':'none';
+  var badge = budStatusMark(_qk2, R.daysLeft===0);
   var progW = Math.max(0, Math.min(100, (R.progress||0)*100));
   var paceW = Math.max(0, Math.min(100, R.tSales? (R.paceSales/R.tSales*100) : 0));
   var mainCause = (Math.abs(R.gapGuest)>=Math.abs(R.gapPpa))?t('客数','Guests'):t('客単価','Spend/guest');
@@ -37532,7 +37582,7 @@ function renderQCommitSummary(scope, y, q){
     /* 見出し＋判定 */
     +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">'
     +'<div style="font-size:13px;font-weight:800"><i class="ti ti-target-arrow" style="color:'+col+'"></i> Q'+q+' '+t('達成サマリー','Summary')+'</div>'
-    +'<span style="padding:2px 10px;border-radius:999px;background:var(--surface2);color:'+col+';font-weight:800;font-size:11px">'+badge+'</span></div>'
+    +badge+'</div>'
     /* 大きな数字 */
     +'<div style="font-size:22px;font-weight:800;line-height:1.2">'+fmtK(R.aSales)
     +' <span style="font-size:12px;color:var(--muted);font-weight:400">/ '+fmtK(R.tSales)+'</span>'
@@ -38468,6 +38518,7 @@ function _bStoreProgCards(items, setter){
       +'<div style="display:flex;align-items:center;gap:8px">'
         +'<span class="store-dot" style="background:'+(it.color||'#888')+'"></span>'
         +'<div style="font-weight:700;font-size:14px;flex:1;min-width:0">'+escapeHtml(it.name)+'</div>'
+        +(it.paceWord?budStatusMark((it.future||p==null)?'none':statusFromPct(p, tg, tg*0.9), !!it.ended):'')
         +'<span style="font-weight:800;font-size:15px;color:'+col+'">'+(p!=null?p.toFixed(1)+'%':'—')+'</span>'
       +'</div>'
       +'<div style="display:flex;align-items:baseline;gap:6px;margin-top:3px">'
@@ -38491,7 +38542,9 @@ function renderBudgetSummaryStores(stores, cumByStore, isCur){
     var act = isCur ? (c.actToToday||0) : (c.actMonth||0);
     var fc = act>0 ? Math.round((c.costToToday||0)/act*1000)/10 : null;
     var lb = act>0 ? Math.round((c.laborToToday||0)/act*1000)/10 : null;
+    var _off=(typeof dailyMonthOffset!=='undefined')?(dailyMonthOffset||0):0;
     return { id:st.id, name:st.name, color:_bStoreCol(st.id), actual:act, budget:bud, pace:(isCur?100:null),
+      paceWord:true, ended:_off<0, future:_off>0,
       sub:t('原価率','FC')+' '+(fc!=null?fc+'%':'—')+' ・ '+t('人件費率','Labor')+' '+(lb!=null?lb+'%':'—') };
   });
   var h = '<div class="card"><div class="card-title"><i class="ti ti-building-store" style="color:var(--accent)"></i>'+t('店舗別 月次進捗','By Store · Monthly')+' <span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">'+(isCur?t('前日までの実績／前日までの予算・達成率','Actual / Budget, through yesterday'):t('実績／月間予算・達成率','Actual / Monthly budget · Achievement'))+(isCur?t('（縦線＝予算どおり100%）',' (line = 100% on budget)'):'')+'</span></div>';
@@ -38551,8 +38604,10 @@ function renderBudgetAllStoreAgg(stores, cumByStore, agg, isCur, mdays, monLabel
      + '</div></div>';
   /* ★v981: 縦線は 100%（＝予算どおり）。従来は暦日ペースの位置に引いていた。 */
   h += '<div style="margin:10px 0 6px">'+progBar(achv,{h:12,color:col,pace:isCur?100:null})+'</div>';
+  var _aOff=(typeof dailyMonthOffset!=='undefined')?(dailyMonthOffset||0):0;
+  var _aKind=(_aOff>0||achv==null)?'none':(paceDiff>=0?'good':paceDiff>=-3?'warn':'danger');
   h += '<div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;font-size:11.5px">'
-     + '<span style="color:'+col+';font-weight:700">'+t('達成','Achieved')+' '+(achv!=null?achv.toFixed(1)+'%':'—')+'</span>'
+     + '<span style="color:'+col+';font-weight:700">'+budStatusMark(_aKind, _aOff<0)+' '+(achv!=null?achv.toFixed(1)+'%':'')+'</span>'
      + (isCur
         /* ★v981: 100% が予算どおりなので、差は achv−100。
            「月の進み」は予算ベースの経過率（暦日ではない）。 */
@@ -39203,7 +39258,9 @@ function budKpiCard(stores, days, agg, isCur, wow){
   html += `<div class="card"><div class="card-title"><i class="ti ti-chart-radar" style="color:var(--accent)"></i>${t('KPI 目標との差・前週比','KPI vs Target · WoW')} <span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">${t('目標＝KPI管理／承認予算 · 押すと内訳','Target = KPI mgmt / approved budget · tap for details')}</span></div>
     <div class="kpi-wrap"><div class="kpi-grid" data-kn="@@KN@@">`;
   var _kpiStart = html.length;
-  html += kpiTile('ti-trending-up',t('売上進捗','Sales progress'), _sp!=null?_sp.toFixed(1)+'%':'—', '100%', _spCol, (wow.sales!=null?wowBadge(wow.sales,true,false,''):''), t('実績','Act')+' '+fmtK(_spAct)+' / '+t('予算','Bud')+' '+fmtK(_spBud)+(isCur?t('（前日まで）',' (through yesterday)'):''), {title:t('売上進捗','Sales progress'), body:_kpiDetailWrap(t('平日（月〜木）と週末（金土日）の1日あたり平均売上と、曜日ごとの平均。','Avg daily sales: weekday vs weekend, and by weekday.'), salesSplitSub(stores,days)+salesDowSub(stores,days))});
+  var _spOff=(typeof dailyMonthOffset!=='undefined')?(dailyMonthOffset||0):0;
+  var _spWord=(_spOff<=0 && _sp!=null)?(budStatusMark(statusFromPct(_sp), _spOff<0)+' '):'';
+  html += kpiTile('ti-trending-up',t('売上進捗','Sales progress'), _sp!=null?_sp.toFixed(1)+'%':'—', '100%', _spCol, (wow.sales!=null?wowBadge(wow.sales,true,false,''):''), _spWord+t('実績','Act')+' '+fmtK(_spAct)+' / '+t('予算','Bud')+' '+fmtK(_spBud)+(isCur?t('（前日まで）',' (through yesterday)'):''), {title:t('売上進捗','Sales progress'), body:_kpiDetailWrap(t('平日（月〜木）と週末（金土日）の1日あたり平均売上と、曜日ごとの平均。','Avg daily sales: weekday vs weekend, and by weekday.'), salesSplitSub(stores,days)+salesDowSub(stores,days))});
   /* v1130（11/02 の依頼 0・UI案67）：リピート率は FUNERGY_VT の状態つきのタイル（対象データなし・未取込も出す・押すと内訳）。数は repeatStats と同じ */
   if (window.FUNERGY_VT) { try { html += FUNERGY_VT.kpiTile(stores, days, k.repeatTgt, function(){ return repeatTrendSub(stores,days); }); } catch(e) { } }
   else if (k.repeatHas) html += kpiTile('ti-repeat',t('リピート率','Repeat rate'), k.repeatRate.toFixed(1)+'%', (k.repeatTgt!=null?k.repeatTgt+'%':''), rCol, '', t('リピート','Repeat')+' '+(k.repeat||0).toLocaleString()+' / '+t('対象','of')+' '+(k.rTotal||0).toLocaleString(), {title:t('リピート率','Repeat rate'), body:_kpiDetailWrap(t('前々月・前月・当月のリピート率と、初回／リピートの実数の推移。','Repeat rate and first/repeat counts: 2 mo ago / last mo / this mo.'), repeatTrendSub(stores,days))});
@@ -40545,6 +40602,7 @@ function renderBudgetDaily() {
       <div style="font-size:26px;font-weight:800;color:var(--tm)">${fmtUSD2(sumActual)}</div>
       <div style="font-size:12px;color:var(--muted)">${t('／ 前日までの予算','/ Budget through yesterday')} ${fmtUSD2(sumBudgetToToday)}</div>
       <span class="tag ${paceRate==null?'tag-gray':paceRate>=100?'tag-green':paceRate>=90?'tag-yellow':'tag-red'}" style="margin-left:auto;font-size:13px">${paceRate==null?'—':paceRate+'%'}</span>
+      ${budStatusMark(paceRate==null?'none':statusFromPct(paceRate), _dOff<0)}
     </div>
     <div style="margin:10px 0 6px">${progBar(paceRate==null?0:paceRate,{h:12,color:_dpCol,pace:100})}</div>
     <div style="font-size:11.5px;color:${_dpCol};font-weight:700">${t('対予算ペース（前日まで）','vs-budget pace (through yesterday)')} ${paceRate==null?t('まだ判定できません（前日までの予算がありません）','No budget elapsed yet'):paceRate+'%'}<span style="color:var(--muted);font-weight:400"> ${t('・ 累計売上 ÷ 累計予算（本日まで）','· Cum. sales ÷ cum. budget (through today)')}</span></div>
@@ -50565,7 +50623,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1222';
+const APP_VERSION = '1223';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
