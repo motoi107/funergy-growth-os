@@ -1,5 +1,24 @@
 # Claude / Codex 共通記録
 
+## 2026-11-27 Google 接続修正の再開（Codex・v1230）
+
+- 引き継いだ修正 `8b84c1900a6422bdf4b2ea60e53230b0e2a5c621` を Codex の別担当 `google_code_audit` が独立レビューし、新たな公開阻害の指摘なし。Claude レビューは未実施。
+- 本番 `google-reviews` は v9。画面は旧版。Business Profile の店舗未設定と Places の未取得を混同しない。
+- 再検証：テスト依存パッケージを lockfile どおり復元後、Google 関連の既存5ファイルが 66/66 成功（skip 0）。`python3 scripts/check-static-release.py` pass/1230。依存パッケージ復元前の起動失敗はコード不具合ではない。
+- 残る実確認：管理者本人のログイン後、Places の評価・口コミ取得と Business Profile の管理店舗一覧を確認する。Google の元エラーは旧空同期で消えており、今回の安全な診断ログで再取得して判断する。認証を迂回したテストや、本番業務データの試験書込みは行わない。
+- 公開結果・最新 SHA は変更 PR に記録する。
+
+## 2026-11-27 Google 接続の調査と修正（Codex・v1230・`codex/fix-google-connection-state`）
+
+- 対象は GitHub 版 `funergy-growth-os`。調査開始の main は `f4d44884c9dd50ce224b283601e2cb53c3b6c231`（v1229）。本番の `google-reviews` v8 はその時点の配備用ファイルと一致していた。
+- 読むだけの本番調査：11/27 17:59:26〜30 UTC（07:59:26〜30 HST）の Places の検索・店舗確認は成功。評価・口コミの取得回数は当日・当月とも 0 で、口コミ取得の成功までは確認していない。17:59:38 UTC の 502 は Business Profile の店舗一覧の経路（`gr_bp_creds` → `gr_bp_mark`）だった。
+- 再現した不具合：Business Profile の店舗が 0 件でも `syncAll` が `ok:true, stores:[]` を返し、既存の pending/error を ok に戻していた。17:59:52 UTC の手動処理もこの経路。Google が断った元の理由は上書き済みなので、利用審査・割り当て・API 設定のどれかは断定しない。
+- 修正：店舗 0 件はトークン更新・Google 通信の前に `bp_no_locations` で終了し、失敗として記録。接続状態・エラー・最終成功時刻は変えない。店舗を結んでいない間は「今すぐ取る」を無効化し、アカウント認証と口コミの取り込み完了を区別する。古い `ok:true, stores:[]` も成功とは表示しない。
+- Places は Business Profile とは別の設定であることを表示し、住所確認済み店舗の「評価と口コミを見る」を接続説明の直下にも表示。通常の要求は本文まで 30 秒で区切る。ページを順に取る `sync_now`・`bp_locations` の長い処理は従来どおり。遅い答え・ログイン変更の確認は維持。
+- Business Profile の accounts/locations 失敗は固定の段階名・HTTP ステータス・許可した Google reason の列挙値だけログに残す。Google のメッセージ・metadata・URL・キー・個人情報は記録しない。今回は SQL・権限・料金上限・保存方針は変更しない。
+- 検証：新しい 4 回帰試験は修正前の main で全て失敗、修正後は 4/4。Google の既存 5 ファイル 62 件は変更前に全て成功。変更後は同じ 5 ファイルで 66/66 成功（新規 4 件込み）。店舗未設定の文言の最終調整後も画面の新規 2 件を再実行して成功。static release は pass/1230（実ブラウザ・実 Google の評価取得の確認とは別）。
+- レビュー担当：Codex。Claude のレビューは未実施。本番のソース変更・デプロイは親担当の正確なコミット確認後。
+
 ## 2026-11-27 UI案104 を main（v1228）に載せる（v1229・ブランチ `claude/ui104-career`・本番未反映）
 
 - main `f184170`（UI案103 ①〜⑥）と UI案104 をマージ。衝突は記録の先頭と `APP_VERSION` / `SW_BUILD` だけ。予実・ワークセンター・経理の変更と、キャリア（FUNERGY_CAREER）の変更は両方残した。

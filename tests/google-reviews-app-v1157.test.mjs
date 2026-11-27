@@ -100,7 +100,7 @@ async function app(srv, emp, { role = 'crew', storeLogin = false, href = 'https:
   const hist = { state: null, replaceState(s, t, u) { loc.replaced = u; } };
   const man = { 'S1|2026.11': { gAvg: 3.9, gCnt: 4, reviewScore: 4.1, gTotalCnt: 300 }, 'S1|2026.9': { gAvg: 4.5, gCnt: 2 }, 'S2|2026.11': { gAvg: 4.4, gCnt: 6, reviewScore: 4.2, gTotalCnt: 205 } };
   const ctx = {
-    console, Promise, Date, Math, JSON, Object, Array, String, Number, Error, RegExp, Map, Set, URL, URLSearchParams,
+    console, Promise, Date, Math, JSON, Object, Array, String, Number, Error, RegExp, Map, Set, URL, URLSearchParams, AbortController,
     setTimeout, clearTimeout, setInterval: () => 1, clearInterval: () => {},
     crypto: webcrypto, SUPABASE_URL: 'https://db.test', SUPABASE_ANON: 'anon-key', _hwSession: emp ? 'pin-' + emp : null,
     curStoreLogin: storeLogin, curRole: role, curPage: 'meeting',
@@ -717,4 +717,58 @@ test('#216 の Codex（7134070355）の P2: a cap answer that arrives after Paci
     put('2000-01-31', tomorrow, 'month');
     assert.match(gm.ctx.grPlacesHtml('S2'), /grLoadPlaces\('S2'\)/, 'month cap, the server month is over');
   }
+});
+
+
+test('v1230: Places stays available while BP has no linked locations; no empty import success in either language', async () => {
+  const s = await server({ loc: false });
+  await s.db.rpc('gr_run_log', { kind: 'manual', ok: true, info: { stores: [] } }); // old misleading record
+  const a = await app(s, 'E2', { role: 'gm' });
+  a.ctx.grTabHtml(); await a.idle();
+  let h = a.ctx.grTabHtml();
+  assert.match(h, /Google アカウント認証済み・店舗が未設定/);
+  assert.doesNotMatch(h, /つながっています|・取れました/);
+  assert.match(h, /disabled onclick="grSyncNow\(\)"/);
+  assert.match(h, /grPlacesOpen\('S2'\)/, 'configured Places remains directly available');
+  assert.match(h, /Places は下の Business Profile/);
+  const calls = a.calls.length;
+  a.ctx.grSyncNow(); await a.idle();
+  assert.equal(a.calls.length, calls, 'no import request while BP setup is empty');
+  assert.ok(a.toasts.some(([kind, msg]) => kind === 'info' && /店舗が未設定/.test(msg)));
+  await s.db.rpc('gr_bp_mark', { status: 'pending', error: 'accounts_403' });
+  a.ctx.grReloadTab(); await a.idle(); h = a.ctx.grTabHtml();
+  assert.match(h, /API の有効化・利用審査・割り当て/);
+  assert.match(h, /grPlacesOpen\('S2'\)/);
+  a.ctx.t = (ja, en) => en;
+  h = a.ctx.grTabHtml();
+  assert.match(h, /separate from Places/);
+  assert.match(h, /disabled onclick="grSyncNow\(\)"/);
+  assert.match(h, /No Business Profile locations are linked/);
+  // A pre-fix server or delayed response returning ok:true with zero stores must not show success.
+  a.S().status.stores.S1 = { loc: true };
+  a.ctx.fetch = async (url, init) => JSON.parse(init.body).action === 'sync_now'
+    ? new Response(JSON.stringify({ ok: true, stores: [] })) : s.handler(new Request(url, init));
+  a.ctx.grSyncNow(); await a.idle();
+  assert.ok(a.toasts.some(([kind, msg]) => kind === 'error' && /No Business Profile locations/.test(msg)));
+  assert.ok(!a.toasts.some(([kind, msg]) => kind === 'success' && /0/.test(msg)));
+});
+
+test('v1230: ordinary requests time out across fetch and body; paginated BP imports keep their existing duration', async () => {
+  const a = await app({ handler: async () => new Response('{}') }, 'E2', { role: 'gm' });
+  const timers = [];
+  a.ctx.setTimeout = (fn, ms) => { timers.push({ fn, ms }); return timers.length; };
+  a.ctx.clearTimeout = () => {};
+  let finish;
+  a.ctx.fetch = async () => ({ ok: true, status: 200, json: () => new Promise(resolve => { finish = resolve; }) });
+  const req = a.ctx.grAPI({ action: 'status' });
+  await sleep(0);
+  assert.equal(timers[0].ms, 30000);
+  const rejected = assert.rejects(req, e => e.code === 'timeout');
+  timers[0].fn(); await rejected;
+  finish({ stale: true }); await sleep(0);
+  timers.length = 0;
+  a.ctx.fetch = async () => new Response(JSON.stringify({ ok: false, error: 'bp_no_locations', stores: [] }));
+  await a.ctx.grAPI({ action: 'sync_now' });
+  await a.ctx.grAPI({ action: 'bp_locations' });
+  assert.equal(timers.length, 0, 'long paginated operations are not cut off at 30 seconds');
 });
